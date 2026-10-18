@@ -1507,6 +1507,7 @@ mod tests {
                     b: 0.25,
                     a: 1.0,
                 },
+                left_gravity: true,
             },
             prefer_no_csd: true,
             cursor: Cursor {

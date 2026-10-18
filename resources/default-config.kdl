@@ -114,6 +114,10 @@ layout {
     // Set gaps around windows in logical pixels.
     gaps 16
 
+    // Tiled windows slide left within their rows until they touch another window, closing gaps
+    // the way columns do in niri. Uncomment to let windows stay wherever you put them instead.
+    // left-gravity false
+
     // When to center a column when changing focus, options are:
     // - "never", default behavior, focusing an off-screen column will keep at the left
     //   or right edge of the screen.

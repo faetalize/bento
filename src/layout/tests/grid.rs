@@ -125,7 +125,8 @@ fn moving_into_a_window_swaps() {
 fn growing_down_pushes_the_window_below() {
     let mut layout = set_up_hole();
 
-    // Put window 3 below window 2 by opening it and moving it under 2.
+    // Put window 3 below window 2 by opening it and moving it down. Left gravity slides it under
+    // window 2.
     let mut ops = vec![
         add_window(3),
         Op::SetWindowHeight {
@@ -134,7 +135,6 @@ fn growing_down_pushes_the_window_below() {
         },
     ];
     ops.extend(vec![Op::MoveWindowDown; 6]);
-    ops.extend(vec![Op::MoveColumnLeft; 2]);
     ops.extend(settle());
     check_ops_on_layout(&mut layout, ops);
     assert_snapshot!(format_tiles(&layout), @"

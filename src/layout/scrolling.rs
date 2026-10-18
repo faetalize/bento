@@ -378,6 +378,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
         let cell_metrics = compute_cell_metrics(working_area, &options);
+        let mut grid = Grid::new(grid::DEFAULT_ROWS);
+        grid.set_left_gravity(options.layout.left_gravity);
 
         Self {
             columns: Vec::new(),
@@ -394,7 +396,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             scale,
             clock,
             options,
-            grid: Grid::new(grid::DEFAULT_ROWS),
+            grid,
             cell_metrics,
             focus_anchor: None,
             grid_resize_original: None,
@@ -422,7 +424,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.scale = scale;
         self.cell_metrics = compute_cell_metrics(working_area, &options);
         self.options = options;
-        self.sync_grid(None, None);
+
+        if self.grid.left_gravity() != self.options.layout.left_gravity {
+            let prev_positions = self.grid_positions();
+            self.grid.set_left_gravity(self.options.layout.left_gravity);
+            self.sync_grid(Some(prev_positions), None);
+        } else {
+            self.sync_grid(None, None);
+        }
 
         // Apply always-center and such right away.
         if !self.columns.is_empty() && !self.view_offset.is_gesture() {
@@ -4486,7 +4495,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let col = (x / (m.cell_w + m.gap)).round() as i32;
         let row = ((y / (m.cell_h + m.gap)).round() as i32).clamp(0, m.rows - rows);
-        InsertPosition::Cell(Area::new(col, row, cols, rows))
+        let area = Area::new(col, row, cols, rows);
+
+        // Show where the window will actually land, after pushing and gravity.
+        let mut grid = self.grid.clone();
+        let id = ColumnId::specific(u64::MAX);
+        grid.insert(id, area);
+        InsertPosition::Cell(grid.area(&id).unwrap())
     }
 
     /// Makes `window` go to `area` on the grid when it's added next.

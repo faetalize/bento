@@ -4,7 +4,8 @@
 //! tall. Every tiled window covers a rectangle of whole cells. Windows are independent of each
 //! other: moving or resizing one pushes the others out of the way, and empty cells are allowed.
 //! Columns of cells that no window covers collapse, so the strip never has empty gaps all the way
-//! from top to bottom.
+//! from top to bottom. With left gravity, windows also slide left within their rows until they
+//! touch another window, like columns close up in niri.
 //!
 //! This module is pure cell arithmetic with no compositor state, so it can be tested in isolation.
 
@@ -114,6 +115,8 @@ impl Area {
 pub struct Grid<K> {
     /// Number of rows; always positive.
     rows: i32,
+    /// Whether windows slide left within their rows until they touch another window.
+    left_gravity: bool,
     /// Windows and their areas, in insertion order.
     items: Vec<(K, Area)>,
 }
@@ -123,8 +126,19 @@ impl<K: Clone + PartialEq> Grid<K> {
         assert!(rows > 0);
         Self {
             rows,
+            left_gravity: false,
             items: Vec::new(),
         }
+    }
+
+    pub fn left_gravity(&self) -> bool {
+        self.left_gravity
+    }
+
+    /// Turns left gravity on or off. Turning it on slides windows left right away.
+    pub fn set_left_gravity(&mut self, left_gravity: bool) {
+        self.left_gravity = left_gravity;
+        self.normalize();
     }
 
     pub fn rows(&self) -> i32 {
@@ -445,8 +459,14 @@ impl<K: Clone + PartialEq> Grid<K> {
         self.items[pushed].1 = q;
     }
 
-    /// Collapses columns that no window covers and moves the strip to start at column 0.
+    /// Collapses columns that no window covers and moves the strip to start at column 0. With
+    /// left gravity, slides windows left within their rows instead.
     fn normalize(&mut self) {
+        if self.left_gravity {
+            self.slide_left();
+            return;
+        }
+
         let Some(min) = self.items.iter().map(|(_, a)| a.col).min() else {
             return;
         };
@@ -476,6 +496,29 @@ impl<K: Clone + PartialEq> Grid<K> {
         }
     }
 
+    /// Slides every window left within its rows until it touches another window or column 0.
+    ///
+    /// This leaves no fully empty columns either, since every window touches something on its
+    /// left all the way to column 0.
+    fn slide_left(&mut self) {
+        // Going left to right, every window to the left of the current one is already in its
+        // final place. Windows only move left, so the order holds.
+        let mut order: Vec<usize> = (0..self.items.len()).collect();
+        order.sort_by_key(|&i| (self.items[i].1.col, self.items[i].1.row));
+
+        for (n, &i) in order.iter().enumerate() {
+            let area = self.items[i].1;
+            let col = order[..n]
+                .iter()
+                .map(|&j| self.items[j].1)
+                .filter(|b| b.row < area.bottom() && area.row < b.bottom())
+                .map(|b| b.right())
+                .max()
+                .unwrap_or(0);
+            self.items[i].1.col = col;
+        }
+    }
+
     pub fn verify_invariants(&self) {
         for (i, (k, a)) in self.items.iter().enumerate() {
             assert!(a.cols >= 1 && a.rows >= 1, "empty area: {a:?}");
@@ -498,6 +541,16 @@ impl<K: Clone + PartialEq> Grid<K> {
                 self.items.iter().any(|(_, a)| a.col <= c && c < a.right()),
                 "empty column {c}"
             );
+        }
+
+        if self.left_gravity {
+            for (_, a) in &self.items {
+                let touches = a.col == 0
+                    || self.items.iter().any(|(_, b)| {
+                        b.right() == a.col && b.row < a.bottom() && a.row < b.bottom()
+                    });
+                assert!(touches, "window could slide left: {a:?}");
+            }
         }
     }
 }
@@ -582,6 +635,7 @@ mod tests {
     fn grid(items: &[(u32, Area)]) -> Grid<u32> {
         let grid = Grid {
             rows: R,
+            left_gravity: false,
             items: items.to_vec(),
         };
         grid.verify_invariants();
@@ -787,6 +841,67 @@ mod tests {
         assert_eq!(g.neighbor(&1, Direction::Right, Some(2)), Some(&2));
     }
 
+    fn gravity_grid(items: &[(u32, Area)]) -> Grid<u32> {
+        let mut grid = grid(items);
+        grid.set_left_gravity(true);
+        grid.verify_invariants();
+        grid
+    }
+
+    #[test]
+    fn gravity_closes_holes_left_by_closed_windows() {
+        // 1 | 2 | 4
+        //   | 3 |
+        let mut g = gravity_grid(&[
+            (1, Area::new(0, 0, 4, R)),
+            (2, Area::new(4, 0, 4, 6)),
+            (3, Area::new(4, 6, 4, 6)),
+            (4, Area::new(8, 0, 4, 6)),
+        ]);
+
+        // Closing 2 lets 4 slide left into its rows; 3 keeps its place.
+        g.remove(&2);
+        g.verify_invariants();
+        assert_eq!(area(&g, 3), Area::new(4, 6, 4, 6));
+        assert_eq!(area(&g, 4), Area::new(4, 0, 4, 6));
+    }
+
+    #[test]
+    fn gravity_keeps_holes_that_nothing_fits() {
+        // A full-height window next to a half-height one can't slide into half the space.
+        let mut g = gravity_grid(&[
+            (1, Area::new(0, 0, 4, 6)),
+            (2, Area::new(4, 0, 4, R)),
+            (3, Area::new(0, 6, 4, 6)),
+        ]);
+        g.remove(&3);
+        g.verify_invariants();
+        assert_eq!(area(&g, 2), Area::new(4, 0, 4, R));
+    }
+
+    #[test]
+    fn gravity_pulls_neighbors_when_shrinking() {
+        let mut g = gravity_grid(&[(1, Area::new(0, 0, 6, R)), (2, Area::new(6, 0, 6, R))]);
+        assert!(g.resize(&1, 4, R));
+        g.verify_invariants();
+        assert_eq!(area(&g, 2), Area::new(4, 0, 6, R));
+    }
+
+    #[test]
+    fn gravity_makes_horizontal_moves_into_empty_space_do_nothing() {
+        // 1 | 2
+        // 3 |
+        let mut g = gravity_grid(&[
+            (1, Area::new(0, 0, 4, 6)),
+            (3, Area::new(0, 6, 4, 6)),
+            (2, Area::new(4, 0, 4, 6)),
+        ]);
+        assert!(!g.move_window(&2, Direction::Right));
+
+        // Moving 3 right swaps nothing either, and it slides back.
+        assert!(!g.move_window(&3, Direction::Right));
+    }
+
     #[test]
     fn metrics_near_square() {
         let m = CellMetrics::new(Size::from((1920., 1080.)), R, 16.);
@@ -848,8 +963,12 @@ mod tests {
 
     proptest! {
         #[test]
-        fn random_operations_keep_invariants(ops in prop::collection::vec(op(), 1..60)) {
+        fn random_operations_keep_invariants(
+            ops in prop::collection::vec(op(), 1..60),
+            left_gravity in any::<bool>(),
+        ) {
             let mut g = Grid::new(R);
+            g.set_left_gravity(left_gravity);
             let mut next_id = 0u32;
 
             for op in ops {
