@@ -15,6 +15,9 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 /// 12 divides evenly into halves, thirds, quarters and sixths.
 pub const DEFAULT_ROWS: i32 = 12;
 
+/// Largest width of a window in columns, which keeps cell arithmetic far from overflowing.
+pub const MAX_COLS: i32 = 10_000;
+
 /// Direction for a grid operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
@@ -155,7 +158,7 @@ impl<K: Clone + PartialEq> Grid<K> {
 
     /// Clamps an area to a valid size and to the rows of the grid.
     fn clamp_area(&self, mut area: Area) -> Area {
-        area.cols = area.cols.max(1);
+        area.cols = area.cols.clamp(1, MAX_COLS);
         area.rows = area.rows.clamp(1, self.rows);
         area.row = area.row.clamp(0, self.rows - area.rows);
         area
@@ -554,7 +557,7 @@ impl CellMetrics {
     ///
     /// Rounds down so that windows sized by complementary proportions fit together.
     pub fn cols_for_proportion(&self, proportion: f64) -> i32 {
-        span_for_proportion(proportion, self.cols_per_view).max(1)
+        span_for_proportion(proportion, self.cols_per_view).clamp(1, MAX_COLS)
     }
 
     /// Number of rows that fit in `proportion` of the view height; at least one.

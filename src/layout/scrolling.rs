@@ -4084,12 +4084,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     /// Number of grid columns for a column width.
     fn grid_cols_for_width(&self, width: ColumnWidth) -> i32 {
         let m = &self.cell_metrics;
-        match width {
+        let cols = match width {
             ColumnWidth::Proportion(proportion) => m.cols_for_proportion(proportion),
-            ColumnWidth::Fixed(width) => {
-                (((width + m.gap) / (m.cell_w + m.gap)).round() as i32).max(1)
-            }
-        }
+            ColumnWidth::Fixed(width) => ((width + m.gap) / (m.cell_w + m.gap)).round() as i32,
+        };
+        cols.clamp(1, grid::MAX_COLS)
     }
 
     /// Number of grid columns for a preset width.
