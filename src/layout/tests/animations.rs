@@ -69,6 +69,7 @@ fn set_up_two_in_column() -> Layout<TestWindow> {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_animates_next_y() {
     let mut layout = set_up_two_in_column();
 
@@ -114,6 +115,7 @@ fn height_resize_animates_next_y() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn clientside_height_change_doesnt_animate() {
     let mut layout = set_up_two_in_column();
 
@@ -143,6 +145,7 @@ fn clientside_height_change_doesnt_animate() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_and_back() {
     let mut layout = set_up_two_in_column();
 
@@ -220,6 +223,7 @@ fn height_resize_and_back() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_and_cancel() {
     let mut layout = set_up_two_in_column();
 
@@ -290,6 +294,7 @@ fn height_resize_and_cancel() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_and_back_during_another_y_anim() {
     let ops = [
         Op::AddOutput(1),
@@ -423,6 +428,7 @@ fn height_resize_and_back_during_another_y_anim() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_and_cancel_during_another_y_anim() {
     let ops = [
         Op::AddOutput(1),
@@ -543,6 +549,7 @@ fn height_resize_and_cancel_during_another_y_anim() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_before_another_y_anim_then_back() {
     let ops = [
         Op::AddOutput(1),
@@ -658,6 +665,7 @@ fn height_resize_before_another_y_anim_then_back() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_before_another_y_anim_then_cancel() {
     let ops = [
         Op::AddOutput(1),
@@ -756,6 +764,7 @@ fn height_resize_before_another_y_anim_then_cancel() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn clientside_height_change_during_another_y_anim() {
     let ops = [
         Op::AddOutput(1),
@@ -820,6 +829,7 @@ fn clientside_height_change_during_another_y_anim() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn height_resize_cancel_with_stationary_second_window() {
     let ops = [
         Op::AddOutput(1),
@@ -918,6 +928,7 @@ fn height_resize_cancel_with_stationary_second_window() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn width_resize_and_cancel() {
     let ops = [
         Op::AddOutput(1),
@@ -1009,6 +1020,7 @@ fn width_resize_and_cancel() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn width_resize_and_cancel_of_column_to_the_left() {
     let ops = [
         Op::AddOutput(1),

@@ -8,9 +8,6 @@
 //!
 //! This module is pure cell arithmetic with no compositor state, so it can be tested in isolation.
 
-// Wired into the layout in a later phase.
-#![allow(dead_code)]
-
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 /// Default number of rows in the grid.
@@ -46,7 +43,7 @@ impl Direction {
         }
     }
 
-    fn is_horizontal(self) -> bool {
+    pub fn is_horizontal(self) -> bool {
         matches!(self, Direction::Left | Direction::Right)
     }
 }
@@ -476,7 +473,6 @@ impl<K: Clone + PartialEq> Grid<K> {
         }
     }
 
-    #[cfg(test)]
     pub fn verify_invariants(&self) {
         for (i, (k, a)) in self.items.iter().enumerate() {
             assert!(a.cols >= 1 && a.rows >= 1, "empty area: {a:?}");
@@ -520,13 +516,16 @@ pub struct CellMetrics {
 
 impl CellMetrics {
     /// Computes cells that fill the view height with `rows` rows and are as close to square as
-    /// possible while fitting a whole number of columns in the view width.
+    /// possible while fitting a whole, even number of columns in the view width.
+    ///
+    /// The column count is even so that two half-width windows fit the view exactly.
     pub fn new(view_size: Size<f64, Logical>, rows: i32, gap: f64) -> Self {
         let rows_f = f64::from(rows);
         let cell_h = ((view_size.h - gap * (rows_f + 1.)) / rows_f).max(1.);
 
         // n columns take n * cell_w + (n + 1) * gap.
-        let n = ((view_size.w - gap) / (cell_h + gap)).round().max(1.);
+        let square_cols = (view_size.w - gap) / (cell_h + gap);
+        let n = ((square_cols / 2.).round() * 2.).max(2.);
         let cell_w = ((view_size.w - gap * (n + 1.)) / n).max(1.);
 
         Self {
@@ -551,15 +550,22 @@ impl CellMetrics {
         Rectangle::new(loc, size)
     }
 
-    /// Number of columns closest to `proportion` of the view width; at least one.
+    /// Number of columns that fit in `proportion` of the view width; at least one.
+    ///
+    /// Rounds down so that windows sized by complementary proportions fit together.
     pub fn cols_for_proportion(&self, proportion: f64) -> i32 {
-        ((proportion * f64::from(self.cols_per_view)).round() as i32).max(1)
+        span_for_proportion(proportion, self.cols_per_view).max(1)
     }
 
-    /// Number of rows closest to `proportion` of the view height; at least one.
+    /// Number of rows that fit in `proportion` of the view height; at least one.
     pub fn rows_for_proportion(&self, proportion: f64) -> i32 {
-        ((proportion * f64::from(self.rows)).round() as i32).clamp(1, self.rows)
+        span_for_proportion(proportion, self.rows).clamp(1, self.rows)
     }
+}
+
+/// Rounds down, allowing for proportions written with limited precision like 0.33333.
+fn span_for_proportion(proportion: f64, total: i32) -> i32 {
+    (proportion * f64::from(total) + 0.01).floor() as i32
 }
 
 #[cfg(test)]
@@ -781,7 +787,7 @@ mod tests {
     #[test]
     fn metrics_near_square() {
         let m = CellMetrics::new(Size::from((1920., 1080.)), R, 16.);
-        assert_eq!(m.cols_per_view, 21);
+        assert_eq!(m.cols_per_view, 22);
         assert!((m.cell_w / m.cell_h - 1.).abs() < 0.05);
 
         // The cells exactly fill the view.
@@ -792,6 +798,12 @@ mod tests {
         assert_eq!(m.rows_for_proportion(0.5), 6);
         assert_eq!(m.rows_for_proportion(1. / 3.), 4);
         assert_eq!(m.rows_for_proportion(0.25), 3);
+        assert_eq!(m.rows_for_proportion(0.33333), 4);
+
+        // Complementary proportions fit in the view.
+        assert_eq!(m.cols_for_proportion(0.5), 11);
+        assert_eq!(m.cols_for_proportion(0.33333), 7);
+        assert_eq!(m.cols_for_proportion(0.66667), 14);
     }
 
     #[derive(Debug, Clone)]

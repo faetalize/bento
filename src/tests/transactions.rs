@@ -34,6 +34,7 @@ fn create_window(f: &mut Fixture, id: ClientId, w: u16, h: u16) -> WlSurface {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn column_resize_waits_for_both_windows() {
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));

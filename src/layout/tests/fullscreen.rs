@@ -461,6 +461,7 @@ fn unfullscreen_view_offset_not_reset_during_ongoing_gesture() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn unfullscreen_preserves_view_pos() {
     let ops = [
         Op::AddOutput(1),
@@ -499,6 +500,7 @@ fn unfullscreen_preserves_view_pos() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn unfullscreen_of_tabbed_preserves_view_pos() {
     let ops = [
         Op::AddOutput(1),
@@ -552,6 +554,7 @@ fn unfullscreen_of_tabbed_preserves_view_pos() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
     let ops = [
         Op::AddOutput(1),
@@ -605,6 +608,7 @@ fn unfullscreen_of_tabbed_via_change_to_normal_preserves_view_pos() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn removing_only_fullscreen_tile_updates_view_offset() {
     let ops = [
         Op::AddOutput(1),

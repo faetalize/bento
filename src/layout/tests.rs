@@ -15,6 +15,7 @@ use super::*;
 
 mod animations;
 mod fullscreen;
+mod grid;
 
 impl<W: LayoutElement> Default for Layout<W> {
     fn default() -> Self {
@@ -3458,6 +3459,7 @@ fn removing_window_above_preserves_focused_window() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn preset_column_width_fixed_correct_with_border() {
     let ops = [
         Op::AddOutput(0),
@@ -3505,6 +3507,7 @@ fn preset_column_width_fixed_correct_with_border() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn preset_column_width_reset_after_set_width() {
     let ops = [
         Op::AddOutput(0),
@@ -3750,6 +3753,7 @@ fn move_window_to_workspace_maximize_and_fullscreen() {
 }
 
 #[test]
+#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn tabs_with_different_border() {
     let ops = [
         Op::AddOutput(1),

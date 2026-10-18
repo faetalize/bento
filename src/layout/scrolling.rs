@@ -11,6 +11,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
+use super::grid::{self, Area, CellMetrics, Grid};
 use super::monitor::InsertPosition;
 use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
@@ -25,11 +26,17 @@ use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::utils::id::IdCounter;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
-use crate::utils::ResizeEdge;
+use crate::utils::{round_logical_in_physical, ResizeEdge};
 use crate::window::ResolvedWindowRules;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
+
+/// Whether windows are laid out on bento's cell grid rather than in niri's columns.
+///
+/// On the grid, every window is its own single-tile column, positioned by [`Grid`]. The niri
+/// column code paths stay in place behind this flag to keep upstream merges simple.
+const GRID_LAYOUT: bool = true;
 
 /// A scrollable-tiling space for windows.
 #[derive(Debug)]
@@ -93,6 +100,27 @@ pub struct ScrollingSpace<W: LayoutElement> {
 
     /// Configurable properties of the layout.
     options: Rc<Options>,
+
+    /// Cell grid positioning every column.
+    grid: Grid<ColumnId>,
+
+    /// Pixel geometry of the cell grid.
+    cell_metrics: CellMetrics,
+
+    /// Remembered row and column for directional focus.
+    focus_anchor: Option<FocusAnchor>,
+}
+
+/// Row and column that directional focus is travelling along.
+///
+/// Only valid while `column` stays active.
+#[derive(Debug, Clone, Copy)]
+struct FocusAnchor {
+    column: ColumnId,
+    /// Row for focusing left and right.
+    row: Option<i32>,
+    /// Column for focusing up and down.
+    col: Option<i32>,
 }
 
 niri_render_elements! {
@@ -240,6 +268,25 @@ pub struct Column<W: LayoutElement> {
 
     /// Unique ID of this column.
     id: ColumnId,
+
+    /// Position and size of this column's tile on the cell grid, set by the scrolling space.
+    ///
+    /// When set, this decides the tile size and vertical position in the normal sizing mode.
+    grid_geometry: Option<GridGeometry>,
+
+    /// Size of this column on the cell grid in (columns, rows).
+    ///
+    /// Kept on the column so that it survives moving between workspaces.
+    grid_span: Option<(i32, i32)>,
+}
+
+/// Where a column's tile sits on the cell grid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GridGeometry {
+    /// Y of the tile relative to the top of the working area.
+    y: f64,
+    /// Size of the tile.
+    size: Size<f64, Logical>,
 }
 
 /// Extra per-tile data.
@@ -321,6 +368,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         options: Rc<Options>,
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
+        let cell_metrics = compute_cell_metrics(working_area, &options);
 
         Self {
             columns: Vec::new(),
@@ -337,6 +385,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             scale,
             clock,
             options,
+            grid: Grid::new(grid::DEFAULT_ROWS),
+            cell_metrics,
+            focus_anchor: None,
         }
     }
 
@@ -358,7 +409,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.working_area = working_area;
         self.parent_area = parent_area;
         self.scale = scale;
+        self.cell_metrics = compute_cell_metrics(working_area, &options);
         self.options = options;
+        self.sync_grid(None, None);
 
         // Apply always-center and such right away.
         if !self.columns.is_empty() && !self.view_offset.is_gesture() {
@@ -530,6 +583,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         } else {
             Size::from((0., 0.))
         };
+
+        if GRID_LAYOUT {
+            // Open windows at the size of the grid cells they will occupy.
+            let borders = if border.off { 0. } else { border.width * 2. };
+            let width = width.map_or(0, |preset| {
+                let cols = self.grid_cols_for_preset(preset);
+                let w = self.grid_geometry(Area::new(0, 0, cols, 1)).size.w - borders;
+                max(1, w.floor() as i32)
+            });
+            let rows = height.map_or(self.cell_metrics.rows, |preset| {
+                self.grid_rows_for_preset(preset)
+            });
+            let h = self.grid_geometry(Area::new(0, 0, 1, rows)).size.h - borders;
+            return Size::from((width, max(h.floor() as i32, 1)));
+        }
 
         let working_size = self.working_area.size;
 
@@ -890,6 +958,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .unwrap()
         };
 
+        if GRID_LAYOUT {
+            let _ = (closest_tile_idx, tile_y);
+            return InsertPosition::NewColumn(closest_col_idx);
+        }
+
         // Return the closest among the vertical and the horizontal gap.
         let vert_dist = (col_x - x).abs();
         let hor_dist = (tile_y - y).abs();
@@ -929,6 +1002,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         tile: Tile<W>,
         activate: bool,
     ) {
+        if GRID_LAYOUT {
+            let _ = tile_idx;
+            let width = self.columns[col_idx].width;
+            self.add_tile(Some(col_idx + 1), tile, activate, width, false, None);
+            return;
+        }
+
         let prev_next_x = self.column_x(col_idx + 1);
 
         let target_column = &mut self.columns[col_idx];
@@ -1013,6 +1093,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         });
 
+        // Every window is its own column on the grid, so there are no tabs.
+        if GRID_LAYOUT {
+            column.display_mode = ColumnDisplay::Normal;
+        }
+
         column.update_config(
             self.view_size,
             self.working_area,
@@ -1020,6 +1105,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.scale,
             self.options.clone(),
         );
+
+        // Place the column on the grid right of the column before it, pushing others aside.
+        let prev_positions = self.grid_positions();
+        let (cols, rows) = self.grid_span_for(&column);
+        let id = column.id;
+        match idx.checked_sub(1).and_then(|i| self.columns.get(i)) {
+            Some(after) => self.grid.insert_after(id, Some(&after.id), cols, rows),
+            None => self.grid.insert(id, Area::new(0, 0, cols, rows)),
+        }
+
         self.data.insert(idx, ColumnData::new(&column));
         self.columns.insert(idx, column);
 
@@ -1028,17 +1123,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         // Animate movement of other columns.
-        let offset = self.column_x(idx + 1) - self.column_x(idx);
-        let config = anim_config.unwrap_or(self.options.animations.window_movement.0);
-        if self.active_column_idx <= idx {
-            for col in &mut self.columns[idx + 1..] {
-                col.animate_move_x_from_with_config(-offset, config);
-            }
-        } else {
-            for col in &mut self.columns[..idx] {
-                col.animate_move_x_from_with_config(offset, config);
-            }
-        }
+        self.sync_grid(Some(prev_positions), anim_config);
+        let idx = self.columns.iter().position(|col| col.id == id).unwrap();
 
         if activate {
             // If this is the first window on an empty workspace, remove the effect of whatever
@@ -1194,21 +1280,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         column_idx: usize,
         anim_config: Option<niri_config::Animation>,
     ) -> Column<W> {
-        // Animate movement of the other columns.
-        let movement_config = anim_config.unwrap_or(self.options.animations.window_movement.0);
-        let offset = self.column_x(column_idx + 1) - self.column_x(column_idx);
-        if self.active_column_idx <= column_idx {
-            for col in &mut self.columns[column_idx + 1..] {
-                col.animate_move_x_from_with_config(offset, movement_config);
-            }
-        } else {
-            for col in &mut self.columns[..column_idx] {
-                col.animate_move_x_from_with_config(-offset, movement_config);
-            }
-        }
+        let prev_positions = self.grid_positions();
 
         let column = self.columns.remove(column_idx);
         self.data.remove(column_idx);
+
+        // Removing leaves a hole on the grid, and collapses columns of cells that became empty.
+        // This keeps the order of the remaining columns, so the index logic below still holds.
+        self.grid.remove(&column.id);
+        self.sync_grid(Some(prev_positions), anim_config);
 
         // Stop interactive resize.
         if let Some(resize) = &self.interactive_resize {
@@ -1307,51 +1387,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let offset = prev_width - self.data[col_idx].width;
 
-        // Move other columns in tandem with resizing.
-        let ongoing_resize_anim = column.tiles[tile_idx].resize_animation().is_some();
-        if offset != 0. {
-            if self.active_column_idx <= col_idx {
-                for col in &mut self.columns[col_idx + 1..] {
-                    // If there's a resize animation on the tile (that may have just started in
-                    // column.update_window()), then the apparent size change is smooth with no
-                    // sudden jumps. This corresponds to adding an X animation to adjacent columns.
-                    //
-                    // There could also be no resize animation with nonzero offset. This could
-                    // happen for example:
-                    // - if the window resized on its own, which we don't animate
-                    // - if the window resized by less than 10 px (the resize threshold)
-                    //
-                    // The latter case could also cancel an ongoing resize animation.
-                    //
-                    // Now, stationary columns shouldn't react to this offset change in any way,
-                    // i.e. their apparent X position should jump together with the resize.
-                    // However, adjacent columns that are already animating an X movement should
-                    // offset their animations to avoid the jump.
-                    //
-                    // Notably, this is necessary to fix the animation jump when resizing width back
-                    // and forth in quick succession (in a way that cancels the resize animation).
-                    if ongoing_resize_anim {
-                        col.animate_move_x_from_with_config(
-                            offset,
-                            self.options.animations.window_resize.anim,
-                        );
-                    } else {
-                        col.offset_move_anim_current(offset);
-                    }
-                }
-            } else {
-                for col in &mut self.columns[..=col_idx] {
-                    if ongoing_resize_anim {
-                        col.animate_move_x_from_with_config(
-                            -offset,
-                            self.options.animations.window_resize.anim,
-                        );
-                    } else {
-                        col.offset_move_anim_current(-offset);
-                    }
-                }
-            }
-        }
+        // Columns sit on the grid, so unlike in niri, other columns don't move in tandem with
+        // the resize.
+        let ongoing_resize_anim = self.columns[col_idx].tiles[tile_idx]
+            .resize_animation()
+            .is_some();
 
         // When a column goes between fullscreen and non-fullscreen, the tiles origin can change.
         // The change comes from things like ignoring struts and hiding the tab indicator in
@@ -1579,6 +1619,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_left(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.focus_grid(grid::Direction::Left);
+        }
+
         if self.active_column_idx == 0 {
             return false;
         }
@@ -1587,6 +1631,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_right(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.focus_grid(grid::Direction::Right);
+        }
+
         if self.active_column_idx + 1 >= self.columns.len() {
             return false;
         }
@@ -1624,6 +1672,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_down(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.focus_grid(grid::Direction::Down);
+        }
+
         if self.columns.is_empty() {
             return false;
         }
@@ -1632,6 +1684,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_up(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.focus_grid(grid::Direction::Up);
+        }
+
         if self.columns.is_empty() {
             return false;
         }
@@ -1640,6 +1696,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_down_or_left(&mut self) {
+        if GRID_LAYOUT {
+            if !self.focus_down() {
+                self.focus_left();
+            }
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1651,6 +1714,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_down_or_right(&mut self) {
+        if GRID_LAYOUT {
+            if !self.focus_down() {
+                self.focus_right();
+            }
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1662,6 +1732,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_up_or_left(&mut self) {
+        if GRID_LAYOUT {
+            if !self.focus_up() {
+                self.focus_left();
+            }
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1673,6 +1750,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_up_or_right(&mut self) {
+        if GRID_LAYOUT {
+            if !self.focus_up() {
+                self.focus_right();
+            }
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1708,6 +1792,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     fn move_column_to(&mut self, new_idx: usize) {
+        if GRID_LAYOUT {
+            self.move_grid_to(new_idx);
+            return;
+        }
+
         if self.active_column_idx == new_idx {
             return;
         }
@@ -1745,6 +1834,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn move_left(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.move_grid(grid::Direction::Left);
+        }
+
         if self.active_column_idx == 0 {
             return false;
         }
@@ -1754,6 +1847,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn move_right(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.move_grid(grid::Direction::Right);
+        }
+
         let new_idx = self.active_column_idx + 1;
         if new_idx >= self.columns.len() {
             return false;
@@ -1777,6 +1874,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn move_down(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.move_grid(grid::Direction::Down);
+        }
+
         if self.columns.is_empty() {
             return false;
         }
@@ -1785,6 +1886,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn move_up(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.move_grid(grid::Direction::Up);
+        }
+
         if self.columns.is_empty() {
             return false;
         }
@@ -1793,6 +1898,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
+        if GRID_LAYOUT {
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1901,6 +2010,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn consume_or_expel_window_right(&mut self, window: Option<&W::Id>) {
+        if GRID_LAYOUT {
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1993,6 +2106,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn consume_into_column(&mut self) {
+        if GRID_LAYOUT {
+            return;
+        }
+
         if self.columns.len() < 2 {
             return;
         }
@@ -2021,6 +2138,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn expel_from_column(&mut self) {
+        if GRID_LAYOUT {
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2059,6 +2180,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
+        if GRID_LAYOUT {
+            match direction {
+                ScrollDirection::Left => self.move_left(),
+                ScrollDirection::Right => self.move_right(),
+            };
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2187,6 +2316,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn toggle_column_tabbed_display(&mut self) {
+        if GRID_LAYOUT {
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2201,6 +2334,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
+        if GRID_LAYOUT {
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2331,6 +2468,22 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     // HACK: pass a self.data iterator in manually as a workaround for the lack of method partial
     // borrowing. Note that this method's return value does not borrow the entire &Self!
     fn column_xs(&self, data: impl Iterator<Item = ColumnData>) -> impl Iterator<Item = f64> {
+        if GRID_LAYOUT {
+            // Columns sit on the grid, so their X comes from their grid area. Chain one past the
+            // end of the grid.
+            let xs: Vec<f64> = self
+                .columns
+                .iter()
+                .map(|col| {
+                    self.grid
+                        .area(&col.id)
+                        .map_or(0., |area| self.grid_x(area.col))
+                })
+                .chain(iter::once(self.grid_x(self.grid.width())))
+                .collect();
+            return xs.into_iter();
+        }
+
         let gaps = self.options.layout.gaps;
         let mut x = 0.;
 
@@ -2338,11 +2491,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let dummy = ColumnData { width: 0. };
         let data = data.chain(iter::once(dummy));
 
-        data.map(move |data| {
-            let rv = x;
-            x += data.width + gaps;
-            rv
-        })
+        let xs: Vec<f64> = data
+            .map(move |data| {
+                let rv = x;
+                x += data.width + gaps;
+                rv
+            })
+            .collect();
+        xs.into_iter()
     }
 
     fn column_x(&self, column_idx: usize) -> f64 {
@@ -2643,6 +2799,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn toggle_width(&mut self, forwards: bool) {
+        if GRID_LAYOUT {
+            self.toggle_grid_width(None, forwards);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2654,6 +2815,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn toggle_full_width(&mut self) {
+        if GRID_LAYOUT {
+            self.toggle_grid_full_width();
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2665,6 +2831,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
+        if GRID_LAYOUT {
+            self.set_grid_width(window, change);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2689,6 +2860,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
+        if GRID_LAYOUT {
+            self.set_grid_height(window, change);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2713,6 +2889,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
+        if GRID_LAYOUT {
+            self.resize_grid(window, None, Some(self.cell_metrics.rows));
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2737,6 +2918,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn toggle_window_width(&mut self, window: Option<&W::Id>, forwards: bool) {
+        if GRID_LAYOUT {
+            self.toggle_grid_width(window, forwards);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2761,6 +2947,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
+        if GRID_LAYOUT {
+            self.toggle_grid_height(window, forwards);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2785,6 +2976,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn expand_column_to_available_width(&mut self) {
+        if GRID_LAYOUT {
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -3572,6 +3767,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
+        if GRID_LAYOUT {
+            let _ = (window, edges);
+            return false;
+        }
+
         if self.interactive_resize.is_some() {
             return false;
         }
@@ -3846,6 +4046,417 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 "interactive resize window must be present in the layout"
             );
         }
+
+        if GRID_LAYOUT {
+            self.verify_grid_invariants();
+        }
+    }
+}
+
+/// bento's cell grid.
+impl<W: LayoutElement> ScrollingSpace<W> {
+    /// X of a grid column; the first column starts at 0, like niri's columns.
+    fn grid_x(&self, col: i32) -> f64 {
+        let m = &self.cell_metrics;
+        round_logical_in_physical(self.scale, f64::from(col) * (m.cell_w + m.gap))
+    }
+
+    /// Tile geometry for a grid area.
+    fn grid_geometry(&self, area: Area) -> GridGeometry {
+        let rect = self.cell_metrics.rect(area);
+
+        // Round the edges rather than the sizes so that neighbors line up exactly.
+        let left = self.grid_x(area.col);
+        let right = self.grid_x(area.right()) - self.cell_metrics.gap;
+        let top = round_logical_in_physical(self.scale, rect.loc.y);
+        let bottom = round_logical_in_physical(self.scale, rect.loc.y + rect.size.h);
+
+        // With gaps too large to fit the rows, cells bottom out at 1 px and the rows overflow.
+        // Keep tiles within the working area like niri does.
+        let max_h = (self.working_area.size.h - self.cell_metrics.gap * 2.).max(1.);
+
+        GridGeometry {
+            y: top,
+            size: Size::from((right - left, (bottom - top).min(max_h))),
+        }
+    }
+
+    /// Number of grid columns for a column width.
+    fn grid_cols_for_width(&self, width: ColumnWidth) -> i32 {
+        let m = &self.cell_metrics;
+        match width {
+            ColumnWidth::Proportion(proportion) => m.cols_for_proportion(proportion),
+            ColumnWidth::Fixed(width) => {
+                (((width + m.gap) / (m.cell_w + m.gap)).round() as i32).max(1)
+            }
+        }
+    }
+
+    /// Number of grid columns for a preset width.
+    fn grid_cols_for_preset(&self, preset: PresetSize) -> i32 {
+        self.grid_cols_for_width(ColumnWidth::from(preset))
+    }
+
+    /// Number of grid rows for a preset height.
+    fn grid_rows_for_preset(&self, preset: PresetSize) -> i32 {
+        let m = &self.cell_metrics;
+        match preset {
+            PresetSize::Proportion(proportion) => m.rows_for_proportion(proportion),
+            PresetSize::Fixed(height) => {
+                let rows = (f64::from(height) + m.gap) / (m.cell_h + m.gap);
+                (rows.round() as i32).clamp(1, m.rows)
+            }
+        }
+    }
+
+    /// Grid size in (columns, rows) for a column that is being added.
+    fn grid_span_for(&self, column: &Column<W>) -> (i32, i32) {
+        if let Some(span) = column.grid_span {
+            return span;
+        }
+
+        let cols = if column.is_full_width {
+            self.cell_metrics.cols_per_view
+        } else {
+            self.grid_cols_for_width(column.width)
+        };
+        (cols, self.cell_metrics.rows)
+    }
+
+    /// Current position of every column, for animating grid changes.
+    fn grid_positions(&self) -> Vec<(ColumnId, Point<f64, Logical>)> {
+        zip(&self.columns, self.column_xs(self.data.iter().copied()))
+            .map(|(col, x)| (col.id, Point::from((x, col.tiles_origin().y))))
+            .collect()
+    }
+
+    /// Brings the columns in line with the grid after it changed.
+    ///
+    /// Sorts the columns by grid position and updates their geometry. If `prev_positions` is set,
+    /// animates tile sizes and columns that moved from there.
+    fn sync_grid(
+        &mut self,
+        prev_positions: Option<Vec<(ColumnId, Point<f64, Logical>)>>,
+        anim_config: Option<niri_config::Animation>,
+    ) {
+        let active_id = self.columns.get(self.active_column_idx).map(|col| col.id);
+
+        // Sort top-left first. This keeps column X non-decreasing with the index, which the
+        // view code relies on.
+        let grid = &self.grid;
+        let key = |col: &Column<W>| grid.area(&col.id).map(|a| (a.col, a.row));
+        if !self.columns.is_sorted_by_key(key) {
+            let mut order: Vec<_> = (0..self.columns.len()).collect();
+            order.sort_by_key(|&i| key(&self.columns[i]));
+
+            let mut columns: Vec<_> = self.columns.drain(..).map(Some).collect();
+            self.columns = order.iter().map(|&i| columns[i].take().unwrap()).collect();
+            self.data = order.iter().map(|&i| self.data[i]).collect();
+        }
+
+        if let Some(id) = active_id {
+            self.active_column_idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        }
+
+        let animate = prev_positions.is_some();
+        for idx in 0..self.columns.len() {
+            let Some(area) = self.grid.area(&self.columns[idx].id) else {
+                continue;
+            };
+            let geometry = self.grid_geometry(area);
+
+            let col = &mut self.columns[idx];
+            col.set_grid_geometry(geometry, (area.cols, area.rows), animate);
+            self.data[idx].update(col);
+        }
+
+        let Some(prev_positions) = prev_positions else {
+            return;
+        };
+
+        let config = anim_config.unwrap_or(self.options.animations.window_movement.0);
+        for (idx, (id, pos)) in self.grid_positions().into_iter().enumerate() {
+            let Some((_, prev)) = prev_positions.iter().find(|(prev_id, _)| *prev_id == id) else {
+                continue;
+            };
+
+            let col = &mut self.columns[idx];
+            if prev.x != pos.x {
+                col.animate_move_x_from_with_config(prev.x - pos.x, config);
+            }
+            if prev.y != pos.y {
+                col.animate_move_y_from_with_config(prev.y - pos.y, config);
+            }
+        }
+    }
+
+    /// Focuses the nearest window in `dir`.
+    fn focus_grid(&mut self, dir: grid::Direction) -> bool {
+        let Some(id) = self.columns.get(self.active_column_idx).map(|col| col.id) else {
+            return false;
+        };
+        let Some(area) = self.grid.area(&id) else {
+            return false;
+        };
+
+        let anchor = self.focus_anchor.filter(|anchor| anchor.column == id);
+        let row = anchor.and_then(|anchor| anchor.row);
+        let col = anchor.and_then(|anchor| anchor.col);
+
+        let along = if dir.is_horizontal() { row } else { col };
+        let Some(&target) = self.grid.neighbor(&id, dir, along) else {
+            return false;
+        };
+        let target_area = self.grid.area(&target).unwrap();
+
+        // Keep travelling along the same row or column, and remember which side of the new
+        // window we entered from.
+        let (row, col) = match dir {
+            grid::Direction::Right => (row.unwrap_or(area.row), target_area.col),
+            grid::Direction::Left => (row.unwrap_or(area.row), target_area.right() - 1),
+            grid::Direction::Down => (target_area.row, col.unwrap_or(area.col)),
+            grid::Direction::Up => (target_area.bottom() - 1, col.unwrap_or(area.col)),
+        };
+
+        let idx = self
+            .columns
+            .iter()
+            .position(|col| col.id == target)
+            .unwrap();
+        self.activate_column(idx);
+        self.focus_anchor = Some(FocusAnchor {
+            column: target,
+            row: Some(row),
+            col: Some(col),
+        });
+        true
+    }
+
+    /// Moves the active window by one cell in `dir`.
+    fn move_grid(&mut self, dir: grid::Direction) -> bool {
+        let Some(id) = self.columns.get(self.active_column_idx).map(|col| col.id) else {
+            return false;
+        };
+
+        let prev_positions = self.grid_positions();
+        if !self.grid.move_window(&id, dir) {
+            return false;
+        }
+
+        self.finish_grid_move(prev_positions);
+        true
+    }
+
+    /// Moves the active window to where the column at `idx` is on the grid.
+    fn move_grid_to(&mut self, idx: usize) {
+        let Some(id) = self.columns.get(self.active_column_idx).map(|col| col.id) else {
+            return;
+        };
+        let area = self.grid.area(&id).unwrap();
+        let target = self.grid.area(&self.columns[idx].id).unwrap();
+
+        let (col, dir) = if idx < self.active_column_idx {
+            // Take the target's place and push it right.
+            (target.col, grid::Direction::Right)
+        } else if idx + 1 == self.columns.len() {
+            // Go past the end.
+            (self.grid.width(), grid::Direction::Right)
+        } else {
+            // Line up with the target's right edge and push it left.
+            (target.right() - area.cols, grid::Direction::Left)
+        };
+
+        let prev_positions = self.grid_positions();
+        self.grid.set_area(&id, Area { col, ..area }, dir);
+        self.finish_grid_move(prev_positions);
+    }
+
+    /// Syncs columns after moving the active window, keeping the view in place and then
+    /// scrolling to the window.
+    fn finish_grid_move(&mut self, prev_positions: Vec<(ColumnId, Point<f64, Logical>)>) {
+        let id = self.columns[self.active_column_idx].id;
+        let prev_x = prev_positions
+            .iter()
+            .find(|(prev_id, _)| *prev_id == id)
+            .map(|(_, pos)| pos.x);
+
+        self.sync_grid(Some(prev_positions), None);
+
+        // Keep the camera where it was, then scroll to the moved window.
+        if let Some(prev_x) = prev_x {
+            let new_x = self.column_x(self.active_column_idx);
+            self.view_offset.offset(prev_x - new_x);
+        }
+        self.animate_view_offset_to_column_with_config(
+            None,
+            self.active_column_idx,
+            None,
+            self.options.animations.window_movement.0,
+        );
+    }
+
+    /// Index of the column with `window`, or of the active column.
+    fn grid_column_idx(&self, window: Option<&W::Id>) -> Option<usize> {
+        match window {
+            Some(window) => self.columns.iter().position(|col| col.contains(window)),
+            None => (!self.columns.is_empty()).then_some(self.active_column_idx),
+        }
+    }
+
+    /// Resizes a window to a new grid span, pushing others aside.
+    fn resize_grid(&mut self, window: Option<&W::Id>, cols: Option<i32>, rows: Option<i32>) {
+        let Some(idx) = self.grid_column_idx(window) else {
+            return;
+        };
+        let id = self.columns[idx].id;
+        let area = self.grid.area(&id).unwrap();
+
+        let prev_positions = self.grid_positions();
+        let cols = cols.unwrap_or(area.cols);
+        let rows = rows.unwrap_or(area.rows);
+        if !self.grid.resize(&id, cols, rows) {
+            return;
+        }
+
+        self.sync_grid(Some(prev_positions), None);
+
+        // Make sure the resized window stays in view.
+        if self.columns[self.active_column_idx].id == id && !self.view_offset.is_gesture() {
+            self.animate_view_offset_to_column(None, self.active_column_idx, None);
+        }
+    }
+
+    fn set_grid_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
+        let Some(idx) = self.grid_column_idx(window) else {
+            return;
+        };
+        let cols = self.grid.area(&self.columns[idx].id).unwrap().cols;
+        let m = &self.cell_metrics;
+
+        let cols = match change {
+            SizeChange::SetFixed(width) => self.grid_cols_for_preset(PresetSize::Fixed(width)),
+            SizeChange::SetProportion(percent) => m.cols_for_proportion(percent / 100.),
+            SizeChange::AdjustFixed(delta) => cols + delta.signum(),
+            SizeChange::AdjustProportion(delta) => cols + (delta.signum() as i32),
+        };
+        self.resize_grid(window, Some(cols.max(1)), None);
+    }
+
+    fn set_grid_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
+        let Some(idx) = self.grid_column_idx(window) else {
+            return;
+        };
+        let rows = self.grid.area(&self.columns[idx].id).unwrap().rows;
+        let m = &self.cell_metrics;
+
+        let rows = match change {
+            SizeChange::SetFixed(height) => self.grid_rows_for_preset(PresetSize::Fixed(height)),
+            SizeChange::SetProportion(percent) => m.rows_for_proportion(percent / 100.),
+            SizeChange::AdjustFixed(delta) => rows + delta.signum(),
+            SizeChange::AdjustProportion(delta) => rows + (delta.signum() as i32),
+        };
+        self.resize_grid(window, None, Some(rows.clamp(1, m.rows)));
+    }
+
+    fn toggle_grid_width(&mut self, window: Option<&W::Id>, forwards: bool) {
+        let Some(idx) = self.grid_column_idx(window) else {
+            return;
+        };
+        let cols = self.grid.area(&self.columns[idx].id).unwrap().cols;
+        let presets = self.options.layout.preset_column_widths.iter();
+        let spans = presets.map(|preset| self.grid_cols_for_preset(*preset));
+        let cols = next_preset_span(cols, spans, forwards);
+        self.resize_grid(window, Some(cols), None);
+    }
+
+    fn toggle_grid_height(&mut self, window: Option<&W::Id>, forwards: bool) {
+        let Some(idx) = self.grid_column_idx(window) else {
+            return;
+        };
+        let rows = self.grid.area(&self.columns[idx].id).unwrap().rows;
+        let presets = self.options.layout.preset_window_heights.iter();
+        let spans = presets.map(|preset| self.grid_rows_for_preset(*preset));
+        let rows = next_preset_span(rows, spans, forwards);
+        self.resize_grid(window, None, Some(rows));
+    }
+
+    fn toggle_grid_full_width(&mut self) {
+        let Some(idx) = self.grid_column_idx(None) else {
+            return;
+        };
+        let cols = self.grid.area(&self.columns[idx].id).unwrap().cols;
+        let full = self.cell_metrics.cols_per_view;
+
+        let cols = if cols == full {
+            let default = self.options.layout.default_column_width;
+            default.map_or(full / 2, |preset| self.grid_cols_for_preset(preset))
+        } else {
+            full
+        };
+        self.resize_grid(None, Some(cols.max(1)), None);
+    }
+
+    #[cfg(test)]
+    fn verify_grid_invariants(&self) {
+        assert_eq!(self.grid.len(), self.columns.len());
+        self.grid.verify_invariants();
+
+        let mut prev_key = None;
+        for col in &self.columns {
+            assert_eq!(
+                col.tiles.len(),
+                1,
+                "every window must be its own column on the grid"
+            );
+
+            let area = self
+                .grid
+                .area(&col.id)
+                .expect("every column must be on the grid");
+            let key = (area.col, area.row);
+            assert!(
+                prev_key.is_none_or(|prev| prev < key),
+                "columns must be sorted by grid position"
+            );
+            prev_key = Some(key);
+
+            assert_eq!(col.grid_span, Some((area.cols, area.rows)));
+            assert_eq!(col.grid_geometry, Some(self.grid_geometry(area)));
+        }
+    }
+}
+
+/// Next span when cycling through presets: the smallest one larger than `current` going
+/// forwards, or the largest one smaller going backwards, wrapping around.
+fn next_preset_span(current: i32, spans: impl Iterator<Item = i32>, forwards: bool) -> i32 {
+    let mut spans: Vec<i32> = spans.collect();
+    spans.sort_unstable();
+    spans.dedup();
+
+    let next = if forwards {
+        spans
+            .iter()
+            .copied()
+            .find(|&span| span > current)
+            .or(spans.first().copied())
+    } else {
+        spans
+            .iter()
+            .rev()
+            .copied()
+            .find(|&span| span < current)
+            .or(spans.last().copied())
+    };
+    next.unwrap_or(current)
+}
+
+impl<W: LayoutElement> Column<W> {
+    fn set_grid_geometry(&mut self, geometry: GridGeometry, span: (i32, i32), animate: bool) {
+        self.grid_span = Some(span);
+        if self.grid_geometry != Some(geometry) {
+            self.grid_geometry = Some(geometry);
+            self.update_tile_sizes(animate);
+        }
     }
 }
 
@@ -4036,6 +4647,8 @@ impl<W: LayoutElement> Column<W> {
             clock: tile.clock.clone(),
             options,
             id: ColumnId::next(),
+            grid_geometry: None,
+            grid_span: None,
         };
 
         let pending_sizing_mode = tile.window().pending_sizing_mode();
@@ -4578,6 +5191,13 @@ impl<W: LayoutElement> Column<W> {
                 } else {
                     tile.request_maximized(self.parent_area.size, animate, transaction);
                 }
+            }
+            return;
+        }
+
+        if let Some(geometry) = self.grid_geometry {
+            for tile in &mut self.tiles {
+                tile.request_tile_size(geometry.size, animate, Some(transaction.clone()));
             }
             return;
         }
@@ -5324,6 +5944,11 @@ impl<W: LayoutElement> Column<W> {
             SizingMode::Fullscreen => return origin,
         }
 
+        if let Some(geometry) = self.grid_geometry {
+            origin.y += self.working_area.loc.y + geometry.y;
+            return origin;
+        }
+
         origin.y += self.working_area.loc.y + self.options.layout.gaps;
 
         if self.display_mode == ColumnDisplay::Tabbed {
@@ -5632,6 +6257,10 @@ fn compute_new_view_offset(
     } else {
         -(view_width - padding - new_col_width)
     }
+}
+
+fn compute_cell_metrics(working_area: Rectangle<f64, Logical>, options: &Options) -> CellMetrics {
+    CellMetrics::new(working_area.size, grid::DEFAULT_ROWS, options.layout.gaps)
 }
 
 fn compute_working_area(
