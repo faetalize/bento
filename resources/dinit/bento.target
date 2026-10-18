@@ -1,0 +1,6 @@
+type           = internal
+restart        = false
+depends-on:    bento
+waits-for.d:   $XDG_CONFIG_HOME/dinit.d/bento.d/
+waits-for.d:   $HOME/.config/dinit.d/bento.d/
+waits-for.d:   /etc/dinit.d/user/bento.d/

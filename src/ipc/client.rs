@@ -124,7 +124,7 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
     }
 
     let reply = result.context("error communicating with niri")?;
-    let response = reply.map_err(|err_msg| anyhow!(err_msg).context("niri returned an error"))?;
+    let response = reply.map_err(|err_msg| anyhow!(err_msg).context("bento returned an error"))?;
 
     match msg {
         Msg::RequestError => {

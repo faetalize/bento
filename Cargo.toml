@@ -7,7 +7,7 @@ members = [
 
 [workspace.package]
 version = "26.4.0"
-description = "A scrollable-tiling Wayland compositor"
+description = "A scrollable-tiling Wayland compositor with nested rows, forked from niri"
 authors = ["Ivan Molodetskikh <yalterz@gmail.com>"]
 license = "GPL-3.0-or-later"
 edition = "2021"
@@ -38,7 +38,7 @@ rev = "8a270232f1bfc416c781273c98a3f52a812a0bba"
 # path = "../smithay/smithay-drm-extras"
 
 [package]
-name = "niri"
+name = "bento"
 version.workspace = true
 description.workspace = true
 authors.workspace = true
@@ -49,6 +49,15 @@ rust-version.workspace = true
 
 readme = "README.md"
 keywords = ["wayland", "compositor", "tiling", "smithay", "wm"]
+
+# Keep the library crate named `niri` so that upstream changes merge cleanly.
+[lib]
+name = "niri"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bento"
+path = "src/main.rs"
 
 [dependencies]
 accesskit = { version = "0.25", optional = true }
@@ -166,12 +175,12 @@ png.opt-level = 3
 [package.metadata.generate-rpm]
 version = "26.04"
 assets = [
-    { source = "target/release/niri", dest = "/usr/bin/", mode = "755" },
-    { source = "resources/niri-session", dest = "/usr/bin/", mode = "755" },
-    { source = "resources/niri.desktop", dest = "/usr/share/wayland-sessions/", mode = "644" },
-    { source = "resources/niri-portals.conf", dest = "/usr/share/xdg-desktop-portal/", mode = "644" },
-    { source = "resources/niri.service", dest = "/usr/lib/systemd/user/", mode = "644" },
-    { source = "resources/niri-shutdown.target", dest = "/usr/lib/systemd/user/", mode = "644" },
+    { source = "target/release/bento", dest = "/usr/bin/", mode = "755" },
+    { source = "resources/bento-session", dest = "/usr/bin/", mode = "755" },
+    { source = "resources/bento.desktop", dest = "/usr/share/wayland-sessions/", mode = "644" },
+    { source = "resources/bento-portals.conf", dest = "/usr/share/xdg-desktop-portal/", mode = "644" },
+    { source = "resources/bento.service", dest = "/usr/lib/systemd/user/", mode = "644" },
+    { source = "resources/bento-shutdown.target", dest = "/usr/lib/systemd/user/", mode = "644" },
 ]
 [package.metadata.generate-rpm.requires]
 alacritty = "*"
@@ -180,10 +189,10 @@ fuzzel = "*"
 [package.metadata.deb]
 depends = "alacritty, fuzzel"
 assets = [
-    ["target/release/niri", "usr/bin/", "755"],
-    ["resources/niri-session", "usr/bin/", "755"],
-    ["resources/niri.desktop", "/usr/share/wayland-sessions/", "644"],
-    ["resources/niri-portals.conf", "/usr/share/xdg-desktop-portal/", "644"],
-    ["resources/niri.service", "/usr/lib/systemd/user/", "644"],
-    ["resources/niri-shutdown.target", "/usr/lib/systemd/user/", "644"],
+    ["target/release/bento", "usr/bin/", "755"],
+    ["resources/bento-session", "usr/bin/", "755"],
+    ["resources/bento.desktop", "/usr/share/wayland-sessions/", "644"],
+    ["resources/bento-portals.conf", "/usr/share/xdg-desktop-portal/", "644"],
+    ["resources/bento.service", "/usr/lib/systemd/user/", "644"],
+    ["resources/bento-shutdown.target", "/usr/lib/systemd/user/", "644"],
 ]

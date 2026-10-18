@@ -50,9 +50,9 @@ impl Winit {
         let builder = WindowAttributes::default()
             .with_surface_size(LogicalSize::new(1280.0, 800.0))
             // .with_resizable(false)
-            .with_title("niri")
+            .with_title("bento")
             .with_platform_attributes(Box::new(
-                WindowAttributesWayland::default().with_name("niri", ""),
+                WindowAttributesWayland::default().with_name("bento", ""),
             ));
         let (backend, winit) = winit::init_from_attributes(builder)?;
 

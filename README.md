@@ -1,3 +1,11 @@
+> [!NOTE]
+> **bento** is an unofficial fork of [niri](https://github.com/niri-wm/niri) by Ivan Molodetskikh and contributors.
+> It adds nested rows inside columns, which is out of scope for upstream niri.
+> Please don't report bento issues to the niri project.
+>
+> bento keeps niri's IPC protocol and `NIRI_SOCKET`, so tools that talk to niri should keep working.
+> Config lives in `$XDG_CONFIG_HOME/bento/config.kdl`.
+
 <h1 align="center"><img alt="niri" src="https://github.com/user-attachments/assets/07d05cd0-d5dc-4a28-9a35-51bae8f119a0"></h1>
 <p align="center">A scrollable-tiling Wayland compositor.</p>
 <p align="center">

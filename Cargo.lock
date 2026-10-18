@@ -406,6 +406,67 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
+name = "bento"
+version = "26.4.0"
+dependencies = [
+ "accesskit",
+ "accesskit_unix",
+ "anyhow",
+ "approx",
+ "arrayvec",
+ "async-channel",
+ "async-io",
+ "atomic",
+ "bitflags",
+ "bytemuck",
+ "calloop",
+ "calloop-wayland-source",
+ "clap",
+ "clap_complete",
+ "clap_complete_nushell",
+ "directories",
+ "drm-ffi",
+ "fastrand",
+ "futures-util",
+ "git-version",
+ "glam",
+ "input",
+ "insta",
+ "keyframe",
+ "libc",
+ "libdisplay-info",
+ "log",
+ "niri-config",
+ "niri-ipc",
+ "ordered-float",
+ "pango",
+ "pangocairo",
+ "pipewire",
+ "pkg-config",
+ "png",
+ "portable-atomic",
+ "profiling",
+ "proptest",
+ "proptest-derive",
+ "rayon",
+ "sd-notify",
+ "serde",
+ "serde_json",
+ "smithay",
+ "smithay-drm-extras",
+ "tracing",
+ "tracing-subscriber",
+ "tracy-client",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wayland-server",
+ "xcursor",
+ "xshell",
+ "zbus",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2202,67 +2263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "niri"
-version = "26.4.0"
-dependencies = [
- "accesskit",
- "accesskit_unix",
- "anyhow",
- "approx",
- "arrayvec",
- "async-channel",
- "async-io",
- "atomic",
- "bitflags",
- "bytemuck",
- "calloop",
- "calloop-wayland-source",
- "clap",
- "clap_complete",
- "clap_complete_nushell",
- "directories",
- "drm-ffi",
- "fastrand",
- "futures-util",
- "git-version",
- "glam",
- "input",
- "insta",
- "keyframe",
- "libc",
- "libdisplay-info",
- "log",
- "niri-config",
- "niri-ipc",
- "ordered-float",
- "pango",
- "pangocairo",
- "pipewire",
- "pkg-config",
- "png",
- "portable-atomic",
- "profiling",
- "proptest",
- "proptest-derive",
- "rayon",
- "sd-notify",
- "serde",
- "serde_json",
- "smithay",
- "smithay-drm-extras",
- "tracing",
- "tracing-subscriber",
- "tracy-client",
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
- "wayland-server",
- "xcursor",
- "xshell",
- "zbus",
-]
-
-[[package]]
 name = "niri-config"
 version = "26.4.0"
 dependencies = [
@@ -2295,9 +2295,9 @@ name = "niri-visual-tests"
 version = "26.4.0"
 dependencies = [
  "anyhow",
+ "bento",
  "gtk4",
  "libadwaita",
- "niri",
  "niri-config",
  "smithay",
  "tracing",

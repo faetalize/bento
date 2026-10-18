@@ -31,7 +31,7 @@ use sd_notify::NotifyState;
 use smithay::reexports::wayland_server::Display;
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_LOG_FILTER: &str = "niri=debug,smithay::backend::renderer::gles=error";
+const DEFAULT_LOG_FILTER: &str = "niri=debug,bento=debug,smithay::backend::renderer::gles=error";
 
 #[cfg(feature = "profile-with-tracy-allocations")]
 #[global_allocator]
@@ -91,7 +91,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Set the current desktop for xdg-desktop-portal.
-        env::set_var("XDG_CURRENT_DESKTOP", "niri");
+        // Include "niri" so that tools and portal configs targeting niri keep working.
+        env::set_var("XDG_CURRENT_DESKTOP", "bento:niri");
         // Ensure the session type is set to Wayland for xdg-autostart and Qt apps.
         env::set_var("XDG_SESSION_TYPE", "wayland");
     }
@@ -121,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         clap_complete::generate(
                             Nushell,
                             &mut Cli::command(),
-                            "niri",
+                            "bento",
                             &mut io::stdout(),
                         );
                     }
@@ -130,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         clap_complete::generate(
                             generator,
                             &mut Cli::command(),
-                            "niri",
+                            "bento",
                             &mut io::stdout(),
                         );
                     }
@@ -340,7 +341,7 @@ fn env_config_path() -> Option<PathBuf> {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    let Some(dirs) = ProjectDirs::from("", "", "niri") else {
+    let Some(dirs) = ProjectDirs::from("", "", "bento") else {
         warn!("error retrieving home directory");
         return None;
     };
@@ -351,7 +352,7 @@ fn default_config_path() -> Option<PathBuf> {
 }
 
 fn system_config_path() -> PathBuf {
-    PathBuf::from("/etc/niri/config.kdl")
+    PathBuf::from("/etc/bento/config.kdl")
 }
 
 fn config_path(cli_path: Option<PathBuf>) -> ConfigPath {

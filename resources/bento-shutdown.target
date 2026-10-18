@@ -1,5 +1,5 @@
 [Unit]
-Description=Shutdown running niri session
+Description=Shutdown running bento session
 DefaultDependencies=no
 StopWhenUnneeded=true
 
