@@ -109,6 +109,15 @@ pub struct ScrollingSpace<W: LayoutElement> {
 
     /// Remembered row and column for directional focus.
     focus_anchor: Option<FocusAnchor>,
+
+    /// Grid as it was when the ongoing interactive resize started.
+    ///
+    /// Resizing applies to this snapshot, so windows pushed aside come back if the resize shrinks
+    /// again.
+    grid_resize_original: Option<Grid<ColumnId>>,
+
+    /// Where on the grid a dropped window goes when it's added.
+    grid_drop_area: Option<(W::Id, Area)>,
 }
 
 /// Row and column that directional focus is travelling along.
@@ -388,6 +397,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             grid: Grid::new(grid::DEFAULT_ROWS),
             cell_metrics,
             focus_anchor: None,
+            grid_resize_original: None,
+            grid_drop_area: None,
         }
     }
 
@@ -901,7 +912,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
     }
 
-    pub(super) fn insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
+    pub(super) fn insert_position(
+        &self,
+        pos: Point<f64, Logical>,
+        tile_size: Size<f64, Logical>,
+        pointer_ratio: (f64, f64),
+    ) -> InsertPosition {
+        if GRID_LAYOUT {
+            return self.grid_insert_position(pos, tile_size, pointer_ratio);
+        }
+
         if self.columns.is_empty() {
             return InsertPosition::NewColumn(0);
         }
@@ -957,11 +977,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 .min_by_key(|(_, tile_y)| NotNan::new((tile_y - y).abs()).unwrap())
                 .unwrap()
         };
-
-        if GRID_LAYOUT {
-            let _ = (closest_tile_idx, tile_y);
-            return InsertPosition::NewColumn(closest_col_idx);
-        }
 
         // Return the closest among the vertical and the horizontal gap.
         let vert_dist = (col_x - x).abs();
@@ -1110,9 +1125,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_positions = self.grid_positions();
         let (cols, rows) = self.grid_span_for(&column);
         let id = column.id;
-        match idx.checked_sub(1).and_then(|i| self.columns.get(i)) {
-            Some(after) => self.grid.insert_after(id, Some(&after.id), cols, rows),
-            None => self.grid.insert(id, Area::new(0, 0, cols, rows)),
+        let drop_area = self
+            .grid_drop_area
+            .take()
+            .filter(|(window, _)| column.contains(window));
+        if let Some((_, area)) = drop_area {
+            self.grid.insert(id, area);
+        } else {
+            match idx.checked_sub(1).and_then(|i| self.columns.get(i)) {
+                Some(after) => self.grid.insert_after(id, Some(&after.id), cols, rows),
+                None => self.grid.insert(id, Area::new(0, 0, cols, rows)),
+            }
         }
 
         self.data.insert(idx, ColumnData::new(&column));
@@ -1409,7 +1432,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // If offset == 0, then don't mess with the view or the gesture. Some clients (Firefox,
             // Chromium, Electron) currently don't commit after the ack of a configure that drops
             // the Resizing state, which can trigger this code path for a while.
-            let resize = if offset != 0. { resize } else { None };
+            let resize = if offset != 0. && !GRID_LAYOUT {
+                resize
+            } else {
+                None
+            };
             if let Some(resize) = resize {
                 // Don't bother with the gesture.
                 self.view_offset.cancel_gesture();
@@ -2717,6 +2744,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let loc = Point::from((self.column_x(column_index) + origin_x, y));
                 Rectangle::new(loc, size)
             }
+            InsertPosition::Cell(area) => {
+                let geometry = self.grid_geometry(area);
+                let loc =
+                    Point::from((self.grid_x(area.col), self.working_area.loc.y + geometry.y));
+                Rectangle::new(loc, geometry.size)
+            }
             InsertPosition::Floating => return None,
         };
 
@@ -3767,11 +3800,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
-        if GRID_LAYOUT {
-            let _ = (window, edges);
-            return false;
-        }
-
         if self.interactive_resize.is_some() {
             return false;
         }
@@ -3800,6 +3828,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             data: InteractiveResizeData { edges },
         };
         self.interactive_resize = Some(resize);
+        self.grid_resize_original = Some(self.grid.clone());
 
         self.view_offset.stop_anim_and_gesture();
 
@@ -3817,6 +3846,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         if window != &resize.window {
             return false;
+        }
+
+        if GRID_LAYOUT {
+            return self.interactive_resize_grid(window, delta);
         }
 
         let is_centering = self.is_centering_focused_column();
@@ -3884,6 +3917,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         self.interactive_resize = None;
+        self.grid_resize_original = None;
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
@@ -4237,12 +4271,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         };
 
+        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
+        let prev_view_pos = self.view_pos();
         if !self.grid.move_window(&id, dir) {
             return false;
         }
 
-        self.finish_grid_move(prev_positions);
+        self.finish_grid_move(id, &before, prev_positions, prev_view_pos);
         true
     }
 
@@ -4265,33 +4301,196 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             (target.right() - area.cols, grid::Direction::Left)
         };
 
+        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
+        let prev_view_pos = self.view_pos();
         self.grid.set_area(&id, Area { col, ..area }, dir);
-        self.finish_grid_move(prev_positions);
+        self.finish_grid_move(id, &before, prev_positions, prev_view_pos);
     }
 
-    /// Syncs columns after moving the active window, keeping the view in place and then
-    /// scrolling to the window.
-    fn finish_grid_move(&mut self, prev_positions: Vec<(ColumnId, Point<f64, Logical>)>) {
-        let id = self.columns[self.active_column_idx].id;
-        let prev_x = prev_positions
-            .iter()
-            .find(|(prev_id, _)| *prev_id == id)
-            .map(|(_, pos)| pos.x);
-
-        self.sync_grid(Some(prev_positions), None);
-
-        // Keep the camera where it was, then scroll to the moved window.
-        if let Some(prev_x) = prev_x {
-            let new_x = self.column_x(self.active_column_idx);
-            self.view_offset.offset(prev_x - new_x);
-        }
+    /// Syncs columns after moving the active window, keeping the windows that stayed in place
+    /// still, then scrolls to the moved window.
+    fn finish_grid_move(
+        &mut self,
+        id: ColumnId,
+        before: &Grid<ColumnId>,
+        prev_positions: Vec<(ColumnId, Point<f64, Logical>)>,
+        prev_view_pos: f64,
+    ) {
+        let shift = self.grid_shift(before, id);
+        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
         self.animate_view_offset_to_column_with_config(
             None,
             self.active_column_idx,
             None,
             self.options.animations.window_movement.0,
         );
+    }
+
+    /// How far the strip moved under the windows that stayed in place after a grid change.
+    ///
+    /// Collapsing empty columns and windows going past column 0 shift whole parts of the strip.
+    /// This takes the most common column change among windows other than `except`.
+    fn grid_shift(&self, before: &Grid<ColumnId>, except: ColumnId) -> f64 {
+        let mut counts: Vec<(i32, usize)> = Vec::new();
+        for (id, area) in self.grid.iter() {
+            let Some(prev) = before.area(id).filter(|_| *id != except) else {
+                continue;
+            };
+            let delta = area.col - prev.col;
+            match counts.iter_mut().find(|(d, _)| *d == delta) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((delta, 1)),
+            }
+        }
+
+        let shift = counts
+            .into_iter()
+            .max_by_key(|&(delta, count)| (count, -delta.abs()))
+            .map_or(0, |(delta, _)| delta);
+        self.grid_x(shift)
+    }
+
+    /// Syncs columns after a grid change, keeping the view still relative to the windows that
+    /// stayed in place, given how far the strip moved under them.
+    fn sync_grid_keeping_view(
+        &mut self,
+        mut prev_positions: Vec<(ColumnId, Point<f64, Logical>)>,
+        prev_view_pos: f64,
+        shift: f64,
+    ) {
+        for (_, pos) in &mut prev_positions {
+            pos.x += shift;
+        }
+        self.sync_grid(Some(prev_positions), None);
+
+        let delta = prev_view_pos + shift - self.view_pos();
+        self.view_offset.offset(delta);
+    }
+
+    /// Resizes a window by dragging its edges, snapping to cells and pushing others aside.
+    ///
+    /// `delta` is the pointer movement since the start of the resize.
+    fn interactive_resize_grid(&mut self, window: &W::Id, delta: Point<f64, Logical>) -> bool {
+        let Some(resize) = &self.interactive_resize else {
+            return false;
+        };
+        let edges = resize.data.edges;
+
+        let idx = self
+            .columns
+            .iter()
+            .position(|col| col.contains(window))
+            .unwrap();
+        let id = self.columns[idx].id;
+
+        // Windows opened or closed during the resize make the snapshot stale, so stop there.
+        let Some(original) = self
+            .grid_resize_original
+            .as_ref()
+            .filter(|original| {
+                original.len() == self.columns.len()
+                    && self
+                        .columns
+                        .iter()
+                        .all(|col| original.area(&col.id).is_some())
+            })
+            .cloned()
+        else {
+            self.interactive_resize = None;
+            self.grid_resize_original = None;
+            return false;
+        };
+        let orig = original.area(&id).unwrap();
+
+        let m = self.cell_metrics;
+        let dx = (delta.x / (m.cell_w + m.gap)).round() as i32;
+        let dy = (delta.y / (m.cell_h + m.gap)).round() as i32;
+
+        let mut grid = original;
+        if edges.intersects(ResizeEdge::TOP_BOTTOM) {
+            let (area, dir) = if edges.contains(ResizeEdge::TOP) {
+                let row = (orig.row + dy).clamp(0, orig.bottom() - 1);
+                let area = Area {
+                    row,
+                    rows: orig.bottom() - row,
+                    ..orig
+                };
+                (area, grid::Direction::Up)
+            } else {
+                let rows = (orig.rows + dy).clamp(1, m.rows - orig.row);
+                (Area { rows, ..orig }, grid::Direction::Down)
+            };
+            grid.set_area(&id, area, dir);
+        }
+        if edges.intersects(ResizeEdge::LEFT_RIGHT) {
+            let cur = grid.area(&id).unwrap();
+            let (area, dir) = if edges.contains(ResizeEdge::LEFT) {
+                let dx = dx.min(orig.cols - 1);
+                let area = Area {
+                    col: cur.col + dx,
+                    cols: orig.cols - dx,
+                    ..cur
+                };
+                (area, grid::Direction::Left)
+            } else {
+                let cols = (orig.cols + dx).max(1);
+                (Area { cols, ..cur }, grid::Direction::Right)
+            };
+            grid.set_area(&id, area, dir);
+        }
+
+        if grid == self.grid {
+            return true;
+        }
+
+        // Keep the edge opposite to the one being dragged still on screen.
+        let fixed_edge = |area: Area| {
+            if edges.contains(ResizeEdge::LEFT) {
+                area.right()
+            } else {
+                area.col
+            }
+        };
+        let prev_edge = fixed_edge(self.grid.area(&id).unwrap());
+        let new_edge = fixed_edge(grid.area(&id).unwrap());
+        let shift = self.grid_x(new_edge) - self.grid_x(prev_edge);
+
+        let prev_positions = self.grid_positions();
+        let prev_view_pos = self.view_pos();
+        self.grid = grid;
+        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
+        true
+    }
+
+    /// Where a window being dragged would drop on the grid.
+    ///
+    /// `pos` is the pointer position in the workspace view, and `pointer_ratio` is where the
+    /// pointer is within the window, so the window lands where it's being held.
+    fn grid_insert_position(
+        &self,
+        pos: Point<f64, Logical>,
+        tile_size: Size<f64, Logical>,
+        pointer_ratio: (f64, f64),
+    ) -> InsertPosition {
+        let m = &self.cell_metrics;
+
+        let cols =
+            (((tile_size.w + m.gap) / (m.cell_w + m.gap)).round() as i32).clamp(1, grid::MAX_COLS);
+        let rows = (((tile_size.h + m.gap) / (m.cell_h + m.gap)).round() as i32).clamp(1, m.rows);
+
+        // Top-left corner of the window in strip coordinates.
+        let x = pos.x - pointer_ratio.0 * tile_size.w + self.view_pos();
+        let y = pos.y - pointer_ratio.1 * tile_size.h - self.working_area.loc.y - m.gap;
+
+        let col = (x / (m.cell_w + m.gap)).round() as i32;
+        let row = ((y / (m.cell_h + m.gap)).round() as i32).clamp(0, m.rows - rows);
+        InsertPosition::Cell(Area::new(col, row, cols, rows))
+    }
+
+    /// Makes `window` go to `area` on the grid when it's added next.
+    pub fn set_grid_drop_area(&mut self, window: W::Id, area: Area) {
+        self.grid_drop_area = Some((window, area));
     }
 
     /// Index of the column with `window`, or of the active column.

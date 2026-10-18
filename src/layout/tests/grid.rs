@@ -201,3 +201,165 @@ fn switching_preset_width_snaps_to_cells() {
     // Then 1/2 (11 cells).
     assert_snapshot!(format_tiles(&layout), @" 616 × 688 at x:  16 y: 16");
 }
+
+/// Distance between the left edges of neighboring grid columns in the test output.
+const COL_STEP: f64 = (1280. - 16. * 23.) / 22. + 16.;
+/// Distance between the top edges of neighboring grid rows in the test output.
+const ROW_STEP: f64 = (720. - 16. * 13.) / 12. + 16.;
+
+#[test]
+fn dragging_the_right_edge_snaps_and_pushes() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::InteractiveResizeBegin {
+            window: 1,
+            edges: ResizeEdge::RIGHT,
+        },
+        // A bit over 2.5 cells snaps to 3 more cells.
+        Op::InteractiveResizeUpdate {
+            window: 1,
+            dx: COL_STEP * 2.6,
+            dy: 0.,
+        },
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // Window 1 is 5 cells wide and pushed window 2 along.
+    assert_snapshot!(format_tiles(&layout), @"
+    271 × 688 at x:  16 y: 16
+     99 × 688 at x: 303 y: 16
+    ");
+
+    // Dragging back puts window 2 back where it was.
+    let mut ops = vec![
+        Op::InteractiveResizeUpdate {
+            window: 1,
+            dx: COL_STEP * 0.4,
+            dy: 0.,
+        },
+        Op::InteractiveResizeEnd { window: 1 },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 688 at x: 131 y: 16
+    ");
+}
+
+#[test]
+fn dragging_the_bottom_edge_leaves_a_hole() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::InteractiveResizeBegin {
+            window: 1,
+            edges: ResizeEdge::BOTTOM,
+        },
+        Op::InteractiveResizeUpdate {
+            window: 1,
+            dx: 0.,
+            dy: -ROW_STEP * 4.,
+        },
+        Op::InteractiveResizeEnd { window: 1 },
+    ];
+    ops.extend(settle());
+    let layout = check_ops(ops);
+
+    // 8 rows tall.
+    assert_snapshot!(format_tiles(&layout), @"  99 × 453 at x:  16 y: 16");
+}
+
+#[test]
+fn dragging_the_left_edge_keeps_the_right_edge_still() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::InteractiveResizeBegin {
+            window: 2,
+            edges: ResizeEdge::LEFT,
+        },
+        Op::InteractiveResizeUpdate {
+            window: 2,
+            dx: -COL_STEP * 3.,
+            dy: 0.,
+        },
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // While dragging, window 2 grows 3 cells to the left, pushing window 1 left, and its right
+    // edge stays at x = 230.
+    assert_snapshot!(format_tiles(&layout), @"
+     99 × 688 at x:-156 y: 16
+    271 × 688 at x: -41 y: 16
+    ");
+
+    // Ending the resize scrolls the active window into view, like in niri.
+    let mut ops = vec![Op::InteractiveResizeEnd { window: 2 }];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+     99 × 688 at x: -99 y: 16
+    271 × 688 at x:  16 y: 16
+    ");
+}
+
+#[test]
+fn dropping_a_window_into_a_cell() {
+    // Window 1 full height, window 2 on top to its right, window 3 half height further right.
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: SizeChange::SetProportion(50.),
+        },
+        add_window(3),
+        Op::SetWindowHeight {
+            id: Some(3),
+            change: SizeChange::SetProportion(50.),
+        },
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 336 at x: 131 y: 16
+    99 × 336 at x: 246 y: 16
+    ");
+
+    // Grab window 3 near its top-left corner and drop it into the hole under window 2.
+    let start: Point<f64, Logical> = Point::from((16. + 4. * COL_STEP + 4., 16. + 4.));
+    let end: Point<f64, Logical> =
+        Point::from((16. + 2. * COL_STEP + 4., 16. + 6. * ROW_STEP + 4.));
+    let mut ops = vec![
+        Op::InteractiveMoveBegin {
+            window: 3,
+            output_idx: 1,
+            px: start.x,
+            py: start.y,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 3,
+            dx: end.x - start.x,
+            dy: end.y - start.y,
+            output_idx: 1,
+            px: end.x,
+            py: end.y,
+        },
+        Op::InteractiveMoveEnd { window: 3 },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 336 at x: 131 y: 16
+    99 × 336 at x: 131 y:368
+    ");
+}

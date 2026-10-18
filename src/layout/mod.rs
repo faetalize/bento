@@ -2914,7 +2914,11 @@ impl<W: LayoutElement> Layout<W> {
                     let position = if move_.is_floating {
                         InsertPosition::Floating
                     } else {
-                        ws.scrolling_insert_position(pos_within_workspace)
+                        ws.scrolling_insert_position(
+                            pos_within_workspace,
+                            move_.tile.tile_size(),
+                            move_.pointer_ratio_within_window,
+                        )
                     };
 
                     let border_width = move_.tile.effective_border_width().unwrap_or(0.);
@@ -4221,7 +4225,11 @@ impl<W: LayoutElement> Layout<W> {
                                     let pos_within_workspace =
                                         (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
                                     let ws = &mut mon.workspaces[ws_idx];
-                                    ws.scrolling_insert_position(pos_within_workspace)
+                                    ws.scrolling_insert_position(
+                                        pos_within_workspace,
+                                        move_.tile.tile_size(),
+                                        move_.pointer_ratio_within_window,
+                                    )
                                 };
 
                                 (position, Some(geo.loc))
@@ -4248,7 +4256,11 @@ impl<W: LayoutElement> Layout<W> {
                         let position = if move_.is_floating {
                             InsertPosition::Floating
                         } else {
-                            ws.scrolling_insert_position(Point::from((0., 0.)))
+                            ws.scrolling_insert_position(
+                                Point::from((0., 0.)),
+                                move_.tile.tile_size(),
+                                move_.pointer_ratio_within_window,
+                            )
                         };
 
                         let insert_ws = InsertWorkspace::Existing(ws.id());
@@ -4282,6 +4294,23 @@ impl<W: LayoutElement> Layout<W> {
                             MonitorAddWindowTarget::Workspace {
                                 id: ws_id,
                                 column_idx: Some(column_idx),
+                            },
+                            ActivateWindow::Yes,
+                            allow_to_activate_workspace,
+                            move_.width,
+                            move_.is_full_width,
+                            false,
+                            None,
+                        );
+                    }
+                    InsertPosition::Cell(area) => {
+                        let ws_id = mon.workspaces[ws_idx].id();
+                        mon.workspaces[ws_idx].set_grid_drop_area(win_id.clone(), area);
+                        mon.add_tile(
+                            move_.tile,
+                            MonitorAddWindowTarget::Workspace {
+                                id: ws_id,
+                                column_idx: None,
                             },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,

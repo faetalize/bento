@@ -10,6 +10,7 @@ use smithay::backend::renderer::element::utils::{
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use super::grid::Area;
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::scrolling::{Column, ColumnWidth};
 use super::tile::Tile;
@@ -131,6 +132,8 @@ pub struct WorkspaceSwitchGesture {
 pub(super) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
+    /// Area on bento's cell grid.
+    Cell(Area),
     Floating,
 }
 

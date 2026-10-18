@@ -18,6 +18,7 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
+use super::grid::Area;
 use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
 };
@@ -1897,8 +1898,18 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub(super) fn scrolling_insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
-        self.scrolling.insert_position(pos)
+    pub(super) fn scrolling_insert_position(
+        &self,
+        pos: Point<f64, Logical>,
+        tile_size: Size<f64, Logical>,
+        pointer_ratio: (f64, f64),
+    ) -> InsertPosition {
+        self.scrolling
+            .insert_position(pos, tile_size, pointer_ratio)
+    }
+
+    pub(super) fn set_grid_drop_area(&mut self, window: W::Id, area: Area) {
+        self.scrolling.set_grid_drop_area(window, area);
     }
 
     pub(super) fn insert_hint_area(

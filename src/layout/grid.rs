@@ -110,7 +110,7 @@ impl Area {
 }
 
 /// Windows placed on the cell grid, keyed by `K`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Grid<K> {
     /// Number of rows; always positive.
     rows: i32,
