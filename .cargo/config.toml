@@ -1,0 +1,19 @@
+# Development settings for bento.
+#
+# niri has no .cargo/config.toml, so keeping these here rather than in Cargo.toml avoids conflicts
+# when merging upstream.
+
+# Release-like builds for iterating: same optimizations as release but without LTO, which makes
+# rebuilds after a small change take seconds instead of a minute and a half.
+#
+#     cargo build --profile fast   # binary in target/fast/bento
+[profile.fast]
+inherits = "release"
+lto = false
+codegen-units = 256
+incremental = true
+
+[alias]
+# Build with the fast profile and run bento nested in a window inside the current session.
+# Arguments go to bento, e.g. `cargo nested -c path/to/config.kdl`. When nested, Mod is Alt.
+nested = "run --profile fast --"
