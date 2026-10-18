@@ -11,7 +11,7 @@ description = "A scrollable-tiling Wayland compositor with nested rows, forked f
 authors = ["Ivan Molodetskikh <yalterz@gmail.com>"]
 license = "GPL-3.0-or-later"
 edition = "2021"
-repository = "https://github.com/niri-wm/niri"
+repository = "https://github.com/faetalize/bento"
 rust-version = "1.87"
 
 [workspace.dependencies]
