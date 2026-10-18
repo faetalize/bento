@@ -4,8 +4,8 @@ description: "want fullscreen: AU\nconfig:\nwindow-rule {\n    open-fullscreen f
 expression: snapshot
 ---
 initial configure:
-size: 1231 × 680, bounds: 1231 × 680, states: []
+size: 1240 × 680, bounds: 1240 × 680, states: []
 
 post-map configures:
-size: 1231 × 680, bounds: 1231 × 680, states: []
-size: 1231 × 680, bounds: 1231 × 680, states: [Activated]
+size: 1240 × 680, bounds: 1240 × 680, states: []
+size: 1240 × 680, bounds: 1240 × 680, states: [Activated]

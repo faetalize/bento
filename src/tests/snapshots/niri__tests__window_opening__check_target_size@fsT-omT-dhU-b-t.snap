@@ -4,10 +4,10 @@ description: "config:\nwindow-rule {\n    open-fullscreen true\n    open-maximiz
 expression: snapshot
 ---
 initial configure:
-size: 1280 × 720, bounds: 1231 × 680, states: [Fullscreen]
+size: 1280 × 720, bounds: 1240 × 680, states: [Fullscreen]
 
 post-map configures:
-size: 1280 × 720, bounds: 1231 × 680, states: [Fullscreen, Activated]
+size: 1280 × 720, bounds: 1240 × 680, states: [Fullscreen, Activated]
 
 unfullscreen configure:
-size: 1231 × 680, bounds: 1231 × 680, states: [Activated]
+size: 1240 × 680, bounds: 1240 × 680, states: [Activated]

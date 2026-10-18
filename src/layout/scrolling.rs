@@ -562,7 +562,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let display_mode = rules
             .default_column_display
             .unwrap_or(self.options.layout.default_column_display);
-        let will_tab = display_mode == ColumnDisplay::Tabbed;
+        // There are no tabs on the grid.
+        let will_tab = !GRID_LAYOUT && display_mode == ColumnDisplay::Tabbed;
         let extra_size = if will_tab {
             TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
         } else {
