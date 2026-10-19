@@ -2131,6 +2131,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
         if GRID_LAYOUT {
+            self.consume_or_expel_grid(window, grid::Direction::Left);
             return;
         }
 
@@ -2248,6 +2249,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn consume_or_expel_window_right(&mut self, window: Option<&W::Id>) {
         if GRID_LAYOUT {
+            self.consume_or_expel_grid(window, grid::Direction::Right);
             return;
         }
 
@@ -2344,6 +2346,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn consume_into_column(&mut self) {
         if GRID_LAYOUT {
+            // Bring the window on the right under the active one.
+            let Some((id, row, _)) = self.grid_focus_lines() else {
+                return;
+            };
+            if let Some(&right) = self.grid.adjacent(&id, grid::Direction::Right, Some(row)) {
+                self.change_grid(|this| this.consume_grid(right, id));
+            }
             return;
         }
 
@@ -2376,6 +2385,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn expel_from_column(&mut self) {
         if GRID_LAYOUT {
+            if let Some(col) = self.columns.get(self.active_column_idx) {
+                let id = col.id;
+                self.change_grid(|this| this.expel_grid(id, grid::Direction::Right));
+            }
             return;
         }
 
@@ -4663,6 +4676,140 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_positions = self.grid_positions();
         self.grid.set_area(&id, new_area, grid::Direction::Right);
         let shift = self.grid_shift_left_of(&before, area.col);
+        self.sync_grid_keeping_view(prev_positions, shift, None);
+        if !self.view_offset.is_gesture() {
+            self.animate_view_offset_to_column(None, self.active_column_idx, None);
+        }
+    }
+
+    /// Expels `window` (or the active one) from its stack towards `dir`, or if it's not stacked
+    /// with other windows, consumes it into the stack of the window beside it towards `dir`.
+    fn consume_or_expel_grid(&mut self, window: Option<&W::Id>, dir: grid::Direction) {
+        let Some(idx) = self.grid_column_idx(window) else {
+            return;
+        };
+        let id = self.columns[idx].id;
+        let area = self.grid.area(&id).unwrap();
+
+        let stacked = [grid::Direction::Up, grid::Direction::Down]
+            .into_iter()
+            .any(|dir| self.grid.adjacent(&id, dir, None).is_some());
+        if stacked {
+            self.change_grid(|this| this.expel_grid(id, dir));
+            return;
+        }
+
+        let anchor = self
+            .focus_anchor
+            .filter(|anchor| anchor.column == id)
+            .and_then(|anchor| anchor.row)
+            .unwrap_or(area.row);
+        if let Some(&into) = self.grid.adjacent(&id, dir, Some(anchor)) {
+            self.change_grid(|this| this.consume_grid(id, into));
+        }
+    }
+
+    /// Puts `window` in the column of cells of `into`, which keeps the top half of its rows,
+    /// giving `window` the bottom half, like consuming a window into a column in niri.
+    ///
+    /// Returns whether anything changed.
+    fn consume_grid(&mut self, window: ColumnId, into: ColumnId) -> bool {
+        if window == into || self.grid.area(&into).unwrap().rows < 2 {
+            return false;
+        }
+
+        // Take the window out first so that its cells don't get in the way. Gravity can move
+        // the target then, so look it up again after every change.
+        self.grid.remove(&window);
+        let target = self.grid.area(&into).unwrap();
+        let top = (target.rows + 1) / 2;
+        let bottom = target.rows - top;
+        self.grid.set_area(
+            &into,
+            Area {
+                rows: top,
+                ..target
+            },
+            grid::Direction::Up,
+        );
+
+        let target = self.grid.area(&into).unwrap();
+        let area = Area::new(target.col, target.bottom(), target.cols, bottom);
+        self.grid.insert(window, area);
+        true
+    }
+
+    /// Takes `window` out of its stack, full height beside it towards `dir`, and gives its rows
+    /// to the window it was split from, like expelling a window from a column in niri.
+    ///
+    /// Returns whether anything changed.
+    fn expel_grid(&mut self, window: ColumnId, dir: grid::Direction) -> bool {
+        let area = self.grid.area(&window).unwrap();
+
+        // The window right above or below in exactly the same columns, if any, gets the rows
+        // back.
+        let same_columns = |id: &ColumnId| {
+            let other = self.grid.area(id).unwrap();
+            other.col == area.col && other.cols == area.cols
+        };
+        let partner = [grid::Direction::Up, grid::Direction::Down]
+            .into_iter()
+            .filter_map(|dir| self.grid.adjacent(&window, dir, None).copied())
+            .find(same_columns);
+        if partner.is_none()
+            && [grid::Direction::Up, grid::Direction::Down]
+                .into_iter()
+                .all(|dir| self.grid.adjacent(&window, dir, None).is_none())
+        {
+            // Not stacked with anything.
+            return false;
+        }
+
+        self.grid.remove(&window);
+        if let Some(partner) = partner {
+            let other = self.grid.area(&partner).unwrap();
+            let row = other.row.min(area.row);
+            let bottom = other.bottom().max(area.bottom());
+            let grown = Area {
+                row,
+                rows: bottom - row,
+                ..other
+            };
+            self.grid.set_area(&partner, grown, grid::Direction::Right);
+        }
+
+        // Go past everything sharing columns with where the window was, or before all of it.
+        let x_overlap = |b: &Area| b.col < area.right() && area.col < b.right();
+        let stack = self.grid.iter().filter(|(_, b)| x_overlap(b));
+        let col = match dir {
+            grid::Direction::Left => stack.map(|(_, b)| b.col).min().unwrap_or(area.col),
+            _ => stack.map(|(_, b)| b.right()).max().unwrap_or(area.right()),
+        };
+        let rows = self.grid.rows();
+        self.grid.insert(window, Area::new(col, 0, area.cols, rows));
+        true
+    }
+
+    /// Applies a grid change from `change`, if it returns true, keeping the view still and the
+    /// active window in view.
+    fn change_grid(&mut self, change: impl FnOnce(&mut Self) -> bool) {
+        let before = self.grid.clone();
+        let prev_positions = self.grid_positions();
+        if !change(self) {
+            return;
+        }
+
+        let col = &mut self.columns[self.active_column_idx];
+        cancel_resize_for_column(&mut self.interactive_resize, col);
+
+        // Keep the view still relative to the windows left of everything that changed.
+        let changed_col = before
+            .iter()
+            .filter(|(id, area)| self.grid.area(id) != Some(*area))
+            .map(|(_, area)| area.col)
+            .min()
+            .unwrap_or(0);
+        let shift = self.grid_shift_left_of(&before, changed_col);
         self.sync_grid_keeping_view(prev_positions, shift, None);
         if !self.view_offset.is_gesture() {
             self.animate_view_offset_to_column(None, self.active_column_idx, None);

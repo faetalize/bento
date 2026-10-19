@@ -1000,3 +1000,54 @@ fn expanding_fills_the_free_cells_in_view() {
     1133 × 688 at x: 131 y: 16
     ");
 }
+
+#[test]
+fn consuming_splits_rows_and_expelling_gives_them_back() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+        Op::FocusWindow(2),
+        Op::ConsumeOrExpelWindowLeft { id: None },
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // Window 2 goes under window 1, which keeps the top half, and window 3 slides left.
+    assert_eq!(focused_id(&layout), 2);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x:  16 y:368
+    99 × 688 at x: 131 y: 16
+    ");
+
+    // Window 2 is stacked now, so this expels it back out to the right.
+    let mut ops = vec![Op::ConsumeOrExpelWindowRight { id: None }];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_eq!(focused_id(&layout), 2);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 688 at x: 131 y: 16
+    99 × 688 at x: 246 y: 16
+    ");
+}
+
+#[test]
+fn consuming_into_column_brings_the_window_on_the_right_under() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::FocusWindow(1),
+        Op::ConsumeWindowIntoColumn,
+    ];
+    ops.extend(settle());
+    let layout = check_ops(ops);
+    assert_eq!(focused_id(&layout), 1);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x:  16 y:368
+    ");
+}
