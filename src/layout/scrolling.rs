@@ -314,9 +314,10 @@ pub struct Column<W: LayoutElement> {
     grid_geometry: Option<GridGeometry>,
 
     /// Size of this column on the cell grid in (columns, rows).
-    ///
-    /// Kept on the column so that it survives moving between workspaces.
     grid_span: Option<(i32, i32)>,
+
+    /// Row to go back to on the grid when the column stops being fullscreen or maximized.
+    grid_row_to_restore: Option<i32>,
 }
 
 /// Where a column's tile sits on the cell grid.
@@ -464,7 +465,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let spans: Vec<_> = self
             .columns
             .iter()
-            .map(|col| (col.id, self.grid_span_for(col)))
+            .map(|col| (col.id, self.grid_span_in_mode(col)))
             .collect();
         let resized = spans.iter().any(|(id, (cols, rows))| {
             self.grid
@@ -1237,7 +1238,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // Animate movement of other columns, keeping the view still.
         let shift = self.grid_shift_left_of(&before, self.grid.area(&id).unwrap().col);
         self.sync_grid_keeping_view(prev_positions, shift, anim_config);
-        let idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        let mut idx = self.columns.iter().position(|col| col.id == id).unwrap();
+
+        // A window that is already fullscreen or maximized pushes the others aside right away.
+        if !self.columns[idx].pending_sizing_mode().is_normal() {
+            self.fit_grid_to_sizing_mode(idx);
+            idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        }
 
         if activate {
             // If this is the first window on an empty workspace, remove the effect of whatever
@@ -3347,6 +3354,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // With place_within_column, the tab indicator changes the column size immediately.
         self.data[col_idx].update(col);
 
+        // Fullscreen windows push the windows beside them aside on the grid.
+        if GRID_LAYOUT {
+            self.fit_grid_to_sizing_mode(col_idx);
+        }
+
         true
     }
 
@@ -3377,6 +3389,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // With place_within_column, the tab indicator changes the column size immediately.
         self.data[col_idx].update(col);
+
+        // Maximized windows push the windows beside them aside on the grid.
+        if GRID_LAYOUT {
+            self.fit_grid_to_sizing_mode(col_idx);
+        }
 
         true
     }
@@ -4345,6 +4362,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.grid_span_for_size(size, column.width, column.is_full_width)
     }
 
+    /// Grid size in (columns, rows) that a column takes in its requested sizing mode: its own
+    /// size, or when fullscreen or maximized, enough columns to cover its width and all rows.
+    fn grid_span_in_mode(&self, column: &Column<W>) -> (i32, i32) {
+        let m = &self.cell_metrics;
+        let width = match column.pending_sizing_mode() {
+            SizingMode::Normal => return self.grid_span_for(column),
+            SizingMode::Fullscreen => self.view_size.w,
+            SizingMode::Maximized => self.parent_area.size.w,
+        };
+
+        // Cover the width and the gap after it, so that the next window starts past it.
+        let cols = ((width + m.gap) / (m.cell_w + m.gap)).ceil() as i32;
+        (cols.clamp(1, grid::MAX_COLS), m.rows)
+    }
+
     /// Grid size in (columns, rows) for a window of `size` in a column of `width`.
     fn grid_span_for_size(
         &self,
@@ -4423,8 +4455,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let geometry = self.grid_geometry(area);
 
             // The grid has the final say on sizes: if the window's size resolves to a different
-            // span, the user resized it, so remember the new size.
-            let (cols, rows) = self.grid_span_for(&self.columns[idx]);
+            // span, the user resized it, so remember the new size. Fullscreen and maximized
+            // windows take more space for the time being.
+            let col = &self.columns[idx];
+            let (cols, rows) =
+                if col.sizing_mode().is_normal() && col.pending_sizing_mode().is_normal() {
+                    self.grid_span_for(col)
+                } else {
+                    (area.cols, area.rows)
+                };
             let m = &self.cell_metrics;
             let cols_span = (area.cols != cols).then_some(GridSpan::Cells {
                 n: area.cols,
@@ -4535,6 +4574,36 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         self.finish_grid_move(id, &before, prev_positions);
         true
+    }
+
+    /// Gives a column that is going fullscreen or maximized enough cells to cover its width,
+    /// across all rows, or gives it back its own size when it's going back to normal.
+    ///
+    /// This happens as the change is requested, so that the window is configured right away
+    /// with the size it ends up with.
+    fn fit_grid_to_sizing_mode(&mut self, idx: usize) {
+        let id = self.columns[idx].id;
+        let area = self.grid.area(&id).unwrap();
+
+        let (cols, rows) = self.grid_span_in_mode(&self.columns[idx]);
+        let new_area = if self.columns[idx].pending_sizing_mode().is_normal() {
+            let row = self.columns[idx].grid_row_to_restore.take();
+            Area::new(area.col, row.unwrap_or(area.row), cols, rows)
+        } else {
+            self.columns[idx]
+                .grid_row_to_restore
+                .get_or_insert(area.row);
+            Area::new(area.col, 0, cols, rows)
+        };
+        if new_area == area {
+            return;
+        }
+
+        let before = self.grid.clone();
+        let prev_positions = self.grid_positions();
+        self.grid.set_area(&id, new_area, grid::Direction::Right);
+        let shift = self.grid_shift_left_of(&before, area.col);
+        self.sync_grid_keeping_view(prev_positions, shift, None);
     }
 
     /// Moves the active window to where `target` is on the grid.
@@ -5291,6 +5360,7 @@ impl<W: LayoutElement> Column<W> {
             id: ColumnId::next(),
             grid_geometry: None,
             grid_span: None,
+            grid_row_to_restore: None,
         };
 
         let pending_sizing_mode = tile.window().pending_sizing_mode();

@@ -941,3 +941,44 @@ fn ipc_positions_follow_grid_columns() {
     // Windows 1 and 3 are stacked in the first column, window 2 is in the second.
     assert_eq!(positions, [(1, (1, 1)), (2, (2, 1)), (3, (1, 2))]);
 }
+
+#[test]
+fn fullscreen_pushes_windows_aside_until_it_ends() {
+    // Window 2 half height, with window 3 under it.
+    let half = || SizeChange::SetProportion(50.);
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: half(),
+        },
+        add_window(3),
+        Op::SetWindowHeight {
+            id: Some(3),
+            change: half(),
+        },
+    ];
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.extend([Op::FocusWindow(2), Op::FullscreenWindow(2)]);
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // Window 2 covers the view, and window 3 is pushed past it rather than drawn under it.
+    assert_snapshot!(format_tiles(&layout), @"
+      99 × 688 at x:-115 y: 16
+    1280 × 720 at x:   0 y:  0
+      99 × 336 at x:1321 y:368
+    ");
+
+    // Everything goes back once it ends.
+    let mut ops = vec![Op::FullscreenWindow(2)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 336 at x: 131 y: 16
+    99 × 336 at x: 131 y:368
+    ");
+}

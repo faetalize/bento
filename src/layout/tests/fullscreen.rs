@@ -461,7 +461,6 @@ fn unfullscreen_view_offset_not_reset_during_ongoing_gesture() {
 }
 
 #[test]
-#[ignore = "tests niri's column layout; bento places windows on a cell grid"]
 fn unfullscreen_preserves_view_pos() {
     let ops = [
         Op::AddOutput(1),
@@ -485,8 +484,8 @@ fn unfullscreen_preserves_view_pos() {
     ];
     check_ops_on_layout(&mut layout, ops);
 
-    // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().scrolling().view_pos(), @"116");
+    // View pos = X of the second window on the grid.
+    assert_snapshot!(layout.active_workspace().unwrap().scrolling().view_pos(), @"115");
 
     let ops = [
         Op::FullscreenWindow(2),
