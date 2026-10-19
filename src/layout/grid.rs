@@ -5,9 +5,15 @@
 //! other: moving or resizing one pushes the others out of the way, and empty cells are allowed.
 //! Columns of cells that no window covers collapse, so the strip never has empty gaps all the way
 //! from top to bottom. With left gravity, windows also slide left within their rows until they
-//! touch another window, like columns close up in niri.
+//! touch another window or column 0, which is the fixed left edge of the strip, like columns
+//! close up in niri. Without gravity, the strip goes on to the left too.
+//!
+//! Positions never depend on where the windows are: column 0 stays put, and nothing gets
+//! renumbered to start at the leftmost window.
 //!
 //! This module is pure cell arithmetic with no compositor state, so it can be tested in isolation.
+
+use std::iter::zip;
 
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -186,6 +192,9 @@ impl<K: Clone + PartialEq> Grid<K> {
 
     /// Clamps an area to a valid size and to the rows of the grid.
     fn clamp_area(&self, mut area: Area) -> Area {
+        if self.left_gravity {
+            area.col = area.col.max(0);
+        }
         area.cols = area.cols.clamp(1, MAX_COLS);
         area.rows = area.rows.clamp(1, self.rows);
         area.row = area.row.clamp(0, self.rows - area.rows);
@@ -267,8 +276,7 @@ impl<K: Clone + PartialEq> Grid<K> {
         let before = self.items.clone();
         self.items[idx].1 = self.clamp_area(area);
         self.settle(&[idx], dir);
-        self.normalize();
-        self.items != before
+        self.finish(before)
     }
 
     /// Resizes a window to `cols` × `rows`, keeping its top-left corner.
@@ -289,8 +297,7 @@ impl<K: Clone + PartialEq> Grid<K> {
         self.items[idx].1 = self.clamp_area(Area { cols, ..area });
         self.settle(&[idx], Direction::Right);
 
-        self.normalize();
-        self.items != before
+        self.finish(before)
     }
 
     /// Moves a window by one cell in `dir`.
@@ -365,7 +372,45 @@ impl<K: Clone + PartialEq> Grid<K> {
             self.settle(&pinned, dir.opposite());
         }
 
+        self.finish(before)
+    }
+
+    /// Finishes a change that started from `before`, returning whether anything changed.
+    ///
+    /// With left gravity, column 0 is the left edge of the grid that windows pack against, so a
+    /// change that pushed a window past it doesn't happen at all. Without gravity, the grid goes
+    /// on to the left too.
+    fn finish(&mut self, before: Vec<(K, Area)>) -> bool {
+        if self.left_gravity && self.items.iter().any(|(_, a)| a.col < 0) {
+            self.items = before;
+            return false;
+        }
+
         self.normalize();
+
+        // Shifting every window by the same number of columns leaves the layout as it was, only
+        // somewhere else on the grid, so it isn't a change. Like moving the leftmost window left
+        // without gravity: collapsing the empty column it leaves pulls everything else along.
+        let shifted_by = |dx: i32| {
+            self.items.len() == before.len()
+                && zip(&self.items, &before).all(|((k, a), (bk, b))| {
+                    k == bk
+                        && *a
+                            == Area {
+                                col: b.col + dx,
+                                ..*b
+                            }
+                })
+        };
+        let dx = match (self.items.first(), before.first()) {
+            (Some((_, a)), Some((_, b))) => a.col - b.col,
+            _ => 0,
+        };
+        if dx != 0 && shifted_by(dx) {
+            self.items = before;
+            return false;
+        }
+
         self.items != before
     }
 
@@ -547,14 +592,21 @@ impl<K: Clone + PartialEq> Grid<K> {
         self.items[pushed].1 = q;
     }
 
-    /// Collapses columns that no window covers and moves the strip to start at column 0. With
-    /// left gravity, slides windows left within their rows instead.
+    /// Collapses columns that no window covers between windows, moving the windows right of them
+    /// left. With left gravity, slides windows left within their rows instead.
     fn normalize(&mut self) {
         if self.left_gravity {
             self.slide_left();
             return;
         }
 
+        // A window held by the pointer stays where it is until it's released.
+        if self.pinned.is_some() {
+            return;
+        }
+
+        // Positions don't depend on the windows: the leftmost window stays where it is, and so
+        // does any space before it.
         let Some(min) = self.items.iter().map(|(_, a)| a.col).min() else {
             return;
         };
@@ -580,7 +632,7 @@ impl<K: Clone + PartialEq> Grid<K> {
         // A window covers contiguous columns, so none of its own columns collapse.
         for (_, a) in &mut self.items {
             let rel = (a.col - min) as usize;
-            a.col = rel as i32 - empty_before[rel];
+            a.col -= empty_before[rel];
         }
     }
 
@@ -623,7 +675,10 @@ impl<K: Clone + PartialEq> Grid<K> {
                 a.row >= 0 && a.bottom() <= self.rows,
                 "area outside rows: {a:?}"
             );
-            assert!(a.col >= 0, "area before column 0: {a:?}");
+            assert!(
+                !self.left_gravity || a.col >= 0,
+                "area before column 0 with left gravity: {a:?}"
+            );
             assert!(
                 self.items[..i].iter().all(|(other, _)| other != k),
                 "duplicate window"
@@ -640,11 +695,18 @@ impl<K: Clone + PartialEq> Grid<K> {
             );
         }
 
-        // A pinned window can leave empty columns to its left until it's released.
-        let pinned_with_gravity = self.left_gravity && self.pinned.is_some();
-        for c in 0..self.width() {
+        // No column is empty between the start of the grid with gravity, or the leftmost window
+        // without, and the rightmost window. A pinned window can leave empty columns until it's
+        // released.
+        let start = if self.left_gravity {
+            0
+        } else {
+            self.items.iter().map(|(_, a)| a.col).min().unwrap_or(0)
+        };
+        for c in start..self.width() {
             assert!(
-                pinned_with_gravity || self.items.iter().any(|(_, a)| a.col <= c && c < a.right()),
+                self.pinned.is_some()
+                    || self.items.iter().any(|(_, a)| a.col <= c && c < a.right()),
                 "empty column {c}"
             );
         }

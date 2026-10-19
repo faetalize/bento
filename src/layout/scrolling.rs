@@ -53,11 +53,12 @@ pub struct ScrollingSpace<W: LayoutElement> {
     /// Ongoing interactive resize.
     interactive_resize: Option<InteractiveResize<W>>,
 
-    /// Offset of the view from x = 0 on the grid.
+    /// Offset of the view from x = 0 on the grid, which is the fixed left edge of the grid.
     ///
-    /// Unlike niri, where this is relative to the active column, it's absolute: windows on the
-    /// grid move around independently of focus, and the view only moves when asked to rather
-    /// than following whichever column happens to be active.
+    /// Unlike niri, where this is relative to the active column, it's absolute, and layout
+    /// changes never move it: windows that move slide on screen. The view only scrolls to keep
+    /// the focused window in view, and for actions about the view itself, like focusing another
+    /// window, gestures, centering and fullscreen.
     ///
     /// Any gaps, including left padding from work area left exclusive zone, is handled
     /// with this view offset (rather than added as a constant elsewhere in the code). This allows
@@ -146,8 +147,6 @@ struct PrevColumn {
     opened: ColumnId,
     /// Column that was active before it.
     prev: ColumnId,
-    /// View offset relative to `prev` back then, to restore it.
-    view_offset: f64,
 }
 
 /// Row and column that directional focus is travelling along.
@@ -1205,7 +1204,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         );
 
         // Place the column on the grid right of the column before it, pushing others aside.
-        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         let (cols, rows) = self.grid_span_for(&column);
         let id = column.id;
@@ -1229,9 +1227,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.active_column_idx += 1;
         }
 
-        // Animate movement of other columns, keeping the view still.
-        let shift = self.grid_shift_left_of(&before, self.grid.area(&id).unwrap().col);
-        self.sync_grid_keeping_view(prev_positions, shift, anim_config);
+        // Animate movement of other columns.
+        self.sync_grid(Some(prev_positions), anim_config);
         let mut idx = self.columns.iter().position(|col| col.id == id).unwrap();
 
         // A window that is already fullscreen or maximized pushes the others aside right away.
@@ -1252,13 +1249,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             // Gravity can put the new column anywhere in the order, so remember the previous one
             // by id.
-            let prev = (!was_empty).then(|| {
-                let prev = self.active_column_idx;
-                PrevColumn {
-                    opened: id,
-                    prev: self.columns[prev].id,
-                    view_offset: self.view_offset.stationary() - self.column_x(prev),
-                }
+            let prev = (!was_empty).then(|| PrevColumn {
+                opened: id,
+                prev: self.columns[self.active_column_idx].id,
             });
 
             let anim_config =
@@ -1422,11 +1415,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.active_column_idx = min(self.active_column_idx, self.columns.len().saturating_sub(1));
 
         // Removing leaves a hole on the grid, collapses columns of cells that became empty, and
-        // lets gravity pull windows left. The view stays still relative to the windows left of
-        // the removed one, so the ones that moved visibly slide into place.
-        let removed = self.grid.remove(&column.id).unwrap();
-        let shift = self.grid_shift_left_of(&before, removed.col);
-        self.sync_grid_keeping_view(prev_positions, shift, anim_config);
+        // lets gravity pull windows left. The view stays still, so the windows that moved slide
+        // into place.
+        self.grid.remove(&column.id);
+        self.sync_grid(Some(prev_positions), anim_config);
 
         // Stop interactive resize.
         if let Some(resize) = &self.interactive_resize {
@@ -1468,18 +1460,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Go back to the column that this one was opened from, if there were no focus changes
         // in-between.
+        // The view only scrolls if that window isn't fully in view.
         let prev = prev
             .filter(|prev| prev.opened == column.id)
-            .and_then(|prev| {
-                let idx = self.columns.iter().position(|col| col.id == prev.prev)?;
-                Some((idx, prev.view_offset))
-            });
-        if let Some((idx, prev_offset)) = prev {
+            .and_then(|prev| self.columns.iter().position(|col| col.id == prev.prev));
+        if let Some(idx) = prev {
             self.active_column_idx = idx;
-
-            // Restore the view offset but make sure to scroll the view in case the previous
-            // window had resized.
-            self.animate_view_offset_with_config(idx, prev_offset, view_config);
             self.animate_view_offset_to_column_with_config(None, idx, None, view_config);
             return column;
         }
@@ -1729,8 +1715,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        // The view doesn't follow the active column, so the window closes where it is. If the
-        // strip shifts under it on removal, sync_grid_keeping_view() moves it along.
+        // The view doesn't follow the active column, so the window closes where it is.
         tile_pos.x += self.view_pos();
 
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
@@ -2197,12 +2182,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // However, if it was already going to be activated, leave the offset as is. This
                 // improves the workflow that has become common with tabbed columns: open a new
                 // window, then immediately consume it left as a new tab.
-                let view_offset = self.view_offset.stationary() - self.column_x(source_col_idx);
                 self.activate_prev_column_on_removal
                     .get_or_insert(PrevColumn {
                         opened: self.columns[source_col_idx].id,
                         prev: self.columns[target_column_idx].id,
-                        view_offset: view_offset + offset.x,
                     });
             }
 
@@ -3689,15 +3672,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         true
     }
 
-    /// How far DnD scrolling can move the view: from a working area width left of the grid, to
-    /// the left edge of the working area reaching the right edge of the rightmost window.
+    /// How far DnD scrolling can move the view: from a working area width left of the leftmost
+    /// window, to the left edge of the working area reaching the right edge of the rightmost
+    /// window.
     fn dnd_scroll_bounds(&self) -> (f64, f64) {
         if self.columns.is_empty() {
             return (0., 0.);
         }
 
-        let leftmost = -self.working_area.size.w;
-        let right_edge = zip(self.column_xs(self.data.iter().copied()), &self.data)
+        let col_xs = || zip(self.column_xs(self.data.iter().copied()), &self.data);
+        let left_edge = col_xs()
+            .map(|(col_x, _)| col_x)
+            .fold(f64::INFINITY, f64::min);
+        let leftmost = left_edge - self.working_area.size.w;
+        let right_edge = col_xs()
             .map(|(col_x, data)| col_x + data.width)
             .fold(f64::NEG_INFINITY, f64::max);
         let rightmost = right_edge - self.working_area.loc.x;
@@ -4627,13 +4615,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return false;
         };
 
-        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         if !self.grid.move_window(&id, dir) {
             return false;
         }
 
-        self.finish_grid_move(id, &before, prev_positions);
+        self.finish_grid_move(prev_positions);
         true
     }
 
@@ -4660,11 +4647,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         self.grid.set_area(&id, new_area, grid::Direction::Right);
-        let shift = self.grid_shift_left_of(&before, area.col);
-        self.sync_grid_keeping_view(prev_positions, shift, None);
+        self.sync_grid(Some(prev_positions), None);
     }
 
     /// Grows the active window into the empty cells beside it in its rows, right and left, up to
@@ -4699,11 +4684,16 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .filter(|col| *col >= area.right())
             .min()
             .unwrap_or(i32::MAX);
+        // With gravity, the grid starts at column 0. Without, it goes on to the left too.
         let left_limit = others()
             .map(|(_, b)| b.right())
             .filter(|right| *right <= area.col)
             .max()
-            .unwrap_or(0);
+            .unwrap_or(if self.grid.left_gravity() {
+                0
+            } else {
+                i32::MIN
+            });
 
         let left = area.col.min(left_limit.max(first_visible));
         let right = area.right().max(right_limit.min(end_visible));
@@ -4719,11 +4709,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let col = &mut self.columns[self.active_column_idx];
         cancel_resize_for_column(&mut self.interactive_resize, col);
 
-        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         self.grid.set_area(&id, new_area, grid::Direction::Right);
-        let shift = self.grid_shift_left_of(&before, area.col);
-        self.sync_grid_keeping_view(prev_positions, shift, None);
+        self.sync_grid(Some(prev_positions), None);
         if !self.view_offset.is_gesture() {
             self.animate_view_offset_to_column(None, self.active_column_idx, None);
         }
@@ -5120,10 +5108,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         id
     }
 
-    /// Applies a grid change from `change`, if it returns true, keeping the view still and the
-    /// active window in view.
+    /// Applies a grid change from `change`, if it returns true, scrolling to the active window if
+    /// it went out of view.
     fn change_grid(&mut self, change: impl FnOnce(&mut Self) -> bool) {
-        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         if !change(self) {
             return;
@@ -5132,15 +5119,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let col = &mut self.columns[self.active_column_idx];
         cancel_resize_for_column(&mut self.interactive_resize, col);
 
-        // Keep the view still relative to the windows left of everything that changed.
-        let changed_col = before
-            .iter()
-            .filter(|(id, area)| self.grid.area(id) != Some(*area))
-            .map(|(_, area)| area.col)
-            .min()
-            .unwrap_or(0);
-        let shift = self.grid_shift_left_of(&before, changed_col);
-        self.sync_grid_keeping_view(prev_positions, shift, None);
+        self.sync_grid(Some(prev_positions), None);
         if !self.view_offset.is_gesture() {
             self.animate_view_offset_to_column(None, self.active_column_idx, None);
         }
@@ -5172,10 +5151,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
-        self.grid.set_area(&id, Area { col, ..area }, dir);
-        self.finish_grid_move(id, &before, prev_positions);
+        let moved = self.grid.set_area(&id, Area { col, ..area }, dir);
+
+        // Pushing left can run into the left edge of the grid. Push right instead, from the same
+        // place.
+        if !moved && dir == grid::Direction::Left {
+            let col = col.max(0);
+            self.grid
+                .set_area(&id, Area { col, ..area }, grid::Direction::Right);
+        }
+        self.finish_grid_move(prev_positions);
     }
 
     /// The active window with the row and column of cells that focus is travelling along.
@@ -5285,16 +5271,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         in_row.or(stack.first()).map(|id| **id)
     }
 
-    /// Syncs columns after moving the active window, keeping the windows that stayed in place
-    /// still, then scrolls to the moved window.
-    fn finish_grid_move(
-        &mut self,
-        id: ColumnId,
-        before: &Grid<ColumnId>,
-        prev_positions: Vec<(ColumnId, Point<f64, Logical>)>,
-    ) {
-        let shift = self.grid_shift(before, id);
-        self.sync_grid_keeping_view(prev_positions, shift, None);
+    /// Syncs columns after moving the active window, then scrolls to it if it went out of view.
+    fn finish_grid_move(&mut self, prev_positions: Vec<(ColumnId, Point<f64, Logical>)>) {
+        self.sync_grid(Some(prev_positions), None);
         self.animate_view_offset_to_column_with_config(
             None,
             self.active_column_idx,
@@ -5303,58 +5282,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         );
     }
 
-    /// How far the strip moved under the windows that stayed in place after a grid change.
-    ///
-    /// Collapsing empty columns and windows going past column 0 shift whole parts of the strip.
-    /// This takes the most common column change among windows other than `except`.
-    fn grid_shift(&self, before: &Grid<ColumnId>, except: ColumnId) -> f64 {
-        self.grid_shift_among(before, |id, _| id != except)
-    }
-
-    /// How far the strip moved under the windows entirely left of column `col` (on `before`)
-    /// after a grid change.
-    ///
-    /// Adding, removing, resizing or dropping a window can't move the windows to its left other
-    /// than by shifting the whole strip, so they make a good reference for keeping the view still.
-    /// Zero if there are none.
-    fn grid_shift_left_of(&self, before: &Grid<ColumnId>, col: i32) -> f64 {
-        self.grid_shift_among(before, |_, prev| prev.right() <= col)
-    }
-
-    /// Most common column change among the windows on both grids that pass `filter`, which gets
-    /// their area on `before`.
-    fn grid_shift_among(
-        &self,
-        before: &Grid<ColumnId>,
-        mut filter: impl FnMut(ColumnId, Area) -> bool,
-    ) -> f64 {
-        let mut counts: Vec<(i32, usize)> = Vec::new();
-        for (&id, prev) in before.iter() {
-            if !filter(id, prev) {
-                continue;
-            }
-            let Some(area) = self.grid.area(&id) else {
-                continue;
-            };
-            let delta = area.col - prev.col;
-            match counts.iter_mut().find(|(d, _)| *d == delta) {
-                Some((_, count)) => *count += 1,
-                None => counts.push((delta, 1)),
-            }
-        }
-
-        let shift = counts
-            .into_iter()
-            .max_by_key(|&(delta, count)| (count, -delta.abs()))
-            .map_or(0, |(delta, _)| delta);
-        self.grid_x(shift)
-    }
-
-    /// Lets the window held by the pointer fall into place, keeping the view still.
+    /// Lets the window held by the pointer fall into place.
     fn release_grid_pin(&mut self) {
-        let Some(&id) = self.grid.pinned() else {
+        if self.grid.pinned().is_none() {
             return;
-        };
+        }
 
         let before = self.grid.clone();
         let prev_positions = self.grid_positions();
@@ -5368,29 +5300,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let shift = self.grid_shift_left_of(&before, before.area(&id).unwrap().col);
-        self.sync_grid_keeping_view(prev_positions, shift, None);
-    }
-
-    /// Syncs columns after a grid change, keeping the view still relative to the windows that
-    /// stayed in place, given how far the strip moved under them.
-    ///
-    /// The view is otherwise left alone: the windows that did move animate there on screen.
-    fn sync_grid_keeping_view(
-        &mut self,
-        mut prev_positions: Vec<(ColumnId, Point<f64, Logical>)>,
-        shift: f64,
-        anim_config: Option<niri_config::Animation>,
-    ) {
-        for (_, pos) in &mut prev_positions {
-            pos.x += shift;
-        }
-        self.sync_grid(Some(prev_positions), anim_config);
-
-        self.view_offset.offset(shift);
-        for closing in &mut self.closing_windows {
-            closing.offset(Point::from((shift, 0.)));
-        }
+        self.sync_grid(Some(prev_positions), None);
     }
 
     /// Resizes a window by dragging its edges, snapping to cells and pushing others aside.
@@ -5450,40 +5360,36 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
         if edges.intersects(ResizeEdge::LEFT_RIGHT) {
             let cur = grid.area(&id).unwrap();
-            let (area, dir) = if edges.contains(ResizeEdge::LEFT) {
-                let dx = dx.min(orig.cols - 1);
-                let area = Area {
-                    col: cur.col + dx,
-                    cols: orig.cols - dx,
-                    ..cur
-                };
-                (area, grid::Direction::Left)
+            if edges.contains(ResizeEdge::LEFT) {
+                // Grow left only as far as the windows to the left can go before the left edge
+                // of the grid.
+                let mut dx = dx.min(orig.cols - 1);
+                loop {
+                    let area = Area {
+                        col: cur.col + dx,
+                        cols: orig.cols - dx,
+                        ..cur
+                    };
+                    let mut attempt = grid.clone();
+                    if attempt.set_area(&id, area, grid::Direction::Left) || dx >= 0 {
+                        grid = attempt;
+                        break;
+                    }
+                    dx += 1;
+                }
             } else {
                 let cols = (orig.cols + dx).max(1);
-                (Area { cols, ..cur }, grid::Direction::Right)
-            };
-            grid.set_area(&id, area, dir);
+                grid.set_area(&id, Area { cols, ..cur }, grid::Direction::Right);
+            }
         }
 
         if grid == self.grid {
             return true;
         }
 
-        // Keep the edge opposite to the one being dragged still on screen.
-        let fixed_edge = |area: Area| {
-            if edges.contains(ResizeEdge::LEFT) {
-                area.right()
-            } else {
-                area.col
-            }
-        };
-        let prev_edge = fixed_edge(self.grid.area(&id).unwrap());
-        let new_edge = fixed_edge(grid.area(&id).unwrap());
-        let shift = self.grid_x(new_edge) - self.grid_x(prev_edge);
-
         let prev_positions = self.grid_positions();
         self.grid = grid;
-        self.sync_grid_keeping_view(prev_positions, shift, None);
+        self.sync_grid(Some(prev_positions), None);
         true
     }
 
@@ -5551,7 +5457,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let id = self.columns[idx].id;
         let area = self.grid.area(&id).unwrap();
 
-        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         let cols = cols.unwrap_or(area.cols);
         let rows = rows.unwrap_or(area.rows);
@@ -5559,8 +5464,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let shift = self.grid_shift_left_of(&before, before.area(&id).unwrap().col);
-        self.sync_grid_keeping_view(prev_positions, shift, None);
+        self.sync_grid(Some(prev_positions), None);
 
         // Make sure the resized window stays in view.
         if self.columns[self.active_column_idx].id == id && !self.view_offset.is_gesture() {

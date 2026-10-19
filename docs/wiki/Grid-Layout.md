@@ -2,6 +2,7 @@
 
 bento lays out tiled windows on a grid of cells.
 Like niri's strip of columns, the grid scrolls horizontally without end, and every workspace has its own grid.
+With [left gravity](#left-gravity), the grid starts at a fixed left edge that windows can't be pushed past; without it, the grid goes on to the left too.
 Unlike niri, a window doesn't have to fill a column from top to bottom.
 Every window covers a rectangle of whole cells: a starting column and row, plus a span.
 So windows can sit in different rows, stack on top of each other, and span several cells in either direction.
@@ -43,7 +44,8 @@ layout {
 }
 ```
 
-Without gravity, windows stay where you put them, and only columns of cells that are completely empty collapse.
+Without gravity, windows stay where you put them, and only columns of cells that are completely empty between windows collapse.
+The grid also has no left edge then, so windows can be pushed or moved further left than the first one.
 
 ### Opening windows
 
@@ -74,6 +76,8 @@ It doesn't push anything aside.
 
 When you drag a window edge with the mouse, the size snaps to cells and neighbouring windows get pushed aside as you go.
 The edge opposite the one you're dragging stays still.
+With left gravity, windows can't be pushed past the left edge of the grid, and they're always packed against it, so dragging a left edge can only shrink the window.
+Without gravity, dragging a left edge grows the window to the left too, pushing the windows there further left.
 The window you're resizing stays put until you let go, then falls into place with left gravity.
 
 ### Columns and stacks
@@ -99,13 +103,14 @@ The wrap-arounds `focus-column-right-or-first` and `focus-column-left-or-last` d
 - `focus-window-top`, `focus-window-bottom` and `focus-window-in-column` work within the stack, so `focus-window-down-or-top` and `focus-window-up-or-bottom` wrap around within it.
 
 When you close the focused window, focus goes back to the window it was opened from, if focus didn't change in between.
+The view doesn't scroll back to where it was, unless that window is out of view.
 Otherwise, focus goes to the window below, then above, then right, then left of it.
 
 ### The view
 
 Layout changes don't move the view.
-When a window opens or closes, the windows that move slide into place on screen, while the rest stay still.
-The view only scrolls if the focused window would otherwise be out of view, or when focus changes.
+When windows open, close, move or resize, the ones that move slide into place on screen, while the rest stay still.
+The view only scrolls to keep the focused window in view, and for actions about the view itself, like focusing another window, swiping, centering, or going fullscreen.
 
 [`center-focused-column`](./Configuration:-Layout.md#center-focused-column) `"always"` and `"on-overflow"`, and the `center-visible-columns` action, work with the windows' spans on the grid.
 [`always-center-single-column`](./Configuration:-Layout.md#always-center-single-column) applies when no two windows are side by side.

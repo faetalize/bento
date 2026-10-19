@@ -274,7 +274,7 @@ fn dragging_the_bottom_edge_leaves_a_hole() {
 }
 
 #[test]
-fn dragging_the_left_edge_keeps_the_right_edge_still() {
+fn dragging_the_left_edge_stops_at_the_start_of_the_grid() {
     let mut ops = vec![
         Op::AddOutput(1),
         add_window(1),
@@ -292,20 +292,24 @@ fn dragging_the_left_edge_keeps_the_right_edge_still() {
     ops.extend(settle());
     let mut layout = check_ops(ops);
 
-    // While dragging, window 2 grows 3 cells to the left, pushing window 1 left, and its right
-    // edge stays at x = 230.
+    // Window 1 is already at the start of the grid, so window 2 can't push it any further, and
+    // doesn't grow.
     assert_snapshot!(format_tiles(&layout), @"
-     99 × 688 at x:-156 y: 16
-    271 × 688 at x: -41 y: 16
+    99 × 688 at x:  16 y: 16
+    99 × 688 at x: 131 y: 16
     ");
 
-    // Ending the resize scrolls the active window into view, like in niri.
-    let mut ops = vec![Op::InteractiveResizeEnd { window: 2 }];
+    // Shrinking from the left still works, keeping the right edge still.
+    let mut ops = vec![Op::InteractiveResizeUpdate {
+        window: 2,
+        dx: COL_STEP,
+        dy: 0.,
+    }];
     ops.extend(settle());
     check_ops_on_layout(&mut layout, ops);
     assert_snapshot!(format_tiles(&layout), @"
-     99 × 688 at x: -99 y: 16
-    271 × 688 at x:  16 y: 16
+    99 × 688 at x:  16 y: 16
+    42 × 688 at x: 188 y: 16
     ");
 }
 
@@ -1133,5 +1137,98 @@ fn consuming_into_tabs_adds_a_tab_and_expelling_takes_it_out() {
     assert_snapshot!(format_tiles(&layout), @"
     99 × 688 at x:  16 y: 16
     99 × 688 at x: 131 y: 16
+    ");
+}
+
+#[test]
+fn swapping_past_a_stack_keeps_the_view_still() {
+    // Window 1 three rows tall, windows 2 and 3 stacked to its right within its rows, and window
+    // 4 under all of them, spanning both.
+    let rows = |n: f64| SizeChange::SetProportion(n * 100. / 12. + 0.1);
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: rows(3.),
+        },
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: rows(2.),
+        },
+        add_window(3),
+        Op::SetWindowHeight {
+            id: Some(3),
+            change: rows(1.),
+        },
+        Op::MoveWindowDown,
+        Op::MoveWindowDown,
+        add_window(4),
+        Op::SetWindowWidth {
+            id: Some(4),
+            change: SizeChange::SetProportion(18.2),
+        },
+        Op::SetWindowHeight {
+            id: Some(4),
+            change: rows(2.),
+        },
+        Op::MoveWindowDown,
+        Op::MoveWindowDown,
+        Op::MoveWindowDown,
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+     99 × 160 at x:  16 y: 16
+     99 × 101 at x: 131 y: 16
+     99 ×  43 at x: 131 y:133
+    214 × 101 at x:  16 y:192
+    ");
+
+    // Window 1 trades places with the stack of windows 2 and 3. Window 4 isn't involved, so it
+    // stays where it is on screen, and so does the view.
+    let mut ops = vec![Op::FocusWindow(1), Op::MoveColumnRight];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+     99 × 160 at x: 131 y: 16
+     99 × 101 at x:  16 y: 16
+     99 ×  43 at x:  16 y:133
+    214 × 101 at x:  16 y:192
+    ");
+}
+
+#[test]
+fn dragging_the_left_edge_without_gravity_pushes_past_column_0() {
+    let options = Options {
+        layout: niri_config::Layout {
+            left_gravity: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::InteractiveResizeBegin {
+            window: 2,
+            edges: ResizeEdge::LEFT,
+        },
+        Op::InteractiveResizeUpdate {
+            window: 2,
+            dx: -COL_STEP * 3.,
+            dy: 0.,
+        },
+    ];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options, ops);
+
+    // Without gravity there's no left edge to stop at: window 2 grows 3 cells to the left,
+    // pushing window 1 past column 0, and its right edge stays at x = 230.
+    assert_snapshot!(format_tiles(&layout), @"
+     99 × 688 at x:-156 y: 16
+    271 × 688 at x: -41 y: 16
     ");
 }

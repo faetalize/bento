@@ -157,11 +157,6 @@ impl ClosingWindow {
         })
     }
 
-    /// Moves the window by `delta` in the workspace.
-    pub fn offset(&mut self, delta: Point<f64, Logical>) {
-        self.pos += delta;
-    }
-
     pub fn advance_animations(&mut self) {
         match &mut self.anim_state {
             AnimationState::Waiting { blocker, anim } => {
