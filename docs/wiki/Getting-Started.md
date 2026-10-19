@@ -54,6 +54,8 @@ You can also run `niri` inside an existing desktop session.
 Then it will open as a window, where you can give it a try.
 Note that this windowed mode is mainly meant for development, so it is a bit buggy (in particular, there are issues with hotkeys).
 
+To learn how bento arranges windows on its grid of cells, see the [Grid Layout](./Grid-Layout.md) page.
+
 Next, see the [list of important software](./Important-Software.md) required for normal desktop use, like a notification daemon and portals.
 Also, check the [configuration introduction](./Configuration:-Introduction.md) page to get started configuring niri.
 There you can find links to other pages containing thorough documentation and examples for all options.
@@ -106,7 +108,7 @@ crw-rw-rw-@ 226,129 root 14 мая 07:07 renderD129
 
 You will likely have one `render` device and two `card` devices.
 
-Open the niri config file at `~/.config/niri/config.kdl` and put your `render` device path like this:
+Open the config file at `~/.config/bento/config.kdl` and put your `render` device path like this:
 
 ```kdl
 debug {
@@ -142,14 +144,14 @@ The general system is: if a hotkey switches somewhere, then adding <kbd>Ctrl</kb
 | <kbd>Mod</kbd><kbd>D</kbd> | Spawn `fuzzel` (application launcher) |
 | <kbd>Super</kbd><kbd>Alt</kbd><kbd>L</kbd> | Spawn `swaylock` (screen locker) |
 | <kbd>Mod</kbd><kbd>Q</kbd> | Close the focused window |
-| <kbd>Mod</kbd><kbd>H</kbd> or <kbd>Mod</kbd><kbd>←</kbd> | Focus the column to the left |
-| <kbd>Mod</kbd><kbd>L</kbd> or <kbd>Mod</kbd><kbd>→</kbd> | Focus the column to the right |
-| <kbd>Mod</kbd><kbd>J</kbd> or <kbd>Mod</kbd><kbd>↓</kbd> | Focus the window below in a column |
-| <kbd>Mod</kbd><kbd>K</kbd> or <kbd>Mod</kbd><kbd>↑</kbd> | Focus the window above in a column |
-| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>H</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>←</kbd> | Move the focused column to the left |
-| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>L</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>→</kbd> | Move the focused column to the right |
-| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>J</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>↓</kbd> | Move the focused window below in a column |
-| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>K</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>↑</kbd> | Move the focused window above in a column |
+| <kbd>Mod</kbd><kbd>H</kbd> or <kbd>Mod</kbd><kbd>←</kbd> | Focus the window to the left |
+| <kbd>Mod</kbd><kbd>L</kbd> or <kbd>Mod</kbd><kbd>→</kbd> | Focus the window to the right |
+| <kbd>Mod</kbd><kbd>J</kbd> or <kbd>Mod</kbd><kbd>↓</kbd> | Focus the window below |
+| <kbd>Mod</kbd><kbd>K</kbd> or <kbd>Mod</kbd><kbd>↑</kbd> | Focus the window above |
+| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>H</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>←</kbd> | Move the focused window one cell to the left |
+| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>L</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>→</kbd> | Move the focused window one cell to the right |
+| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>J</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>↓</kbd> | Move the focused window one cell down |
+| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>K</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>↑</kbd> | Move the focused window one cell up |
 | <kbd>Mod</kbd><kbd>Shift</kbd><kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> or <kbd>Mod</kbd><kbd>Shift</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>↑</kbd><kbd>→</kbd> | Focus the monitor to the side |
 | <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> or <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>↑</kbd><kbd>→</kbd> | Move the focused column to the monitor to the side |
 | <kbd>Mod</kbd><kbd>U</kbd> or <kbd>Mod</kbd><kbd>PageDown</kbd> | Switch to the workspace below |
@@ -160,14 +162,14 @@ The general system is: if a hotkey switches somewhere, then adding <kbd>Ctrl</kb
 | <kbd>Mod</kbd><kbd>Shift</kbd><kbd>I</kbd> or <kbd>Mod</kbd><kbd>Shift</kbd><kbd>PageUp</kbd> | Move the focused workspace up |
 | <kbd>Mod</kbd><kbd>[</kbd> | Consume or expel the focused window to the left |
 | <kbd>Mod</kbd><kbd>]</kbd> | Consume or expel the focused window to the right |
-| <kbd>Mod</kbd><kbd>R</kbd> and <kbd>Mod</kbd><kbd>Shift</kbd><kbd>R</kbd> | Toggle between preset column widths forward and back |
+| <kbd>Mod</kbd><kbd>R</kbd> and <kbd>Mod</kbd><kbd>Shift</kbd><kbd>R</kbd> | Toggle between preset window widths forward and back |
 | <kbd>Mod</kbd><kbd>M</kbd> | Maximize window |
-| <kbd>Mod</kbd><kbd>C</kbd> | Center column within view |
-| <kbd>Mod</kbd><kbd>-</kbd> | Decrease column width by 10% |
-| <kbd>Mod</kbd><kbd>=</kbd> | Increase column width by 10% |
-| <kbd>Mod</kbd><kbd>Shift</kbd><kbd>-</kbd> | Decrease window height by 10% |
-| <kbd>Mod</kbd><kbd>Shift</kbd><kbd>=</kbd> | Increase window height by 10% |
-| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>R</kbd> | Reset window height back to automatic |
+| <kbd>Mod</kbd><kbd>C</kbd> | Center the focused window within view |
+| <kbd>Mod</kbd><kbd>-</kbd> | Decrease window width by about 10% (at least one cell) |
+| <kbd>Mod</kbd><kbd>=</kbd> | Increase window width by about 10% (at least one cell) |
+| <kbd>Mod</kbd><kbd>Shift</kbd><kbd>-</kbd> | Decrease window height by about 10% (at least one cell) |
+| <kbd>Mod</kbd><kbd>Shift</kbd><kbd>=</kbd> | Increase window height by about 10% (at least one cell) |
+| <kbd>Mod</kbd><kbd>Ctrl</kbd><kbd>R</kbd> | Reset window height back to the full height |
 | <kbd>Mod</kbd><kbd>Shift</kbd><kbd>F</kbd> | Toggle full-screen on the focused window |
 | <kbd>Mod</kbd><kbd>V</kbd> | Move the focused window between the floating and the tiling layout |
 | <kbd>Mod</kbd><kbd>Shift</kbd><kbd>V</kbd> | Switch focus between the floating and the tiling layout |

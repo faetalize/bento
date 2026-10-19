@@ -303,10 +303,9 @@ Movement of individual windows within a workspace.
 
 Includes:
 
-- Moving window columns with `move-column-left` and `move-column-right`.
-- Moving windows inside a column with `move-window-up` and `move-window-down`.
-- Moving windows out of the way upon window opening and closing.
-- Window movement between columns when consuming/expelling.
+- Moving windows on the grid with `move-column-left`, `move-column-right`, `move-window-up` and `move-window-down`.
+- Moving windows out of the way upon window opening and closing, and sliding windows into place on screen afterwards.
+- Window movement when consuming/expelling.
 
 This animation *does not* include the camera view movement, such as scrolling the workspace left and right.
 

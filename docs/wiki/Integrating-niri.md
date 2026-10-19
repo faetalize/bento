@@ -3,13 +3,13 @@ First, for creating a niri package, see the [Packaging](./Packaging-niri.md) pag
 
 ### Configuration
 
-Niri will load configuration from `$XDG_CONFIG_HOME/niri/config.kdl` or `~/.config/niri/config.kdl`, falling back to `/etc/niri/config.kdl`.
-If both of these files are missing, niri will create `$XDG_CONFIG_HOME/niri/config.kdl` with the contents of [the default configuration file](https://github.com/niri-wm/niri/blob/main/resources/default-config.kdl), which are embedded into the niri binary at build time.
+bento will load configuration from `$XDG_CONFIG_HOME/bento/config.kdl` or `~/.config/bento/config.kdl`, falling back to `/etc/bento/config.kdl`.
+If both of these files are missing, bento will create `$XDG_CONFIG_HOME/bento/config.kdl` with the contents of [the default configuration file](https://github.com/niri-wm/niri/blob/main/resources/default-config.kdl), which are embedded into the niri binary at build time.
 
-This means that you can customize your distribution defaults by creating `/etc/niri/config.kdl`.
-When this file is present, niri *will not* automatically create a config at `~/.config/niri/`, so you'll need to direct your users how to do it themselves.
+This means that you can customize your distribution defaults by creating `/etc/bento/config.kdl`.
+When this file is present, bento *will not* automatically create a config at `~/.config/bento/`, so you'll need to direct your users how to do it themselves.
 
-Keep in mind that we update the default config in new releases, so if you have a custom `/etc/niri/config.kdl`, you likely want to inspect and apply the relevant changes too.
+Keep in mind that we update the default config in new releases, so if you have a custom `/etc/bento/config.kdl`, you likely want to inspect and apply the relevant changes too.
 
 The default configuration locations can be overridden with the `NIRI_CONFIG` environment variable.
 

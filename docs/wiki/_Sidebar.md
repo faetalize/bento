@@ -2,6 +2,7 @@
 * [Getting Started](./Getting-Started.md)
 * [Example systemd Setup](./Example-systemd-Setup.md)
 * [Important Software](./Important-Software.md)
+* [Grid Layout](./Grid-Layout.md)
 * [Workspaces](./Workspaces.md)
 * [Floating Windows](./Floating-Windows.md)
 * [Tabs](./Tabs.md)

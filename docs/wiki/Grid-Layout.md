@@ -1,0 +1,139 @@
+### Overview
+
+bento lays out tiled windows on a grid of cells.
+Like niri's strip of columns, the grid scrolls horizontally without end, and every workspace has its own grid.
+Unlike niri, a window doesn't have to fill a column from top to bottom.
+Every window covers a rectangle of whole cells: a starting column and row, plus a span.
+So windows can sit in different rows, stack on top of each other, and span several cells in either direction.
+
+The grid has 12 rows.
+Cells are close to square: bento works out an even number of columns across the view from the output size and the [gaps](./Configuration:-Layout.md#gaps).
+Gaps go between cells.
+
+> [!NOTE]
+> bento keeps niri's action and option names, so many of them still say "column", like `move-column-left` or `default-column-width`.
+> See [Columns and stacks](#columns-and-stacks) for what a column means on the grid.
+
+### Sizes
+
+Window sizes snap to whole cells.
+
+- `proportion` sizes round down to whole cells.
+Complementary proportions like <sup>1</sup>&frasl;<sub>3</sub> and <sup>2</sup>&frasl;<sub>3</sub> fit together, but may leave a cell free.
+For example, if the view is 16 cells wide, <sup>1</sup>&frasl;<sub>3</sub> is 5 cells and <sup>2</sup>&frasl;<sub>3</sub> is 10 cells, leaving one cell free.
+- `fixed` sizes in logical pixels go to the nearest number of cells.
+Like in niri, a fixed width or height is for the window itself, without its border.
+
+A window remembers its size on the grid.
+It keeps that size when you move it to another workspace or monitor, when you make it floating and tile it again, and when you toggle full width.
+
+When the number of cells across the view changes, for example on an output of a different size, bento works the sizes out again so that proportional sizes stay proportional.
+
+### Left gravity
+
+By default, windows slide left within their rows until they touch another window.
+This closes the gaps left by closed, shrunk or moved windows, much like columns close up in niri.
+Holes remain only where nothing fits.
+
+You can turn this off in the [`layout {}` section](./Configuration:-Layout.md#left-gravity):
+
+```kdl
+layout {
+    left-gravity false
+}
+```
+
+Without gravity, windows stay where you put them, and only columns of cells that are completely empty collapse.
+
+### Opening windows
+
+New windows open to the right of the focused window, lined up with its top row.
+Windows that are in the way get pushed to the right.
+
+New windows get their size from [`default-column-width`](./Configuration:-Layout.md#default-column-width) and the [`default-window-height`](./Configuration:-Window-Rules.md#default-window-height) window rule, snapped to cells.
+The [`default-column-width`](./Configuration:-Window-Rules.md#default-column-width) window rule works too.
+
+### Moving windows
+
+- `move-column-left` and `move-column-right` move the focused window one cell to the side, swapping places with a window it runs into.
+- `move-window-up` and `move-window-down` move it one cell up or down.
+- `move-column-to-first` and `move-column-to-last` move it to the start of the strip, or past its end, staying in its rows.
+- `move-column-to-index` uses the [column numbering](#columns-and-stacks) below.
+
+When you drag a window with the mouse, bento shows the cells where it will land, after pushing other windows aside and applying left gravity, and drops it there.
+
+### Resizing windows
+
+`set-column-width`, `set-window-height`, `switch-preset-column-width`, `switch-preset-window-height` and their `-back` variants all work in cells.
+Adjustments like `"+10%"` or `"-100"` change the size by the nearest number of cells, and always by at least one cell.
+
+`maximize-column` toggles the window between full width and its previous width.
+
+`expand-column-to-available-width` grows the window to the right, then to the left, into empty cells in its rows, up to the nearest window or the edge of the view.
+It doesn't push anything aside.
+
+When you drag a window edge with the mouse, the size snaps to cells and neighbouring windows get pushed aside as you go.
+The edge opposite the one you're dragging stays still.
+The window you're resizing stays put until you let go, then falls into place with left gravity.
+
+### Columns and stacks
+
+Some actions talk about columns.
+On the grid, "column" means one of two things.
+
+The grid's columns are the places where windows start, numbered from left to right starting at 1.
+This numbering is used by `focus-column N`, `move-column-to-index N`, and the `pos_in_scrolling_layout` field in the [IPC](./IPC.md).
+
+For actions that work within a column, like `focus-window-top`, `focus-window-bottom` and `focus-window-in-column N`, a window's column is its stack: the windows covering the same column of cells, from top to bottom.
+Windows in a [tabbed area](./Tabs.md) count in tab order.
+
+### Focus
+
+Directional focus remembers the line you're travelling along: the row when going left and right, and the column of cells when going up and down.
+This way, going past a big window brings you back to the same line on the other side.
+
+- `focus-window-down` and `focus-window-up` can reach the nearest window further down or up, even if it's diagonal.
+- Actions that fall back to something else, like `focus-window-or-workspace-down`, `focus-window-or-monitor-up` or `focus-window-down-or-column-left`, only count windows directly below or above that share columns of cells.
+- `focus-column-first` and `focus-column-last` go to the leftmost or rightmost window in the row you're travelling along.
+The wrap-arounds `focus-column-right-or-first` and `focus-column-left-or-last` do the same.
+- `focus-window-top`, `focus-window-bottom` and `focus-window-in-column` work within the stack, so `focus-window-down-or-top` and `focus-window-up-or-bottom` wrap around within it.
+
+When you close the focused window, focus goes back to the window it was opened from, if focus didn't change in between.
+Otherwise, focus goes to the window below, then above, then right, then left of it.
+
+### The view
+
+Layout changes don't move the view.
+When a window opens or closes, the windows that move slide into place on screen, while the rest stay still.
+The view only scrolls if the focused window would otherwise be out of view, or when focus changes.
+
+[`center-focused-column`](./Configuration:-Layout.md#center-focused-column) `"always"` and `"on-overflow"`, and the `center-visible-columns` action, work with the windows' spans on the grid.
+[`always-center-single-column`](./Configuration:-Layout.md#always-center-single-column) applies when no two windows are side by side.
+Windows stacked on top of each other count as a single column.
+
+On a touchpad, swiping the view snaps to window edges on the grid.
+After the swipe, the furthest fully visible window in the swipe direction gets focus, preferring the row you were in.
+
+### Fullscreen and maximized windows
+
+[Fullscreen and maximized-to-edges windows](./Fullscreen-and-Maximize.md) take enough cells to cover their width, across all rows.
+Other windows get pushed aside, so nothing draws over them.
+When a window stops being fullscreen or maximized, it gets its own size and row back.
+
+### Consume and expel
+
+- `consume-or-expel-window-left` and `consume-or-expel-window-right` on a window that isn't stacked put it into the stack beside it.
+The window beside it keeps the top half of its rows, and the consumed window takes the bottom half.
+- On a stacked window, they expel it instead.
+It goes full height to the left or right of everything sharing its columns of cells, and the window it was split from grows back over its rows.
+- `consume-window-into-column` brings the window on the right under the focused window.
+- `expel-window-from-column` expels the focused window to the right.
+
+See the [Tabs](./Tabs.md) page for how consume and expel work with tabbed areas.
+
+### IPC
+
+bento keeps niri's IPC and `NIRI_SOCKET`, so `niri msg` and other tools keep working.
+
+A window's `pos_in_scrolling_layout` is (column, position in the stack), both starting at 1.
+It uses the [column numbering and stacks](#columns-and-stacks) above, so it matches `focus-column` and `focus-window-in-column`.

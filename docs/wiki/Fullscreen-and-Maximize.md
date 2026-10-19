@@ -1,16 +1,17 @@
-There are several ways to make a window big on niri: maximizing the column, maximizing the window to edges, and fullscreening the window.
+There are several ways to make a window big on niri: maximizing the column (full width), maximizing the window to edges, and fullscreening the window.
 Let's look at their differences.
 
-## Maximized (full-width) columns
+## Maximized (full-width) windows
 
-Maximizing the column via `maximize-column` (bound to <kbd>Mod</kbd><kbd>F</kbd> by default) expands its width to cover the whole screen.
-Maximized columns still leave space for [struts] and [gaps], and can contain multiple windows.
-The windows retain their borders.
+Maximizing the column via `maximize-column` (bound to <kbd>Mod</kbd><kbd>F</kbd> by default) expands the focused window's width to cover the whole screen.
+Running it again brings back the previous width.
+Only the width changes: the window keeps its rows on the [grid](./Grid-Layout.md).
+Full-width windows still leave space for [struts] and [gaps], and retain their borders.
 This is the simplest of the sizing modes, and is equivalent to `proportion 1.0` column width, or `set-column-width "100%"`.
 
 ![Screenshot of a maximized column with two windows.](./img/maximized-column.png)
 
-You can make a window open in a maximized column with the [`open-maximized true`](./Configuration:-Window-Rules.md#open-maximized) window rule.
+You can make a window open at full width with the [`open-maximized true`](./Configuration:-Window-Rules.md#open-maximized) window rule.
 
 ## Windows maximized to edges
 
@@ -23,7 +24,7 @@ You will still see your bar, but not struts, gaps, or borders.
 Windows are aware of their maximized-to-edges status and generally respond by squaring their corners.
 Windows can also control maximizing-to-edges: when you click on the square icon in the window's titlebar, or double-click on the titlebar, the window will request niri to maximize or unmaximize itself.
 
-You can put multiple maximized windows into a [tabbed column](./Tabs.md), but not into a regular column.
+You can put multiple maximized windows into a [tabbed area](./Tabs.md).
 
 ![Screenshot of a window maximized to edges.](./img/window-maximized-to-edges.png)
 
@@ -53,6 +54,10 @@ So if you try to fullscreen or maximize a [floating window](./Floating-Windows.m
 Then, unfullscreening/unmaximizing will bring it back into the floating layout automatically.
 
 Thanks to scrollable tiling, fullscreen and maximized windows remain a normal participant of the layout: you can scroll left and right from them and see other windows.
+
+On bento's [grid](./Grid-Layout.md#fullscreen-and-maximized-windows), fullscreen and maximized-to-edges windows take enough cells to cover their width, across all rows.
+They push other windows aside, so nothing draws over them.
+When a window stops being fullscreen or maximized, it gets its own size and row back.
 
 ![Screenshot of the overview showing a fullscreen window with other windows side by side.](./img/fullscreen-window-in-overview.png)
 

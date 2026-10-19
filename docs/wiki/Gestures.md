@@ -12,6 +12,9 @@ Also see the [gestures configuration](./Configuration:-Gestures.md) wiki page.
 
 You can move windows by holding <kbd>Mod</kbd> and the left mouse button.
 
+On bento's [grid](./Grid-Layout.md#moving-windows), the preview shows the cells where the window will land, after pushing other windows aside and applying left gravity, and the window drops there when you let go.
+Dragging a window into a [tabbed area](./Tabs.md) to add a tab is not supported yet.
+
 You can customize the look of the window insertion preview in the [`insert-hint` layout config](./Configuration:-Layout.md#insert-hint).
 
 <sup>Since: 25.01</sup> Right click while moving to toggle between floating and tiling layout to put the window into.
@@ -22,11 +25,15 @@ You can customize the look of the window insertion preview in the [`insert-hint`
 
 You can resize windows by holding <kbd>Mod</kbd> and the right mouse button.
 
+Tiled windows snap to cells on the [grid](./Grid-Layout.md#resizing-windows), and neighbouring windows get pushed aside as you drag.
+The edge opposite the one you're dragging stays still.
+The window stays put until you let go, then falls into place with left gravity.
+
 #### Reset Window Height
 
 <sup>Since: 0.1.6</sup>
 
-If you double-click on a top or bottom tiled window resize edge, the window height will reset to automatic.
+If you double-click on a top or bottom tiled window resize edge, the window height will reset to the full height of the grid.
 
 This works with both window-initiated resizes (when using client-side decorations), and niri-initiated <kbd>Mod</kbd> + right click resizes.
 
@@ -34,7 +41,7 @@ This works with both window-initiated resizes (when using client-side decoration
 
 <sup>Since: 0.1.6</sup>
 
-If you double-click on a left or right tiled window resize edge, the column will expand to the full workspace width.
+If you double-click on a left or right tiled window resize edge, the window will expand to the full workspace width.
 
 This works with both window-initiated resizes (when using client-side decorations), and niri-initiated <kbd>Mod</kbd> + right click resizes.
 
@@ -59,6 +66,9 @@ Switch workspaces with three-finger vertical swipes.
 #### Horizontal View Movement
 
 Move the view horizontally with three-finger horizontal swipes.
+
+When you finish the swipe, the view snaps to window edges on the grid.
+Then, the furthest fully visible window in the swipe direction gets focus, preferring the row you were in.
 
 #### Open and Close the Overview
 

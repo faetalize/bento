@@ -7,6 +7,7 @@ Here are the contents of this section at a glance:
 ```kdl
 layout {
     gaps 16
+    // left-gravity false
     center-focused-column "never"
     always-center-single-column
     empty-workspace-above-first
@@ -103,6 +104,8 @@ layout {
 
 Set gaps around (inside and outside) windows in logical pixels.
 
+On bento's [grid](./Grid-Layout.md), gaps go between cells, and the gaps setting affects how many cells fit across the view.
+
 <sup>Since: 0.1.7</sup> You can use fractional values.
 The value will be rounded to physical pixels according to the scale factor of every output.
 For example, `gaps 0.5` on an output with `scale 2` will result in one physical-pixel wide gaps.
@@ -115,14 +118,33 @@ layout {
 }
 ```
 
+### `left-gravity`
+
+When on, tiled windows slide left within their rows until they touch another window, closing gaps left by closed, shrunk or moved windows.
+Holes remain only where nothing fits.
+This is the default.
+
+Set `left-gravity false` to let windows stay wherever you put them.
+Then, only columns of cells that are completely empty collapse.
+
+See the [Grid Layout](./Grid-Layout.md#left-gravity) page for more details.
+
+```kdl
+layout {
+    left-gravity false
+}
+```
+
 ### `center-focused-column`
 
-When to center a column when changing focus.
+When to center the focused window when changing focus.
 This can be set to:
 
-- `"never"`: no special centering, focusing an off-screen column will scroll it to the left or right edge of the screen. This is the default.
-- `"always"`, the focused column will always be centered.
-- `"on-overflow"`, focusing a column will center it if it doesn't fit on screen together with the previously focused column.
+- `"never"`: no special centering, focusing an off-screen window will scroll it to the left or right edge of the screen. This is the default.
+- `"always"`, the focused window will always be centered.
+- `"on-overflow"`, focusing a window will center it if it doesn't fit on screen together with the previously focused window.
+
+Centering uses the cells that the windows span on the grid.
 
 ```kdl
 layout {
@@ -135,6 +157,9 @@ layout {
 <sup>Since: 0.1.9</sup>
 
 If set, niri will always center a single column on a workspace, regardless of the `center-focused-column` option.
+
+On bento's grid, this applies when no two windows on the workspace are side by side.
+Windows stacked on top of each other count as a single column.
 
 ```kdl
 layout {
@@ -158,16 +183,18 @@ layout {
 
 <sup>Since: 25.02</sup>
 
-Sets the default display mode for new columns.
+Sets the default display mode for new windows.
 Can be `normal` or `tabbed`.
 
+With `tabbed`, new windows open as a [tabbed area](./Tabs.md) with a single tab.
+
 ```kdl
-// Make all new columns tabbed by default.
+// Make all new windows tabbed by default.
 layout {
     default-column-display "tabbed"
 
     // You may also want to hide the tab indicator
-    // when there's only a single window in a column.
+    // when there's only a single window in a tabbed area.
     tab-indicator {
         hide-when-single-tab
     }
@@ -180,10 +207,11 @@ Set the widths that the `switch-preset-column-width` action (Mod+R) toggles betw
 <sup>Since: 25.08</sup> You can use the `switch-preset-column-width-back` action (Mod+Shift+R) to toggle in reverse.
 
 `proportion` sets the width as a fraction of the output width, taking gaps into account.
-For example, you can perfectly fit four windows sized `proportion 0.25` on an output, regardless of the gaps setting.
+bento rounds it down to whole cells on the [grid](./Grid-Layout.md#sizes), so complementary proportions like <sup>1</sup>&frasl;<sub>3</sub> and <sup>2</sup>&frasl;<sub>3</sub> fit together, but may leave a cell free.
 The default preset widths are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output.
 
-`fixed` sets the window width in logical pixels exactly.
+`fixed` sets the window width in logical pixels, which bento turns into the nearest number of cells.
+Like in niri, the fixed width is for the window itself, without its border.
 
 ```kdl
 layout {
@@ -201,7 +229,7 @@ layout {
 
 Set the default width of the new windows.
 
-The syntax is the same as in `preset-column-widths` above.
+The syntax is the same as in `preset-column-widths` above, and the width snaps to cells the same way.
 
 ```kdl
 layout {
@@ -233,9 +261,11 @@ Set the heights that the `switch-preset-window-height` action (Mod+Ctrl+Shift+R)
 <sup>Since: 25.08</sup> You can use the `switch-preset-window-height-back` action (not bound by default) to toggle in reverse.
 
 `proportion` sets the height as a fraction of the output height, taking gaps into account.
+bento rounds it down to whole rows of the [grid](./Grid-Layout.md#sizes).
 The default preset heights are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output.
 
-`fixed` sets the height in logical pixels exactly.
+`fixed` sets the height in logical pixels, which bento turns into the nearest number of rows.
+Like in niri, the fixed height is for the window itself, without its border.
 
 ```kdl
 layout {
@@ -433,14 +463,14 @@ prefer-no-csd
 
 <sup>Since: 25.02</sup>
 
-Controls the appearance of the tab indicator that appears next to columns in tabbed display mode.
+Controls the appearance of the tab indicator that appears next to [tabbed areas](./Tabs.md).
 
 Set `off` to hide the tab indicator.
 
-Set `hide-when-single-tab` to hide the indicator for tabbed columns that only have a single window.
+Set `hide-when-single-tab` to hide the indicator for tabbed areas that only have a single window.
 
-Set `place-within-column` to put the tab indicator "within" the column, rather than outside.
-This will include it in column sizing and avoid overlaying adjacent columns.
+Set `place-within-column` to put the tab indicator "within" the tabbed area, rather than outside.
+This will include it in the area's sizing and avoid overlaying adjacent windows.
 
 `gap` sets the gap between the tab indicator and the window in logical pixels.
 The gap can be negative, this will put the tab indicator on top of the window.
@@ -470,7 +500,7 @@ Tab colors are picked in this order:
 
 ```kdl
 // Make the tab indicator wider and match the window height,
-// also put it at the top and within the column.
+// also put it at the top and within the tabbed area.
 layout {
     tab-indicator {
         width 8
@@ -487,6 +517,8 @@ layout {
 <sup>Since: 0.1.10</sup> 
 
 Settings for the window insert position hint during an interactive window move.
+
+On the grid, the hint shows the cells where the window will land.
 
 `off` disables the insert hint altogether.
 

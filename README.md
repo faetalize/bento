@@ -18,9 +18,11 @@ This repo follows a more permissive development stride, and thus may be less sta
 
 ## Features
 
-- Everything niri has...
-- ... and nested tiling. We still follow the principle of never resizing or moving windows that already exist, however more complex manual layouts are possible
-- Grid columns replace the row-tag design for layouts. A column can be an N×M grid where each window covers a rectangular area (row/column start plus span)
+- A grid of cells instead of niri's single row of columns. The grid still scrolls horizontally without end, but it has 12 rows, and every window covers a rectangle of whole cells, so windows can sit in different rows, stack, and span several cells
+- Window sizes snap to cells, and windows remember their size on the grid
+- Left gravity (on by default): windows slide left within their rows to close gaps, like columns do in niri. Turn it off with `left-gravity false` to keep windows where you put them
+- Opening, moving or resizing a window pushes the windows in its way aside
+- niri's actions, tabs, fullscreen, gestures and IPC, adapted to the grid. See the [Grid Layout](docs/wiki/Grid-Layout.md) wiki page
 - Support for more experimental Wayland protocols
 
 ## Status

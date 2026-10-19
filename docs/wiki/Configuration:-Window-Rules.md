@@ -244,6 +244,9 @@ Matches the window that is the "active" window in its column.
 Contrary to `is-active`, there is always one `is-active-in-column` window in each column.
 It is the window that was last focused in the column, i.e. the one that will gain focus if this column is focused.
 
+On bento's [grid](./Grid-Layout.md), every tiled window outside a [tabbed area](./Tabs.md) is the active window in its own column, so this matches `true` for it.
+In a tabbed area, it matches the selected tab.
+
 <sup>Since: 25.01</sup> This rule will match `true` during the initial window opening.
 
 ```kdl
@@ -351,6 +354,8 @@ Set the default width for the new window.
 
 This works for floating windows too, despite the word "column" in the name.
 
+For tiled windows, the width snaps to cells on the [grid](./Grid-Layout.md#sizes): proportions round down to whole cells, and fixed sizes go to the nearest number of cells.
+
 ```kdl
 // Give Blender and GIMP some guaranteed width on opening.
 window-rule {
@@ -369,6 +374,8 @@ window-rule {
 <sup>Since: 25.01</sup>
 
 Set the default height for the new window.
+
+For tiled windows, the height snaps to rows on the [grid](./Grid-Layout.md#sizes), the same way as `default-column-width`.
 
 ```kdl
 // Open the Firefox picture-in-picture window as floating with 480×270 size.
@@ -427,7 +434,7 @@ window-rule {
 
 #### `open-maximized`
 
-Make the window open as a maximized column.
+Make the window open at full width, as if toggled with `maximize-column`.
 
 ```kdl
 // Maximize Firefox by default.
@@ -674,6 +681,8 @@ window-rule {
 
 Set the default display mode for columns created from this window.
 Can be `normal` or `tabbed`.
+
+With `tabbed`, the window opens as a [tabbed area](./Tabs.md) with a single tab.
 
 This is used any time a window goes into its own column.
 For example:

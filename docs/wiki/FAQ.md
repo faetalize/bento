@@ -98,8 +98,10 @@ You'll need to use a script, for example [this one](https://github.com/niri-wm/n
 
 ### Can I open a window directly in the current column / in the same column as another window?
 
-No, but you can script the behavior you want with the [niri IPC](./IPC.md).
-Listen to the event stream for a new window opening, then call an action like `consume-or-expel-window-left`.
+No. On bento's [grid](./Grid-Layout.md#opening-windows), new windows open to the right of the focused window, lined up with its top row.
+
+You can script the behavior you want with the [niri IPC](./IPC.md).
+Listen to the event stream for a new window opening, then call an action like `consume-or-expel-window-left`, which puts the new window into the stack beside it, in the bottom half of that window's rows.
 
 Adding this directly to niri is challenging:
 
