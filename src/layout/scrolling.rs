@@ -5646,6 +5646,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         assert_eq!(self.grid.len(), self.columns.len());
         self.grid.verify_invariants();
 
+        assert_eq!(
+            self.cell_metrics,
+            compute_cell_metrics(self.working_area, &self.options),
+            "cell metrics must match the working area"
+        );
+        assert_eq!(self.grid.rows(), self.cell_metrics.rows);
+        assert_eq!(self.grid.left_gravity(), self.options.layout.left_gravity);
+
         let mut prev_key = None;
         for col in &self.columns {
             assert!(
@@ -5672,6 +5680,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             assert_eq!(col.grid_span, Some((area.cols, area.rows)));
             assert_eq!(col.grid_geometry, Some(self.grid_geometry(area)));
+            assert_eq!(
+                self.grid_span_in_mode(col),
+                (area.cols, area.rows),
+                "the window's size must match its area on the grid"
+            );
         }
     }
 }

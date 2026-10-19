@@ -1406,6 +1406,11 @@ pub struct WindowLayout {
     /// The indices are 1-based, i.e. the leftmost column is at index 1 and the topmost tile in a
     /// column is at index 1. This is consistent with [`Action::FocusColumn`] and
     /// [`Action::FocusWindowInColumn`].
+    ///
+    /// In bento, windows sit on a grid of cells. Columns are the columns of cells where windows
+    /// start, numbered left to right, and a window's column is the column where it starts. Its
+    /// tile index is its place among the windows covering that column of cells, top to bottom,
+    /// counting tabs in order.
     pub pos_in_scrolling_layout: Option<(usize, usize)>,
     /// Size of the tile this window is in, including decorations like borders.
     pub tile_size: (f64, f64),
