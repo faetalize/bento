@@ -3823,6 +3823,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         if !col.pending_sizing_mode().is_normal() {
             return false;
         }
+        let col_id = col.id;
 
         let tile = col
             .tiles
@@ -3838,6 +3839,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             data: InteractiveResizeData { edges },
         };
         self.interactive_resize = Some(resize);
+
+        // The window being resized is held by the pointer, so gravity leaves it alone until the
+        // resize ends.
+        self.grid.set_pinned(Some(col_id));
         self.grid_resize_original = Some(self.grid.clone());
 
         self.view_offset.stop_anim_and_gesture();
@@ -3928,9 +3933,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         self.interactive_resize = None;
         self.grid_resize_original = None;
+        self.release_grid_pin();
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
+        // A resize can end without interactive_resize_end(), for example when focus moves away.
+        if self.interactive_resize.is_none() {
+            self.release_grid_pin();
+        }
+
         for (col_idx, col) in self.columns.iter_mut().enumerate() {
             let mut col_resize_data = None;
             if let Some(resize) = &self.interactive_resize {
@@ -4361,6 +4372,61 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.grid_x(shift)
     }
 
+    /// How far the strip moved under the windows entirely left of `id` after a grid change.
+    ///
+    /// Resizing or dropping a window can't move the windows to its left other than by shifting
+    /// the whole strip, so they make a good reference for keeping the view still. Zero if there
+    /// are none.
+    fn grid_shift_left_of(&self, before: &Grid<ColumnId>, id: ColumnId) -> f64 {
+        let Some(left) = before.area(&id).map(|area| area.col) else {
+            return 0.;
+        };
+
+        let mut counts: Vec<(i32, usize)> = Vec::new();
+        for (other, prev) in before.iter() {
+            if prev.right() > left {
+                continue;
+            }
+            let Some(area) = self.grid.area(other) else {
+                continue;
+            };
+            let delta = area.col - prev.col;
+            match counts.iter_mut().find(|(d, _)| *d == delta) {
+                Some((_, count)) => *count += 1,
+                None => counts.push((delta, 1)),
+            }
+        }
+
+        let shift = counts
+            .into_iter()
+            .max_by_key(|&(delta, count)| (count, -delta.abs()))
+            .map_or(0, |(delta, _)| delta);
+        self.grid_x(shift)
+    }
+
+    /// Lets the window held by the pointer fall into place, keeping the view still.
+    fn release_grid_pin(&mut self) {
+        let Some(&id) = self.grid.pinned() else {
+            return;
+        };
+
+        let before = self.grid.clone();
+        let prev_positions = self.grid_positions();
+        let prev_view_pos = self.view_pos();
+        self.grid.set_pinned(None);
+
+        let moved = self
+            .grid
+            .iter()
+            .any(|(other, area)| before.area(other) != Some(area));
+        if !moved {
+            return;
+        }
+
+        let shift = self.grid_shift_left_of(&before, id);
+        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
+    }
+
     /// Syncs columns after a grid change, keeping the view still relative to the windows that
     /// stayed in place, given how far the strip moved under them.
     fn sync_grid_keeping_view(
@@ -4525,14 +4591,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let id = self.columns[idx].id;
         let area = self.grid.area(&id).unwrap();
 
+        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
+        let prev_view_pos = self.view_pos();
         let cols = cols.unwrap_or(area.cols);
         let rows = rows.unwrap_or(area.rows);
         if !self.grid.resize(&id, cols, rows) {
             return;
         }
 
-        self.sync_grid(Some(prev_positions), None);
+        let shift = self.grid_shift_left_of(&before, id);
+        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
 
         // Make sure the resized window stays in view.
         if self.columns[self.active_column_idx].id == id && !self.view_offset.is_gesture() {

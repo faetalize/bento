@@ -117,6 +117,8 @@ pub struct Grid<K> {
     rows: i32,
     /// Whether windows slide left within their rows until they touch another window.
     left_gravity: bool,
+    /// Window held in place by the pointer, which gravity doesn't move until it's released.
+    pinned: Option<K>,
     /// Windows and their areas, in insertion order.
     items: Vec<(K, Area)>,
 }
@@ -127,8 +129,20 @@ impl<K: Clone + PartialEq> Grid<K> {
         Self {
             rows,
             left_gravity: false,
+            pinned: None,
             items: Vec::new(),
         }
+    }
+
+    pub fn pinned(&self) -> Option<&K> {
+        self.pinned.as_ref()
+    }
+
+    /// Pins a window in place against gravity, like holding it with the pointer, or releases the
+    /// pin with `None` and lets the window fall.
+    pub fn set_pinned(&mut self, id: Option<K>) {
+        self.pinned = id;
+        self.normalize();
     }
 
     pub fn left_gravity(&self) -> bool {
@@ -204,6 +218,9 @@ impl<K: Clone + PartialEq> Grid<K> {
     pub fn remove(&mut self, id: &K) -> Option<Area> {
         let idx = self.idx(id)?;
         let (_, area) = self.items.remove(idx);
+        if self.pinned.as_ref() == Some(id) {
+            self.pinned = None;
+        }
         self.normalize();
         Some(area)
     }
@@ -500,21 +517,30 @@ impl<K: Clone + PartialEq> Grid<K> {
     ///
     /// This leaves no fully empty columns either, since every window touches something on its
     /// left all the way to column 0.
+    ///
+    /// A pinned window doesn't slide, but windows to its left can still push it right, the same
+    /// as they would push a window held by the pointer.
     fn slide_left(&mut self) {
+        let pinned = self.pinned.as_ref().and_then(|id| self.idx(id));
+
         // Going left to right, every window to the left of the current one is already in its
-        // final place. Windows only move left, so the order holds.
+        // final place. Windows only move left, except the pinned one, which only moves right, but
+        // only as far as the windows before it in the order, so the order holds.
         let mut order: Vec<usize> = (0..self.items.len()).collect();
         order.sort_by_key(|&i| (self.items[i].1.col, self.items[i].1.row));
 
         for (n, &i) in order.iter().enumerate() {
             let area = self.items[i].1;
-            let col = order[..n]
+            let mut col = order[..n]
                 .iter()
                 .map(|&j| self.items[j].1)
                 .filter(|b| b.row < area.bottom() && area.row < b.bottom())
                 .map(|b| b.right())
                 .max()
                 .unwrap_or(0);
+            if Some(i) == pinned {
+                col = col.max(area.col);
+            }
             self.items[i].1.col = col;
         }
     }
@@ -536,15 +562,27 @@ impl<K: Clone + PartialEq> Grid<K> {
             }
         }
 
+        if let Some(pinned) = &self.pinned {
+            assert!(
+                self.idx(pinned).is_some(),
+                "pinned window must be in the grid"
+            );
+        }
+
+        // A pinned window can leave empty columns to its left until it's released.
+        let pinned_with_gravity = self.left_gravity && self.pinned.is_some();
         for c in 0..self.width() {
             assert!(
-                self.items.iter().any(|(_, a)| a.col <= c && c < a.right()),
+                pinned_with_gravity || self.items.iter().any(|(_, a)| a.col <= c && c < a.right()),
                 "empty column {c}"
             );
         }
 
         if self.left_gravity {
-            for (_, a) in &self.items {
+            for (k, a) in &self.items {
+                if self.pinned.as_ref() == Some(k) {
+                    continue;
+                }
                 let touches = a.col == 0
                     || self.items.iter().any(|(_, b)| {
                         b.right() == a.col && b.row < a.bottom() && a.row < b.bottom()
@@ -636,6 +674,7 @@ mod tests {
         let grid = Grid {
             rows: R,
             left_gravity: false,
+            pinned: None,
             items: items.to_vec(),
         };
         grid.verify_invariants();
@@ -903,6 +942,39 @@ mod tests {
     }
 
     #[test]
+    fn pinned_window_falls_only_when_released() {
+        // 1 | 2
+        //   | 2
+        let mut g = gravity_grid(&[(1, Area::new(0, 0, 4, 4)), (2, Area::new(4, 0, 4, R))]);
+        g.set_pinned(Some(2));
+
+        // Shrinking 2 from the top frees rows next to nothing, but it stays put while held.
+        let held = Area::new(4, 4, 4, 8);
+        assert!(g.set_area(&2, held, Direction::Up));
+        g.verify_invariants();
+        assert_eq!(area(&g, 2), held);
+
+        // Letting go drops it under 1.
+        g.set_pinned(None);
+        g.verify_invariants();
+        assert_eq!(area(&g, 2), Area::new(0, 4, 4, 8));
+        assert_eq!(area(&g, 1), Area::new(0, 0, 4, 4));
+    }
+
+    #[test]
+    fn windows_slide_up_to_a_pinned_window() {
+        let mut g = gravity_grid(&[
+            (1, Area::new(0, 0, 4, R)),
+            (2, Area::new(4, 0, 4, R)),
+            (3, Area::new(8, 0, 4, R)),
+        ]);
+        g.set_pinned(Some(2));
+        assert!(g.resize(&2, 2, R));
+        g.verify_invariants();
+        assert_eq!(area(&g, 3), Area::new(6, 0, 4, R));
+    }
+
+    #[test]
     fn metrics_near_square() {
         let m = CellMetrics::new(Size::from((1920., 1080.)), R, 16.);
         assert_eq!(m.cols_per_view, 22);
@@ -931,6 +1003,7 @@ mod tests {
         Move(usize, Direction),
         Resize(usize, i32, i32),
         SetArea(usize, Area, Direction),
+        Pin(Option<usize>),
     }
 
     fn direction() -> impl Strategy<Value = Direction> {
@@ -958,6 +1031,7 @@ mod tests {
                     Area::new(col, row, cols, rows),
                     d
                 )),
+            1 => prop::option::of(any::<usize>()).prop_map(Op::Pin),
         ]
     }
 
@@ -1004,6 +1078,9 @@ mod tests {
                         if let Some(id) = target {
                             g.set_area(&id, area, dir);
                         }
+                    }
+                    Op::Pin(i) => {
+                        g.set_pinned(i.and_then(pick));
                     }
                 }
 

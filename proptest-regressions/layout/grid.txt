@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7ed88f9a737c0764df69964430524f3adf0d311596d1c593128143a11c71a449 # shrinks to ops = [Insert { after: 0, cols: 1, rows: 1 }, Pin(Some(0)), Insert { after: 0, cols: 1, rows: 1 }, Insert { after: 0, cols: 1, rows: 1 }, Insert { after: 0, cols: 1, rows: 1 }, Move(0, Left), Insert { after: 0, cols: 6, rows: 1 }, Insert { after: 0, cols: 7, rows: 7 }, Insert { after: 8404758704529584056, cols: 10, rows: 7 }, Move(381782927682779453, Left), SetArea(3744827093464441796, Area { col: 0, row: 0, cols: 1, rows: 1 }, Left)], left_gravity = true
