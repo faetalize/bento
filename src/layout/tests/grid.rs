@@ -642,3 +642,98 @@ fn swiping_snaps_to_window_edges_with_stacked_windows() {
     616 × 688 at x: 648 y: 16
     ");
 }
+
+/// Two windows of the given width stacked on the left, then a full-height window on the right,
+/// focused.
+fn set_up_stack_and_one(width: f64) -> Vec<Op> {
+    let mut ops = vec![Op::AddOutput(1)];
+    for id in 1..=3 {
+        ops.extend([
+            add_window(id),
+            Op::SetWindowWidth {
+                id: Some(id),
+                change: SizeChange::SetProportion(width),
+            },
+        ]);
+    }
+    for id in 1..=2 {
+        ops.push(Op::SetWindowHeight {
+            id: Some(id),
+            change: SizeChange::SetProportion(50.),
+        });
+    }
+    ops.push(Op::FocusWindow(2));
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.extend([Op::MoveColumnLeft, Op::FocusWindow(3)]);
+    ops.extend(settle());
+    ops
+}
+
+#[test]
+fn stacked_windows_count_as_a_single_column_for_centering() {
+    let options = Options {
+        layout: niri_config::Layout {
+            always_center_single_column: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let half = || SizeChange::SetProportion(50.);
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: half(),
+        },
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: half(),
+        },
+    ];
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.push(Op::MoveColumnLeft);
+    ops.extend(settle());
+    let layout = check_ops_with_options(options, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x: 591 y: 16
+    99 × 336 at x: 591 y:368
+    ");
+}
+
+#[test]
+fn centering_visible_columns_uses_their_span_on_the_grid() {
+    let mut ops = set_up_stack_and_one(20.);
+    ops.push(Op::CenterVisibleColumns);
+    ops.extend(settle());
+    let layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    214 × 336 at x: 418 y: 16
+    214 × 336 at x: 418 y:368
+    214 × 688 at x: 648 y: 16
+    ");
+}
+
+#[test]
+fn center_on_overflow_compares_with_the_window_beside() {
+    let options = Options {
+        layout: niri_config::Layout {
+            center_focused_column: CenterFocusedColumn::OnOverflow,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut ops = set_up_stack_and_one(60.);
+    ops.push(Op::FocusColumnLeft);
+    ops.extend(settle());
+    let layout = check_ops_with_options(options, ops);
+    assert_eq!(focused_id(&layout), 1);
+    // Window 1 and window 3 beside it don't fit together, so window 1 is centered. Window 2 under
+    // it is in the same column of cells and doesn't count.
+    assert_snapshot!(format_tiles(&layout), @"
+    731 × 336 at x: 275 y: 16
+    731 × 336 at x: 275 y:368
+    731 × 688 at x:1022 y: 16
+    ");
+}

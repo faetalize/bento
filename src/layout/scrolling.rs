@@ -679,7 +679,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn is_centering_focused_column(&self) -> bool {
         self.options.layout.center_focused_column == CenterFocusedColumn::Always
-            || (self.options.layout.always_center_single_column && self.columns.len() <= 1)
+            || (self.options.layout.always_center_single_column && self.is_single_grid_column())
+    }
+
+    /// Whether no two windows are side by side, like a single column in niri.
+    ///
+    /// Windows stacked on top of each other count as a single column even if their widths
+    /// differ, as long as some column of cells runs through all of them.
+    fn is_single_grid_column(&self) -> bool {
+        let left = self.grid.iter().map(|(_, area)| area.col).max();
+        let right = self.grid.iter().map(|(_, area)| area.right()).min();
+        left.zip(right).is_none_or(|(left, right)| left < right)
     }
 
     fn compute_new_view_offset_fit(
@@ -781,28 +791,40 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     return self.compute_new_view_offset_for_column_fit(target_x, idx);
                 }
 
-                // Always take the left or right neighbor of the target as the source.
-                let source_idx = if prev_idx > idx {
-                    min(idx + 1, self.columns.len() - 1)
+                // Always take the window next to the target on the side we're coming from as the
+                // source. Moving up or down within the same columns of cells doesn't need any
+                // centering.
+                let target_col_x = self.column_x(idx);
+                let target_col_width = self.columns[idx].width();
+                let target_right = target_col_x + target_col_width;
+
+                let prev_col_x = self.column_x(prev_idx);
+                let prev_right = prev_col_x + self.columns[prev_idx].width();
+                let dir = if target_right <= prev_col_x {
+                    grid::Direction::Right
+                } else if prev_right <= target_col_x {
+                    grid::Direction::Left
                 } else {
-                    idx.saturating_sub(1)
+                    return self.compute_new_view_offset_for_column_fit(target_x, idx);
+                };
+
+                let target_id = self.columns[idx].id;
+                let source_idx = self
+                    .grid
+                    .adjacent(&target_id, dir, None)
+                    .and_then(|id| self.columns.iter().position(|col| col.id == *id));
+                let Some(source_idx) = source_idx else {
+                    return self.compute_new_view_offset_for_column_fit(target_x, idx);
                 };
 
                 let source_col_x = self.column_x(source_idx);
-                let source_col_width = self.columns[source_idx].width();
-
-                let target_col_x = self.column_x(idx);
-                let target_col_width = self.columns[idx].width();
+                let source_right = source_col_x + self.columns[source_idx].width();
 
                 // NOTE: This logic won't work entirely correctly with small fixed-size maximized
                 // windows (they have a different area and padding).
-                let total_width = if source_col_x < target_col_x {
-                    // Source is left from target.
-                    target_col_x - source_col_x + target_col_width
-                } else {
-                    // Source is right from target.
-                    source_col_x - target_col_x + source_col_width
-                } + self.options.layout.gaps * 2.;
+                let total_width = f64::max(target_right, source_right)
+                    - f64::min(target_col_x, source_col_x)
+                    + self.options.layout.gaps * 2.;
 
                 // If it fits together, do a normal animation, otherwise center the new column.
                 if total_width <= self.working_area.size.w {
@@ -2506,46 +2528,39 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let working_x = self.working_area.loc.x;
         let working_w = self.working_area.size.w;
 
-        // Count all columns that are fully visible inside the working area.
-        let mut width_taken = 0.;
-        let mut leftmost_col_x = None;
-        let mut active_col_x = None;
-
+        // Find the span of all windows that are fully visible inside the working area. Windows
+        // can be stacked, so this is the span on the grid rather than their widths added up.
         let gap = self.options.layout.gaps;
+        let mut span: Option<(f64, f64)> = None;
+        let mut active_visible = false;
         let col_xs = self.column_xs(self.data.iter().copied());
-        for (idx, col_x) in col_xs.take(self.columns.len()).enumerate() {
-            if col_x < view_x + working_x + gap {
-                // Column goes off-screen to the left.
+        for (idx, (col_x, data)) in zip(col_xs, &self.data).enumerate() {
+            let right = col_x + data.width;
+            if col_x < view_x + working_x + gap || view_x + working_x + working_w < right + gap {
+                // Column goes off-screen.
                 continue;
             }
 
-            leftmost_col_x.get_or_insert(col_x);
-
-            let width = self.data[idx].width;
-            if view_x + working_x + working_w < col_x + width + gap {
-                // Column goes off-screen to the right. We can stop here.
-                break;
-            }
-
-            if idx == self.active_column_idx {
-                active_col_x = Some(col_x);
-            }
-
-            width_taken += width + gap;
+            active_visible |= idx == self.active_column_idx;
+            span = Some(span.map_or((col_x, right), |(left, r)| {
+                (f64::min(left, col_x), f64::max(r, right))
+            }));
         }
 
-        if active_col_x.is_none() {
+        if !active_visible {
             // The active column wasn't fully on screen, so we can't meaningfully do anything.
             return;
         }
+        let (left, right) = span.unwrap();
 
         let col = &mut self.columns[self.active_column_idx];
         cancel_resize_for_column(&mut self.interactive_resize, col);
 
-        let free_space = working_w - width_taken + gap;
-        let new_view_x = leftmost_col_x.unwrap() - free_space / 2. - working_x;
+        let free_space = working_w - (right - left);
+        let new_view_x = left - free_space / 2. - working_x;
 
-        self.animate_view_offset(self.active_column_idx, new_view_x - active_col_x.unwrap());
+        let active_col_x = self.column_x(self.active_column_idx);
+        self.animate_view_offset(self.active_column_idx, new_view_x - active_col_x);
         // Just in case.
         self.animate_view_offset_to_column(None, self.active_column_idx, None);
     }
