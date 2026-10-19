@@ -42,7 +42,7 @@ use niri_config::{
     Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
 };
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
-use scrolling::{Column, ColumnWidth};
+use scrolling::{Column, ColumnWidth, GridSpan};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
@@ -981,9 +981,6 @@ impl<W: LayoutElement> Layout<W> {
         is_floating: bool,
         activate: ActivateWindow,
     ) -> Option<&Output> {
-        let scrolling_height = height.map(SizeChange::from);
-        let id = window.id().clone();
-
         match &mut self.monitor_set {
             MonitorSet::Normal {
                 monitors,
@@ -1049,29 +1046,21 @@ impl<W: LayoutElement> Layout<W> {
                 let ws = &mon.workspaces[ws_idx];
                 let scrolling_width = ws.resolve_scrolling_width(&window, width);
 
+                // The default height goes on the tile so that it opens at its final size on the
+                // grid. It's for scrolling windows only.
+                let height = height.filter(|_| !is_floating);
                 mon.add_window(
                     window,
                     target,
                     activate,
                     scrolling_width,
+                    height,
                     is_full_width,
                     is_floating,
                 );
 
                 if activate.map_smart(|| false) {
                     *active_monitor_idx = mon_idx;
-                }
-
-                // Set the default height for scrolling windows.
-                if !is_floating {
-                    if let Some(change) = scrolling_height {
-                        let ws = mon
-                            .workspaces
-                            .iter_mut()
-                            .find(|ws| ws.has_window(&id))
-                            .unwrap();
-                        ws.set_window_height(Some(&id), change);
-                    }
                 }
 
                 Some(&mon.output)
@@ -1130,7 +1119,10 @@ impl<W: LayoutElement> Layout<W> {
 
                 let scrolling_width = ws.resolve_scrolling_width(&window, width);
 
-                let tile = ws.make_tile(window);
+                // The default height goes on the tile so that it opens at its final size on the
+                // grid. It's for scrolling windows only.
+                let mut tile = ws.make_tile(window);
+                tile.grid_size.rows = height.filter(|_| !is_floating).map(GridSpan::Preset);
                 ws.add_tile(
                     tile,
                     target,
@@ -1140,13 +1132,6 @@ impl<W: LayoutElement> Layout<W> {
                     is_floating,
                     None,
                 );
-
-                // Set the default height for scrolling windows.
-                if !is_floating {
-                    if let Some(change) = scrolling_height {
-                        ws.set_window_height(Some(&id), change);
-                    }
-                }
 
                 None
             }

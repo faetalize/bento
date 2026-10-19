@@ -118,6 +118,27 @@ pub struct ScrollingSpace<W: LayoutElement> {
     grid_drop_area: Option<(W::Id, Area)>,
 }
 
+/// Size of a tiled window on the grid, as the user or a window rule chose it.
+///
+/// Spans are resolved on the grid the window is on, so the size carries over to grids with
+/// different cells.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GridSize {
+    /// Width; `None` follows the column width.
+    pub cols: Option<GridSpan>,
+    /// Height; `None` takes the full height.
+    pub rows: Option<GridSpan>,
+}
+
+/// Number of cells a window spans along one axis of the grid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GridSpan {
+    /// `n` cells out of `of` cells across the view, as picked on a grid.
+    Cells { n: i32, of: i32 },
+    /// A preset size.
+    Preset(PresetSize),
+}
+
 /// Column to go back to when the column opened from it is removed.
 #[derive(Debug, Clone, Copy)]
 struct PrevColumn {
@@ -424,6 +445,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         // Cell size changes move every window, so keep the view on the active one.
         let active_x = (!self.columns.is_empty()).then(|| self.column_x(self.active_column_idx));
+        let prev_cols_per_view = self.cell_metrics.cols_per_view;
 
         for (column, data) in zip(&mut self.columns, &mut self.data) {
             column.update_config(view_size, working_area, parent_area, scale, options.clone());
@@ -436,6 +458,26 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.scale = scale;
         self.cell_metrics = compute_cell_metrics(working_area, &options);
         self.options = options;
+
+        // With different cells, windows resolve their sizes to different spans, like a
+        // proportional width with more cells across the view.
+        let spans: Vec<_> = self
+            .columns
+            .iter()
+            .map(|col| (col.id, self.grid_span_for(col)))
+            .collect();
+        let resized = spans.iter().any(|(id, (cols, rows))| {
+            self.grid
+                .area(id)
+                .is_some_and(|area| (area.cols, area.rows) != (*cols, *rows))
+        });
+        let cols_per_view = self.cell_metrics.cols_per_view;
+        if resized || cols_per_view != prev_cols_per_view {
+            let ratio = f64::from(cols_per_view) / f64::from(prev_cols_per_view);
+            self.grid.rescale(ratio, |id| {
+                spans.iter().find(|(other, _)| other == id).unwrap().1
+            });
+        }
 
         if self.grid.left_gravity() != self.options.layout.left_gravity {
             let prev_positions = self.grid_positions();
@@ -4191,18 +4233,64 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
     }
 
-    /// Grid size in (columns, rows) for a column that is being added.
-    fn grid_span_for(&self, column: &Column<W>) -> (i32, i32) {
-        if let Some(span) = column.grid_span {
-            return span;
+    /// Number of grid columns for a span.
+    fn grid_cols_for_span(&self, span: GridSpan) -> i32 {
+        match span {
+            GridSpan::Cells { n, of } => {
+                scale_span(n, of, self.cell_metrics.cols_per_view).clamp(1, grid::MAX_COLS)
+            }
+            GridSpan::Preset(preset) => self.grid_cols_for_preset(preset),
         }
+    }
 
-        let cols = if column.is_full_width {
+    /// Number of grid rows for a span.
+    fn grid_rows_for_span(&self, span: GridSpan) -> i32 {
+        let rows = self.cell_metrics.rows;
+        match span {
+            GridSpan::Cells { n, of } => scale_span(n, of, rows).clamp(1, rows),
+            GridSpan::Preset(preset) => self.grid_rows_for_preset(preset),
+        }
+    }
+
+    /// Grid size in (columns, rows) that a column should have, from the size of its window.
+    fn grid_span_for(&self, column: &Column<W>) -> (i32, i32) {
+        let size = column.tiles[0].grid_size;
+        self.grid_span_for_size(size, column.width, column.is_full_width)
+    }
+
+    /// Grid size in (columns, rows) for a window of `size` in a column of `width`.
+    fn grid_span_for_size(
+        &self,
+        size: GridSize,
+        width: ColumnWidth,
+        is_full_width: bool,
+    ) -> (i32, i32) {
+        let cols = if is_full_width {
             self.cell_metrics.cols_per_view
         } else {
-            self.grid_cols_for_width(column.width)
+            size.cols.map_or_else(
+                || self.grid_cols_for_width(width),
+                |span| self.grid_cols_for_span(span),
+            )
         };
-        (cols, self.cell_metrics.rows)
+        let rows = size
+            .rows
+            .map_or(self.cell_metrics.rows, |span| self.grid_rows_for_span(span));
+        (cols, rows)
+    }
+
+    /// Area of `cols` × `rows` cells nearest to a window with its top-left corner at `pos`,
+    /// relative to the view.
+    fn grid_area_at(&self, pos: Point<f64, Logical>, cols: i32, rows: i32) -> Area {
+        let m = &self.cell_metrics;
+
+        // Top-left corner of the window in strip coordinates.
+        let x = pos.x + self.view_pos();
+        let y = pos.y - self.working_area.loc.y - m.gap;
+
+        let col = (x / (m.cell_w + m.gap)).round() as i32;
+        let row = ((y / (m.cell_h + m.gap)).round() as i32).clamp(0, m.rows - rows);
+        Area::new(col, row, cols, rows)
     }
 
     /// Current position of every column, for animating grid changes.
@@ -4247,7 +4335,28 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             };
             let geometry = self.grid_geometry(area);
 
+            // The grid has the final say on sizes: if the window's size resolves to a different
+            // span, the user resized it, so remember the new size.
+            let (cols, rows) = self.grid_span_for(&self.columns[idx]);
+            let m = &self.cell_metrics;
+            let cols_span = (area.cols != cols).then_some(GridSpan::Cells {
+                n: area.cols,
+                of: m.cols_per_view,
+            });
+            let rows_span = (area.rows != rows).then_some(GridSpan::Cells {
+                n: area.rows,
+                of: m.rows,
+            });
+
             let col = &mut self.columns[idx];
+            if cols_span.is_some() {
+                col.is_full_width = false;
+                col.tiles[0].grid_size.cols = cols_span;
+            }
+            if rows_span.is_some() {
+                col.tiles[0].grid_size.rows = rows_span;
+            }
+
             col.set_grid_geometry(geometry, (area.cols, area.rows), animate);
             self.data[idx].update(col);
         }
@@ -4573,19 +4682,31 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             (((tile_size.w + m.gap) / (m.cell_w + m.gap)).round() as i32).clamp(1, grid::MAX_COLS);
         let rows = (((tile_size.h + m.gap) / (m.cell_h + m.gap)).round() as i32).clamp(1, m.rows);
 
-        // Top-left corner of the window in strip coordinates.
-        let x = pos.x - pointer_ratio.0 * tile_size.w + self.view_pos();
-        let y = pos.y - pointer_ratio.1 * tile_size.h - self.working_area.loc.y - m.gap;
-
-        let col = (x / (m.cell_w + m.gap)).round() as i32;
-        let row = ((y / (m.cell_h + m.gap)).round() as i32).clamp(0, m.rows - rows);
-        let area = Area::new(col, row, cols, rows);
+        let top_left = Point::from((
+            pos.x - pointer_ratio.0 * tile_size.w,
+            pos.y - pointer_ratio.1 * tile_size.h,
+        ));
+        let area = self.grid_area_at(top_left, cols, rows);
 
         // Show where the window will actually land, after pushing and gravity.
         let mut grid = self.grid.clone();
         let id = ColumnId::specific(u64::MAX);
         grid.insert(id, area);
         InsertPosition::Cell(grid.area(&id).unwrap())
+    }
+
+    /// Makes `tile`, when it's added next, go to the cells nearest to `pos`, its top-left corner
+    /// relative to the view, at the size it had on the grid.
+    pub fn set_grid_drop_pos(
+        &mut self,
+        tile: &Tile<W>,
+        pos: Point<f64, Logical>,
+        width: ColumnWidth,
+        is_full_width: bool,
+    ) {
+        let (cols, rows) = self.grid_span_for_size(tile.grid_size, width, is_full_width);
+        let area = self.grid_area_at(pos, cols, rows);
+        self.set_grid_drop_area(tile.window().id().clone(), area);
     }
 
     /// Makes `window` go to `area` on the grid when it's added next.
@@ -4634,10 +4755,19 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let m = &self.cell_metrics;
 
         let cols = match change {
-            SizeChange::SetFixed(width) => self.grid_cols_for_preset(PresetSize::Fixed(width)),
+            SizeChange::SetFixed(width) => {
+                // Like in niri, a fixed width is for the window, not counting its border.
+                let tile = &self.columns[idx].tiles[0];
+                let width = tile.tile_width_for_window_width(f64::from(width));
+                self.grid_cols_for_width(ColumnWidth::Fixed(width))
+            }
             SizeChange::SetProportion(percent) => m.cols_for_proportion(percent / 100.),
-            SizeChange::AdjustFixed(delta) => cols + delta.signum(),
-            SizeChange::AdjustProportion(delta) => cols + (delta.signum() as i32),
+            SizeChange::AdjustFixed(delta) => {
+                cols + cells_for_delta(f64::from(delta), m.cell_w + m.gap)
+            }
+            SizeChange::AdjustProportion(delta) => {
+                cols + cells_for_delta(delta / 100. * f64::from(m.cols_per_view), 1.)
+            }
         };
         self.resize_grid(window, Some(cols.max(1)), None);
     }
@@ -4650,10 +4780,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let m = &self.cell_metrics;
 
         let rows = match change {
-            SizeChange::SetFixed(height) => self.grid_rows_for_preset(PresetSize::Fixed(height)),
+            SizeChange::SetFixed(height) => {
+                // Like in niri, a fixed height is for the window, not counting its border.
+                let tile = &self.columns[idx].tiles[0];
+                let height = tile.tile_height_for_window_height(f64::from(height));
+                let rows = (height + m.gap) / (m.cell_h + m.gap);
+                (rows.round() as i32).clamp(1, m.rows)
+            }
             SizeChange::SetProportion(percent) => m.rows_for_proportion(percent / 100.),
-            SizeChange::AdjustFixed(delta) => rows + delta.signum(),
-            SizeChange::AdjustProportion(delta) => rows + (delta.signum() as i32),
+            SizeChange::AdjustFixed(delta) => {
+                rows + cells_for_delta(f64::from(delta), m.cell_h + m.gap)
+            }
+            SizeChange::AdjustProportion(delta) => {
+                rows + cells_for_delta(delta / 100. * f64::from(m.rows), 1.)
+            }
         };
         self.resize_grid(window, None, Some(rows.clamp(1, m.rows)));
     }
@@ -4680,20 +4820,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.resize_grid(window, None, Some(rows));
     }
 
+    /// Toggles a window between the full view width and the width it had before.
     fn toggle_grid_full_width(&mut self) {
         let Some(idx) = self.grid_column_idx(None) else {
             return;
         };
-        let cols = self.grid.area(&self.columns[idx].id).unwrap().cols;
-        let full = self.cell_metrics.cols_per_view;
 
-        let cols = if cols == full {
-            let default = self.options.layout.default_column_width;
-            default.map_or(full / 2, |preset| self.grid_cols_for_preset(preset))
-        } else {
-            full
-        };
-        self.resize_grid(None, Some(cols.max(1)), None);
+        // The window keeps its own width while full-width, so it comes back to it.
+        let col = &mut self.columns[idx];
+        col.is_full_width = !col.is_full_width;
+        let (cols, _) = self.grid_span_for(&self.columns[idx]);
+        self.resize_grid(None, Some(cols), None);
     }
 
     #[cfg(test)]
@@ -4724,6 +4861,26 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             assert_eq!(col.grid_geometry, Some(self.grid_geometry(area)));
         }
     }
+}
+
+/// Number of cells to grow or shrink by for `amount`, where a cell takes up `cell`.
+///
+/// Rounds to the nearest cell, but a nonzero amount changes the size by at least one cell.
+fn cells_for_delta(amount: f64, cell: f64) -> i32 {
+    let cells = (amount / cell).round() as i32;
+    if cells == 0 && amount != 0. {
+        amount.signum() as i32
+    } else {
+        cells
+    }
+}
+
+/// Scales a span of `n` cells out of `of` to a view `total` cells across.
+fn scale_span(n: i32, of: i32, total: i32) -> i32 {
+    if of == total || of <= 0 {
+        return n;
+    }
+    (f64::from(n) * f64::from(total) / f64::from(of)).round() as i32
 }
 
 /// Next span when cycling through presets: the smallest one larger than `current` going

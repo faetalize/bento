@@ -214,6 +214,37 @@ impl<K: Clone + PartialEq> Grid<K> {
         self.insert(id, area);
     }
 
+    /// Resizes every window to its span from `span`, and scales column positions by `ratio`,
+    /// for a grid with different cells.
+    ///
+    /// Windows keep their order and rows; ones that would overlap the windows before them move
+    /// right.
+    pub fn rescale(&mut self, ratio: f64, mut span: impl FnMut(&K) -> (i32, i32)) {
+        for i in 0..self.items.len() {
+            let (cols, rows) = span(&self.items[i].0);
+            let area = self.items[i].1;
+            let col = (f64::from(area.col) * ratio).round() as i32;
+            self.items[i].1 = self.clamp_area(Area::new(col, area.row, cols, rows));
+        }
+
+        // Going left to right, every window before the current one is already in its final
+        // place.
+        let mut order: Vec<usize> = (0..self.items.len()).collect();
+        order.sort_by_key(|&i| (self.items[i].1.col, self.items[i].1.row));
+        for (n, &i) in order.iter().enumerate() {
+            let area = self.items[i].1;
+            let col = order[..n]
+                .iter()
+                .map(|&j| self.items[j].1)
+                .filter(|b| b.row < area.bottom() && area.row < b.bottom())
+                .map(|b| b.right())
+                .fold(area.col, i32::max);
+            self.items[i].1.col = col;
+        }
+
+        self.normalize();
+    }
+
     /// Removes a window, leaving its cells empty.
     pub fn remove(&mut self, id: &K) -> Option<Area> {
         let idx = self.idx(id)?;

@@ -737,3 +737,134 @@ fn center_on_overflow_compares_with_the_window_beside() {
     731 × 688 at x:1022 y: 16
     ");
 }
+
+#[test]
+fn moving_a_resized_window_to_another_workspace_keeps_its_size() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowWidth {
+            id: Some(1),
+            change: SizeChange::SetProportion(33.),
+        },
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: SizeChange::SetProportion(50.),
+        },
+        Op::MoveWindowToWorkspaceDown(true),
+    ];
+    ops.extend(settle());
+    let layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    386 × 336 at x:  16 y: 16
+    ");
+}
+
+#[test]
+fn toggling_full_width_restores_the_previous_width() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowWidth {
+            id: Some(1),
+            change: SizeChange::SetProportion(33.),
+        },
+        Op::MaximizeColumn,
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    1248 × 688 at x:  16 y: 16
+    ");
+
+    let mut ops = vec![Op::MaximizeColumn];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    386 × 688 at x:  16 y: 16
+    ");
+}
+
+#[test]
+fn adjusting_width_goes_by_the_requested_amount() {
+    // 10% of 22 columns is 2 columns.
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowWidth {
+            id: Some(1),
+            change: SizeChange::AdjustProportion(10.),
+        },
+    ];
+    ops.extend(settle());
+    let layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    214 × 688 at x:  16 y: 16
+    ");
+}
+
+#[test]
+fn floating_and_tiling_again_keeps_the_size_and_place() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::SetWindowWidth {
+            id: Some(2),
+            change: SizeChange::SetProportion(33.),
+        },
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: SizeChange::SetProportion(50.),
+        },
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+     99 × 688 at x:  16 y: 16
+    386 × 336 at x: 131 y: 16
+    ");
+
+    let mut ops = vec![
+        Op::ToggleWindowFloating { id: Some(2) },
+        Op::ToggleWindowFloating { id: Some(2) },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+     99 × 688 at x:  16 y: 16
+    386 × 336 at x: 131 y: 16
+    ");
+}
+
+#[test]
+fn default_window_height_opens_next_to_the_active_window() {
+    // Window 1 in the bottom half.
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: SizeChange::SetProportion(50.),
+        },
+    ];
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // Window 2 opens half height, lined up with window 1.
+    layout.add_window(
+        TestWindow::new(TestWindowParams::new(2)),
+        AddWindowTarget::Auto,
+        None,
+        Some(PresetSize::Proportion(0.5)),
+        false,
+        false,
+        ActivateWindow::default(),
+    );
+    check_ops_on_layout(&mut layout, settle());
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y:368
+    99 × 336 at x: 131 y:368
+    ");
+}

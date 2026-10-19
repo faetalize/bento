@@ -3,7 +3,7 @@ use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
 
-use niri_config::{CornerRadius, LayoutPart};
+use niri_config::{CornerRadius, LayoutPart, PresetSize};
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
@@ -12,7 +12,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::grid::Area;
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
-use super::scrolling::{Column, ColumnWidth};
+use super::scrolling::{Column, ColumnWidth, GridSpan};
 use super::tile::Tile;
 use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
@@ -528,12 +528,14 @@ impl<W: LayoutElement> Monitor<W> {
         target: MonitorAddWindowTarget<W>,
         activate: ActivateWindow,
         width: ColumnWidth,
+        height: Option<PresetSize>,
         is_full_width: bool,
         is_floating: bool,
     ) {
         // Currently, everything a workspace sets on a Tile is the same across all workspaces of a
         // monitor. So we can use any workspace, not necessarily the exact target workspace.
-        let tile = self.workspaces[0].make_tile(window);
+        let mut tile = self.workspaces[0].make_tile(window);
+        tile.grid_size.rows = height.map(GridSpan::Preset);
 
         self.add_tile(
             tile,

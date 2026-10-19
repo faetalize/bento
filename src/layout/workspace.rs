@@ -1430,7 +1430,15 @@ impl<W: LayoutElement> Workspace<W> {
 
         if self.floating.has_window(&id) {
             let removed = self.floating.remove_tile(&id);
-            // FIXME: compute closest pos?
+
+            // Tile it in the cells under where it was floating, at its size from the last time
+            // it was tiled.
+            self.scrolling.set_grid_drop_pos(
+                &removed.tile,
+                render_pos,
+                removed.width,
+                removed.is_full_width,
+            );
             self.scrolling.add_tile(
                 None,
                 removed.tile,

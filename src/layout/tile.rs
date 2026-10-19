@@ -10,6 +10,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
 use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
+use super::scrolling::GridSize;
 use super::shadow::Shadow;
 use super::{
     HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
@@ -77,6 +78,12 @@ pub struct Tile<W: LayoutElement> {
 
     /// Currently selected preset width index when this tile is floating.
     pub(super) floating_preset_width_idx: Option<usize>,
+
+    /// Size of the tile on the grid when it's tiled.
+    ///
+    /// Kept on the tile so that it carries over to other workspaces and monitors, and back from
+    /// floating.
+    pub(super) grid_size: GridSize,
 
     /// Currently selected preset height index when this tile is floating.
     pub(super) floating_preset_height_idx: Option<usize>,
@@ -204,6 +211,7 @@ impl<W: LayoutElement> Tile<W> {
             floating_pos: None,
             floating_preset_width_idx: None,
             floating_preset_height_idx: None,
+            grid_size: GridSize::default(),
             open_animation: None,
             resize_animation: None,
             move_x_animation: None,
