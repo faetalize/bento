@@ -363,3 +363,118 @@ fn dropping_a_window_into_a_cell() {
     99 × 336 at x: 131 y:368
     ");
 }
+
+#[test]
+fn dragging_the_bottom_window_of_a_stack_keeps_the_view_still() {
+    // Window 2 under window 1, focused.
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: SizeChange::SetProportion(50.),
+        },
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: SizeChange::SetProportion(50.),
+        },
+    ];
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.push(Op::MoveColumnLeft);
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_eq!(focused_id(&layout), 2);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x:  16 y:368
+    ");
+
+    // Drag window 2 far enough to lift it out of the layout.
+    let start: Point<f64, Logical> = Point::from((0., 0.));
+    let ops = [
+        Op::InteractiveMoveBegin {
+            window: 2,
+            output_idx: 1,
+            px: start.x,
+            py: start.y,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 2,
+            dx: 300.,
+            dy: 0.,
+            output_idx: 1,
+            px: start.x + 300.,
+            py: start.y,
+        },
+    ];
+    check_ops_on_layout(&mut layout, ops);
+
+    // Window 1 hasn't jumped.
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    ");
+}
+
+#[test]
+fn dragging_a_window_that_fell_left_keeps_the_view_still() {
+    // Windows 1 and 2 on the top half, then window 3 opens right of window 2, and falls under
+    // window 1 when moved to the bottom half.
+    let half = || SizeChange::SetProportion(50.);
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: half(),
+        },
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: half(),
+        },
+    ];
+    ops.extend(settle());
+    ops.extend([
+        add_window(3),
+        Op::SetWindowHeight {
+            id: Some(3),
+            change: half(),
+        },
+    ]);
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_eq!(focused_id(&layout), 3);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x: 131 y: 16
+    99 × 336 at x:  16 y:368
+    ");
+
+    // Drag window 3 far enough to lift it out of the layout.
+    let mut ops = vec![
+        Op::InteractiveMoveBegin {
+            window: 3,
+            output_idx: 1,
+            px: 0.,
+            py: 0.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 3,
+            dx: 300.,
+            dy: 0.,
+            output_idx: 1,
+            px: 300.,
+            py: 0.,
+        },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+
+    // Windows 1 and 2 stay where they were.
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x: 131 y: 16
+    ");
+}

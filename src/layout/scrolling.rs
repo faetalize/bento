@@ -1314,6 +1314,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         anim_config: Option<niri_config::Animation>,
     ) -> Column<W> {
         let prev_positions = self.grid_positions();
+        let prev_view_pos = self.view_pos();
 
         let column = self.columns.remove(column_idx);
         self.data.remove(column_idx);
@@ -1322,6 +1323,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         // This keeps the order of the remaining columns, so the index logic below still holds.
         self.grid.remove(&column.id);
         self.sync_grid(Some(prev_positions), anim_config);
+
+        // The view offset is relative to the active column, and the index of the removed active
+        // column now points at the next column, or one past the end of the grid. Unlike niri's
+        // strip, that isn't where the removed column was (say, it was at the bottom of a stack),
+        // so keep the view still and let activating a column below animate it.
+        if column_idx == self.active_column_idx {
+            self.view_offset.offset(prev_view_pos - self.view_pos());
+        }
 
         // Stop interactive resize.
         if let Some(resize) = &self.interactive_resize {
@@ -4194,6 +4203,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         anim_config: Option<niri_config::Animation>,
     ) {
         let active_id = self.columns.get(self.active_column_idx).map(|col| col.id);
+        let prev_id = |this: &Self| {
+            this.active_column_idx
+                .checked_sub(1)
+                .and_then(|idx| this.columns.get(idx))
+                .map(|col| col.id)
+        };
+        let prev_id_before = prev_id(self);
 
         // Sort top-left first. This keeps column X non-decreasing with the index, which the
         // view code relies on.
@@ -4210,6 +4226,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         if let Some(id) = active_id {
             self.active_column_idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        }
+
+        // The view offset to restore on removal belongs to the column before the active one.
+        // Windows falling into place can put a different column there, and restoring the offset
+        // on that one would throw the view off.
+        if prev_id(self) != prev_id_before {
+            self.activate_prev_column_on_removal = None;
         }
 
         let animate = prev_positions.is_some();
