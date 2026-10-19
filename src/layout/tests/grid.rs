@@ -982,3 +982,21 @@ fn fullscreen_pushes_windows_aside_until_it_ends() {
     99 × 336 at x: 131 y:368
     ");
 }
+
+#[test]
+fn expanding_fills_the_free_cells_in_view() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::ExpandColumnToAvailableWidth,
+    ];
+    ops.extend(settle());
+    let layout = check_ops(ops);
+
+    // Window 2 grows up to the right edge of the view, and window 1 stays as is.
+    assert_snapshot!(format_tiles(&layout), @"
+      99 × 688 at x:  16 y: 16
+    1133 × 688 at x: 131 y: 16
+    ");
+}

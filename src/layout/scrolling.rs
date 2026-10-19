@@ -3227,6 +3227,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn expand_column_to_available_width(&mut self) {
         if GRID_LAYOUT {
+            self.expand_grid_to_available_width();
             return;
         }
 
@@ -4604,6 +4605,68 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.grid.set_area(&id, new_area, grid::Direction::Right);
         let shift = self.grid_shift_left_of(&before, area.col);
         self.sync_grid_keeping_view(prev_positions, shift, None);
+    }
+
+    /// Grows the active window into the empty cells beside it in its rows, right and left, up to
+    /// the next window or the edge of the view, without pushing anything.
+    fn expand_grid_to_available_width(&mut self) {
+        let Some(col) = self.columns.get(self.active_column_idx) else {
+            return;
+        };
+        if !col.pending_sizing_mode().is_normal() || col.is_full_width {
+            return;
+        }
+        let id = col.id;
+        let area = self.grid.area(&id).unwrap();
+
+        // Columns of cells fully inside the working area, once the view gets where it's going.
+        let m = &self.cell_metrics;
+        let step = m.cell_w + m.gap;
+        let view_left = self.target_view_pos() + self.working_area.loc.x;
+        let view_right = view_left + self.working_area.size.w;
+        let first_visible = (view_left / step).ceil() as i32;
+        let end_visible = ((view_right - m.cell_w) / step).floor() as i32 + 1;
+
+        // Edges of the nearest windows on either side in the same rows.
+        let in_rows = |b: &Area| b.row < area.bottom() && area.row < b.bottom();
+        let others = || {
+            self.grid
+                .iter()
+                .filter(|(other, b)| **other != id && in_rows(b))
+        };
+        let right_limit = others()
+            .map(|(_, b)| b.col)
+            .filter(|col| *col >= area.right())
+            .min()
+            .unwrap_or(i32::MAX);
+        let left_limit = others()
+            .map(|(_, b)| b.right())
+            .filter(|right| *right <= area.col)
+            .max()
+            .unwrap_or(0);
+
+        let left = area.col.min(left_limit.max(first_visible));
+        let right = area.right().max(right_limit.min(end_visible));
+        let new_area = Area {
+            col: left,
+            cols: right - left,
+            ..area
+        };
+        if new_area == area {
+            return;
+        }
+
+        let col = &mut self.columns[self.active_column_idx];
+        cancel_resize_for_column(&mut self.interactive_resize, col);
+
+        let before = self.grid.clone();
+        let prev_positions = self.grid_positions();
+        self.grid.set_area(&id, new_area, grid::Direction::Right);
+        let shift = self.grid_shift_left_of(&before, area.col);
+        self.sync_grid_keeping_view(prev_positions, shift, None);
+        if !self.view_offset.is_gesture() {
+            self.animate_view_offset_to_column(None, self.active_column_idx, None);
+        }
     }
 
     /// Moves the active window to where `target` is on the grid.
