@@ -509,51 +509,93 @@ impl<K: Clone + PartialEq> Grid<K> {
     /// Windows in `pinned` never move, and must not overlap each other. A window pushed off the
     /// top or bottom goes to the right of the window that pushed it instead, keeping its rows.
     fn settle(&mut self, pinned: &[usize], dir: Direction) {
-        let n = self.items.len();
-        let is_pinned = |i: usize| pinned.contains(&i);
-        let mut moved = vec![false; n];
-        for &i in pinned {
-            moved[i] = true;
+        if self.sweep(pinned, dir) {
+            // Make room for the windows that went to the right.
+            self.sweep(pinned, Direction::Right);
         }
+    }
 
-        // Every push moves a window strictly further along `dir` (counting a push off the top or
-        // bottom as a move right), and positions are bounded, so this terminates. The cap is a
-        // safety net.
-        let max_steps = 64 + n * n * (self.rows as usize + 1) * 4;
-        for _ in 0..max_steps {
-            // Among all overlaps involving a window that has moved, resolve the one whose pusher
-            // comes first along `dir`, so pushes propagate outwards in order.
-            let mut best: Option<((bool, i32, usize), usize, usize)> = None;
-            for a in (0..n).filter(|&a| moved[a]) {
-                let area = self.items[a].1;
-                for b in (0..n).filter(|&b| b != a && area.overlaps(&self.items[b].1)) {
-                    // Pinned windows push; otherwise an unmoved window gets pushed; otherwise
-                    // the one further along `dir` does.
-                    let b_ahead = (self.along(b, dir), b) > (self.along(a, dir), a);
-                    let (pusher, pushed) = if is_pinned(b) {
-                        (b, a)
-                    } else if is_pinned(a) || !moved[b] || b_ahead {
-                        (a, b)
-                    } else {
-                        (b, a)
-                    };
-                    debug_assert!(!is_pinned(pushed), "pinned windows must not overlap");
+    /// Pushes windows in `dir` so that none overlap, keeping their order along `dir`.
+    ///
+    /// Going through the windows in order along `dir`, each one moves only as far as it has to
+    /// to clear the windows before it that share rows (or columns, going up or down) with it, and
+    /// any pinned window. So a window pushes the next one, which pushes the one after it.
+    ///
+    /// Returns whether a window was pushed off the top or bottom and went right instead.
+    fn sweep(&mut self, pinned: &[usize], dir: Direction) -> bool {
+        let is_pinned = |i: usize| pinned.contains(&i);
+        let mut order: Vec<usize> = (0..self.items.len()).filter(|&i| !is_pinned(i)).collect();
+        order.sort_by_key(|&i| (self.along(i, dir), self.items[i].1.cross_span(dir).0, i));
 
-                    let key = (!is_pinned(pusher), self.along(pusher, dir), pusher);
-                    if best.is_none_or(|(best_key, _, _)| key < best_key) {
-                        best = Some((key, pusher, pushed));
-                    }
+        let shares_lines = |a: &Area, b: &Area| {
+            let ((s1, e1), (s2, e2)) = (a.cross_span(dir), b.cross_span(dir));
+            s1 < e2 && s2 < e1
+        };
+        // Whether `a` reaches past where `b` ends along `dir`, and so has to move.
+        let behind = |a: &Area, b: &Area| match dir {
+            Direction::Right => a.col < b.right(),
+            Direction::Left => a.right() > b.col,
+            Direction::Down => a.row < b.bottom(),
+            Direction::Up => a.bottom() > b.row,
+        };
+        // `a` moved just past `b` along `dir`.
+        let past = |a: Area, b: &Area| match dir {
+            Direction::Right => Area {
+                col: b.right(),
+                ..a
+            },
+            Direction::Left => Area {
+                col: b.col - a.cols,
+                ..a
+            },
+            Direction::Down => Area {
+                row: b.bottom(),
+                ..a
+            },
+            Direction::Up => Area {
+                row: b.row - a.rows,
+                ..a
+            },
+        };
+
+        let mut placed: Vec<usize> = Vec::new();
+        let mut went_right = false;
+        for i in order {
+            let orig = self.items[i].1;
+            let mut area = orig;
+            let mut pusher = None;
+
+            // Stay after the windows that came before in these rows or columns. They only ever
+            // moved further along `dir`, so this keeps the order.
+            for &j in &placed {
+                let b = self.items[j].1;
+                if shares_lines(&area, &b) && behind(&area, &b) {
+                    area = past(area, &b);
+                    pusher = Some(j);
                 }
             }
 
-            let Some((_, pusher, pushed)) = best else {
-                return;
-            };
-            self.push(pusher, pushed, dir);
-            moved[pushed] = true;
-        }
+            // Clear the pinned windows, which can be anywhere.
+            while let Some(&j) = pinned.iter().find(|&&j| area.overlaps(&self.items[j].1)) {
+                area = past(area, &self.items[j].1);
+                pusher = Some(j);
+            }
 
-        debug_assert!(false, "grid settle did not converge");
+            if area.row < 0 || area.bottom() > self.rows {
+                // Pushed off the top or bottom: go right of the pusher instead, in the same rows.
+                let pusher = self.items[pusher.unwrap()].1;
+                self.items[i].1 = Area {
+                    col: pusher.right(),
+                    ..orig
+                };
+                went_right = true;
+                continue;
+            }
+
+            self.items[i].1 = area;
+            placed.push(i);
+        }
+        went_right
     }
 
     /// Position of a window along `dir`; larger means further in that direction.
@@ -565,31 +607,6 @@ impl<K: Clone + PartialEq> Grid<K> {
             Direction::Down => a.row,
             Direction::Up => -a.bottom(),
         }
-    }
-
-    /// Moves `pushed` just past `pusher` in `dir`.
-    fn push(&mut self, pusher: usize, pushed: usize, dir: Direction) {
-        let p = self.items[pusher].1;
-        let mut q = self.items[pushed].1;
-        match dir {
-            Direction::Right => q.col = p.right(),
-            Direction::Left => q.col = p.col - q.cols,
-            Direction::Down => {
-                if p.bottom() + q.rows <= self.rows {
-                    q.row = p.bottom();
-                } else {
-                    q.col = p.right();
-                }
-            }
-            Direction::Up => {
-                if p.row - q.rows >= 0 {
-                    q.row = p.row - q.rows;
-                } else {
-                    q.col = p.right();
-                }
-            }
-        }
-        self.items[pushed].1 = q;
     }
 
     /// Collapses columns that no window covers between windows, moving the windows right of them
@@ -1072,6 +1089,26 @@ mod tests {
 
         // Moving 3 right swaps nothing either, and it slides back.
         assert!(!g.move_window(&3, Direction::Right));
+    }
+
+    #[test]
+    fn pushes_keep_windows_in_order() {
+        // 5 | 6 | 2, with 2 full height, and 3 | 4 at the bottom. 2 comes first in the grid's
+        // own order, so that order can't decide who goes first.
+        let mut g = gravity_grid(&[
+            (2, Area::new(12, 0, 8, R)),
+            (3, Area::new(0, 8, 5, 4)),
+            (4, Area::new(5, 8, 7, 4)),
+            (5, Area::new(0, 0, 8, 5)),
+            (6, Area::new(8, 0, 4, 5)),
+        ]);
+
+        // 7 lands where 6 is, and is wide enough to reach into 2. It pushes 6, which pushes 2.
+        g.insert(7, Area::new(8, 1, 12, 3));
+        g.verify_invariants();
+        assert_eq!(area(&g, 7), Area::new(8, 1, 12, 3));
+        assert_eq!(area(&g, 6), Area::new(20, 0, 4, 5));
+        assert_eq!(area(&g, 2), Area::new(24, 0, 8, R));
     }
 
     #[test]
