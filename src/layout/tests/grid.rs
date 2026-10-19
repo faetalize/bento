@@ -1051,3 +1051,87 @@ fn consuming_into_column_brings_the_window_on_the_right_under() {
     99 × 336 at x:  16 y:368
     ");
 }
+
+/// Windows 1 and 2 stacked on the left, window 3 on the right.
+fn set_up_stack_of_two() -> Vec<Op> {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+        Op::FocusWindow(2),
+        Op::ConsumeOrExpelWindowLeft { id: None },
+    ];
+    ops.extend(settle());
+    ops
+}
+
+#[test]
+fn tabbing_gathers_the_stack_and_untabbing_splits_it() {
+    let mut ops = set_up_stack_of_two();
+    ops.extend([Op::FocusWindow(1), Op::ToggleColumnTabbedDisplay]);
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // Windows 1 and 2 are tabs in the area they shared, with window 1 in front.
+    assert_eq!(focused_id(&layout), 1);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 688 at x:  16 y: 16
+    99 × 688 at x: 131 y: 16
+    ");
+
+    // Focusing down goes to the next tab.
+    check_ops_on_layout(&mut layout, [Op::FocusWindowDown]);
+    assert_eq!(focused_id(&layout), 2);
+
+    let mut ops = vec![Op::ToggleColumnTabbedDisplay];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_eq!(focused_id(&layout), 2);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x:  16 y:368
+    99 × 688 at x: 131 y: 16
+    ");
+}
+
+#[test]
+fn consuming_into_tabs_adds_a_tab_and_expelling_takes_it_out() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::FocusWindow(1),
+        Op::ToggleColumnTabbedDisplay,
+        Op::FocusWindow(2),
+        Op::ConsumeOrExpelWindowLeft { id: None },
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // Window 2 is a second tab in window 1's area.
+    assert_eq!(focused_id(&layout), 2);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 688 at x:  16 y: 16
+    ");
+
+    let ws = layout.active_workspace().unwrap();
+    let mut positions: Vec<_> = ws
+        .scrolling()
+        .tiles_with_ipc_layouts()
+        .map(|(tile, layout)| (tile.window().0.id, layout.pos_in_scrolling_layout.unwrap()))
+        .collect();
+    positions.sort();
+    assert_eq!(positions, [(1, (1, 1)), (2, (1, 2))]);
+
+    let mut ops = vec![Op::ConsumeOrExpelWindowRight { id: None }];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_eq!(focused_id(&layout), 2);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 688 at x: 131 y: 16
+    ");
+}

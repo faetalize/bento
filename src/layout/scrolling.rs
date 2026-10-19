@@ -630,8 +630,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let display_mode = rules
             .default_column_display
             .unwrap_or(self.options.layout.default_column_display);
-        // There are no tabs on the grid.
-        let will_tab = !GRID_LAYOUT && display_mode == ColumnDisplay::Tabbed;
+        let will_tab = display_mode == ColumnDisplay::Tabbed;
         let extra_size = if will_tab {
             TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
         } else {
@@ -669,13 +668,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let borders = if border.off { 0. } else { border.width * 2. };
             let width = width.map_or(0, |preset| {
                 let cols = self.grid_cols_for_preset(preset);
-                let w = self.grid_geometry(Area::new(0, 0, cols, 1)).size.w - borders;
+                let w = self.grid_geometry(Area::new(0, 0, cols, 1)).size.w - borders - extra.w;
                 max(1, w.floor() as i32)
             });
             let rows = height.map_or(self.cell_metrics.rows, |preset| {
                 self.grid_rows_for_preset(preset)
             });
-            let h = self.grid_geometry(Area::new(0, 0, 1, rows)).size.h - borders;
+            let h = self.grid_geometry(Area::new(0, 0, 1, rows)).size.h - borders - extra.h;
             return Size::from((width, max(h.floor() as i32, 1)));
         }
 
@@ -1197,11 +1196,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         });
 
-        // Every window is its own column on the grid, so there are no tabs.
-        if GRID_LAYOUT {
-            column.display_mode = ColumnDisplay::Normal;
-        }
-
         column.update_config(
             self.view_size,
             self.working_area,
@@ -1374,14 +1368,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.data[column_idx].update(column);
         let offset = prev_width - column.width();
 
-        // Animate movement of the other columns.
-        if self.active_column_idx <= column_idx {
-            for col in &mut self.columns[column_idx + 1..] {
-                col.animate_move_x_from_with_config(offset, movement_config);
-            }
-        } else {
-            for col in &mut self.columns[..=column_idx] {
-                col.animate_move_x_from_with_config(-offset, movement_config);
+        // Animate movement of the other columns. On the grid, a column keeps its area when a tab
+        // leaves it, so nothing else moves.
+        if !GRID_LAYOUT {
+            if self.active_column_idx <= column_idx {
+                for col in &mut self.columns[column_idx + 1..] {
+                    col.animate_move_x_from_with_config(offset, movement_config);
+                }
+            } else {
+                for col in &mut self.columns[..=column_idx] {
+                    col.animate_move_x_from_with_config(-offset, movement_config);
+                }
             }
         }
 
@@ -1860,7 +1857,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn focus_down(&mut self) -> bool {
         if GRID_LAYOUT {
-            return self.focus_grid(grid::Direction::Down);
+            return self.focus_grid_tab(true) || self.focus_grid(grid::Direction::Down);
         }
 
         if self.columns.is_empty() {
@@ -1872,7 +1869,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn focus_up(&mut self) -> bool {
         if GRID_LAYOUT {
-            return self.focus_grid(grid::Direction::Up);
+            return self.focus_grid_tab(false) || self.focus_grid(grid::Direction::Up);
         }
 
         if self.columns.is_empty() {
@@ -1888,7 +1885,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     /// For actions that do something else when there's no window below.
     pub fn focus_down_adjacent(&mut self) -> bool {
         if GRID_LAYOUT {
-            return self.focus_grid_in(grid::Direction::Down, true);
+            return self.focus_grid_tab(true) || self.focus_grid_in(grid::Direction::Down, true);
         }
 
         self.focus_down()
@@ -1900,7 +1897,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     /// For actions that do something else when there's no window above.
     pub fn focus_up_adjacent(&mut self) -> bool {
         if GRID_LAYOUT {
-            return self.focus_grid_in(grid::Direction::Up, true);
+            return self.focus_grid_tab(false) || self.focus_grid_in(grid::Direction::Up, true);
         }
 
         self.focus_up()
@@ -2107,6 +2104,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn move_down(&mut self) -> bool {
         if GRID_LAYOUT {
+            // Tabs reorder within their area, like tiles within a column.
+            if let Some(col) = self.columns.get_mut(self.active_column_idx) {
+                if col.display_mode == ColumnDisplay::Tabbed && col.tiles.len() > 1 {
+                    return col.move_down();
+                }
+            }
             return self.move_grid(grid::Direction::Down);
         }
 
@@ -2119,6 +2122,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn move_up(&mut self) -> bool {
         if GRID_LAYOUT {
+            // Tabs reorder within their area, like tiles within a column.
+            if let Some(col) = self.columns.get_mut(self.active_column_idx) {
+                if col.display_mode == ColumnDisplay::Tabbed && col.tiles.len() > 1 {
+                    return col.move_up();
+                }
+            }
             return self.move_grid(grid::Direction::Up);
         }
 
@@ -2387,7 +2396,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         if GRID_LAYOUT {
             if let Some(col) = self.columns.get(self.active_column_idx) {
                 let id = col.id;
-                self.change_grid(|this| this.expel_grid(id, grid::Direction::Right));
+                let tile_idx = col.active_tile_idx;
+                if col.tiles.len() > 1 {
+                    self.change_grid(|this| {
+                        this.expel_grid_tab(id, tile_idx, grid::Direction::Right)
+                    });
+                } else {
+                    self.change_grid(|this| this.expel_grid(id, grid::Direction::Right));
+                }
             }
             return;
         }
@@ -2567,6 +2583,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn toggle_column_tabbed_display(&mut self) {
         if GRID_LAYOUT {
+            let Some(col) = self.columns.get(self.active_column_idx) else {
+                return;
+            };
+            let display = match col.display_mode {
+                ColumnDisplay::Normal => ColumnDisplay::Tabbed,
+                ColumnDisplay::Tabbed => ColumnDisplay::Normal,
+            };
+            self.set_grid_display(display);
             return;
         }
 
@@ -2585,6 +2609,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn set_column_display(&mut self, display: ColumnDisplay) {
         if GRID_LAYOUT {
+            self.set_grid_display(display);
             return;
         }
 
@@ -2863,32 +2888,35 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {
         // On the grid, a window's column is where it starts among the grid's columns, and its
-        // place in it is from the top among the windows covering that column of cells, matching
-        // the column and in-column actions.
+        // place in it is from the top among the windows and tabs covering that column of cells,
+        // matching the column and in-column actions.
         let starts = self.grid.column_starts();
-        let grid_pos = move |col: &Column<W>| {
+        let grid_pos = |col: &Column<W>, tile_idx: usize| {
             let area = self.grid.area(&col.id)?;
             let col_idx = starts.iter().position(|start| *start == area.col)?;
-            let stack = self.grid.stack(area.col);
-            let tile_idx = stack.iter().position(|id| **id == col.id)?;
+            let stack = self.grid_stack_tiles(area.col);
+            let tile_idx = stack.iter().position(|pos| *pos == (col.id, tile_idx))?;
             Some((col_idx, tile_idx))
         };
 
-        self.columns
-            .iter()
-            .enumerate()
-            .flat_map(move |(col_idx, col)| {
-                let grid_pos = if GRID_LAYOUT { grid_pos(col) } else { None };
-                col.tiles().enumerate().map(move |(tile_idx, (tile, _))| {
-                    let (col_idx, tile_idx) = grid_pos.unwrap_or((col_idx, tile_idx));
-                    let layout = WindowLayout {
-                        // Our indices are 1-based, consistent with the actions.
-                        pos_in_scrolling_layout: Some((col_idx + 1, tile_idx + 1)),
-                        ..tile.ipc_layout_template()
-                    };
-                    (tile, layout)
-                })
-            })
+        let mut layouts = Vec::new();
+        for (col_idx, col) in self.columns.iter().enumerate() {
+            for (tile_idx, (tile, _)) in col.tiles().enumerate() {
+                let grid_pos = if GRID_LAYOUT {
+                    grid_pos(col, tile_idx)
+                } else {
+                    None
+                };
+                let (col_idx, tile_idx) = grid_pos.unwrap_or((col_idx, tile_idx));
+                let layout = WindowLayout {
+                    // Our indices are 1-based, consistent with the actions.
+                    pos_in_scrolling_layout: Some((col_idx + 1, tile_idx + 1)),
+                    ..tile.ipc_layout_template()
+                };
+                layouts.push((tile, layout));
+            }
+        }
+        layouts.into_iter()
     }
 
     pub(super) fn insert_hint_area(
@@ -4497,6 +4525,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 col.tiles[0].grid_size.rows = rows_span;
             }
 
+            // Tabs share the area, so they all have its size, and keep it if they leave.
+            let size = col.tiles[0].grid_size;
+            for tile in &mut col.tiles[1..] {
+                tile.grid_size = size;
+            }
+
             col.set_grid_geometry(geometry, (area.cols, area.rows), animate);
             self.data[idx].update(col);
         }
@@ -4691,6 +4725,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let id = self.columns[idx].id;
         let area = self.grid.area(&id).unwrap();
 
+        // A tab leaves its tabbed area.
+        let col = &self.columns[idx];
+        if col.tiles.len() > 1 {
+            let tile_idx =
+                window.map_or(col.active_tile_idx, |window| col.position(window).unwrap());
+            self.change_grid(|this| this.expel_grid_tab(id, tile_idx, dir));
+            return;
+        }
+
         let stacked = [grid::Direction::Up, grid::Direction::Down]
             .into_iter()
             .any(|dir| self.grid.adjacent(&id, dir, None).is_some());
@@ -4714,7 +4757,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ///
     /// Returns whether anything changed.
     fn consume_grid(&mut self, window: ColumnId, into: ColumnId) -> bool {
-        if window == into || self.grid.area(&into).unwrap().rows < 2 {
+        if window == into {
+            return false;
+        }
+
+        // A tabbed area takes the window as another tab.
+        let into_col = self.columns.iter().find(|col| col.id == into).unwrap();
+        if into_col.display_mode == ColumnDisplay::Tabbed {
+            return self.consume_grid_as_tab(window, into);
+        }
+
+        if self.grid.area(&into).unwrap().rows < 2 {
             return false;
         }
 
@@ -4788,6 +4841,270 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let rows = self.grid.rows();
         self.grid.insert(window, Area::new(col, 0, area.cols, rows));
         true
+    }
+
+    /// Moves the windows of `window` into the tabbed `into` as tabs after its own, focusing the
+    /// first of them if `window` was active.
+    fn consume_grid_as_tab(&mut self, window: ColumnId, into: ColumnId) -> bool {
+        let was_active = self.columns[self.active_column_idx].id == window;
+        let column = self.take_grid_column(window);
+
+        let idx = self.columns.iter().position(|col| col.id == into).unwrap();
+        let col = &mut self.columns[idx];
+        let first = col.tiles.len();
+        for tile in column.tiles {
+            col.add_tile_at(col.tiles.len(), tile);
+        }
+        self.data[idx].update(col);
+
+        if was_active {
+            col.activate_idx(first);
+            self.active_column_idx = idx;
+        }
+        true
+    }
+
+    /// Takes the tab at `tile_idx` out of the tabbed `window`, putting it beside the area
+    /// towards `dir` at the same size, and focusing it if it was focused.
+    fn expel_grid_tab(&mut self, window: ColumnId, tile_idx: usize, dir: grid::Direction) -> bool {
+        let area = self.grid.area(&window).unwrap();
+        let idx = self
+            .columns
+            .iter()
+            .position(|col| col.id == window)
+            .unwrap();
+        let col = &mut self.columns[idx];
+        let was_active = idx == self.active_column_idx && tile_idx == col.active_tile_idx;
+        let (width, is_full_width) = (col.width, col.is_full_width);
+        let tile = col.take_tile(tile_idx);
+        self.data[idx].update(col);
+
+        let col = match dir {
+            grid::Direction::Left => area.col,
+            _ => area.right(),
+        };
+        let area = Area { col, ..area };
+        let new = self.put_grid_column(tile, width, is_full_width, area);
+        if was_active {
+            self.active_column_idx = self.columns.iter().position(|col| col.id == new).unwrap();
+        }
+        true
+    }
+
+    /// Switches the active column between tabbed and normal display.
+    ///
+    /// Going tabbed gathers the windows stacked right above and below it in exactly the same
+    /// columns of cells into its area as tabs. Going normal splits the tabs back into a stack,
+    /// sharing the area's rows.
+    fn set_grid_display(&mut self, display: ColumnDisplay) {
+        let Some(col) = self.columns.get(self.active_column_idx) else {
+            return;
+        };
+        if col.display_mode == display || !col.pending_sizing_mode().is_normal() {
+            return;
+        }
+        let id = col.id;
+
+        // Where every window is on the strip, to animate the ones that change columns.
+        let tile_positions = |this: &Self| {
+            let mut positions = Vec::new();
+            for (col, col_x) in zip(&this.columns, this.column_xs(this.data.iter().copied())) {
+                for (tile, offset) in col.tiles() {
+                    let pos = Point::from((col_x, 0.)) + offset;
+                    positions.push((tile.window().id().clone(), col.id, pos));
+                }
+            }
+            positions
+        };
+        let before = tile_positions(self);
+
+        self.change_grid(|this| match display {
+            ColumnDisplay::Tabbed => this.tab_grid_stack(id),
+            ColumnDisplay::Normal => this.untab_grid(id),
+        });
+
+        for (window, col_id, pos) in tile_positions(self) {
+            let Some((_, prev_col_id, prev_pos)) = before.iter().find(|(w, _, _)| *w == window)
+            else {
+                continue;
+            };
+            if *prev_col_id == col_id {
+                continue;
+            }
+            let col = self
+                .columns
+                .iter_mut()
+                .find(|col| col.id == col_id)
+                .unwrap();
+            let tile = col
+                .tiles
+                .iter_mut()
+                .find(|tile| *tile.window().id() == window);
+            tile.unwrap().animate_move_from(*prev_pos - pos);
+        }
+    }
+
+    /// Gathers the windows stacked right above and below `id` in exactly the same columns of
+    /// cells into its column as tabs.
+    fn tab_grid_stack(&mut self, id: ColumnId) -> bool {
+        let area = self.grid.area(&id).unwrap();
+        let in_same_columns = |other: &Area| other.col == area.col && other.cols == area.cols;
+
+        // Nearest first.
+        let mut above = Vec::new();
+        let mut top = area;
+        while let Some((&other, a)) = self
+            .grid
+            .iter()
+            .find(|(_, a)| in_same_columns(a) && a.bottom() == top.row)
+        {
+            above.push(other);
+            top = a;
+        }
+        let mut below = Vec::new();
+        let mut bottom = area;
+        while let Some((&other, a)) = self
+            .grid
+            .iter()
+            .find(|(_, a)| in_same_columns(a) && a.row == bottom.bottom())
+        {
+            below.push(other);
+            bottom = a;
+        }
+
+        let idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        self.columns[idx].set_column_display(ColumnDisplay::Tabbed);
+
+        for other in above {
+            let column = self.take_grid_column(other);
+            let col = self.columns.iter_mut().find(|col| col.id == id).unwrap();
+            for tile in column.tiles.into_iter().rev() {
+                col.add_tile_at(0, tile);
+                col.active_tile_idx += 1;
+            }
+        }
+        for other in below {
+            let column = self.take_grid_column(other);
+            let col = self.columns.iter_mut().find(|col| col.id == id).unwrap();
+            for tile in column.tiles {
+                col.add_tile_at(col.tiles.len(), tile);
+            }
+        }
+
+        let merged = Area {
+            row: top.row,
+            rows: bottom.bottom() - top.row,
+            ..area
+        };
+        self.grid.set_area(&id, merged, grid::Direction::Down);
+        self.active_column_idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        true
+    }
+
+    /// Splits the tabs of `id` back into a stack sharing its area's rows. Tabs that don't get a
+    /// row go after the area.
+    fn untab_grid(&mut self, id: ColumnId) -> bool {
+        let area = self.grid.area(&id).unwrap();
+        let idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        let col = &mut self.columns[idx];
+        let count = col.tiles.len() as i32;
+        let active_tile_idx = col.active_tile_idx;
+        let (width, is_full_width) = (col.width, col.is_full_width);
+
+        let mut tiles = Vec::new();
+        while col.tiles.len() > 1 {
+            tiles.push(col.take_tile(col.tiles.len() - 1));
+        }
+        tiles.reverse();
+        col.set_column_display(ColumnDisplay::Normal);
+        self.data[idx].update(col);
+
+        // Split the rows as evenly as possible, giving the remainder to the top ones.
+        let stacked = count.min(area.rows);
+        let base = area.rows / stacked;
+        let extra = area.rows % stacked;
+        let rows_of = |i: i32| base + i32::from(i < extra);
+
+        let mut row = area.row;
+        let mut slices = Vec::new();
+        for i in 0..count {
+            let slice = if i < stacked {
+                let slice = Area {
+                    row,
+                    rows: rows_of(i),
+                    ..area
+                };
+                row += rows_of(i);
+                slice
+            } else {
+                Area {
+                    col: area.right(),
+                    ..area
+                }
+            };
+            slices.push(slice);
+        }
+
+        self.grid.set_area(&id, slices[0], grid::Direction::Down);
+        let mut active = id;
+        for (i, (tile, slice)) in zip(tiles, &slices[1..]).enumerate() {
+            let new = self.put_grid_column(tile, width, is_full_width, *slice);
+            if i + 1 == active_tile_idx {
+                active = new;
+            }
+        }
+        self.active_column_idx = self
+            .columns
+            .iter()
+            .position(|col| col.id == active)
+            .unwrap();
+        true
+    }
+
+    /// Takes a column off the grid without the focus and view handling of removing a window,
+    /// for its windows to go to another column. Keeps the active column the same if it can.
+    fn take_grid_column(&mut self, id: ColumnId) -> Column<W> {
+        let active = self.columns[self.active_column_idx].id;
+        let idx = self.columns.iter().position(|col| col.id == id).unwrap();
+        let mut column = self.columns.remove(idx);
+        self.data.remove(idx);
+        self.grid.remove(&id);
+        cancel_resize_for_column(&mut self.interactive_resize, &mut column);
+
+        self.active_column_idx = self
+            .columns
+            .iter()
+            .position(|col| col.id == active)
+            .unwrap_or(0);
+        self.activate_prev_column_on_removal = None;
+        column
+    }
+
+    /// Adds a new column with `tile` at `area` on the grid, pushing others aside.
+    fn put_grid_column(
+        &mut self,
+        tile: Tile<W>,
+        width: ColumnWidth,
+        is_full_width: bool,
+        area: Area,
+    ) -> ColumnId {
+        let mut column = Column::new_with_tile(
+            tile,
+            self.view_size,
+            self.working_area,
+            self.parent_area,
+            self.scale,
+            width,
+            is_full_width,
+        );
+        // It was a tab, and is a window of its own now.
+        column.display_mode = ColumnDisplay::Normal;
+
+        let id = column.id;
+        self.data.push(ColumnData::new(&column));
+        self.columns.push(column);
+        self.grid.insert(id, area);
+        id
     }
 
     /// Applies a grid change from `change`, if it returns true, keeping the view still and the
@@ -4896,20 +5213,47 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.focus_grid_window(target, row, col);
     }
 
+    /// Focuses the next tab down, or up, in the active column if it's tabbed.
+    fn focus_grid_tab(&mut self, down: bool) -> bool {
+        let Some(col) = self.columns.get_mut(self.active_column_idx) else {
+            return false;
+        };
+        if col.display_mode != ColumnDisplay::Tabbed {
+            return false;
+        }
+        if down {
+            col.focus_down()
+        } else {
+            col.focus_up()
+        }
+    }
+
+    /// Windows in the stack along column of cells `col`, top to bottom, with tabs in order, as
+    /// (column, tile index).
+    fn grid_stack_tiles(&self, col: i32) -> Vec<(ColumnId, usize)> {
+        let mut tiles = Vec::new();
+        for id in self.grid.stack(col) {
+            let column = self.columns.iter().find(|column| column.id == *id).unwrap();
+            tiles.extend((0..column.tiles.len()).map(|tile_idx| (*id, tile_idx)));
+        }
+        tiles
+    }
+
     /// Focuses a window in the stack along the column of cells that focus is travelling along,
-    /// at the index that `pick` returns for the stack's length.
+    /// counting tabs, at the index that `pick` returns for the stack's length.
     fn focus_grid_in_stack(&mut self, pick: impl FnOnce(usize) -> usize) {
         let Some((_, row, col)) = self.grid_focus_lines() else {
             return;
         };
-        let stack = self.grid.stack(col);
+        let stack = self.grid_stack_tiles(col);
         if stack.is_empty() {
             return;
         }
 
-        let target = *stack[pick(stack.len())];
+        let (target, tile_idx) = stack[pick(stack.len())];
         let area = self.grid.area(&target).unwrap();
         self.focus_grid_window(target, row.clamp(area.row, area.bottom() - 1), col);
+        self.columns[self.active_column_idx].activate_idx(tile_idx);
     }
 
     /// Window in grid column `index`, counting from 1 like the actions do: the one in the row
@@ -5304,10 +5648,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let mut prev_key = None;
         for col in &self.columns {
-            assert_eq!(
-                col.tiles.len(),
-                1,
-                "every window must be its own column on the grid"
+            assert!(
+                col.tiles.len() == 1 || col.display_mode == ColumnDisplay::Tabbed,
+                "every window must be its own column on the grid, except for tabs"
+            );
+            assert!(
+                col.tiles
+                    .iter()
+                    .all(|tile| tile.grid_size == col.tiles[0].grid_size),
+                "tabs must share their size on the grid"
             );
 
             let area = self
@@ -6004,6 +6353,18 @@ impl<W: LayoutElement> Column<W> {
         }
     }
 
+    /// Takes the tile at `idx` out of a column with more than one, for it to go to another
+    /// column.
+    fn take_tile(&mut self, idx: usize) -> Tile<W> {
+        let tile = self.tiles.remove(idx);
+        self.data.remove(idx);
+        if idx < self.active_tile_idx || self.active_tile_idx == self.tiles.len() {
+            self.active_tile_idx -= 1;
+        }
+        self.update_tile_sizes(true);
+        tile
+    }
+
     fn update_window(&mut self, window: &W::Id) {
         let (tile_idx, tile) = self
             .tiles
@@ -6118,8 +6479,18 @@ impl<W: LayoutElement> Column<W> {
         }
 
         if let Some(geometry) = self.grid_geometry {
-            for tile in &mut self.tiles {
-                tile.request_tile_size(geometry.size, animate, Some(transaction.clone()));
+            // Tabs share the area, minus the space for the tab indicator.
+            let extra = self.extra_size();
+            let size = Size::from((
+                f64::max(geometry.size.w - extra.w, 1.),
+                f64::max(geometry.size.h - extra.h, 1.),
+            ));
+            let is_tabbed = self.display_mode == ColumnDisplay::Tabbed;
+            for (idx, tile) in self.tiles.iter_mut().enumerate() {
+                // In tabbed mode, only the visible window participates in the transaction.
+                let transaction =
+                    (!is_tabbed || idx == self.active_tile_idx).then(|| transaction.clone());
+                tile.request_tile_size(size, animate, transaction);
             }
             return;
         }
@@ -6868,6 +7239,11 @@ impl<W: LayoutElement> Column<W> {
 
         if let Some(geometry) = self.grid_geometry {
             origin.y += self.working_area.loc.y + geometry.y;
+            if self.display_mode == ColumnDisplay::Tabbed {
+                origin += self
+                    .tab_indicator
+                    .content_offset(self.tiles.len(), self.scale);
+            }
             return origin;
         }
 
