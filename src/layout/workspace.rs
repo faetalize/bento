@@ -1010,6 +1010,24 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    /// Focuses the window right below, for actions that do something else when there's none.
+    pub fn focus_down_adjacent(&mut self) -> bool {
+        if self.floating_is_active.get() {
+            self.floating.focus_down()
+        } else {
+            self.scrolling.focus_down_adjacent()
+        }
+    }
+
+    /// Focuses the window right above, for actions that do something else when there's none.
+    pub fn focus_up_adjacent(&mut self) -> bool {
+        if self.floating_is_active.get() {
+            self.floating.focus_up()
+        } else {
+            self.scrolling.focus_up_adjacent()
+        }
+    }
+
     pub fn focus_down_or_left(&mut self) {
         if self.floating_is_active.get() {
             self.floating.focus_down();
@@ -1059,13 +1077,13 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_window_down_or_top(&mut self) {
-        if !self.focus_down() {
+        if !self.focus_down_adjacent() {
             self.focus_window_top();
         }
     }
 
     pub fn focus_window_up_or_bottom(&mut self) {
-        if !self.focus_up() {
+        if !self.focus_up_adjacent() {
             self.focus_window_bottom();
         }
     }

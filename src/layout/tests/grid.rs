@@ -868,3 +868,76 @@ fn default_window_height_opens_next_to_the_active_window() {
     99 × 336 at x: 131 y:368
     ");
 }
+
+/// Window 1 full height on the left, window 2 on the top half to its right, and window 3 under
+/// window 2.
+fn set_up_one_and_stack() -> Vec<Op> {
+    let half = || SizeChange::SetProportion(50.);
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: half(),
+        },
+        add_window(3),
+        Op::SetWindowHeight {
+            id: Some(3),
+            change: half(),
+        },
+    ];
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.extend(settle());
+    ops
+}
+
+#[test]
+fn focusing_the_last_column_stays_in_the_row() {
+    let mut ops = set_up_one_and_stack();
+    ops.extend([Op::FocusWindow(1), Op::FocusColumnLast]);
+    let layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
+    99 × 336 at x: 131 y: 16
+    99 × 336 at x: 131 y:368
+    ");
+
+    // Window 3 comes last in the order, but window 2 is the last one in the top row.
+    assert_eq!(focused_id(&layout), 2);
+}
+
+#[test]
+fn focusing_the_top_window_goes_up_the_stack() {
+    let mut ops = set_up_one_and_stack();
+    ops.extend([Op::FocusWindow(3), Op::FocusWindowTop]);
+    let layout = check_ops(ops);
+    assert_eq!(focused_id(&layout), 2);
+}
+
+#[test]
+fn focusing_down_or_to_the_workspace_below_skips_windows_not_below() {
+    // Window 3 is under window 1, not under window 2.
+    let mut ops = set_up_two_over_one();
+    ops.extend([Op::FocusWindow(2), Op::FocusWindowOrWorkspaceDown]);
+    let layout = check_ops(ops);
+    assert!(
+        layout.focus().is_none(),
+        "should switch to the empty workspace below"
+    );
+}
+
+#[test]
+fn ipc_positions_follow_grid_columns() {
+    let layout = check_ops(set_up_two_over_one());
+    let ws = layout.active_workspace().unwrap();
+    let mut positions: Vec<_> = ws
+        .scrolling()
+        .tiles_with_ipc_layouts()
+        .map(|(tile, layout)| (tile.window().0.id, layout.pos_in_scrolling_layout.unwrap()))
+        .collect();
+    positions.sort();
+
+    // Windows 1 and 3 are stacked in the first column, window 2 is in the second.
+    assert_eq!(positions, [(1, (1, 1)), (2, (2, 1)), (3, (1, 2))]);
+}

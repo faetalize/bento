@@ -802,13 +802,13 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn focus_window_or_workspace_down(&mut self) {
-        if !self.active_workspace().focus_down() {
+        if !self.active_workspace().focus_down_adjacent() {
             self.switch_workspace_down();
         }
     }
 
     pub fn focus_window_or_workspace_up(&mut self) {
-        if !self.active_workspace().focus_up() {
+        if !self.active_workspace().focus_up_adjacent() {
             self.switch_workspace_up();
         }
     }

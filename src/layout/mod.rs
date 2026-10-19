@@ -2010,7 +2010,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn focus_window_up_or_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.focus_up() {
+            if workspace.focus_up_adjacent() {
                 return false;
             }
         }
@@ -2021,7 +2021,7 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn focus_window_down_or_output(&mut self, output: &Output) -> bool {
         if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.focus_down() {
+            if workspace.focus_down_adjacent() {
                 return false;
             }
         }

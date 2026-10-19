@@ -369,6 +369,27 @@ impl<K: Clone + PartialEq> Grid<K> {
         self.items != before
     }
 
+    /// Columns of cells where windows start, left to right.
+    ///
+    /// These number the grid's columns for actions and IPC, like the columns of a strip.
+    pub fn column_starts(&self) -> Vec<i32> {
+        let mut starts: Vec<i32> = self.items.iter().map(|(_, a)| a.col).collect();
+        starts.sort_unstable();
+        starts.dedup();
+        starts
+    }
+
+    /// Windows covering column of cells `col`, top to bottom, like the tiles of a column.
+    pub fn stack(&self, col: i32) -> Vec<&K> {
+        let mut stack: Vec<_> = self
+            .items
+            .iter()
+            .filter(|(_, a)| a.col <= col && col < a.right())
+            .collect();
+        stack.sort_by_key(|(_, a)| a.row);
+        stack.into_iter().map(|(k, _)| k).collect()
+    }
+
     /// Finds the window to focus when moving from `id` in `dir`.
     ///
     /// `anchor` is the row (for left and right) or column (for up and down) that the user is

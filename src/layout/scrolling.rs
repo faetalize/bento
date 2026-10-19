@@ -1800,10 +1800,20 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_column_first(&mut self) {
+        if GRID_LAYOUT {
+            self.focus_grid_end(false);
+            return;
+        }
+
         self.activate_column(0);
     }
 
     pub fn focus_column_last(&mut self) {
+        if GRID_LAYOUT {
+            self.focus_grid_end(true);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1812,6 +1822,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_column(&mut self, index: usize) {
+        if GRID_LAYOUT {
+            if let Some(target) = self.grid_column_window(index) {
+                let (_, row, _) = self.grid_focus_lines().unwrap();
+                let col = self.grid.area(&target).unwrap().col;
+                self.focus_grid_window(target, row, col);
+            }
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1820,6 +1839,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_window_in_column(&mut self, index: u8) {
+        if GRID_LAYOUT {
+            self.focus_grid_in_stack(|stack| usize::from(index).saturating_sub(1).min(stack - 1));
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1851,9 +1875,33 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.columns[self.active_column_idx].focus_up()
     }
 
+    /// Focuses the window below that shares columns of cells with the active one, like the tile
+    /// below in a niri column, rather than any window further down.
+    ///
+    /// For actions that do something else when there's no window below.
+    pub fn focus_down_adjacent(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.focus_grid_in(grid::Direction::Down, true);
+        }
+
+        self.focus_down()
+    }
+
+    /// Focuses the window above that shares columns of cells with the active one, like the tile
+    /// above in a niri column, rather than any window further up.
+    ///
+    /// For actions that do something else when there's no window above.
+    pub fn focus_up_adjacent(&mut self) -> bool {
+        if GRID_LAYOUT {
+            return self.focus_grid_in(grid::Direction::Up, true);
+        }
+
+        self.focus_up()
+    }
+
     pub fn focus_down_or_left(&mut self) {
         if GRID_LAYOUT {
-            if !self.focus_down() {
+            if !self.focus_down_adjacent() {
                 self.focus_left();
             }
             return;
@@ -1871,7 +1919,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn focus_down_or_right(&mut self) {
         if GRID_LAYOUT {
-            if !self.focus_down() {
+            if !self.focus_down_adjacent() {
                 self.focus_right();
             }
             return;
@@ -1889,7 +1937,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn focus_up_or_left(&mut self) {
         if GRID_LAYOUT {
-            if !self.focus_up() {
+            if !self.focus_up_adjacent() {
                 self.focus_left();
             }
             return;
@@ -1907,7 +1955,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     pub fn focus_up_or_right(&mut self) {
         if GRID_LAYOUT {
-            if !self.focus_up() {
+            if !self.focus_up_adjacent() {
                 self.focus_right();
             }
             return;
@@ -1924,6 +1972,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_top(&mut self) {
+        if GRID_LAYOUT {
+            self.focus_grid_in_stack(|_| 0);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1932,6 +1985,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn focus_bottom(&mut self) {
+        if GRID_LAYOUT {
+            self.focus_grid_in_stack(|stack| stack - 1);
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1940,6 +1998,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn move_column_to_index(&mut self, index: usize) {
+        if GRID_LAYOUT {
+            if let Some(target) = self.grid_column_window(index) {
+                self.move_grid_to_window(target);
+            }
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -1948,11 +2013,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     fn move_column_to(&mut self, new_idx: usize) {
-        if GRID_LAYOUT {
-            self.move_grid_to(new_idx);
-            return;
-        }
-
         if self.active_column_idx == new_idx {
             return;
         }
@@ -2013,10 +2073,23 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn move_column_to_first(&mut self) {
+        if GRID_LAYOUT {
+            // Go to the start of the strip in the window's own rows, pushing others right.
+            self.move_grid_to_col(|_| (0, grid::Direction::Right));
+            return;
+        }
+
         self.move_column_to(0);
     }
 
     pub fn move_column_to_last(&mut self) {
+        if GRID_LAYOUT {
+            // Go past the end of the strip.
+            let width = self.grid.width();
+            self.move_grid_to_col(|_| (width, grid::Direction::Right));
+            return;
+        }
+
         if self.columns.is_empty() {
             return;
         }
@@ -2769,11 +2842,25 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {
+        // On the grid, a window's column is where it starts among the grid's columns, and its
+        // place in it is from the top among the windows covering that column of cells, matching
+        // the column and in-column actions.
+        let starts = self.grid.column_starts();
+        let grid_pos = move |col: &Column<W>| {
+            let area = self.grid.area(&col.id)?;
+            let col_idx = starts.iter().position(|start| *start == area.col)?;
+            let stack = self.grid.stack(area.col);
+            let tile_idx = stack.iter().position(|id| **id == col.id)?;
+            Some((col_idx, tile_idx))
+        };
+
         self.columns
             .iter()
             .enumerate()
             .flat_map(move |(col_idx, col)| {
+                let grid_pos = if GRID_LAYOUT { grid_pos(col) } else { None };
                 col.tiles().enumerate().map(move |(tile_idx, (tile, _))| {
+                    let (col_idx, tile_idx) = grid_pos.unwrap_or((col_idx, tile_idx));
                     let layout = WindowLayout {
                         // Our indices are 1-based, consistent with the actions.
                         pos_in_scrolling_layout: Some((col_idx + 1, tile_idx + 1)),
@@ -4311,8 +4398,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) {
         let active_id = self.columns.get(self.active_column_idx).map(|col| col.id);
 
-        // Sort top-left first. This keeps column X non-decreasing with the index, which the
-        // view code relies on.
+        // Sort top-left first, so that the order is stable. Nothing should rely on it meaning
+        // anything spatial beyond that: neighbors in the order can be anywhere on the grid.
         let grid = &self.grid;
         let key = |col: &Column<W>| grid.area(&col.id).map(|a| (a.col, a.row));
         if !self.columns.is_sorted_by_key(key) {
@@ -4383,6 +4470,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     /// Focuses the nearest window in `dir`.
     fn focus_grid(&mut self, dir: grid::Direction) -> bool {
+        self.focus_grid_in(dir, false)
+    }
+
+    /// Focuses the nearest window in `dir`, or with `adjacent`, only one sharing rows or columns
+    /// of cells with the active window.
+    fn focus_grid_in(&mut self, dir: grid::Direction, adjacent: bool) -> bool {
         let Some(id) = self.columns.get(self.active_column_idx).map(|col| col.id) else {
             return false;
         };
@@ -4395,7 +4488,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let col = anchor.and_then(|anchor| anchor.col);
 
         let along = if dir.is_horizontal() { row } else { col };
-        let Some(&target) = self.grid.neighbor(&id, dir, along) else {
+        let target = if adjacent {
+            self.grid.adjacent(&id, dir, along)
+        } else {
+            self.grid.neighbor(&id, dir, along)
+        };
+        let Some(&target) = target else {
             return false;
         };
         let target_area = self.grid.area(&target).unwrap();
@@ -4439,29 +4537,116 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         true
     }
 
-    /// Moves the active window to where the column at `idx` is on the grid.
-    fn move_grid_to(&mut self, idx: usize) {
+    /// Moves the active window to where `target` is on the grid.
+    fn move_grid_to_window(&mut self, target: ColumnId) {
+        let target = self.grid.area(&target).unwrap();
+        self.move_grid_to_col(|area| {
+            if target.col <= area.col {
+                // Take the target's place and push it right.
+                (target.col, grid::Direction::Right)
+            } else {
+                // Line up with the target's right edge and push it left.
+                (target.right() - area.cols, grid::Direction::Left)
+            }
+        });
+    }
+
+    /// Moves the active window to the column of cells from `place`, which also gives the
+    /// direction to push others in.
+    fn move_grid_to_col(&mut self, place: impl FnOnce(Area) -> (i32, grid::Direction)) {
         let Some(id) = self.columns.get(self.active_column_idx).map(|col| col.id) else {
             return;
         };
         let area = self.grid.area(&id).unwrap();
-        let target = self.grid.area(&self.columns[idx].id).unwrap();
-
-        let (col, dir) = if idx < self.active_column_idx {
-            // Take the target's place and push it right.
-            (target.col, grid::Direction::Right)
-        } else if idx + 1 == self.columns.len() {
-            // Go past the end.
-            (self.grid.width(), grid::Direction::Right)
-        } else {
-            // Line up with the target's right edge and push it left.
-            (target.right() - area.cols, grid::Direction::Left)
-        };
+        let (col, dir) = place(area);
+        if col == area.col {
+            return;
+        }
 
         let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         self.grid.set_area(&id, Area { col, ..area }, dir);
         self.finish_grid_move(id, &before, prev_positions);
+    }
+
+    /// The active window with the row and column of cells that focus is travelling along.
+    fn grid_focus_lines(&self) -> Option<(ColumnId, i32, i32)> {
+        let id = self.columns.get(self.active_column_idx)?.id;
+        let area = self.grid.area(&id)?;
+        let anchor = self.focus_anchor.filter(|anchor| anchor.column == id);
+        let row = anchor.and_then(|anchor| anchor.row).unwrap_or(area.row);
+        let col = anchor.and_then(|anchor| anchor.col).unwrap_or(area.col);
+        Some((id, row, col))
+    }
+
+    /// Focuses `target`, travelling along `row` and `col` where it covers them.
+    fn focus_grid_window(&mut self, target: ColumnId, row: i32, col: i32) {
+        let area = self.grid.area(&target).unwrap();
+        let idx = self
+            .columns
+            .iter()
+            .position(|col| col.id == target)
+            .unwrap();
+        self.activate_column(idx);
+        self.focus_anchor = Some(FocusAnchor {
+            column: target,
+            row: Some(row.clamp(area.row, area.bottom() - 1)),
+            col: Some(col.clamp(area.col, area.right() - 1)),
+        });
+    }
+
+    /// Focuses the leftmost or rightmost window in the row that focus is travelling along.
+    fn focus_grid_end(&mut self, last: bool) {
+        let Some((_, row, _)) = self.grid_focus_lines() else {
+            return;
+        };
+        let in_row = self
+            .grid
+            .iter()
+            .filter(|(_, area)| area.row <= row && row < area.bottom());
+        let target = if last {
+            in_row.max_by_key(|(_, area)| (area.right(), -area.row))
+        } else {
+            in_row.min_by_key(|(_, area)| (area.col, area.row))
+        };
+        let Some((&target, area)) = target else {
+            return;
+        };
+
+        let col = if last { area.right() - 1 } else { area.col };
+        self.focus_grid_window(target, row, col);
+    }
+
+    /// Focuses a window in the stack along the column of cells that focus is travelling along,
+    /// at the index that `pick` returns for the stack's length.
+    fn focus_grid_in_stack(&mut self, pick: impl FnOnce(usize) -> usize) {
+        let Some((_, row, col)) = self.grid_focus_lines() else {
+            return;
+        };
+        let stack = self.grid.stack(col);
+        if stack.is_empty() {
+            return;
+        }
+
+        let target = *stack[pick(stack.len())];
+        let area = self.grid.area(&target).unwrap();
+        self.focus_grid_window(target, row.clamp(area.row, area.bottom() - 1), col);
+    }
+
+    /// Window in grid column `index`, counting from 1 like the actions do: the one in the row
+    /// that focus is travelling along, or the top one. Indices past the end give the last
+    /// column.
+    fn grid_column_window(&self, index: usize) -> Option<ColumnId> {
+        let (_, row, _) = self.grid_focus_lines()?;
+        let starts = self.grid.column_starts();
+        let start = *starts.get(index.saturating_sub(1).min(starts.len() - 1))?;
+
+        let stack = self.grid.stack(start);
+        let in_row = stack.iter().find(|id| {
+            let area = self.grid.area(id).unwrap();
+            area.row <= row && row < area.bottom()
+        });
+        in_row.or(stack.first()).map(|id| **id)
     }
 
     /// Syncs columns after moving the active window, keeping the windows that stayed in place
