@@ -667,12 +667,12 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // Open windows at the size of the grid cells they will occupy.
             let borders = if border.off { 0. } else { border.width * 2. };
             let width = width.map_or(0, |preset| {
-                let cols = self.grid_cols_for_preset(preset);
+                let cols = self.grid_cols_for_preset(preset, borders);
                 let w = self.grid_geometry(Area::new(0, 0, cols, 1)).size.w - borders - extra.w;
                 max(1, w.floor() as i32)
             });
             let rows = height.map_or(self.cell_metrics.rows, |preset| {
-                self.grid_rows_for_preset(preset)
+                self.grid_rows_for_preset(preset, borders)
             });
             let h = self.grid_geometry(Area::new(0, 0, 1, rows)).size.h - borders - extra.h;
             return Size::from((width, max(h.floor() as i32, 1)));
@@ -4363,45 +4363,55 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     /// Number of grid columns for a preset width.
-    fn grid_cols_for_preset(&self, preset: PresetSize) -> i32 {
-        self.grid_cols_for_width(ColumnWidth::from(preset))
+    ///
+    /// Like in niri, a fixed width is for the window, so `borders` is added to it: the width of
+    /// the borders on both sides.
+    fn grid_cols_for_preset(&self, preset: PresetSize, borders: f64) -> i32 {
+        match preset {
+            PresetSize::Fixed(width) => {
+                self.grid_cols_for_width(ColumnWidth::Fixed(f64::from(width) + borders))
+            }
+            PresetSize::Proportion(_) => self.grid_cols_for_width(ColumnWidth::from(preset)),
+        }
     }
 
     /// Number of grid rows for a preset height.
-    fn grid_rows_for_preset(&self, preset: PresetSize) -> i32 {
+    ///
+    /// Like in niri, a fixed height is for the window, so `borders` is added to it: the height of
+    /// the borders on both sides.
+    fn grid_rows_for_preset(&self, preset: PresetSize, borders: f64) -> i32 {
         let m = &self.cell_metrics;
         match preset {
             PresetSize::Proportion(proportion) => m.rows_for_proportion(proportion),
             PresetSize::Fixed(height) => {
-                let rows = (f64::from(height) + m.gap) / (m.cell_h + m.gap);
+                let rows = (f64::from(height) + borders + m.gap) / (m.cell_h + m.gap);
                 (rows.round() as i32).clamp(1, m.rows)
             }
         }
     }
 
-    /// Number of grid columns for a span.
-    fn grid_cols_for_span(&self, span: GridSpan) -> i32 {
+    /// Number of grid columns for a span of a window with `borders`.
+    fn grid_cols_for_span(&self, span: GridSpan, borders: f64) -> i32 {
         match span {
             GridSpan::Cells { n, of } => {
                 scale_span(n, of, self.cell_metrics.cols_per_view).clamp(1, grid::MAX_COLS)
             }
-            GridSpan::Preset(preset) => self.grid_cols_for_preset(preset),
+            GridSpan::Preset(preset) => self.grid_cols_for_preset(preset, borders),
         }
     }
 
-    /// Number of grid rows for a span.
-    fn grid_rows_for_span(&self, span: GridSpan) -> i32 {
+    /// Number of grid rows for a span of a window with `borders`.
+    fn grid_rows_for_span(&self, span: GridSpan, borders: f64) -> i32 {
         let rows = self.cell_metrics.rows;
         match span {
             GridSpan::Cells { n, of } => scale_span(n, of, rows).clamp(1, rows),
-            GridSpan::Preset(preset) => self.grid_rows_for_preset(preset),
+            GridSpan::Preset(preset) => self.grid_rows_for_preset(preset, borders),
         }
     }
 
     /// Grid size in (columns, rows) that a column should have, from the size of its window.
     fn grid_span_for(&self, column: &Column<W>) -> (i32, i32) {
-        let size = column.tiles[0].grid_size;
-        self.grid_span_for_size(size, column.width, column.is_full_width)
+        self.grid_span_for_size(&column.tiles[0], column.width, column.is_full_width)
     }
 
     /// Grid size in (columns, rows) that a column takes in its requested sizing mode: its own
@@ -4419,24 +4429,27 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         (cols.clamp(1, grid::MAX_COLS), m.rows)
     }
 
-    /// Grid size in (columns, rows) for a window of `size` in a column of `width`.
+    /// Grid size in (columns, rows) for the window of `tile` in a column of `width`.
     fn grid_span_for_size(
         &self,
-        size: GridSize,
+        tile: &Tile<W>,
         width: ColumnWidth,
         is_full_width: bool,
     ) -> (i32, i32) {
+        let size = tile.grid_size;
         let cols = if is_full_width {
             self.cell_metrics.cols_per_view
         } else {
+            let borders = tile.tile_width_for_window_width(0.);
             size.cols.map_or_else(
                 || self.grid_cols_for_width(width),
-                |span| self.grid_cols_for_span(span),
+                |span| self.grid_cols_for_span(span, borders),
             )
         };
-        let rows = size
-            .rows
-            .map_or(self.cell_metrics.rows, |span| self.grid_rows_for_span(span));
+        let borders = tile.tile_height_for_window_height(0.);
+        let rows = size.rows.map_or(self.cell_metrics.rows, |span| {
+            self.grid_rows_for_span(span, borders)
+        });
         (cols, rows)
     }
 
@@ -5512,7 +5525,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         width: ColumnWidth,
         is_full_width: bool,
     ) {
-        let (cols, rows) = self.grid_span_for_size(tile.grid_size, width, is_full_width);
+        let (cols, rows) = self.grid_span_for_size(tile, width, is_full_width);
         let area = self.grid_area_at(pos, cols, rows);
         self.set_grid_drop_area(tile.window().id().clone(), area);
     }
@@ -5611,8 +5624,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         };
         let cols = self.grid.area(&self.columns[idx].id).unwrap().cols;
+        let borders = self.columns[idx].tiles[0].tile_width_for_window_width(0.);
         let presets = self.options.layout.preset_column_widths.iter();
-        let spans = presets.map(|preset| self.grid_cols_for_preset(*preset));
+        let spans = presets.map(|preset| self.grid_cols_for_preset(*preset, borders));
         let cols = next_preset_span(cols, spans, forwards);
         self.resize_grid(window, Some(cols), None);
     }
@@ -5622,8 +5636,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         };
         let rows = self.grid.area(&self.columns[idx].id).unwrap().rows;
+        let borders = self.columns[idx].tiles[0].tile_height_for_window_height(0.);
         let presets = self.options.layout.preset_window_heights.iter();
-        let spans = presets.map(|preset| self.grid_rows_for_preset(*preset));
+        let spans = presets.map(|preset| self.grid_rows_for_preset(*preset, borders));
         let rows = next_preset_span(rows, spans, forwards);
         self.resize_grid(window, None, Some(rows));
     }
