@@ -53,27 +53,25 @@ pub struct ScrollingSpace<W: LayoutElement> {
     /// Ongoing interactive resize.
     interactive_resize: Option<InteractiveResize<W>>,
 
-    /// Offset of the view computed from the active column.
+    /// Offset of the view from x = 0 on the grid.
+    ///
+    /// Unlike niri, where this is relative to the active column, it's absolute: windows on the
+    /// grid move around independently of focus, and the view only moves when asked to rather
+    /// than following whichever column happens to be active.
     ///
     /// Any gaps, including left padding from work area left exclusive zone, is handled
     /// with this view offset (rather than added as a constant elsewhere in the code). This allows
     /// for natural handling of fullscreen windows, which must ignore work area padding.
     view_offset: ViewOffset,
 
-    /// Whether to activate the previous, rather than the next, column upon column removal.
+    /// Column to activate, rather than a neighbor, when the active column is removed.
     ///
     /// When a new column is created and removed with no focus changes in-between, it is more
-    /// natural to activate the previously-focused column. This variable tracks that.
-    ///
-    /// Since we only create-and-activate columns immediately to the right of the active column (in
-    /// contrast to tabs in Firefox, for example), we can track this as a bool, rather than an
-    /// index of the previous column to activate.
-    ///
-    /// The value is the view offset that the previous column had before, to restore it.
-    activate_prev_column_on_removal: Option<f64>,
+    /// natural to go back to the previously-focused column. This variable tracks that.
+    activate_prev_column_on_removal: Option<PrevColumn>,
 
-    /// View offset to restore after unfullscreening or unmaximizing.
-    view_offset_to_restore: Option<f64>,
+    /// View offset to restore after unfullscreening or unmaximizing, relative to the column.
+    view_offset_to_restore: Option<(ColumnId, f64)>,
 
     /// Windows in the closing animation.
     closing_windows: Vec<ClosingWindow>,
@@ -118,6 +116,17 @@ pub struct ScrollingSpace<W: LayoutElement> {
 
     /// Where on the grid a dropped window goes when it's added.
     grid_drop_area: Option<(W::Id, Area)>,
+}
+
+/// Column to go back to when the column opened from it is removed.
+#[derive(Debug, Clone, Copy)]
+struct PrevColumn {
+    /// Column that was opened.
+    opened: ColumnId,
+    /// Column that was active before it.
+    prev: ColumnId,
+    /// View offset relative to `prev` back then, to restore it.
+    view_offset: f64,
 }
 
 /// Row and column that directional focus is travelling along.
@@ -413,6 +422,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     ) {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
+        // Cell size changes move every window, so keep the view on the active one.
+        let active_x = (!self.columns.is_empty()).then(|| self.column_x(self.active_column_idx));
+
         for (column, data) in zip(&mut self.columns, &mut self.data) {
             column.update_config(view_size, working_area, parent_area, scale, options.clone());
             data.update(column);
@@ -431,6 +443,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.sync_grid(Some(prev_positions), None);
         } else {
             self.sync_grid(None, None);
+            if let Some(active_x) = active_x {
+                self.view_offset
+                    .offset(self.column_x(self.active_column_idx) - active_x);
+            }
         }
 
         // Apply always-center and such right away.
@@ -815,10 +831,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         new_view_offset: f64,
         config: niri_config::Animation,
     ) {
-        let new_col_x = self.column_x(idx);
-        let old_col_x = self.column_x(self.active_column_idx);
-        let offset_delta = old_col_x - new_col_x;
-        self.view_offset.offset(offset_delta);
+        // The view offset is absolute, while new_view_offset is relative to the column.
+        let new_view_offset = self.column_x(idx) + new_view_offset;
 
         let pixel = 1. / self.scale;
 
@@ -1132,6 +1146,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         );
 
         // Place the column on the grid right of the column before it, pushing others aside.
+        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
         let (cols, rows) = self.grid_span_for(&column);
         let id = column.id;
@@ -1155,26 +1170,36 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             self.active_column_idx += 1;
         }
 
-        // Animate movement of other columns.
-        self.sync_grid(Some(prev_positions), anim_config);
+        // Animate movement of other columns, keeping the view still.
+        let shift = self.grid_shift_left_of(&before, self.grid.area(&id).unwrap().col);
+        self.sync_grid_keeping_view(prev_positions, shift, anim_config);
         let idx = self.columns.iter().position(|col| col.id == id).unwrap();
 
         if activate {
             // If this is the first window on an empty workspace, remove the effect of whatever
             // view_offset was left over and skip the animation.
             if was_empty {
-                self.view_offset = ViewOffset::Static(0.);
-                self.view_offset =
-                    ViewOffset::Static(self.compute_new_view_offset_for_column(None, idx, None));
+                let col_x = self.column_x(idx);
+                self.view_offset = ViewOffset::Static(col_x);
+                let offset = self.compute_new_view_offset_for_column(None, idx, None);
+                self.view_offset = ViewOffset::Static(col_x + offset);
             }
 
-            let prev_offset = (!was_empty && idx == self.active_column_idx + 1)
-                .then(|| self.view_offset.stationary());
+            // Gravity can put the new column anywhere in the order, so remember the previous one
+            // by id.
+            let prev = (!was_empty).then(|| {
+                let prev = self.active_column_idx;
+                PrevColumn {
+                    opened: id,
+                    prev: self.columns[prev].id,
+                    view_offset: self.view_offset.stationary() - self.column_x(prev),
+                }
+            });
 
             let anim_config =
                 anim_config.unwrap_or(self.options.animations.horizontal_view_movement.0);
             self.activate_column_with_anim_config(idx, anim_config);
-            self.activate_prev_column_on_removal = prev_offset;
+            self.activate_prev_column_on_removal = prev;
         }
     }
 
@@ -1313,24 +1338,27 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         column_idx: usize,
         anim_config: Option<niri_config::Animation>,
     ) -> Column<W> {
+        let before = self.grid.clone();
         let prev_positions = self.grid_positions();
-        let prev_view_pos = self.view_pos();
+        let was_active = column_idx == self.active_column_idx;
 
         let column = self.columns.remove(column_idx);
         self.data.remove(column_idx);
 
-        // Removing leaves a hole on the grid, and collapses columns of cells that became empty.
-        // This keeps the order of the remaining columns, so the index logic below still holds.
-        self.grid.remove(&column.id);
-        self.sync_grid(Some(prev_positions), anim_config);
-
-        // The view offset is relative to the active column, and the index of the removed active
-        // column now points at the next column, or one past the end of the grid. Unlike niri's
-        // strip, that isn't where the removed column was (say, it was at the bottom of a stack),
-        // so keep the view still and let activating a column below animate it.
-        if column_idx == self.active_column_idx {
-            self.view_offset.offset(prev_view_pos - self.view_pos());
+        // Keep pointing at the same active column so that sync_grid() follows it through the
+        // re-sort. If the active column itself was removed, this points at some other column
+        // until we pick one below.
+        if column_idx < self.active_column_idx {
+            self.active_column_idx -= 1;
         }
+        self.active_column_idx = min(self.active_column_idx, self.columns.len().saturating_sub(1));
+
+        // Removing leaves a hole on the grid, collapses columns of cells that became empty, and
+        // lets gravity pull windows left. The view stays still relative to the windows left of
+        // the removed one, so the ones that moved visibly slide into place.
+        let removed = self.grid.remove(&column.id).unwrap();
+        let shift = self.grid_shift_left_of(&before, removed.col);
+        self.sync_grid_keeping_view(prev_positions, shift, anim_config);
 
         // Stop interactive resize.
         if let Some(resize) = &self.interactive_resize {
@@ -1343,43 +1371,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             }
         }
 
-        if column_idx + 1 == self.active_column_idx {
-            // The previous column, that we were going to activate upon removal of the active
-            // column, has just been itself removed.
-            self.activate_prev_column_on_removal = None;
-        }
-
-        if column_idx == self.active_column_idx {
-            self.view_offset_to_restore = None;
-        }
+        let prev = self.activate_prev_column_on_removal.take();
 
         if self.columns.is_empty() {
+            self.view_offset_to_restore = None;
             return column;
         }
 
         let view_config = anim_config.unwrap_or(self.options.animations.horizontal_view_movement.0);
 
-        if column_idx < self.active_column_idx {
-            // A column to the left was removed; preserve the current position.
-            // FIXME: preserve activate_prev_column_on_removal.
-            self.active_column_idx -= 1;
-            self.activate_prev_column_on_removal = None;
-        } else if column_idx == self.active_column_idx
-            && self.activate_prev_column_on_removal.is_some()
-        {
-            // The active column was removed, and we needed to activate the previous column.
-            if 0 < column_idx {
-                let prev_offset = self.activate_prev_column_on_removal.unwrap();
+        if !was_active {
+            // Keep going back to the previous column, unless that's the one that was removed.
+            self.activate_prev_column_on_removal = prev.filter(|prev| prev.prev != column.id);
 
-                self.activate_column_with_anim_config(self.active_column_idx - 1, view_config);
-
-                // Restore the view offset but make sure to scroll the view in case the
-                // previous window had resized.
-                self.animate_view_offset_with_config(
-                    self.active_column_idx,
-                    prev_offset,
-                    view_config,
-                );
+            // Gravity may have pulled the active column out of view.
+            if !self.view_offset.is_gesture() {
                 self.animate_view_offset_to_column_with_config(
                     None,
                     self.active_column_idx,
@@ -1387,14 +1393,66 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     view_config,
                 );
             }
-        } else {
-            self.activate_column_with_anim_config(
-                min(self.active_column_idx, self.columns.len() - 1),
-                view_config,
-            );
+            return column;
         }
 
+        self.view_offset_to_restore = None;
+
+        // Go back to the column that this one was opened from, if there were no focus changes
+        // in-between.
+        let prev = prev
+            .filter(|prev| prev.opened == column.id)
+            .and_then(|prev| {
+                let idx = self.columns.iter().position(|col| col.id == prev.prev)?;
+                Some((idx, prev.view_offset))
+            });
+        if let Some((idx, prev_offset)) = prev {
+            self.active_column_idx = idx;
+
+            // Restore the view offset but make sure to scroll the view in case the previous
+            // window had resized.
+            self.animate_view_offset_with_config(idx, prev_offset, view_config);
+            self.animate_view_offset_to_column_with_config(None, idx, None, view_config);
+            return column;
+        }
+
+        // Otherwise, go to a neighbor of the removed column.
+        let anchor = self
+            .focus_anchor
+            .filter(|anchor| anchor.column == column.id);
+        let idx = self
+            .removal_fallback(&before, column.id, anchor)
+            .and_then(|id| self.columns.iter().position(|col| col.id == id))
+            .unwrap_or(self.active_column_idx);
+        self.active_column_idx = idx;
+        self.animate_view_offset_to_column_with_config(None, idx, None, view_config);
+
         column
+    }
+
+    /// Column to activate after removing the active `removed` column from `before`.
+    ///
+    /// Prefers the window below or above, like the tile below or above in a niri column, then
+    /// the one to the right or left, like the next or previous column.
+    fn removal_fallback(
+        &self,
+        before: &Grid<ColumnId>,
+        removed: ColumnId,
+        anchor: Option<FocusAnchor>,
+    ) -> Option<ColumnId> {
+        use grid::Direction::{Down, Left, Right, Up};
+
+        let row = anchor.and_then(|anchor| anchor.row);
+        let col = anchor.and_then(|anchor| anchor.col);
+        [(Down, col), (Up, col), (Right, row), (Left, row)]
+            .into_iter()
+            .find_map(|(dir, anchor)| before.adjacent(&removed, dir, anchor))
+            .or_else(|| {
+                [(Right, row), (Left, row)]
+                    .into_iter()
+                    .find_map(|(dir, anchor)| before.neighbor(&removed, dir, anchor))
+            })
+            .copied()
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
@@ -1469,7 +1527,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     // FIXME: when view_offset becomes fractional, this can be made additive too.
                     let new_offset =
                         -(self.working_area.size.w - width) / 2. - self.working_area.loc.x;
-                    new_offset - self.view_offset.target()
+                    self.column_x(col_idx) + new_offset - self.view_offset.target()
                 } else if resize.edges.contains(ResizeEdge::LEFT) {
                     -offset
                 } else {
@@ -1482,7 +1540,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             // When the active column goes fullscreen, store the view offset to restore later.
             let is_normal = self.columns[col_idx].sizing_mode().is_normal();
             if was_normal && !is_normal {
-                self.view_offset_to_restore = Some(self.view_offset.stationary());
+                let id = self.columns[col_idx].id;
+                let offset = self.view_offset.stationary() - self.column_x(col_idx);
+                self.view_offset_to_restore = Some((id, offset));
             }
 
             // Upon unfullscreening, restore the view offset.
@@ -1495,7 +1555,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // Take the value unconditionally, even if the view is currently frozen by
                 // a view gesture. It shouldn't linger around because it's only valid for this
                 // particular unfullscreen.
-                self.view_offset_to_restore.take()
+                let id = self.columns[col_idx].id;
+                self.view_offset_to_restore
+                    .take()
+                    .filter(|(restore_id, _)| *restore_id == id)
+                    .map(|(_, offset)| offset)
             } else {
                 None
             };
@@ -1591,33 +1655,15 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             .unwrap();
 
         let col = &self.columns[col_idx];
-        let removing_last = col.tiles.len() == 1;
 
         // Skip closing animation for invisible tiles in a tabbed column.
         if col.display_mode == ColumnDisplay::Tabbed && tile_idx != col.active_tile_idx {
             return;
         }
 
+        // The view doesn't follow the active column, so the window closes where it is. If the
+        // strip shifts under it on removal, sync_grid_keeping_view() moves it along.
         tile_pos.x += self.view_pos();
-
-        if col_idx < self.active_column_idx {
-            let offset = if removing_last {
-                self.column_x(col_idx + 1) - self.column_x(col_idx)
-            } else {
-                self.data[col_idx].width
-                    - col
-                        .data
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, data)| {
-                            (idx != tile_idx).then_some(NotNan::new(data.size.w).unwrap())
-                        })
-                        .max()
-                        .map(NotNan::into_inner)
-                        .unwrap()
-            };
-            tile_pos.x -= offset;
-        }
 
         self.start_close_animation_for_tile(renderer, snapshot, tile_size, tile_pos, blocker);
     }
@@ -1856,10 +1902,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.columns.insert(new_idx, column);
         self.data.insert(new_idx, data);
 
-        // Preserve the camera position when moving to the left.
-        let view_offset_delta = -self.column_x(self.active_column_idx) + current_col_x;
-        self.view_offset.offset(view_offset_delta);
-
         // The column we just moved is offset by the difference between its new and old position.
         let new_col_x = self.column_x(new_idx);
         self.columns[new_idx].animate_move_x_from(current_col_x - new_col_x);
@@ -2001,8 +2043,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 // However, if it was already going to be activated, leave the offset as is. This
                 // improves the workflow that has become common with tabbed columns: open a new
                 // window, then immediately consume it left as a new tab.
+                let view_offset = self.view_offset.stationary() - self.column_x(source_col_idx);
                 self.activate_prev_column_on_removal
-                    .get_or_insert(self.view_offset.stationary() + offset.x);
+                    .get_or_insert(PrevColumn {
+                        opened: self.columns[source_col_idx].id,
+                        prev: self.columns[target_column_idx].id,
+                        view_offset: view_offset + offset.x,
+                    });
             }
 
             offset += self.columns[source_col_idx].render_offset();
@@ -2504,11 +2551,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn view_pos(&self) -> f64 {
-        self.column_x(self.active_column_idx) + self.view_offset.current()
+        self.view_offset.current()
     }
 
     pub fn target_view_pos(&self) -> f64 {
-        self.column_x(self.active_column_idx) + self.view_offset.target()
+        self.view_offset.target()
     }
 
     // HACK: pass a self.data iterator in manually as a workaround for the lack of method partial
@@ -2799,7 +2846,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     pub fn active_window_visual_rectangle(&self) -> Option<Rectangle<f64, Logical>> {
         let col = self.columns.get(self.active_column_idx)?;
 
-        let final_view_offset = self.view_offset.target();
+        let final_view_offset = self.view_offset.target() - self.column_x(self.active_column_idx);
         let view_off = Point::from((-final_view_offset, 0.));
 
         let (tile, tile_off) = col.tiles().nth(col.active_tile_idx).unwrap();
@@ -3389,6 +3436,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn dnd_scroll_gesture_scroll(&mut self, delta: f64) -> bool {
+        let bounds = self.dnd_scroll_bounds();
+
         let ViewOffset::Gesture(gesture) = &mut self.view_offset else {
             return false;
         };
@@ -3427,32 +3476,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let view_offset = gesture.tracker.pos() + gesture.delta_from_tracker;
 
         // Clamp it so that it doesn't go too much out of bounds.
-        let (leftmost, rightmost) = if self.columns.is_empty() {
-            (0., 0.)
-        } else {
-            let gaps = self.options.layout.gaps;
-
-            let mut leftmost = -self.working_area.size.w;
-
-            let last_col_idx = self.columns.len() - 1;
-            let last_col_x = self
-                .columns
-                .iter()
-                .take(last_col_idx)
-                .fold(0., |col_x, col| col_x + col.width() + gaps);
-            let last_col_width = self.data[last_col_idx].width;
-            let mut rightmost = last_col_x + last_col_width - self.working_area.loc.x;
-
-            let active_col_x = self
-                .columns
-                .iter()
-                .take(self.active_column_idx)
-                .fold(0., |col_x, col| col_x + col.width() + gaps);
-            leftmost -= active_col_x;
-            rightmost -= active_col_x;
-
-            (leftmost, rightmost)
-        };
+        let (leftmost, rightmost) = bounds;
         let min_offset = f64::min(leftmost, rightmost);
         let max_offset = f64::max(leftmost, rightmost);
         let clamped_offset = view_offset.clamp(min_offset, max_offset);
@@ -3460,6 +3484,21 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         gesture.delta_from_tracker += clamped_offset - view_offset;
         gesture.current_view_offset = clamped_offset;
         true
+    }
+
+    /// How far DnD scrolling can move the view: from a working area width left of the grid, to
+    /// the left edge of the working area reaching the right edge of the rightmost window.
+    fn dnd_scroll_bounds(&self) -> (f64, f64) {
+        if self.columns.is_empty() {
+            return (0., 0.);
+        }
+
+        let leftmost = -self.working_area.size.w;
+        let right_edge = zip(self.column_xs(self.data.iter().copied()), &self.data)
+            .map(|(col_x, data)| col_x + data.width)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let rightmost = right_edge - self.working_area.loc.x;
+        (leftmost, rightmost)
     }
 
     pub fn view_offset_gesture_end(&mut self, is_touchpad: Option<bool>) -> bool {
@@ -3498,20 +3537,24 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let end_pos = gesture.tracker.projected_end_pos() * norm_factor;
         let target_view_offset = end_pos + gesture.delta_from_tracker;
 
-        // Compute the snapping points. These are where the view aligns with column boundaries on
-        // either side.
+        // Compute the snapping points. These are where the view aligns with window edges on
+        // either side, with windows at their X on the grid.
         struct Snap {
-            // View position relative to x = 0 (the first column).
+            // View position relative to x = 0 (the left edge of the grid).
             view_pos: f64,
             // Column to activate for this snapping point.
             col_idx: usize,
         }
 
+        let col_xs: Vec<f64> = self
+            .column_xs(self.data.iter().copied())
+            .take(self.columns.len())
+            .collect();
         let mut snapping_points = Vec::new();
 
         if self.is_centering_focused_column() {
-            let mut col_x = 0.;
             for (col_idx, col) in self.columns.iter().enumerate() {
+                let col_x = col_xs[col_idx];
                 let col_w = col.width();
                 let mode = col.sizing_mode();
 
@@ -3531,8 +3574,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                     col_x - (area.size.w - col_w) / 2. - left_strut
                 };
                 snapping_points.push(Snap { view_pos, col_idx });
-
-                col_x += col_w + self.options.layout.gaps;
             }
         } else {
             let center_on_overflow = matches!(
@@ -3543,243 +3584,191 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             let view_width = self.view_size.w;
             let gaps = self.options.layout.gaps;
 
-            let snap_points =
-                |col_x, col: &Column<W>, prev_col_w: Option<f64>, next_col_w: Option<f64>| {
-                    let col_w = col.width();
-                    let mode = col.sizing_mode();
+            // Width of the window next to the column in `dir` on the grid, if any.
+            let adjacent_w = |col: &Column<W>, dir| {
+                let id = self.grid.adjacent(&col.id, dir, None)?;
+                self.columns
+                    .iter()
+                    .find(|col| col.id == *id)
+                    .map(|col| col.width())
+            };
 
-                    let area = if mode.is_maximized() {
-                        self.parent_area
-                    } else {
-                        self.working_area
-                    };
+            let snap_points = |col_x, col: &Column<W>| {
+                let col_w = col.width();
+                let mode = col.sizing_mode();
 
-                    let left_strut = area.loc.x;
-                    let right_strut = self.view_size.w - area.size.w - area.loc.x;
-
-                    // Normal columns align with the working area, but fullscreen columns align with
-                    // the view size.
-                    if mode.is_fullscreen() {
-                        let left = col_x;
-                        let right = left + col_w;
-                        (left, right)
-                    } else {
-                        // Logic from compute_new_view_offset.
-                        let padding = if mode.is_maximized() {
-                            0.
-                        } else {
-                            ((area.size.w - col_w) / 2.).clamp(0., gaps)
-                        };
-
-                        let center = if area.size.w <= col_w {
-                            col_x - left_strut
-                        } else {
-                            col_x - (area.size.w - col_w) / 2. - left_strut
-                        };
-                        let is_overflowing = |adj_col_w: Option<f64>| {
-                            center_on_overflow
-                                && adj_col_w
-                                    .filter(|adj_col_w| {
-                                        // NOTE: This logic won't work entirely correctly with small
-                                        // fixed-size maximized windows (they have a different area
-                                        // and padding).
-                                        center_on_overflow
-                                            && adj_col_w + 3.0 * gaps + col_w > area.size.w
-                                    })
-                                    .is_some()
-                        };
-
-                        let left = if is_overflowing(next_col_w) {
-                            center
-                        } else {
-                            col_x - padding - left_strut
-                        };
-                        let right = if is_overflowing(prev_col_w) {
-                            center + view_width
-                        } else {
-                            col_x + col_w + padding + right_strut
-                        };
-                        (left, right)
-                    }
+                let area = if mode.is_maximized() {
+                    self.parent_area
+                } else {
+                    self.working_area
                 };
 
-            // Prevent the gesture from snapping further than the first/last column, as this is
-            // generally undesired.
-            //
-            // It's ok if leftmost_snap is > rightmost_snap (this happens if the columns on a
-            // workspace total up to less than the workspace width).
+                let left_strut = area.loc.x;
+                let right_strut = self.view_size.w - area.size.w - area.loc.x;
 
-            // The first column's left snap isn't actually guaranteed to be the *leftmost* snap.
-            // With weird enough left strut and perhaps a maximized small fixed-size window, you
-            // can make the second window's left snap be further to the left than the first
-            // window's. The same goes for the rightmost snap.
-            //
-            // This isn't actually a big problem because it's very much an obscure edge case. Just
-            // need to make sure the code doesn't panic when that happens.
-            let leftmost_snap = snap_points(
-                0.,
-                &self.columns[0],
-                None,
-                self.columns.get(1).map(|c| c.width()),
-            )
-            .0;
-            let last_col_idx = self.columns.len() - 1;
-            let last_col_x = self
-                .columns
-                .iter()
-                .take(last_col_idx)
-                .fold(0., |col_x, col| col_x + col.width() + gaps);
-            let rightmost_snap = snap_points(
-                last_col_x,
-                &self.columns[last_col_idx],
-                last_col_idx
-                    .checked_sub(1)
-                    .and_then(|idx| self.columns.get(idx).map(|c| c.width())),
-                None,
-            )
-            .1 - view_width;
+                // Normal columns align with the working area, but fullscreen columns align with
+                // the view size.
+                if mode.is_fullscreen() {
+                    let left = col_x;
+                    let right = left + col_w;
+                    (left, right)
+                } else {
+                    // Logic from compute_new_view_offset.
+                    let padding = if mode.is_maximized() {
+                        0.
+                    } else {
+                        ((area.size.w - col_w) / 2.).clamp(0., gaps)
+                    };
 
-            snapping_points.push(Snap {
-                view_pos: leftmost_snap,
-                col_idx: 0,
-            });
-            snapping_points.push(Snap {
-                view_pos: rightmost_snap,
-                col_idx: last_col_idx,
-            });
+                    let center = if area.size.w <= col_w {
+                        col_x - left_strut
+                    } else {
+                        col_x - (area.size.w - col_w) / 2. - left_strut
+                    };
+                    let is_overflowing = |adj_col_w: Option<f64>| {
+                        // NOTE: This logic won't work entirely correctly with small fixed-size
+                        // maximized windows (they have a different area and padding).
+                        center_on_overflow
+                            && adj_col_w.is_some_and(|adj_col_w| {
+                                adj_col_w + 3.0 * gaps + col_w > area.size.w
+                            })
+                    };
 
-            let mut push = |col_idx, left, right| {
-                if leftmost_snap < left && left < rightmost_snap {
-                    snapping_points.push(Snap {
-                        view_pos: left,
-                        col_idx,
-                    });
-                }
-
-                let right = right - view_width;
-                if leftmost_snap < right && right < rightmost_snap {
-                    snapping_points.push(Snap {
-                        view_pos: right,
-                        col_idx,
-                    });
+                    let left = if is_overflowing(adjacent_w(col, grid::Direction::Right)) {
+                        center
+                    } else {
+                        col_x - padding - left_strut
+                    };
+                    let right = if is_overflowing(adjacent_w(col, grid::Direction::Left)) {
+                        center + view_width
+                    } else {
+                        col_x + col_w + padding + right_strut
+                    };
+                    (left, right - view_width)
                 }
             };
 
-            let mut col_x = 0.;
-            for (col_idx, col) in self.columns.iter().enumerate() {
-                let (left, right) = snap_points(
-                    col_x,
-                    col,
-                    col_idx
-                        .checked_sub(1)
-                        .and_then(|idx| self.columns.get(idx).map(|c| c.width())),
-                    self.columns.get(col_idx + 1).map(|c| c.width()),
-                );
-                push(col_idx, left, right);
+            let snaps: Vec<(f64, f64)> = self
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(col_idx, col)| snap_points(col_xs[col_idx], col))
+                .collect();
 
-                col_x += col.width() + gaps;
+            // Prevent the gesture from snapping further than the leftmost or rightmost window, as
+            // this is generally undesired.
+            //
+            // It's ok if leftmost_snap is > rightmost_snap (this happens if the windows on a
+            // workspace span less than the workspace width).
+            let (leftmost_idx, leftmost_snap) = snaps
+                .iter()
+                .map(|(left, _)| *left)
+                .enumerate()
+                .min_by_key(|(_, left)| NotNan::new(*left).unwrap())
+                .unwrap();
+            let (rightmost_idx, rightmost_snap) = snaps
+                .iter()
+                .map(|(_, right)| *right)
+                .enumerate()
+                .max_by_key(|(_, right)| NotNan::new(*right).unwrap())
+                .unwrap();
+
+            snapping_points.push(Snap {
+                view_pos: leftmost_snap,
+                col_idx: leftmost_idx,
+            });
+            snapping_points.push(Snap {
+                view_pos: rightmost_snap,
+                col_idx: rightmost_idx,
+            });
+
+            for (col_idx, (left, right)) in snaps.into_iter().enumerate() {
+                for view_pos in [left, right] {
+                    if leftmost_snap < view_pos && view_pos < rightmost_snap {
+                        snapping_points.push(Snap { view_pos, col_idx });
+                    }
+                }
             }
         }
 
         // Find the closest snapping point.
-        snapping_points.sort_by_key(|snap| NotNan::new(snap.view_pos).unwrap());
-
-        let active_col_x = self.column_x(self.active_column_idx);
-        let target_view_pos = active_col_x + target_view_offset;
         let target_snap = snapping_points
             .iter()
-            .min_by_key(|snap| NotNan::new((snap.view_pos - target_view_pos).abs()).unwrap())
+            .min_by_key(|snap| NotNan::new((snap.view_pos - target_view_offset).abs()).unwrap())
             .unwrap();
 
         let mut new_col_idx = target_snap.col_idx;
 
         if !self.is_centering_focused_column() {
-            // Focus the furthest window towards the direction of the gesture.
-            if target_view_offset >= current_view_offset {
-                for col_idx in (new_col_idx + 1)..self.columns.len() {
-                    let col = &self.columns[col_idx];
-                    let col_x = self.column_x(col_idx);
-                    let col_w = col.width();
-                    let mode = col.sizing_mode();
+            // Focus the furthest window towards the direction of the gesture that is fully visible
+            // after snapping, preferring the row the user was in.
+            let view_pos = target_snap.view_pos;
+            let is_visible = |col_idx: usize| {
+                let col = &self.columns[col_idx];
+                let col_x = col_xs[col_idx];
+                let col_w = col.width();
+                let mode = col.sizing_mode();
 
-                    let area = if mode.is_maximized() {
-                        self.parent_area
-                    } else {
-                        self.working_area
-                    };
-
-                    let left_strut = area.loc.x;
-
-                    if mode.is_fullscreen() {
-                        if target_snap.view_pos + self.view_size.w < col_x + col_w {
-                            break;
-                        }
-                    } else {
-                        let padding = if mode.is_maximized() {
-                            0.
-                        } else {
-                            ((area.size.w - col_w) / 2.).clamp(0., self.options.layout.gaps)
-                        };
-
-                        if target_snap.view_pos + left_strut + area.size.w < col_x + col_w + padding
-                        {
-                            break;
-                        }
-                    }
-
-                    new_col_idx = col_idx;
+                if mode.is_fullscreen() {
+                    return view_pos <= col_x && col_x + col_w <= view_pos + self.view_size.w;
                 }
-            } else {
-                for col_idx in (0..new_col_idx).rev() {
-                    let col = &self.columns[col_idx];
-                    let col_x = self.column_x(col_idx);
-                    let col_w = col.width();
-                    let mode = col.sizing_mode();
 
-                    let area = if mode.is_maximized() {
-                        self.parent_area
-                    } else {
-                        self.working_area
-                    };
+                let area = if mode.is_maximized() {
+                    self.parent_area
+                } else {
+                    self.working_area
+                };
+                let padding = if mode.is_maximized() {
+                    0.
+                } else {
+                    ((area.size.w - col_w) / 2.).clamp(0., self.options.layout.gaps)
+                };
 
-                    let left_strut = area.loc.x;
+                view_pos + area.loc.x <= col_x - padding
+                    && col_x + col_w + padding <= view_pos + area.loc.x + area.size.w
+            };
 
-                    if mode.is_fullscreen() {
-                        if col_x < target_snap.view_pos {
-                            break;
-                        }
-                    } else {
-                        let padding = if mode.is_maximized() {
-                            0.
+            let row = self.columns.get(self.active_column_idx).and_then(|col| {
+                let anchor = self.focus_anchor.filter(|anchor| anchor.column == col.id);
+                let area = self.grid.area(&col.id)?;
+                Some(anchor.and_then(|anchor| anchor.row).unwrap_or(area.row))
+            });
+            let in_row = |col_idx: usize| {
+                let area = self.grid.area(&self.columns[col_idx].id);
+                row.zip(area)
+                    .is_some_and(|(row, area)| area.row <= row && row < area.bottom())
+            };
+
+            let forward = target_view_offset >= current_view_offset;
+            let furthest = |in_row_only: bool| {
+                (0..self.columns.len())
+                    .filter(|&idx| is_visible(idx) && (!in_row_only || in_row(idx)))
+                    .max_by_key(|&idx| {
+                        let left = NotNan::new(col_xs[idx]).unwrap();
+                        let right = NotNan::new(col_xs[idx] + self.columns[idx].width()).unwrap();
+                        if forward {
+                            (right, left)
                         } else {
-                            ((area.size.w - col_w) / 2.).clamp(0., self.options.layout.gaps)
-                        };
-
-                        if col_x - padding < target_snap.view_pos + left_strut {
-                            break;
+                            (-left, -right)
                         }
-                    }
-
-                    new_col_idx = col_idx;
-                }
+                    })
+            };
+            if let Some(idx) = furthest(true).or_else(|| furthest(false)) {
+                new_col_idx = idx;
             }
         }
 
-        let new_col_x = self.column_x(new_col_idx);
-        let delta = active_col_x - new_col_x;
-
         if self.active_column_idx != new_col_idx {
             self.view_offset_to_restore = None;
+            self.activate_prev_column_on_removal = None;
         }
 
         self.active_column_idx = new_col_idx;
 
-        let target_view_offset = target_snap.view_pos - new_col_x;
-
         self.view_offset = ViewOffset::Animation(Animation::new(
             self.clock.clone(),
-            current_view_offset + delta,
-            target_view_offset,
+            current_view_offset,
+            target_snap.view_pos,
             velocity,
             self.options.animations.horizontal_view_movement.0,
         ));
@@ -4092,11 +4081,26 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
             let col = &self.columns[self.active_column_idx];
 
-            if self.view_offset_to_restore.is_some() {
+            if let Some((id, _)) = self.view_offset_to_restore {
+                assert_eq!(
+                    id, col.id,
+                    "view_offset_to_restore must be for the active column"
+                );
                 assert!(
                     !col.sizing_mode().is_normal(),
                     "when view_offset_to_restore is set, \
                      the active column must be fullscreen or maximized"
+                );
+            }
+
+            if let Some(prev) = &self.activate_prev_column_on_removal {
+                assert_eq!(
+                    prev.opened, col.id,
+                    "activate_prev_column_on_removal must be for the active column"
+                );
+                assert!(
+                    self.columns.iter().any(|col| col.id == prev.prev),
+                    "activate_prev_column_on_removal must point to an existing column"
                 );
             }
         }
@@ -4203,13 +4207,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         anim_config: Option<niri_config::Animation>,
     ) {
         let active_id = self.columns.get(self.active_column_idx).map(|col| col.id);
-        let prev_id = |this: &Self| {
-            this.active_column_idx
-                .checked_sub(1)
-                .and_then(|idx| this.columns.get(idx))
-                .map(|col| col.id)
-        };
-        let prev_id_before = prev_id(self);
 
         // Sort top-left first. This keeps column X non-decreasing with the index, which the
         // view code relies on.
@@ -4226,13 +4223,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         if let Some(id) = active_id {
             self.active_column_idx = self.columns.iter().position(|col| col.id == id).unwrap();
-        }
-
-        // The view offset to restore on removal belongs to the column before the active one.
-        // Windows falling into place can put a different column there, and restoring the offset
-        // on that one would throw the view off.
-        if prev_id(self) != prev_id_before {
-            self.activate_prev_column_on_removal = None;
         }
 
         let animate = prev_positions.is_some();
@@ -4317,12 +4307,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let before = self.grid.clone();
         let prev_positions = self.grid_positions();
-        let prev_view_pos = self.view_pos();
         if !self.grid.move_window(&id, dir) {
             return false;
         }
 
-        self.finish_grid_move(id, &before, prev_positions, prev_view_pos);
+        self.finish_grid_move(id, &before, prev_positions);
         true
     }
 
@@ -4347,9 +4336,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let before = self.grid.clone();
         let prev_positions = self.grid_positions();
-        let prev_view_pos = self.view_pos();
         self.grid.set_area(&id, Area { col, ..area }, dir);
-        self.finish_grid_move(id, &before, prev_positions, prev_view_pos);
+        self.finish_grid_move(id, &before, prev_positions);
     }
 
     /// Syncs columns after moving the active window, keeping the windows that stayed in place
@@ -4359,10 +4347,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         id: ColumnId,
         before: &Grid<ColumnId>,
         prev_positions: Vec<(ColumnId, Point<f64, Logical>)>,
-        prev_view_pos: f64,
     ) {
         let shift = self.grid_shift(before, id);
-        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
+        self.sync_grid_keeping_view(prev_positions, shift, None);
         self.animate_view_offset_to_column_with_config(
             None,
             self.active_column_idx,
@@ -4376,41 +4363,32 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     /// Collapsing empty columns and windows going past column 0 shift whole parts of the strip.
     /// This takes the most common column change among windows other than `except`.
     fn grid_shift(&self, before: &Grid<ColumnId>, except: ColumnId) -> f64 {
-        let mut counts: Vec<(i32, usize)> = Vec::new();
-        for (id, area) in self.grid.iter() {
-            let Some(prev) = before.area(id).filter(|_| *id != except) else {
-                continue;
-            };
-            let delta = area.col - prev.col;
-            match counts.iter_mut().find(|(d, _)| *d == delta) {
-                Some((_, count)) => *count += 1,
-                None => counts.push((delta, 1)),
-            }
-        }
-
-        let shift = counts
-            .into_iter()
-            .max_by_key(|&(delta, count)| (count, -delta.abs()))
-            .map_or(0, |(delta, _)| delta);
-        self.grid_x(shift)
+        self.grid_shift_among(before, |id, _| id != except)
     }
 
-    /// How far the strip moved under the windows entirely left of `id` after a grid change.
+    /// How far the strip moved under the windows entirely left of column `col` (on `before`)
+    /// after a grid change.
     ///
-    /// Resizing or dropping a window can't move the windows to its left other than by shifting
-    /// the whole strip, so they make a good reference for keeping the view still. Zero if there
-    /// are none.
-    fn grid_shift_left_of(&self, before: &Grid<ColumnId>, id: ColumnId) -> f64 {
-        let Some(left) = before.area(&id).map(|area| area.col) else {
-            return 0.;
-        };
+    /// Adding, removing, resizing or dropping a window can't move the windows to its left other
+    /// than by shifting the whole strip, so they make a good reference for keeping the view still.
+    /// Zero if there are none.
+    fn grid_shift_left_of(&self, before: &Grid<ColumnId>, col: i32) -> f64 {
+        self.grid_shift_among(before, |_, prev| prev.right() <= col)
+    }
 
+    /// Most common column change among the windows on both grids that pass `filter`, which gets
+    /// their area on `before`.
+    fn grid_shift_among(
+        &self,
+        before: &Grid<ColumnId>,
+        mut filter: impl FnMut(ColumnId, Area) -> bool,
+    ) -> f64 {
         let mut counts: Vec<(i32, usize)> = Vec::new();
-        for (other, prev) in before.iter() {
-            if prev.right() > left {
+        for (&id, prev) in before.iter() {
+            if !filter(id, prev) {
                 continue;
             }
-            let Some(area) = self.grid.area(other) else {
+            let Some(area) = self.grid.area(&id) else {
                 continue;
             };
             let delta = area.col - prev.col;
@@ -4435,7 +4413,6 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let before = self.grid.clone();
         let prev_positions = self.grid_positions();
-        let prev_view_pos = self.view_pos();
         self.grid.set_pinned(None);
 
         let moved = self
@@ -4446,25 +4423,29 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             return;
         }
 
-        let shift = self.grid_shift_left_of(&before, id);
-        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
+        let shift = self.grid_shift_left_of(&before, before.area(&id).unwrap().col);
+        self.sync_grid_keeping_view(prev_positions, shift, None);
     }
 
     /// Syncs columns after a grid change, keeping the view still relative to the windows that
     /// stayed in place, given how far the strip moved under them.
+    ///
+    /// The view is otherwise left alone: the windows that did move animate there on screen.
     fn sync_grid_keeping_view(
         &mut self,
         mut prev_positions: Vec<(ColumnId, Point<f64, Logical>)>,
-        prev_view_pos: f64,
         shift: f64,
+        anim_config: Option<niri_config::Animation>,
     ) {
         for (_, pos) in &mut prev_positions {
             pos.x += shift;
         }
-        self.sync_grid(Some(prev_positions), None);
+        self.sync_grid(Some(prev_positions), anim_config);
 
-        let delta = prev_view_pos + shift - self.view_pos();
-        self.view_offset.offset(delta);
+        self.view_offset.offset(shift);
+        for closing in &mut self.closing_windows {
+            closing.offset(Point::from((shift, 0.)));
+        }
     }
 
     /// Resizes a window by dragging its edges, snapping to cells and pushing others aside.
@@ -4556,9 +4537,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let shift = self.grid_x(new_edge) - self.grid_x(prev_edge);
 
         let prev_positions = self.grid_positions();
-        let prev_view_pos = self.view_pos();
         self.grid = grid;
-        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
+        self.sync_grid_keeping_view(prev_positions, shift, None);
         true
     }
 
@@ -4616,15 +4596,14 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
         let before = self.grid.clone();
         let prev_positions = self.grid_positions();
-        let prev_view_pos = self.view_pos();
         let cols = cols.unwrap_or(area.cols);
         let rows = rows.unwrap_or(area.rows);
         if !self.grid.resize(&id, cols, rows) {
             return;
         }
 
-        let shift = self.grid_shift_left_of(&before, id);
-        self.sync_grid_keeping_view(prev_positions, prev_view_pos, shift);
+        let shift = self.grid_shift_left_of(&before, before.area(&id).unwrap().col);
+        self.sync_grid_keeping_view(prev_positions, shift, None);
 
         // Make sure the resized window stays in view.
         if self.columns[self.active_column_idx].id == id && !self.view_offset.is_gesture() {

@@ -348,6 +348,23 @@ impl<K: Clone + PartialEq> Grid<K> {
     /// one direction never skips a window. Windows overlapping the anchor break ties, then
     /// windows overlapping the current window's span, then the distance from the anchor.
     pub fn neighbor(&self, id: &K, dir: Direction, anchor: Option<i32>) -> Option<&K> {
+        self.find_neighbor(id, dir, anchor, false)
+    }
+
+    /// Like [`Self::neighbor`], but only finds windows that share rows (for left and right) or
+    /// columns (for up and down) with `id`, the way columns in a strip or tiles in a column
+    /// are next to each other.
+    pub fn adjacent(&self, id: &K, dir: Direction, anchor: Option<i32>) -> Option<&K> {
+        self.find_neighbor(id, dir, anchor, true)
+    }
+
+    fn find_neighbor(
+        &self,
+        id: &K,
+        dir: Direction,
+        anchor: Option<i32>,
+        strict: bool,
+    ) -> Option<&K> {
         let area = self.area(id)?;
         let (start, end) = area.cross_span(dir);
         let anchor = anchor.unwrap_or(start).clamp(start, end - 1);
@@ -371,6 +388,8 @@ impl<K: Clone + PartialEq> Grid<K> {
                     0
                 } else if s < end && start < e {
                     1
+                } else if strict {
+                    return None;
                 } else {
                     2
                 };

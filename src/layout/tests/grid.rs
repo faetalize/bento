@@ -29,11 +29,12 @@ fn focused_id(layout: &Layout<TestWindow>) -> usize {
     layout.focus().unwrap().0.id
 }
 
-fn settle() -> [Op; 4] {
+fn settle() -> [Op; 5] {
     [
         Op::Communicate(1),
         Op::Communicate(2),
         Op::Communicate(3),
+        Op::Communicate(4),
         Op::CompleteAnimations,
     ]
 }
@@ -177,11 +178,10 @@ fn closing_a_window_collapses_empty_columns() {
     ops.extend(settle());
     let layout = check_ops(ops);
 
-    // Window 3 slides into the place of window 2. The view stays on the active window 3, like in
-    // niri.
+    // Window 3 slides into the place of window 2, and the view stays still.
     assert_snapshot!(format_tiles(&layout), @"
+    99 × 688 at x:  16 y: 16
     99 × 688 at x: 131 y: 16
-    99 × 688 at x: 246 y: 16
     ");
 }
 
@@ -476,5 +476,169 @@ fn dragging_a_window_that_fell_left_keeps_the_view_still() {
     assert_snapshot!(format_tiles(&layout), @"
     99 × 336 at x:  16 y: 16
     99 × 336 at x: 131 y: 16
+    ");
+}
+
+/// Windows 1 and 2 on the top half, window 3 in the bottom half under window 1.
+fn set_up_two_over_one() -> Vec<Op> {
+    let half = || SizeChange::SetProportion(50.);
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: half(),
+        },
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: half(),
+        },
+        add_window(3),
+        Op::SetWindowHeight {
+            id: Some(3),
+            change: half(),
+        },
+    ];
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.extend(settle());
+    ops
+}
+
+#[test]
+fn closing_a_window_keeps_focus_on_another() {
+    let mut ops = set_up_two_over_one();
+    ops.push(Op::FocusWindow(2));
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x: 131 y: 16
+    99 × 336 at x:  16 y:368
+    ");
+
+    // Closing window 1 lets window 2 slide left, which reorders the windows.
+    let mut ops = vec![Op::CloseWindow(1)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_eq!(focused_id(&layout), 2);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x:  16 y:368
+    ");
+}
+
+#[test]
+fn closing_the_focused_window_focuses_the_one_above() {
+    let mut ops = set_up_two_over_one();
+    // Focus away and back so that closing window 3 doesn't go back to window 2 it was opened from.
+    ops.extend([Op::FocusWindow(1), Op::FocusWindow(3), Op::CloseWindow(3)]);
+    ops.extend(settle());
+    let layout = check_ops(ops);
+    assert_eq!(focused_id(&layout), 1);
+}
+
+#[test]
+fn closing_a_new_window_goes_back_to_the_previous_one() {
+    // Window 1 on top of window 2, both on the left.
+    let half = || SizeChange::SetProportion(50.);
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: half(),
+        },
+        add_window(2),
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: half(),
+        },
+    ];
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.push(Op::MoveColumnLeft);
+    ops.push(Op::FocusWindow(1));
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y: 16
+    99 × 336 at x:  16 y:368
+    ");
+
+    // Window 3 opens right of window 1, after window 2 in the order.
+    let mut ops = vec![add_window(3)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_eq!(focused_id(&layout), 3);
+
+    let mut ops = vec![Op::CloseWindow(3)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_eq!(focused_id(&layout), 1);
+}
+
+#[test]
+fn swiping_snaps_to_window_edges_with_stacked_windows() {
+    // Windows 1 and 2 stacked on the left, then windows 3 and 4, all half the view wide.
+    let half = || SizeChange::SetProportion(50.);
+    let mut ops = vec![Op::AddOutput(1)];
+    for id in 1..=4 {
+        ops.extend([
+            add_window(id),
+            Op::SetWindowWidth {
+                id: Some(id),
+                change: half(),
+            },
+        ]);
+    }
+    ops.extend([
+        Op::SetWindowHeight {
+            id: Some(1),
+            change: half(),
+        },
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: half(),
+        },
+        Op::FocusWindow(2),
+    ]);
+    ops.extend(std::iter::repeat_n(Op::MoveWindowDown, 6));
+    ops.extend([Op::MoveColumnLeft, Op::FocusWindow(1)]);
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    616 × 336 at x:  16 y: 16
+    616 × 336 at x:  16 y:368
+    616 × 688 at x: 648 y: 16
+    616 × 688 at x:1280 y: 16
+    ");
+
+    // Swipe right by a bit over one window.
+    let mut ops = vec![
+        Op::ViewOffsetGestureBegin {
+            output_idx: 1,
+            workspace_idx: None,
+            is_touchpad: false,
+        },
+        Op::ViewOffsetGestureUpdate {
+            delta: 700.,
+            timestamp: Duration::from_millis(100),
+            is_touchpad: false,
+        },
+        Op::ViewOffsetGestureEnd {
+            is_touchpad: Some(false),
+        },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+
+    // The view snaps to window 3 on the left and window 4 on the right, focusing window 4 as the
+    // furthest in the direction of the swipe.
+    assert_eq!(focused_id(&layout), 4);
+    assert_snapshot!(format_tiles(&layout), @"
+    616 × 336 at x:-616 y: 16
+    616 × 336 at x:-616 y:368
+    616 × 688 at x:  16 y: 16
+    616 × 688 at x: 648 y: 16
     ");
 }
