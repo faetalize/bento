@@ -116,7 +116,16 @@ pub struct ScrollingSpace<W: LayoutElement> {
     grid_resize_original: Option<Grid<ColumnId>>,
 
     /// Where on the grid a dropped window goes when it's added.
-    grid_drop_area: Option<(W::Id, Area)>,
+    grid_drop: Option<GridDrop<W::Id>>,
+}
+
+/// Where on the grid a dropped window goes.
+#[derive(Debug)]
+struct GridDrop<Id> {
+    window: Id,
+    area: Area,
+    /// Window that gives up some of its cells to the dropped window, and its area after.
+    split: Option<(ColumnId, Area)>,
 }
 
 /// Size of a tiled window on the grid, as the user or a window rule chose it.
@@ -430,7 +439,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             cell_metrics,
             focus_anchor: None,
             grid_resize_original: None,
-            grid_drop_area: None,
+            grid_drop: None,
         }
     }
 
@@ -1207,12 +1216,17 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         let prev_positions = self.grid_positions();
         let (cols, rows) = self.grid_span_for(&column);
         let id = column.id;
-        let drop_area = self
-            .grid_drop_area
+        let drop = self
+            .grid_drop
             .take()
-            .filter(|(window, _)| column.contains(window));
-        if let Some((_, area)) = drop_area {
-            self.grid.insert(id, area);
+            .filter(|drop| column.contains(&drop.window));
+        if let Some(drop) = drop {
+            let mut areas = vec![(id, drop.area)];
+            areas.extend(
+                drop.split
+                    .filter(|(target, _)| self.grid.area(target).is_some()),
+            );
+            self.grid.place(areas);
         } else {
             match idx.checked_sub(1).and_then(|i| self.columns.get(i)) {
                 Some(after) => self.grid.insert_after(id, Some(&after.id), cols, rows),
@@ -2985,12 +2999,8 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let loc = Point::from((self.column_x(column_index) + origin_x, y));
                 Rectangle::new(loc, size)
             }
-            InsertPosition::Cell(area) => {
-                let geometry = self.grid_geometry(area);
-                let loc =
-                    Point::from((self.grid_x(area.col), self.working_area.loc.y + geometry.y));
-                Rectangle::new(loc, geometry.size)
-            }
+            InsertPosition::Cell(area) => self.grid_rect(area),
+            InsertPosition::Split(idx, dir) => self.grid_rect(self.grid_split_landing(idx, dir)?),
             InsertPosition::Floating => return None,
         };
 
@@ -4320,6 +4330,13 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         round_logical_in_physical(self.scale, f64::from(col) * (m.cell_w + m.gap))
     }
 
+    /// Rectangle of a grid area in strip coordinates.
+    fn grid_rect(&self, area: Area) -> Rectangle<f64, Logical> {
+        let geometry = self.grid_geometry(area);
+        let loc = Point::from((self.grid_x(area.col), self.working_area.loc.y + geometry.y));
+        Rectangle::new(loc, geometry.size)
+    }
+
     /// Tile geometry for a grid area.
     fn grid_geometry(&self, area: Area) -> GridGeometry {
         let rect = self.cell_metrics.rect(area);
@@ -5403,6 +5420,10 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         tile_size: Size<f64, Logical>,
         pointer_ratio: (f64, f64),
     ) -> InsertPosition {
+        if let Some((idx, dir)) = self.grid_split_at(pos) {
+            return InsertPosition::Split(idx, dir);
+        }
+
         let m = &self.cell_metrics;
 
         let cols =
@@ -5438,7 +5459,114 @@ impl<W: LayoutElement> ScrollingSpace<W> {
 
     /// Makes `window` go to `area` on the grid when it's added next.
     pub fn set_grid_drop_area(&mut self, window: W::Id, area: Area) {
-        self.grid_drop_area = Some((window, area));
+        self.grid_drop = Some(GridDrop {
+            window,
+            area,
+            split: None,
+        });
+    }
+
+    /// Makes `window`, when it's added next, take the half of the cells of the column at `idx`
+    /// on the side in `dir`.
+    pub fn set_grid_split_drop(&mut self, window: W::Id, idx: usize, dir: grid::Direction) {
+        let Some((area, target_area)) = self.grid_split_areas(idx, dir) else {
+            return;
+        };
+        self.grid_drop = Some(GridDrop {
+            window,
+            area,
+            split: Some((self.columns[idx].id, target_area)),
+        });
+    }
+
+    /// Areas that a window dropped to split the column at `idx` in `dir` and the column get.
+    ///
+    /// The dropped window takes the half on the side in `dir`, rounding down.
+    fn grid_split_areas(&self, idx: usize, dir: grid::Direction) -> Option<(Area, Area)> {
+        let a = self.grid.area(&self.columns.get(idx)?.id)?;
+        let areas = match dir {
+            grid::Direction::Left => {
+                let n = a.cols / 2;
+                (
+                    Area::new(a.col, a.row, n, a.rows),
+                    Area::new(a.col + n, a.row, a.cols - n, a.rows),
+                )
+            }
+            grid::Direction::Right => {
+                let n = a.cols / 2;
+                (
+                    Area::new(a.right() - n, a.row, n, a.rows),
+                    Area::new(a.col, a.row, a.cols - n, a.rows),
+                )
+            }
+            grid::Direction::Up => {
+                let n = a.rows / 2;
+                (
+                    Area::new(a.col, a.row, a.cols, n),
+                    Area::new(a.col, a.row + n, a.cols, a.rows - n),
+                )
+            }
+            grid::Direction::Down => {
+                let n = a.rows / 2;
+                (
+                    Area::new(a.col, a.bottom() - n, a.cols, n),
+                    Area::new(a.col, a.row, a.cols, a.rows - n),
+                )
+            }
+        };
+        (areas.0.cols > 0 && areas.0.rows > 0).then_some(areas)
+    }
+
+    /// Column and side to split for a window dropped with the pointer at `pos`, relative to the
+    /// view: the pointer is over the column, close to that edge.
+    fn grid_split_at(&self, pos: Point<f64, Logical>) -> Option<(usize, grid::Direction)> {
+        let x = pos.x + self.view_pos();
+        let y = pos.y;
+        let m = &self.cell_metrics;
+
+        let (idx, area, rect) = self.columns.iter().enumerate().find_map(|(idx, col)| {
+            let area = self.grid.area(&col.id).unwrap();
+            let rect = self.grid_rect(area);
+            let (loc, size) = (rect.loc, rect.size);
+            let inside = loc.x <= x && x < loc.x + size.w && loc.y <= y && y < loc.y + size.h;
+            inside.then_some((idx, area, rect))
+        })?;
+        let col = &self.columns[idx];
+        if !col.sizing_mode().is_normal() || !col.pending_sizing_mode().is_normal() {
+            return None;
+        }
+
+        // The edges are a quarter of the window deep at most, so that the middle always drops
+        // normally.
+        let (loc, size) = (rect.loc, rect.size);
+        let zone_w = (size.w / 4.).min(m.cell_w);
+        let zone_h = (size.h / 4.).min(m.cell_h);
+        let edges = [
+            (grid::Direction::Left, x - loc.x, zone_w, area.cols),
+            (
+                grid::Direction::Right,
+                loc.x + size.w - x,
+                zone_w,
+                area.cols,
+            ),
+            (grid::Direction::Up, y - loc.y, zone_h, area.rows),
+            (grid::Direction::Down, loc.y + size.h - y, zone_h, area.rows),
+        ];
+        edges
+            .into_iter()
+            .filter(|&(_, dist, zone, span)| span >= 2 && dist < zone)
+            .min_by(|a, b| (a.1 / a.2).total_cmp(&(b.1 / b.2)))
+            .map(|(dir, ..)| (idx, dir))
+    }
+
+    /// Where a window dropped to split the column at `idx` in `dir` lands, after pushing and
+    /// gravity.
+    fn grid_split_landing(&self, idx: usize, dir: grid::Direction) -> Option<Area> {
+        let (area, target_area) = self.grid_split_areas(idx, dir)?;
+        let mut grid = self.grid.clone();
+        let id = ColumnId::specific(u64::MAX);
+        grid.place(vec![(id, area), (self.columns[idx].id, target_area)]);
+        grid.area(&id)
     }
 
     /// Index of the column with `window`, or of the active column.

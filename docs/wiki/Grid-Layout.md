@@ -64,6 +64,10 @@ The [`default-column-width`](./Configuration:-Window-Rules.md#default-column-wid
 
 When you drag a window with the mouse, bento shows the cells where it will land, after pushing other windows aside and applying left gravity, and drops it there.
 
+Holding the pointer close to an edge of another window splits that window instead: the dragged window takes the half of its cells on that side, and the other window keeps the rest.
+The edges are a cell deep, or a quarter of the window for small windows, so dropping in the middle of a window works as usual.
+A window that is one cell wide or tall can't be split that way.
+
 ### Resizing windows
 
 `set-column-width`, `set-window-height`, `switch-preset-column-width`, `switch-preset-window-height` and their `-back` variants all work in cells.

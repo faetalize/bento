@@ -4288,9 +4288,18 @@ impl<W: LayoutElement> Layout<W> {
                             None,
                         );
                     }
-                    InsertPosition::Cell(area) => {
-                        let ws_id = mon.workspaces[ws_idx].id();
-                        mon.workspaces[ws_idx].set_grid_drop_area(win_id.clone(), area);
+                    InsertPosition::Cell(_) | InsertPosition::Split(..) => {
+                        let ws = &mut mon.workspaces[ws_idx];
+                        match position {
+                            InsertPosition::Split(idx, dir) => {
+                                ws.set_grid_split_drop(win_id.clone(), idx, dir)
+                            }
+                            InsertPosition::Cell(area) => {
+                                ws.set_grid_drop_area(win_id.clone(), area)
+                            }
+                            _ => unreachable!(),
+                        }
+                        let ws_id = ws.id();
                         mon.add_tile(
                             move_.tile,
                             MonitorAddWindowTarget::Workspace {

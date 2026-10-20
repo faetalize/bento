@@ -18,7 +18,7 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
-use super::grid::Area;
+use super::grid::{Area, Direction};
 use super::scrolling::{
     Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
 };
@@ -1936,6 +1936,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub(super) fn set_grid_drop_area(&mut self, window: W::Id, area: Area) {
         self.scrolling.set_grid_drop_area(window, area);
+    }
+
+    pub(super) fn set_grid_split_drop(&mut self, window: W::Id, idx: usize, dir: Direction) {
+        self.scrolling.set_grid_split_drop(window, idx, dir);
     }
 
     pub(super) fn insert_hint_area(

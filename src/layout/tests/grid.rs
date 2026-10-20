@@ -368,6 +368,56 @@ fn dropping_a_window_into_a_cell() {
     ");
 }
 
+/// Drags `window` from `start` and drops it with the pointer at `end`.
+fn drag(window: usize, start: Point<f64, Logical>, end: Point<f64, Logical>) -> Vec<Op> {
+    let mut ops = vec![
+        Op::InteractiveMoveBegin {
+            window,
+            output_idx: 1,
+            px: start.x,
+            py: start.y,
+        },
+        Op::InteractiveMoveUpdate {
+            window,
+            dx: end.x - start.x,
+            dy: end.y - start.y,
+            output_idx: 1,
+            px: end.x,
+            py: end.y,
+        },
+        Op::InteractiveMoveEnd { window },
+    ];
+    ops.extend(settle());
+    ops
+}
+
+#[test]
+fn dropping_on_the_edge_of_a_window_splits_it() {
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2), add_window(3)];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // Drop window 3 at the top edge of window 1: 3 takes the top half and 1 keeps the bottom.
+    let start = Point::from((16. + 4. * COL_STEP + 50., 300.));
+    let end = Point::from((16. + 50., 16. + 10.));
+    check_ops_on_layout(&mut layout, drag(3, start, end));
+    assert_snapshot!(format_tiles(&layout), @"
+    99 × 336 at x:  16 y:368
+    99 × 688 at x: 131 y: 16
+    99 × 336 at x:  16 y: 16
+    ");
+
+    // Drop window 2 at the left edge of window 1: 2 takes the left column, 1 the right one.
+    let start = Point::from((16. + 2. * COL_STEP + 50., 300.));
+    let end = Point::from((16. + 5., 16. + 9. * ROW_STEP));
+    check_ops_on_layout(&mut layout, drag(2, start, end));
+    assert_snapshot!(format_tiles(&layout), @"
+    42 × 336 at x:  73 y:368
+    41 × 336 at x:  16 y:368
+    99 × 336 at x:  16 y: 16
+    ");
+}
+
 #[test]
 fn dragging_the_bottom_window_of_a_stack_keeps_the_view_still() {
     // Window 2 under window 1, focused.

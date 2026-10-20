@@ -10,7 +10,7 @@ use smithay::backend::renderer::element::utils::{
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use super::grid::Area;
+use super::grid::{Area, Direction};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::scrolling::{Column, ColumnWidth, GridSpan};
 use super::tile::Tile;
@@ -134,6 +134,8 @@ pub(super) enum InsertPosition {
     InColumn(usize, usize),
     /// Area on bento's cell grid.
     Cell(Area),
+    /// Half of the cells of the column at the index, on the side in the direction.
+    Split(usize, Direction),
     Floating,
 }
 

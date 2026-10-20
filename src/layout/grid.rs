@@ -279,6 +279,40 @@ impl<K: Clone + PartialEq> Grid<K> {
         self.finish(before)
     }
 
+    /// Sets the areas of several windows at once, adding the ones not in the grid yet, and pushes
+    /// other overlapping windows to the right.
+    ///
+    /// The areas must not overlap each other. Returns whether any window changed position or
+    /// size.
+    pub fn place(&mut self, areas: Vec<(K, Area)>) -> bool {
+        let before = self.items.clone();
+
+        let mut pinned = Vec::with_capacity(areas.len());
+        for (id, area) in areas {
+            let area = self.clamp_area(area);
+            let idx = match self.idx(&id) {
+                Some(idx) => {
+                    self.items[idx].1 = area;
+                    idx
+                }
+                None => {
+                    self.items.push((id, area));
+                    self.items.len() - 1
+                }
+            };
+            pinned.push(idx);
+        }
+        debug_assert!(
+            pinned.iter().enumerate().all(|(n, &i)| pinned[..n]
+                .iter()
+                .all(|&j| !self.items[i].1.overlaps(&self.items[j].1))),
+            "placed areas must not overlap"
+        );
+
+        self.settle(&pinned, Direction::Right);
+        self.finish(before)
+    }
+
     /// Resizes a window to `cols` × `rows`, keeping its top-left corner.
     ///
     /// Growing down pushes windows below it down; growing right pushes windows right.
