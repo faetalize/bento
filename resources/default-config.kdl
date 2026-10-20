@@ -107,6 +107,20 @@ input {
     position x=1280 y=0
 }
 
+// The tiling layout: where windows go, and what the layout actions do.
+// "bento" puts windows on a grid of cells, "niri" gives niri's scrollable columns,
+// and a path loads a layout file.
+// https://github.com/faetalize/bento/blob/layout-host/docs/wiki/Configuration:-Tiling-Layouts.md
+tiling {
+    layout "bento"
+
+    // Options that the layout declares.
+    options {
+        // With gravity, windows slide left until they touch another window.
+        // gravity false
+    }
+}
+
 // Settings that influence how windows are positioned and sized.
 // Find more information on the wiki:
 // https://niri-wm.github.io/niri/Configuration:-Layout
@@ -576,6 +590,11 @@ binds {
     // Expand the focused column to space not taken up by other fully visible columns.
     // Makes the column "fill the rest of the space".
     Mod+Ctrl+F { expand-column-to-available-width; }
+
+    // Actions that the tiling layout adds run with layout-action.
+    // The bento layout's "arrange" fits the windows in view to the screen:
+    // halves, a main window with a stack, tiles. Press again for the next way.
+    Mod+A { layout-action "arrange"; }
 
     Mod+C { center-column; }
 

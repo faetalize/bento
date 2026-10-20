@@ -4,6 +4,7 @@
 * [Important Software](./Important-Software.md)
 * [Workspaces](./Workspaces.md)
 * [Floating Windows](./Floating-Windows.md)
+* [Grid Layout](./Grid-Layout.md)
 * [Tabs](./Tabs.md)
 * [Overview](./Overview.md)
 * [Screencasting](./Screencasting.md)
