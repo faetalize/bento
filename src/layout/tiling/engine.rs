@@ -20,7 +20,11 @@ use serde::Deserialize;
 const PRELUDE: &str = include_str!("../../../resources/layouts/prelude.js");
 
 /// Layouts that ship with bento.
-const BUILT_IN: &[(&str, &str)] = &[("fallback", FALLBACK)];
+const BUILT_IN: &[(&str, &str)] = &[
+    ("bento", include_str!("../../../resources/layouts/bento.js")),
+    ("niri", include_str!("../../../resources/layouts/niri.js")),
+    ("fallback", FALLBACK),
+];
 
 /// The layout used when the configured one fails to load: windows side by side.
 const FALLBACK: &str = r#"

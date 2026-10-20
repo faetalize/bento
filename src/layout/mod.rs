@@ -403,7 +403,7 @@ enum MonitorSet<W: LayoutElement> {
     },
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Options {
     pub layout: niri_config::Layout,
     pub tiling: niri_config::Tiling,
@@ -668,6 +668,32 @@ impl HitType {
                 is_tab_indicator: false,
             },
             HitType::Activate { .. } => self,
+        }
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        // niri's layout tests check the niri layout, which should behave like niri.
+        let tiling = if cfg!(test) {
+            niri_config::Tiling {
+                layout: niri_config::TilingLayout::BuiltIn(String::from("niri")),
+                options: Vec::new(),
+            }
+        } else {
+            niri_config::Tiling::default()
+        };
+
+        Self {
+            layout: Default::default(),
+            tiling,
+            animations: Default::default(),
+            gestures: Default::default(),
+            overview: Default::default(),
+            blur: Default::default(),
+            disable_resize_throttling: false,
+            disable_transactions: false,
+            deactivate_unfocused_windows: false,
         }
     }
 }

@@ -1,5 +1,6 @@
-//! Tests for the tiling host, with the built-in fallback layout, which puts windows side by side,
-//! each half the working area wide.
+//! Tests for the tiling host: mostly with the built-in fallback layout, which puts windows side by
+//! side, each half the working area wide, and a few with the shipped layouts, to check that they
+//! run in the engine.
 //!
 //! The test output is 1280 × 720 with 16 px gaps.
 
@@ -10,9 +11,13 @@ use insta::assert_snapshot;
 use super::*;
 
 fn options() -> Options {
+    options_for("fallback")
+}
+
+fn options_for(layout: &str) -> Options {
     Options {
         tiling: niri_config::Tiling {
-            layout: niri_config::TilingLayout::BuiltIn(String::from("fallback")),
+            layout: niri_config::TilingLayout::BuiltIn(String::from(layout)),
             options: Vec::new(),
         },
         ..Options::default()
@@ -94,5 +99,53 @@ fn layout_places_windows_and_moves_the_camera() {
     assert_snapshot!(format_tiles(&layout), @"
     616 × 688 at x: -616 y: 16
     616 × 688 at x:   16 y: 16 focused
+    ");
+}
+
+#[test]
+fn niri_layout_runs_in_the_engine() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ];
+    ops.extend([
+        Op::FocusColumnLeft,
+        Op::ConsumeOrExpelWindowLeft { id: None },
+    ]);
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for("niri"), ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    100 × 336 at x:   16 y: 16
+    100 × 336 at x:   16 y:368 focused
+    100 × 688 at x:  132 y: 16
+    ");
+}
+
+#[test]
+fn bento_layout_runs_in_the_engine() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ];
+    ops.extend([
+        Op::SetWindowHeight {
+            id: Some(2),
+            change: SizeChange::SetProportion(50.),
+        },
+        Op::SetWindowHeight {
+            id: Some(3),
+            change: SizeChange::SetProportion(50.),
+        },
+    ]);
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for("bento"), ops);
+    assert_snapshot!(format_tiles(&layout), @"
+      99 × 688 at x:   16 y: 16
+      99 × 336 at x:  131 y: 16
+      99 × 336 at x:  246 y: 16 focused
     ");
 }
