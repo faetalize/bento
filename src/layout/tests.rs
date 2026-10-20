@@ -614,6 +614,7 @@ enum Op {
         id: Option<usize>,
     },
     ExpandColumnToAvailableWidth,
+    ArrangeVisibleWindows,
     ToggleWindowFloating {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
@@ -1351,6 +1352,7 @@ impl Op {
                 layout.reset_window_height(id.as_ref());
             }
             Op::ExpandColumnToAvailableWidth => layout.expand_column_to_available_width(),
+            Op::ArrangeVisibleWindows => layout.arrange_visible_windows(),
             Op::ToggleWindowFloating { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.toggle_window_floating(id.as_ref());

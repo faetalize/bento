@@ -11,7 +11,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
-use super::grid::{self, Area, CellMetrics, Grid};
+use super::grid::{self, Area, Arrangement, CellMetrics, Grid};
 use super::monitor::InsertPosition;
 use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
@@ -117,6 +117,10 @@ pub struct ScrollingSpace<W: LayoutElement> {
 
     /// Where on the grid a dropped window goes when it's added.
     grid_drop: Option<GridDrop<W::Id>>,
+
+    /// Last arrangement the arrange action applied, as its index in the cycle and the areas it
+    /// gave the windows, so that applying it again goes on to the next one.
+    grid_arrangement: Option<(usize, Vec<(ColumnId, Area)>)>,
 }
 
 /// Where on the grid a dropped window goes.
@@ -440,6 +444,7 @@ impl<W: LayoutElement> ScrollingSpace<W> {
             focus_anchor: None,
             grid_resize_original: None,
             grid_drop: None,
+            grid_arrangement: None,
         }
     }
 
@@ -4731,6 +4736,101 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.sync_grid(Some(prev_positions), None);
         if !self.view_offset.is_gesture() {
             self.animate_view_offset_to_column(None, self.active_column_idx, None);
+        }
+    }
+
+    /// Arranges the windows in view to fill it exactly, or if they're still arranged the way this
+    /// left them, rearranges them the next way.
+    pub fn arrange_visible_windows(&mut self) {
+        if !GRID_LAYOUT {
+            return;
+        }
+        let Some(active) = self.columns.get(self.active_column_idx) else {
+            return;
+        };
+        if !active.pending_sizing_mode().is_normal() {
+            return;
+        }
+        let active_id = active.id;
+
+        // The columns of cells the view shows, once it's lined up with them.
+        let m = self.cell_metrics;
+        let step = m.cell_w + m.gap;
+        let view_left = self.target_view_pos() + self.working_area.loc.x + m.gap;
+        let mut first = (view_left / step).round() as i32;
+        if self.grid.left_gravity() {
+            first = first.max(0);
+        }
+        let cols = m.cols_per_view;
+        let end = first + cols;
+
+        // Windows mostly in view, left to right.
+        let mut windows: Vec<(ColumnId, Area)> = self
+            .columns
+            .iter()
+            .filter(|col| col.pending_sizing_mode().is_normal())
+            .map(|col| (col.id, self.grid.area(&col.id).unwrap()))
+            .filter(|&(id, a)| {
+                let inside = a.right().min(end) - a.col.max(first);
+                id == active_id || inside * 2 >= a.cols
+            })
+            .collect();
+        windows.sort_by_key(|(_, a)| (a.col, a.row));
+        let n = windows.len();
+
+        // Go on to the next arrangement if the windows are still where the last one put them.
+        // Otherwise start from the first one that changes something.
+        let still_arranged = self.grid_arrangement.as_ref().filter(|(_, areas)| {
+            areas.len() == n
+                && areas
+                    .iter()
+                    .all(|(id, area)| windows.contains(&(*id, *area)))
+        });
+        let arrangements = Arrangement::for_count(n);
+        let start = still_arranged.map_or(0, |(idx, _)| idx + 1);
+
+        let mut chosen = None;
+        for i in 0..arrangements.len() {
+            let idx = (start + i) % arrangements.len();
+            let arrangement = arrangements[idx];
+            let Some(areas) = arrangement.areas(n as i32, first, cols, m.rows) else {
+                continue;
+            };
+
+            let mut order: Vec<ColumnId> = windows.iter().map(|(id, _)| *id).collect();
+            if arrangement.has_main() {
+                let pos = order.iter().position(|id| *id == active_id).unwrap();
+                let main = order.remove(pos);
+                order.insert(0, main);
+            }
+            let placed: Vec<(ColumnId, Area)> = zip(order, areas).collect();
+
+            let changes = placed.iter().any(|placed| !windows.contains(placed));
+            if still_arranged.is_some() || changes {
+                chosen = Some((idx, placed));
+                break;
+            }
+        }
+        let Some((idx, placed)) = chosen else {
+            return;
+        };
+
+        for col in &mut self.columns {
+            if placed.iter().any(|(id, _)| *id == col.id) {
+                cancel_resize_for_column(&mut self.interactive_resize, col);
+            }
+        }
+
+        let prev_positions = self.grid_positions();
+        self.grid.place(placed.clone());
+        self.sync_grid(Some(prev_positions), None);
+        self.grid_arrangement = Some((idx, placed));
+
+        // Line the view up with the arranged cells.
+        if !self.view_offset.is_gesture() {
+            let x = self.grid_x(first) - m.gap - self.working_area.loc.x;
+            let idx = self.active_column_idx;
+            self.animate_view_offset(idx, x - self.column_x(idx));
         }
     }
 

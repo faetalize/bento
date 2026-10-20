@@ -581,6 +581,11 @@ binds {
     // Makes the column "fill the rest of the space".
     Mod+Ctrl+F { expand-column-to-available-width; }
 
+    // Arrange the windows in view to fill the screen: halves, a main window
+    // with a stack beside it, tiles and so on. Press again for the next way.
+    // The focused window becomes the main one.
+    Mod+A { arrange-visible-windows; }
+
     Mod+C { center-column; }
 
     // Center all fully visible columns on screen.

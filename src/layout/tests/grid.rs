@@ -393,7 +393,12 @@ fn drag(window: usize, start: Point<f64, Logical>, end: Point<f64, Logical>) -> 
 
 #[test]
 fn dropping_on_the_edge_of_a_window_splits_it() {
-    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2), add_window(3)];
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ];
     ops.extend(settle());
     let mut layout = check_ops(ops);
 
@@ -1035,6 +1040,48 @@ fn fullscreen_pushes_windows_aside_until_it_ends() {
     99 × 336 at x: 131 y: 16
     99 × 336 at x: 131 y:368
     ");
+}
+
+#[test]
+fn arranging_cycles_through_layouts_that_fill_the_view() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+        Op::FocusWindow(2),
+        Op::ArrangeVisibleWindows,
+    ];
+    ops.extend(settle());
+    let mut layout = check_ops(ops);
+
+    // The focused window is the main one, with the others stacked beside it.
+    assert_snapshot!(format_tiles(&layout), @"
+    616 × 336 at x: 648 y: 16
+    616 × 688 at x:  16 y: 16
+    616 × 336 at x: 648 y:368
+    ");
+
+    // Then side by side, in their order on screen.
+    let mut ops = vec![Op::ArrangeVisibleWindows];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    386 × 688 at x: 476 y: 16
+    444 × 688 at x:  16 y: 16
+    386 × 688 at x: 878 y: 16
+    ");
+
+    // Then back to the first one.
+    let mut ops = vec![Op::ArrangeVisibleWindows];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    assert_snapshot!(format_tiles(&layout), @"
+    616 × 336 at x: 648 y: 16
+    616 × 688 at x:  16 y: 16
+    616 × 336 at x: 648 y:368
+    ");
+    assert_eq!(focused_id(&layout), 2);
 }
 
 #[test]

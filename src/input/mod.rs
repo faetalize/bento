@@ -2118,6 +2118,9 @@ impl State {
             Action::ExpandColumnToAvailableWidth => {
                 self.niri.layout.expand_column_to_available_width();
             }
+            Action::ArrangeVisibleWindows => {
+                self.niri.layout.arrange_visible_windows();
+            }
             Action::ShowHotkeyOverlay => {
                 if self.niri.hotkey_overlay.show() {
                     self.niri.queue_redraw_all();

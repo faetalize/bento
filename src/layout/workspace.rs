@@ -1297,6 +1297,13 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
+    pub fn arrange_visible_windows(&mut self) {
+        if self.floating_is_active.get() {
+            return;
+        }
+        self.scrolling.arrange_visible_windows();
+    }
+
     pub fn expand_column_to_available_width(&mut self) {
         if self.floating_is_active.get() {
             return;

@@ -765,6 +765,9 @@ pub enum Action {
     },
     /// Expand the focused column to space not taken up by other fully visible columns.
     ExpandColumnToAvailableWidth {},
+    /// Arrange the windows in view to fill it, or if they're already arranged, rearrange them
+    /// the next way.
+    ArrangeVisibleWindows {},
     /// Switch between keyboard layouts.
     SwitchLayout {
         /// Layout to switch to.

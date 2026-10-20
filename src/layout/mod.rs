@@ -3158,6 +3158,13 @@ impl<W: LayoutElement> Layout<W> {
         workspace.reset_window_height(window);
     }
 
+    pub fn arrange_visible_windows(&mut self) {
+        let Some(workspace) = self.active_workspace_mut() else {
+            return;
+        };
+        workspace.arrange_visible_windows();
+    }
+
     pub fn expand_column_to_available_width(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;

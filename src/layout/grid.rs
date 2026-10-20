@@ -777,6 +777,89 @@ impl<K: Clone + PartialEq> Grid<K> {
     }
 }
 
+/// A way to arrange windows so that they exactly fill a region of the grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrangement {
+    /// Side by side, all equally wide.
+    Columns,
+    /// A main window on the left taking `num / den` of the width, the others stacked on the
+    /// right.
+    MainAndStack { num: i32, den: i32 },
+    /// Equal columns, about as many as rows of windows in them, filled top to bottom.
+    Tiles,
+}
+
+impl Arrangement {
+    /// Arrangements for `n` windows, in the order the arrange action cycles through them.
+    pub fn for_count(n: usize) -> &'static [Arrangement] {
+        use Arrangement::*;
+        const HALF: Arrangement = MainAndStack { num: 1, den: 2 };
+        match n {
+            0 | 1 => &[Columns],
+            2 => &[Columns, MainAndStack { num: 2, den: 3 }],
+            3 => &[HALF, Columns],
+            _ => &[Tiles, HALF, Columns],
+        }
+    }
+
+    /// Whether the first window gets a special place, so it should be the focused one rather
+    /// than the first one from the left.
+    pub fn has_main(self) -> bool {
+        matches!(self, Arrangement::MainAndStack { .. })
+    }
+
+    /// Areas for `n` windows filling `cols` × `rows` cells from column `col`, or `None` if they
+    /// don't fit.
+    pub fn areas(self, n: i32, col: i32, cols: i32, rows: i32) -> Option<Vec<Area>> {
+        if n < 1 {
+            return None;
+        }
+
+        // Windows in vertical stacks, given as the number of columns and windows in each stack.
+        let stacks: Vec<(i32, i32)> = match self {
+            Arrangement::Columns => {
+                let widths = split_evenly(cols, n)?;
+                widths.into_iter().map(|w| (w, 1)).collect()
+            }
+            Arrangement::MainAndStack { .. } if n == 1 => vec![(cols, 1)],
+            Arrangement::MainAndStack { num, den } => {
+                if cols < 2 {
+                    return None;
+                }
+                let main = (cols * num / den).clamp(1, cols - 1);
+                vec![(main, 1), (cols - main, n - 1)]
+            }
+            Arrangement::Tiles => {
+                let k = (1..=n).find(|k| k * k >= n).unwrap();
+                let widths = split_evenly(cols, k)?;
+                zip(widths, split_evenly(n, k)?).collect()
+            }
+        };
+
+        let mut areas = Vec::with_capacity(n as usize);
+        let mut x = col;
+        for (w, count) in stacks {
+            let mut y = 0;
+            for h in split_evenly(rows, count)? {
+                areas.push(Area::new(x, y, w, h));
+                y += h;
+            }
+            x += w;
+        }
+        Some(areas)
+    }
+}
+
+/// Splits `total` cells into `n` spans as equal as possible, larger ones first, or `None` if
+/// there are fewer cells than spans.
+fn split_evenly(total: i32, n: i32) -> Option<Vec<i32>> {
+    (0 < n && n <= total).then(|| {
+        (0..n)
+            .map(|i| total / n + i32::from(i < total % n))
+            .collect()
+    })
+}
+
 /// Pixel geometry of the cell grid for a given view size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
@@ -1176,6 +1259,43 @@ mod tests {
         assert!(g.resize(&2, 2, R));
         g.verify_invariants();
         assert_eq!(area(&g, 3), Area::new(6, 0, 4, R));
+    }
+
+    #[test]
+    fn arrangements_fill_the_region() {
+        for n in 1..=8 {
+            for &arrangement in Arrangement::for_count(n) {
+                let n = n as i32;
+                let areas = arrangement.areas(n, 3, 22, 12).unwrap();
+                assert_eq!(areas.len(), n as usize);
+                for (i, a) in areas.iter().enumerate() {
+                    assert!(a.col >= 3 && a.right() <= 25 && a.row >= 0 && a.bottom() <= 12);
+                    assert!(areas[..i].iter().all(|b| !a.overlaps(b)), "{arrangement:?}");
+                }
+                let cells: i32 = areas.iter().map(|a| a.cols * a.rows).sum();
+                assert_eq!(cells, 22 * 12, "{arrangement:?} with {n} windows");
+            }
+        }
+
+        let half = Arrangement::MainAndStack { num: 1, den: 2 };
+        assert_eq!(
+            half.areas(3, 0, 22, 12).unwrap(),
+            [
+                Area::new(0, 0, 11, 12),
+                Area::new(11, 0, 11, 6),
+                Area::new(11, 6, 11, 6)
+            ]
+        );
+        assert_eq!(
+            Arrangement::Tiles.areas(5, 0, 22, 12).unwrap(),
+            [
+                Area::new(0, 0, 8, 6),
+                Area::new(0, 6, 8, 6),
+                Area::new(8, 0, 7, 6),
+                Area::new(8, 6, 7, 6),
+                Area::new(15, 0, 7, 12),
+            ]
+        );
     }
 
     #[test]
