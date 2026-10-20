@@ -846,11 +846,124 @@ describe("grid layout", () => {
     });
 });
 
+describe("split and swap", () => {
+    /** A and B stacked on the left half, C on the right half at full height. */
+    async function setUpStackAndOne() {
+        const host = await setup({ config: { defaultColumnWidth: { proportion: 0.5 } } });
+        const a = host.open();
+        const b = host.open();
+        host.action("consume-or-expel-window-left");
+        const c = host.open();
+        assert.deepEqual(tiles(host), [
+            "616 × 336 at x:16 y:16",
+            "616 × 336 at x:16 y:368",
+            "616 × 688 at x:648 y:16",
+        ]);
+        return { host, a, b, c };
+    }
+
+    test("splitting side by side gives the window the half facing it", async () => {
+        const { host, a, c } = await setUpStackAndOne();
+
+        // The first press picks A and highlights it.
+        host.activate(a);
+        assert.equal(host.action("split-h"), true);
+        assert.deepEqual(host.hint, { x: 0, y: 16, w: 616, h: 336 });
+
+        // The second press moves C into A's right half; A keeps the larger half.
+        host.activate(c);
+        assert.equal(host.action("split-h"), true);
+        assert.equal(host.hint, null);
+        assert.deepEqual(tiles(host), [
+            "329 × 336 at x:16 y:16",
+            "616 × 336 at x:16 y:368",
+            "271 × 336 at x:361 y:16",
+        ]);
+        assert.equal(host.focused, c);
+    });
+
+    test("splitting the bottom window of a stack", async () => {
+        const { host, b, c } = await setUpStackAndOne();
+        host.activate(b);
+        host.action("split-h");
+        host.activate(c);
+        host.action("split-h");
+        assert.deepEqual(tiles(host), [
+            "616 × 336 at x:16 y:16",
+            "329 × 336 at x:16 y:368",
+            "271 × 336 at x:361 y:368",
+        ]);
+    });
+
+    test("splitting stacked gives the window the half facing it", async () => {
+        const host = await setup({ config: { defaultColumnWidth: { proportion: 0.5 } } });
+        const a = host.open();
+        const b = host.open();
+        host.action("split-v");
+        host.activate(a);
+        host.action("split-v");
+
+        // A and B are level, so A goes below B, and the column it left collapses.
+        assert.deepEqual(tiles(host), ["616 × 336 at x:16 y:368", "616 × 336 at x:16 y:16"]);
+        assert.equal(host.focused, a);
+        assert.equal(host.action("focus-window-up"), true);
+        assert.equal(host.focused, b);
+    });
+
+    test("swapping trades places and sizes", async () => {
+        const { host, a, c } = await setUpStackAndOne();
+        host.activate(a);
+        host.action("swap");
+        host.activate(c);
+        host.action("swap");
+        assert.deepEqual(tiles(host), [
+            "616 × 688 at x:648 y:16",
+            "616 × 336 at x:16 y:368",
+            "616 × 336 at x:16 y:16",
+        ]);
+    });
+
+    test("picking the same window again cancels", async () => {
+        const { host, a } = await setUpStackAndOne();
+        host.activate(a);
+        const before = tiles(host);
+        host.action("swap");
+        host.action("swap");
+        assert.equal(host.hint, null);
+        assert.deepEqual(tiles(host), before);
+    });
+
+    test("a picked window that closes ends the action", async () => {
+        const { host, a, c } = await setUpStackAndOne();
+        host.activate(a);
+        host.action("split-h");
+        host.close(a);
+        assert.equal(host.hint, null);
+
+        // The next press starts over.
+        host.activate(c);
+        host.action("split-h");
+        assert.deepEqual(host.hint, host.rect(c));
+    });
+
+    test("windows one cell across can't be split that way", async () => {
+        const host = await setup();
+        const a = host.open({ defaultWidth: { fixed: 30 } });
+        const b = host.open();
+        host.activate(a);
+        host.action("split-h");
+        host.activate(b);
+        const before = tiles(host);
+        assert.equal(host.action("split-h"), false);
+        assert.deepEqual(tiles(host), before);
+    });
+});
+
 describe("layout API", () => {
     test("declares the gravity option", async () => {
         const host = await setup();
         assert.equal(host.meta.name, "bento");
-        assert.deepEqual(host.meta.actions, []);
+        assert.deepEqual(host.meta.actions, ["split-h", "split-v", "swap"]);
         assert.deepEqual(host.meta.options, { gravity: "boolean" });
     });
 

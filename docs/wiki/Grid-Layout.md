@@ -87,6 +87,26 @@ With left gravity, windows can't be pushed past the left edge of the grid, and t
 Without gravity, dragging a left edge grows the window to the left too, pushing the windows there further left.
 The window you're resizing stays put until you let go, then falls into place with left gravity.
 
+### Splitting and swapping
+
+The bento layout has three actions of its own for two windows at a time:
+
+- `layout-action "split-h"` splits a window's cells in two side by side, and gives one half to another window.
+- `layout-action "split-v"` does the same with stacked halves.
+- `layout-action "swap"` swaps two windows' places and sizes.
+
+Each takes two presses.
+The first press picks the focused window and highlights it.
+Then focus another window as usual, and press again.
+For a split, the second window moves into the half of the first one on its side, judged by their centers; when they're level, it takes the right or bottom half.
+The first window keeps the larger half of an odd number of cells, and windows one cell wide (or tall, for `split-v`) can't be split that way.
+Pressing again on the window you picked first cancels.
+
+For example, with A and B stacked on the left and C beside them, focusing A, pressing `split-h`, focusing C and pressing `split-h` again puts C next to A, above B.
+
+The cells the second window leaves free up, and with left gravity the windows around them slide in.
+So a window that moves into cells to the right of where it was can slide back into its old place if nothing else takes it.
+
 ### Columns and stacks
 
 Some actions talk about columns.

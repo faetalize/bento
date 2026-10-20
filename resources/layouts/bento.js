@@ -28,7 +28,20 @@ export const meta = {
     api: 1,
     name: "bento",
     description: "Windows on a grid of near-square cells that scrolls horizontally.",
-    actions: {},
+    actions: {
+        // Bind as `layout-action "split-h"` and so on. Each takes two presses: the first picks
+        // the focused window, then focus another window and press again. Pressing again on the
+        // same window cancels.
+        "split-h": {
+            description:
+                "Split a window in two side by side, giving the half facing it to another window.",
+        },
+        "split-v": {
+            description:
+                "Split a window in two stacked halves, giving the half facing it to another window.",
+        },
+        swap: { description: "Swap the places and sizes of two windows." },
+    },
     options: {
         gravity: {
             type: "boolean",
@@ -983,6 +996,13 @@ export default function create(ws) {
     const remembered = new Map();
     /** Tab bars bento shows, by key, with what they showed, to only send changes. */
     const tabBars = new Map();
+    /**
+     * Two-step action waiting for its second window: `{ action, first }`, with `first` the item
+     * picked first. Only lasts until the action finishes or is cancelled; it isn't saved.
+     */
+    let picking = null;
+    /** Rect of the highlight on the first pick, as last shown. */
+    let pickHint = null;
     let nextItemId = 1;
 
     // View geometry, see `updateGeometry`.
@@ -1309,6 +1329,17 @@ export default function create(ws) {
      * others stay still.
      */
     function flush(animate = true) {
+        // Highlight the window picked first for a two-step action.
+        if (picking !== null && !items.includes(picking.first)) {
+            picking = null;
+        }
+        const hint = picking === null ? null : itemRect(picking.first);
+        const same = hint === null ? pickHint === null : pickHint !== null && sameRect(hint, pickHint);
+        if (!same) {
+            ws.setHint(hint);
+            pickHint = hint;
+        }
+
         const bars = new Map();
         for (const item of items) {
             const rect = windowRect(item);
@@ -2521,6 +2552,94 @@ export default function create(ws) {
         return true;
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Split and swap
+    // ---------------------------------------------------------------------------------------------
+    //
+    // These act on two windows. The first press picks the focused window, which gets
+    // highlighted; you focus another window as usual and press again to finish.
+
+    /**
+     * Picks the focused window for `action`, or if one is picked already, runs `run` on it and
+     * the focused window. Picking the same window again cancels.
+     */
+    function pick(action, run) {
+        if (active === null) {
+            return false;
+        }
+        if (picking === null || picking.action !== action) {
+            picking = { action, first: active };
+            return true;
+        }
+
+        const { first } = picking;
+        picking = null;
+        if (first === active) {
+            // Cancelled.
+            return true;
+        }
+        return changeGrid(() => run(first, active));
+    }
+
+    /**
+     * Splits the cells of `first` in two, side by side if `horizontal`, or stacked, and moves
+     * `second` into the half on its side. `first` keeps the larger half.
+     */
+    function split(first, second, horizontal) {
+        if (modeOf(first) !== "normal" || modeOf(second) !== "normal") {
+            return false;
+        }
+
+        // Which side of `first` the second window comes from, by their centers.
+        const a = grid.area(first);
+        const b = grid.area(second);
+        const before = horizontal
+            ? b.col * 2 + b.cols < a.col * 2 + a.cols
+            : b.row * 2 + b.rows < a.row * 2 + a.rows;
+        if ((horizontal ? a.cols : a.rows) < 2) {
+            return false;
+        }
+
+        // Take the second window out first, so that its cells free up. Gravity can move the
+        // first one then, so look it up again.
+        grid.remove(second);
+        const area = grid.area(first);
+        const span = horizontal ? area.cols : area.rows;
+        const half = Math.floor(span / 2);
+        let kept;
+        let given;
+        if (horizontal) {
+            kept = before
+                ? area.with({ col: area.col + half, cols: span - half })
+                : area.with({ cols: span - half });
+            given = before ? area.with({ cols: half }) : area.with({ col: area.right - half, cols: half });
+        } else {
+            kept = before
+                ? area.with({ row: area.row + half, rows: span - half })
+                : area.with({ rows: span - half });
+            given = before ? area.with({ rows: half }) : area.with({ row: area.bottom - half, rows: half });
+        }
+        grid.place([
+            [first, kept],
+            [second, given],
+        ]);
+        return true;
+    }
+
+    /** Swaps the cells of two windows, so that each takes the other's place and size. */
+    function swap(first, second) {
+        if (modeOf(first) !== "normal" || modeOf(second) !== "normal") {
+            return false;
+        }
+        const a = grid.area(first);
+        const b = grid.area(second);
+        grid.place([
+            [first, b],
+            [second, a],
+        ]);
+        return true;
+    }
+
     /**
      * Snaps the camera after a swipe to the window edges nearest to where it would coast, and
      * focuses the furthest window in view in the direction of the swipe, preferring the row focus
@@ -3356,6 +3475,11 @@ export default function create(ws) {
             const item = itemFor(target);
             return item !== null && changeMode(item, item.fullscreen, !item.maximized);
         },
+
+        // bento's own actions.
+        "split-h": () => pick("split-h", (first, second) => split(first, second, true)),
+        "split-v": () => pick("split-v", (first, second) => split(first, second, false)),
+        swap: () => pick("swap", swap),
     };
 
     function runAction(name, args, target) {

@@ -21,6 +21,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use self::protocol::{Mode, Output, Preset, Rect, Rules, TransferOut, Wh, WindowInfo, Xy};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
+use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
 use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
@@ -101,8 +102,12 @@ pub struct TilingSpace<W: LayoutElement> {
     /// Where the view is on the canvas.
     camera: Camera,
 
-    /// Drop target highlight from the layout, on the canvas.
+    /// Highlight that the layout shows, on the canvas.
     hint: Option<Rectangle<f64, Logical>>,
+
+    /// Draws `hint`, and where it was last drawn, relative to the view.
+    hint_element: InsertHintElement,
+    hint_loc: Option<Point<f64, Logical>>,
 
     /// Tab indicators for windows that the layout shows as tabs.
     tab_bars: Vec<TabBar>,
@@ -159,6 +164,7 @@ niri_render_elements! {
         Tile = TileRenderElement<R>,
         ClosingWindow = ClosingWindowRenderElement,
         TabIndicator = TabIndicatorRenderElement,
+        Hint = InsertHintRenderElement,
     }
 }
 
@@ -328,6 +334,8 @@ impl<W: LayoutElement> TilingSpace<W> {
                 gesture: None,
             },
             hint: None,
+            hint_element: InsertHintElement::new(options.layout.insert_hint),
+            hint_loc: None,
             tab_bars: Vec::new(),
             drop: None,
             remove_reason: None,
@@ -363,6 +371,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         for bar in &mut self.tab_bars {
             bar.indicator.update_config(options.layout.tab_indicator);
         }
+        self.hint_element.update_config(options.layout.insert_hint);
 
         self.view_size = view_size;
         self.working_area = working_area;
@@ -401,6 +410,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         for bar in &mut self.tab_bars {
             bar.indicator.update_shaders();
         }
+        self.hint_element.update_shaders();
     }
 
     pub fn advance_animations(&mut self) {
@@ -452,6 +462,22 @@ impl<W: LayoutElement> TilingSpace<W> {
             let mut tile_view_rect = view_rect;
             tile_view_rect.loc -= pos + tile.render_offset();
             tile.update_render_elements(is_active, tile_view_rect);
+        }
+
+        self.hint_loc = None;
+        if let Some(mut hint) = self.hint.filter(|_| !self.options.layout.insert_hint.off) {
+            hint.loc -= camera;
+            let hint = hint
+                .to_physical_precise_round(self.scale)
+                .to_logical(self.scale);
+            let view_rect = Rectangle::new(hint.loc.upscale(-1.), self.view_size);
+            self.hint_element.update_render_elements(
+                hint.size,
+                view_rect,
+                niri_config::CornerRadius::default(),
+                self.scale,
+            );
+            self.hint_loc = Some(hint.loc);
         }
 
         let config = self.options.layout.tab_indicator;
@@ -1527,7 +1553,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
         }
 
-        // Draw the tab indicators on top of the windows.
+        // Draw the layout's highlight and the tab indicators on top of the windows.
+        if layer.is_normal() {
+            if let Some(loc) = self.hint_loc {
+                self.hint_element
+                    .render(ctx.renderer, loc, &mut |elem| push(elem.into()));
+            }
+        }
         for bar in &self.tab_bars {
             bar.indicator
                 .render(ctx.renderer, Point::from((0., 0.)), &mut |elem| {

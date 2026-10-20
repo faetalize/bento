@@ -258,7 +258,10 @@ export interface Workspace {
     moveCamera(to: Partial<Point>, opts?: { animate?: boolean }): void;
     /** Stores anything JSON-serializable on a window, see `Window.data`. */
     setWindowData(win: Window, data: unknown): void;
-    /** Shows a drop target highlight while a window is dragged, or hides it with `null`. */
+    /**
+     * Shows a highlight on the canvas, like around a window picked for a two-step action, or
+     * hides it with `null`. While a window is dragged, bento highlights `dropTarget` instead.
+     */
     setHint(rect: Rect | null): void;
     /**
      * Draws a tab indicator for windows shown as tabs, or removes it with `null`. `key` tells
