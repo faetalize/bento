@@ -129,6 +129,7 @@ class LayoutWindow {
         this.id = info.id;
         this.rect = null;
         this.visible = true;
+        this.data = info.data ?? null;
         this.update(info);
     }
 
@@ -161,6 +162,7 @@ class Instance {
         // What changed since the last result.
         this.dirty = new Set();
         this.animate = new Map();
+        this.dataDirty = new Set();
         this.cameraChange = null;
         this.hint = null;
         this.hintChanged = false;
@@ -229,6 +231,12 @@ class Instance {
                 win.rect = Object.freeze(copyRect(rect));
                 self.dirty.add(win.id);
                 self.animate.set(win.id, opts.animate ?? true);
+            },
+            setWindowData(win, data) {
+                own(win);
+                // Check that it survives the trip through JSON.
+                win.data = data === undefined ? null : JSON.parse(JSON.stringify(data));
+                self.dataDirty.add(win.id);
             },
             setVisible(win, visible) {
                 own(win);
@@ -331,6 +339,7 @@ class Instance {
         this.byId.delete(id);
         this.windows.splice(this.windows.indexOf(win), 1);
         this.dirty.delete(id);
+        this.dataDirty.delete(id);
         this.orderChanged = true;
         for (const [key, bar] of this.tabBars) {
             if (bar.windows.includes(id)) {
@@ -360,7 +369,12 @@ class Instance {
     }
 
     create(event) {
-        const windows = event.windows.map((info) => this.addWindow(info));
+        const windows = event.windows.map((info) => {
+            const win = this.addWindow(info);
+            // The window is where it was; the layout moves it if it likes.
+            win.rect = info.rect ? Object.freeze(copyRect(info.rect)) : null;
+            return win;
+        });
         const focused = event.focused === null ? null : this.byId.get(event.focused) ?? null;
         const hints = new Map(event.windows.map((info) => [info.id, info.rect ?? null]));
         return this.run(false, () => {
@@ -429,6 +443,8 @@ class Instance {
                 // bento moved the camera itself, for a gesture or while dragging near an edge.
                 this.camera = { ...event.camera };
                 return this.run(false, () => {});
+            case "gesture-begin":
+                return this.run(false, () => layout.gestureBegin?.());
             case "gesture-end":
                 this.camera = { ...event.camera };
                 return this.run(false, () =>
@@ -456,7 +472,7 @@ class Instance {
                 const win = this.mustWindow(event.id);
                 return this.run(false, () => {
                     if (typeof layout.modeRequested === "function") {
-                        layout.modeRequested(win, event.mode);
+                        layout.modeRequested(win, event.mode, { ...(event.request ?? {}) });
                     } else {
                         this.ws.setMode(win, event.mode);
                     }
@@ -577,7 +593,7 @@ class Instance {
     query(call) {
         const saved = {
             windows: this.windows.slice(),
-            rects: this.windows.map((win) => [win, win.rect, win.visible, win.mode]),
+            rects: this.windows.map((win) => [win, win.rect, win.visible, win.mode, win.data]),
             focusedId: this.focusedId,
             camera: this.camera,
             hint: this.hint,
@@ -592,10 +608,11 @@ class Instance {
         }
 
         this.windows = saved.windows;
-        for (const [win, rect, visible, mode] of saved.rects) {
+        for (const [win, rect, visible, mode, data] of saved.rects) {
             win.rect = rect;
             win.visible = visible;
             win.mode = mode;
+            win.data = data;
         }
         this.focusedId = saved.focusedId;
         this.camera = saved.camera;
@@ -604,6 +621,7 @@ class Instance {
         this.tabsChanged = false;
         this.dirty.clear();
         this.animate.clear();
+        this.dataDirty.clear();
         this.cameraChange = null;
         this.hintChanged = false;
         this.orderChanged = false;
@@ -642,6 +660,9 @@ class Instance {
         if (this.tabsChanged) {
             out.tabs = [...this.tabBars.values()];
         }
+        if (this.dataDirty.size > 0) {
+            out.data = [...this.dataDirty].map((id) => [id, this.byId.get(id).data]);
+        }
         if (typeof this.layout?.ipcPosition === "function" && (this.dirty.size > 0 || this.orderChanged)) {
             try {
                 out.ipc = this.windows.map((win) => [win.id, this.layout.ipcPosition(win) ?? null]);
@@ -652,6 +673,7 @@ class Instance {
 
         this.dirty.clear();
         this.animate.clear();
+        this.dataDirty.clear();
         this.cameraChange = null;
         this.hintChanged = false;
         this.orderChanged = false;

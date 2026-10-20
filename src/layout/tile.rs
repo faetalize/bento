@@ -85,6 +85,9 @@ pub struct Tile<W: LayoutElement> {
     /// rather than a new window opening.
     pub(super) was_tiled: bool,
 
+    /// What a tiling layout stored on the window, with the name of that layout.
+    pub(super) layout_data: Option<(String, serde_json::Value)>,
+
     /// The animation upon opening a window.
     open_animation: Option<OpenAnimation>,
 
@@ -209,6 +212,7 @@ impl<W: LayoutElement> Tile<W> {
             floating_preset_width_idx: None,
             floating_preset_height_idx: None,
             was_tiled: false,
+            layout_data: None,
             open_animation: None,
             resize_animation: None,
             move_x_animation: None,

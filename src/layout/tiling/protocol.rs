@@ -85,6 +85,8 @@ pub enum Preset {
 pub struct Rules {
     pub default_width: Option<Preset>,
     pub default_height: Option<Preset>,
+    pub default_column_display: &'static str,
+    pub open_full_width: bool,
 }
 
 /// What bento tells the layout about a window.
@@ -101,6 +103,8 @@ pub struct WindowInfo {
     pub mode: Mode,
     pub rules: Rules,
     pub is_urgent: bool,
+    /// What the layout stored on the window.
+    pub data: serde_json::Value,
     /// Where the window is, as a hint when a layout takes over.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rect: Option<Rect>,
@@ -126,6 +130,8 @@ pub struct Output {
     pub ipc: Option<Vec<(u64, Option<(usize, usize)>)>>,
     /// All tab bars, when they changed.
     pub tabs: Option<Vec<TabBarOut>>,
+    /// Data the layout stored on windows.
+    pub data: Option<Vec<(u64, serde_json::Value)>>,
 }
 
 #[derive(Debug, Deserialize)]

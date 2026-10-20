@@ -128,6 +128,9 @@ pub struct TilingSpace<W: LayoutElement> {
     /// Generation in which creating the instance failed, to not retry over and over.
     failed_generation: u64,
 
+    /// Name of the layout, for window data that only that layout gets.
+    layout_name: String,
+
     /// View and config as last told to the layout.
     sent_view: Value,
     sent_config: Value,
@@ -174,6 +177,8 @@ struct TileData {
     ipc: Option<(usize, usize)>,
     /// Width the tile came with, as its default width for the layout.
     default_width: Option<Preset>,
+    /// Whether the window should open as wide as the view.
+    open_full_width: bool,
     /// What the layout was last told about the window.
     reported: Option<WindowInfo>,
 }
@@ -331,6 +336,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             instance: engine::next_instance(),
             generation: 0,
             failed_generation: 0,
+            layout_name: String::new(),
             sent_view: Value::Null,
             sent_config: Value::Null,
             view_size,
@@ -606,6 +612,12 @@ impl<W: LayoutElement> TilingSpace<W> {
             "rules": Rules {
                 default_width: width.map(preset),
                 default_height: height.map(preset),
+                default_column_display: display_name(
+                    rules
+                        .default_column_display
+                        .unwrap_or(self.options.layout.default_column_display),
+                ),
+                open_full_width: rules.open_maximized == Some(true),
             },
             "minSize": Wh { w: 0., h: 0. },
             "maxSize": Wh { w: 0., h: 0. },
@@ -656,6 +668,10 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         let borders = tile.tile_width_for_window_width(0.);
         let default_height = win.rules().default_height.flatten().map(preset);
+        let display = win
+            .rules()
+            .default_column_display
+            .unwrap_or(self.options.layout.default_column_display);
 
         WindowInfo {
             id: data.id,
@@ -672,9 +688,20 @@ impl<W: LayoutElement> TilingSpace<W> {
             rules: Rules {
                 default_width: data.default_width,
                 default_height,
+                default_column_display: display_name(display),
+                open_full_width: data.open_full_width,
             },
             is_urgent: win.is_urgent(),
+            data: self.layout_data(tile),
             rect: None,
+        }
+    }
+
+    /// What the current layout stored on a tile.
+    fn layout_data(&self, tile: &Tile<W>) -> Value {
+        match &tile.layout_data {
+            Some((name, data)) if *name == self.layout_name => data.clone(),
+            _ => Value::Null,
         }
     }
 
@@ -699,10 +726,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             CenterFocusedColumn::Always => "always",
             CenterFocusedColumn::OnOverflow => "on-overflow",
         };
-        let display = match layout.default_column_display {
-            ColumnDisplay::Normal => "normal",
-            ColumnDisplay::Tabbed => "tabbed",
-        };
+        let display = display_name(layout.default_column_display);
         let tabs = &layout.tab_indicator;
         let tab_position = match tabs.position {
             TabIndicatorPosition::Left => "left",
@@ -737,6 +761,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         }
         self.generation = generation;
+        self.layout_name = engine::meta().map(|meta| meta.name).unwrap_or_default();
 
         let windows: Vec<WindowInfo> = (0..self.tiles.len())
             .rev()
@@ -879,7 +904,21 @@ impl<W: LayoutElement> TilingSpace<W> {
             self.active = focused.filter(|id| self.idx_of_layout_id(*id).is_some());
         }
 
-        if let Some(camera) = out.camera {
+        if let Some(data) = out.data {
+            for (id, value) in data {
+                let Some(idx) = self.idx_of_layout_id(id) else {
+                    continue;
+                };
+                self.tiles[idx].layout_data = Some((self.layout_name.clone(), value.clone()));
+                if let Some(reported) = &mut self.data[idx].reported {
+                    reported.data = value;
+                }
+            }
+        }
+
+        // The swipe moves the camera; the layout gets to move it when the swipe ends.
+        let camera = out.camera.filter(|_| self.camera.gesture.is_none());
+        if let Some(camera) = camera {
             let animate = |config: niri_config::Animation, velocity: f64| {
                 camera
                     .animate
@@ -887,7 +926,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             };
             let config = self.options.animations.horizontal_view_movement.0;
             let velocity = apply.camera_velocity;
-            self.camera.gesture = None;
             let to = |v: f64| v.clamp(-1e7, 1e7);
             self.camera
                 .x
@@ -1110,13 +1148,11 @@ impl<W: LayoutElement> TilingSpace<W> {
         };
         tile.was_tiled = true;
 
-        let default_width = if is_full_width {
-            Preset::Proportion(1.)
-        } else {
-            match width {
-                ColumnWidth::Proportion(prop) => Preset::Proportion(prop),
-                ColumnWidth::Fixed(width) => Preset::Fixed(width),
-            }
+        // Fixed column widths include borders, but widths in window rules don't.
+        let borders = tile.tile_width_for_window_width(0.);
+        let default_width = match width {
+            ColumnWidth::Proportion(prop) => Preset::Proportion(prop),
+            ColumnWidth::Fixed(width) => Preset::Fixed(f64::max(1., width - borders)),
         };
 
         let id = TILE_ID_COUNTER.next();
@@ -1130,6 +1166,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 mode: Mode::Normal,
                 ipc: None,
                 default_width: Some(default_width),
+                open_full_width: is_full_width,
                 reported: None,
             },
         );
@@ -1181,7 +1218,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             tile.update_config(self.view_size, self.scale, self.options.clone());
             tile.was_tiled = true;
 
-            let width = tile.tile_expected_or_current_size().w;
+            let width = tile.window_expected_or_current_size().w;
             let id = TILE_ID_COUNTER.next();
             self.tiles.insert(0, tile);
             self.data.insert(
@@ -1193,6 +1230,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                     mode: Mode::Normal,
                     ipc: None,
                     default_width: Some(Preset::Fixed(width)),
+                    open_full_width: false,
                     reported: None,
                 },
             );
@@ -1445,22 +1483,20 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             "normal"
         };
-        self.request_mode(id, mode)
+        self.request_mode(id, mode, json!({ "fullscreen": is_fullscreen }))
     }
 
     pub fn set_maximized(&mut self, id: &W::Id, maximize: bool) -> bool {
         let mode = if maximize { "maximized" } else { "normal" };
-        self.request_mode(id, mode)
+        self.request_mode(id, mode, json!({ "maximized": maximize }))
     }
 
-    fn request_mode(&mut self, id: &W::Id, mode: &str) -> bool {
+    fn request_mode(&mut self, id: &W::Id, mode: &str, request: Value) -> bool {
         let Some(layout_id) = self.layout_id(id) else {
             return false;
         };
-        self.dispatch(
-            json!({ "type": "mode", "id": layout_id, "mode": mode }),
-            Apply::default(),
-        );
+        let event = json!({ "type": "mode", "id": layout_id, "mode": mode, "request": request });
+        self.dispatch(event, Apply::default());
         true
     }
 
@@ -1569,10 +1605,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             },
             mode: Mode::Normal,
             rules: Rules {
-                default_width: Some(Preset::Fixed(tile.tile_size().w)),
+                default_width: Some(Preset::Fixed(tile.window_size().w)),
                 default_height: None,
+                default_column_display: display_name(self.options.layout.default_column_display),
+                open_full_width: false,
             },
             is_urgent: false,
+            data: self.layout_data(tile),
             rect: None,
         };
         let hint = self
@@ -1625,6 +1664,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             dnd_last_event_time: None,
             dnd_nonzero_start_time: None,
         });
+
+        self.dispatch(json!({ "type": "gesture-begin" }), Apply::default());
     }
 
     pub fn view_offset_gesture_update(
@@ -2028,6 +2069,13 @@ fn preset(value: PresetSize) -> Preset {
     match value {
         PresetSize::Proportion(prop) => Preset::Proportion(prop),
         PresetSize::Fixed(width) => Preset::Fixed(f64::from(width)),
+    }
+}
+
+fn display_name(display: ColumnDisplay) -> &'static str {
+    match display {
+        ColumnDisplay::Normal => "normal",
+        ColumnDisplay::Tabbed => "tabbed",
     }
 }
 

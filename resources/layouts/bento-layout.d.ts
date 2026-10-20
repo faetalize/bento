@@ -64,6 +64,10 @@ export interface WindowRules {
     defaultWidth: Preset | null;
     /** `default-window-height` from the window rules; `null` if unset. */
     defaultHeight: Preset | null;
+    /** `default-column-display` from the window rules or the layout config. */
+    defaultColumnDisplay: "normal" | "tabbed";
+    /** Whether the window opens as wide as the view, from `open-maximized`. */
+    openFullWidth: boolean;
 }
 
 /** A tiled window. Objects stay the same for the lifetime of the window on a workspace. */
@@ -83,10 +87,19 @@ export interface Window {
     readonly mode: SizingMode;
     readonly rules: WindowRules;
     readonly isUrgent: boolean;
-    /** Where the layout last placed the window, or `null` if it hasn't yet. */
+    /**
+     * Where the layout last placed the window, or `null` if it hasn't yet. In `adopt`, where the
+     * window was before the layout took over.
+     */
     readonly rect: Rect | null;
     /** Whether the window is shown. */
     readonly visible: boolean;
+    /**
+     * What this layout stored on the window with `Workspace.setWindowData`, or `null`. It stays
+     * with the window when it moves to another workspace, floats and comes back, or is dragged,
+     * as long as the same layout gets it.
+     */
+    readonly data: unknown;
 }
 
 export interface View {
@@ -238,8 +251,13 @@ export interface Workspace {
     raise(win: Window): void;
     /** Gives a window focus, or none. */
     focus(win: Window | null): void;
-    /** Moves the camera. Coordinates left out stay as they are. */
+    /**
+     * Moves the camera. Coordinates left out stay as they are. While a swipe gesture moves the
+     * camera, bento ignores this; the layout gets `gestureEnd` when the swipe ends.
+     */
     moveCamera(to: Partial<Point>, opts?: { animate?: boolean }): void;
+    /** Stores anything JSON-serializable on a window, see `Window.data`. */
+    setWindowData(win: Window, data: unknown): void;
     /** Shows a drop target highlight while a window is dragged, or hides it with `null`. */
     setHint(rect: Rect | null): void;
     /**
@@ -268,8 +286,8 @@ export interface Layout {
 
     /**
      * The layout takes over a workspace that already has windows: at startup of the layout, when
-     * the config switches layouts, or when the layout file is reloaded. If the same layout saved
-     * state with `save`, it gets it back as `state`.
+     * the config switches layouts, or when the layout file is reloaded. The windows' `rect` is
+     * where they were. If the same layout saved state with `save`, it gets it back as `state`.
      *
      * Defaults to adding each window with reason `"adopt"`.
      */
@@ -281,8 +299,19 @@ export interface Layout {
     action?(name: string, args: unknown[], target: Window | null): boolean;
     /** Something wants focus on a window: a click, an app, or IPC. Defaults to focusing it. */
     activate?(win: Window): void;
-    /** The window asks to be fullscreen, maximized or normal. Defaults to `ws.setMode`. */
-    modeRequested?(win: Window, mode: SizingMode): void;
+    /**
+     * The window, or an action, asks for a sizing mode. `request` says exactly what changes:
+     * `{ fullscreen: false }` leaves fullscreen, which can go back to maximized, while
+     * `{ maximized: false }` leaves maximized. `mode` is the mode that results if nothing else is
+     * on. Defaults to `ws.setMode(win, mode)`.
+     */
+    modeRequested?(
+        win: Window,
+        mode: SizingMode,
+        request: { fullscreen?: boolean; maximized?: boolean },
+    ): void;
+    /** A swipe gesture starts moving the camera. Camera moves are ignored until `gestureEnd`. */
+    gestureBegin?(): void;
 
     /** A window's size, limits, title or other properties changed. */
     windowChanged?(win: Window): void;
@@ -308,9 +337,16 @@ export interface Layout {
 
     /** Where a window dragged with the pointer at `pointer` would land, to highlight it. */
     dropTarget?(win: Window, pointer: Point, rect: Rect): Rect | null;
-    /** Size to suggest to a new window before it opens; 0 lets the window choose. */
+    /**
+     * Tile size to suggest to a new window before it opens, borders included like every size in
+     * this API; 0 lets the window choose.
+     */
     newWindowSize?(info: { rules: WindowRules; minSize: Size; maxSize: Size; borders: Size }): Size;
-    /** Windows that move along with `win` to another workspace. Defaults to just `win`. */
+    /**
+     * Windows that move along with `win` to another workspace or output, for the actions that move
+     * a whole column, like `move-column-to-workspace-down`. Defaults to just `win`. Actions that
+     * move one window, like `move-window-to-workspace-down`, only move `win`.
+     */
     transferOut?(win: Window): Transfer;
     /** Windows arrive from another workspace. Defaults to adding each with reason `"move"`. */
     transferIn?(windows: Window[], data: unknown, how: { activate: boolean }): void;

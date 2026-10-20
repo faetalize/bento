@@ -112,8 +112,11 @@ export class TestHost {
             rules: {
                 defaultWidth: opts.defaultWidth ?? this.config.defaultColumnWidth,
                 defaultHeight: opts.defaultHeight ?? null,
+                defaultColumnDisplay: opts.defaultColumnDisplay ?? this.config.defaultColumnDisplay,
+                openFullWidth: opts.openFullWidth ?? false,
             },
             isUrgent: false,
+            data: null,
             rect: null,
             visible: true,
         };
@@ -154,8 +157,15 @@ export class TestHost {
         this.activate(this.tabs.get(key).windows[index]);
     }
 
-    requestMode(id, mode) {
-        this.send({ type: "mode", id, mode });
+    /**
+     * Asks for a sizing mode like bento does: `request` is `{ fullscreen: bool }` or
+     * `{ maximized: bool }`; `mode` is what results, by default from the request.
+     */
+    requestMode(id, mode, request) {
+        if (request === undefined) {
+            request = mode === "maximized" ? { maximized: true } : { fullscreen: mode === "fullscreen" };
+        }
+        this.send({ type: "mode", id, mode, request });
     }
 
     /** Changes a window's size limits, like a client committing new ones. */
@@ -315,6 +325,7 @@ export class TestHost {
             this.settleSize(win);
         }
         if (out.order) this.order = out.order;
+        for (const [id, data] of out.data ?? []) this.windows.get(id).data = data;
         if ("focused" in out) this.focused = out.focused;
         if (out.camera) this.camera = { x: out.camera.x, y: out.camera.y };
         if ("hint" in out) this.hint = out.hint;
