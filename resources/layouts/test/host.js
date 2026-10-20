@@ -20,6 +20,14 @@ const DEFAULT_CONFIG = {
     presetColumnWidths: [{ proportion: 1 / 3 }, { proportion: 0.5 }, { proportion: 2 / 3 }],
     presetWindowHeights: [{ proportion: 1 / 3 }, { proportion: 0.5 }, { proportion: 2 / 3 }],
     defaultColumnDisplay: "normal",
+    tabIndicator: {
+        off: false,
+        position: "left",
+        width: 4,
+        gap: 5,
+        placeWithinColumn: false,
+        hideWhenSingleTab: false,
+    },
 };
 
 export class TestHost {
@@ -52,6 +60,8 @@ export class TestHost {
         this.focused = null;
         this.camera = { x: 0, y: 0 };
         this.hint = null;
+        /** Tab bars by key, with window ids. */
+        this.tabs = new Map();
         this.ipc = new Map();
         this.logs = [];
         this.errors = [];
@@ -137,6 +147,11 @@ export class TestHost {
 
     activate(id) {
         this.send({ type: "activate", id });
+    }
+
+    /** Clicks a tab in a tab bar, which activates its window. */
+    clickTab(key, index) {
+        this.activate(this.tabs.get(key).windows[index]);
     }
 
     requestMode(id, mode) {
@@ -303,6 +318,7 @@ export class TestHost {
         if ("focused" in out) this.focused = out.focused;
         if (out.camera) this.camera = { x: out.camera.x, y: out.camera.y };
         if ("hint" in out) this.hint = out.hint;
+        if (out.tabs) this.tabs = new Map(out.tabs.map((bar) => [bar.key, bar]));
         for (const [id, pos] of out.ipc ?? []) this.ipc.set(id, pos);
 
         // Windows that couldn't take their size tell the layout, like clients committing.

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use niri_config::utils::MergeWith as _;
-use niri_config::{CenterFocusedColumn, PresetSize, Struts};
+use niri_config::{CenterFocusedColumn, PresetSize, Struts, TabIndicatorPosition};
 use niri_ipc::{ColumnDisplay, SizeChange, WindowLayout};
 use serde_json::{json, Value};
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -22,6 +22,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 use self::protocol::{Mode, Output, Preset, Rect, Rules, TransferOut, Wh, WindowInfo, Xy};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
+use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::InteractiveResize;
 use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
@@ -103,6 +104,9 @@ pub struct TilingSpace<W: LayoutElement> {
     /// Drop target highlight from the layout, on the canvas.
     hint: Option<Rectangle<f64, Logical>>,
 
+    /// Tab indicators for windows that the layout shows as tabs.
+    tab_bars: Vec<TabBar>,
+
     /// Where a window that's being dropped goes, for when it's added.
     drop: Option<(W::Id, TiledDrop)>,
 
@@ -151,6 +155,7 @@ niri_render_elements! {
     TilingSpaceRenderElement<R> => {
         Tile = TileRenderElement<R>,
         ClosingWindow = ClosingWindowRenderElement,
+        TabIndicator = TabIndicatorRenderElement,
     }
 }
 
@@ -185,6 +190,19 @@ impl CameraState {
     pub fn is_animation_ongoing(&self) -> bool {
         self.is_animation_ongoing
     }
+}
+
+/// Windows that the layout shows as tabs in one area.
+#[derive(Debug)]
+struct TabBar {
+    key: String,
+    /// Where the tabs are on the canvas.
+    area: Rectangle<f64, Logical>,
+    /// Layout ids of the tabs, in order.
+    windows: Vec<u64>,
+    /// Layout id of the tab that's shown.
+    active: u64,
+    indicator: TabIndicator,
 }
 
 /// Position of the view on the canvas.
@@ -305,6 +323,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 gesture: None,
             },
             hint: None,
+            tab_bars: Vec::new(),
             drop: None,
             remove_reason: None,
             interactive_resize: None,
@@ -334,6 +353,9 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         for tile in &mut self.tiles {
             tile.update_config(view_size, scale, options.clone());
+        }
+        for bar in &mut self.tab_bars {
+            bar.indicator.update_config(options.layout.tab_indicator);
         }
 
         self.view_size = view_size;
@@ -370,6 +392,9 @@ impl<W: LayoutElement> TilingSpace<W> {
         for tile in &mut self.tiles {
             tile.update_shaders();
         }
+        for bar in &mut self.tab_bars {
+            bar.indicator.update_shaders();
+        }
     }
 
     pub fn advance_animations(&mut self) {
@@ -378,6 +403,9 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         for tile in &mut self.tiles {
             tile.advance_animations();
+        }
+        for bar in &mut self.tab_bars {
+            bar.indicator.advance_animations();
         }
 
         self.closing_windows.retain_mut(|closing| {
@@ -389,6 +417,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn are_animations_ongoing(&self) -> bool {
         !self.camera.is_static()
             || self.tiles.iter().any(Tile::are_animations_ongoing)
+            || self
+                .tab_bars
+                .iter()
+                .any(|bar| bar.indicator.are_animations_ongoing())
             || !self.closing_windows.is_empty()
     }
 
@@ -414,6 +446,39 @@ impl<W: LayoutElement> TilingSpace<W> {
             let mut tile_view_rect = view_rect;
             tile_view_rect.loc -= pos + tile.render_offset();
             tile.update_render_elements(is_active, tile_view_rect);
+        }
+
+        let config = self.options.layout.tab_indicator;
+        for bar in &mut self.tab_bars {
+            let mut area = bar.area;
+            area.loc -= camera;
+            let area_view_rect = Rectangle::new(area.loc.upscale(-1.), self.view_size);
+
+            let tabs = bar.windows.iter().filter_map(|id| {
+                let idx = self.data.iter().position(|data| data.id == *id)?;
+                let tile = &self.tiles[idx];
+                let pos =
+                    self.data[idx].rect.unwrap_or_default().loc - camera + tile.render_offset();
+                let is_urgent = tile.window().is_urgent();
+                Some(TabInfo::from_tile(
+                    tile,
+                    pos,
+                    *id == bar.active,
+                    is_urgent,
+                    &config,
+                ))
+            });
+            let count = tabs.clone().count();
+            let is_active = is_active && active.is_some_and(|id| bar.windows.contains(&id));
+            bar.indicator.update_render_elements(
+                count > 0,
+                area,
+                area_view_rect,
+                count,
+                tabs,
+                is_active,
+                self.scale,
+            );
         }
     }
 
@@ -638,6 +703,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             ColumnDisplay::Normal => "normal",
             ColumnDisplay::Tabbed => "tabbed",
         };
+        let tabs = &layout.tab_indicator;
+        let tab_position = match tabs.position {
+            TabIndicatorPosition::Left => "left",
+            TabIndicatorPosition::Right => "right",
+            TabIndicatorPosition::Top => "top",
+            TabIndicatorPosition::Bottom => "bottom",
+        };
         json!({
             "gaps": layout.gaps,
             "struts": { "left": left.0, "right": right.0, "top": top.0, "bottom": bottom.0 },
@@ -647,6 +719,14 @@ impl<W: LayoutElement> TilingSpace<W> {
             "presetColumnWidths": layout.preset_column_widths.iter().copied().map(preset).collect::<Vec<_>>(),
             "presetWindowHeights": layout.preset_window_heights.iter().copied().map(preset).collect::<Vec<_>>(),
             "defaultColumnDisplay": display,
+            "tabIndicator": {
+                "off": tabs.off,
+                "position": tab_position,
+                "width": tabs.width,
+                "gap": tabs.gap,
+                "placeWithinColumn": tabs.place_within_column,
+                "hideWhenSingleTab": tabs.hide_when_single_tab,
+            },
         })
     }
 
@@ -817,6 +897,39 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         if let Some(hint) = out.hint {
             self.hint = hint.map(Rect::to_rect);
+        }
+
+        if let Some(tabs) = out.tabs {
+            let mut old = std::mem::take(&mut self.tab_bars);
+            for bar in tabs {
+                let windows: Vec<u64> = bar
+                    .windows
+                    .into_iter()
+                    .filter(|id| self.idx_of_layout_id(*id).is_some())
+                    .collect();
+                if !windows.contains(&bar.active) {
+                    continue;
+                }
+
+                let indicator = match old.iter().position(|old| old.key == bar.key) {
+                    Some(idx) => old.swap_remove(idx).indicator,
+                    None => {
+                        let mut indicator = TabIndicator::new(self.options.layout.tab_indicator);
+                        indicator.start_open_animation(
+                            self.clock.clone(),
+                            self.options.animations.window_movement.0,
+                        );
+                        indicator
+                    }
+                };
+                self.tab_bars.push(TabBar {
+                    key: bar.key,
+                    area: bar.area.to_rect(),
+                    windows,
+                    active: bar.active,
+                    indicator,
+                });
+            }
         }
 
         if let Some(ipc) = out.ipc {
@@ -1378,6 +1491,14 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
         }
 
+        // Draw the tab indicators on top of the windows.
+        for bar in &self.tab_bars {
+            bar.indicator
+                .render(ctx.renderer, Point::from((0., 0.)), &mut |elem| {
+                    push(elem.into())
+                });
+        }
+
         let active = self.active;
         for ((tile, tile_pos, visible), data) in self.tiles_with_render_positions().zip(&self.data)
         {
@@ -1400,6 +1521,22 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
+        let camera = self.camera.current();
+        for bar in &self.tab_bars {
+            let mut area = bar.area;
+            area.loc -= camera;
+            let count = bar.windows.len();
+            if let Some(tab) = bar.indicator.hit(area, count, self.scale, pos) {
+                let Some(idx) = self.idx_of_layout_id(bar.windows[tab]) else {
+                    continue;
+                };
+                let hit = HitType::Activate {
+                    is_tab_indicator: true,
+                };
+                return Some((self.tiles[idx].window(), hit));
+            }
+        }
+
         self.tiles_with_render_positions()
             .filter(|(_, _, visible)| *visible)
             .find_map(|(tile, tile_pos, _)| HitType::hit_tile(tile, tile_pos, pos))

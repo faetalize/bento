@@ -124,6 +124,16 @@ pub struct Output {
     #[serde(default, deserialize_with = "present")]
     pub hint: Option<Option<Rect>>,
     pub ipc: Option<Vec<(u64, Option<(usize, usize)>)>>,
+    /// All tab bars, when they changed.
+    pub tabs: Option<Vec<TabBarOut>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TabBarOut {
+    pub key: String,
+    pub area: Rect,
+    pub windows: Vec<u64>,
+    pub active: u64,
 }
 
 #[derive(Debug, Deserialize)]

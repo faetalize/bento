@@ -108,6 +108,33 @@ export interface LayoutConfig {
     readonly presetColumnWidths: readonly Preset[];
     readonly presetWindowHeights: readonly Preset[];
     readonly defaultColumnDisplay: "normal" | "tabbed";
+    /** The tab indicator that bento draws for tab bars, see `Workspace.setTabBar`. */
+    readonly tabIndicator: TabIndicatorConfig;
+}
+
+export interface TabIndicatorConfig {
+    readonly off: boolean;
+    readonly position: "left" | "right" | "top" | "bottom";
+    /** Thickness of the indicator. */
+    readonly width: number;
+    /** Space between the indicator and the tabs; negative to overlap them. */
+    readonly gap: number;
+    /**
+     * Whether the indicator goes inside the tabbed area, so the windows should leave
+     * `width + gap` free on the indicator's side.
+     */
+    readonly placeWithinColumn: boolean;
+    readonly hideWhenSingleTab: boolean;
+}
+
+/** Windows shown as tabs in one area, see `Workspace.setTabBar`. */
+export interface TabBar {
+    /** Where the tabs are; bento draws the indicator along this rect, as the config says. */
+    area: Rect;
+    /** The tabs, in order. */
+    windows: Window[];
+    /** The tab that's shown. */
+    active: Window;
 }
 
 export type OptionValue = boolean | number | string;
@@ -215,6 +242,12 @@ export interface Workspace {
     moveCamera(to: Partial<Point>, opts?: { animate?: boolean }): void;
     /** Shows a drop target highlight while a window is dragged, or hides it with `null`. */
     setHint(rect: Rect | null): void;
+    /**
+     * Draws a tab indicator for windows shown as tabs, or removes it with `null`. `key` tells
+     * tab bars apart, so that each keeps its animations; any string. Clicking a tab activates its
+     * window through `Layout.activate`. Hiding inactive tabs is up to the layout.
+     */
+    setTabBar(key: string, bar: TabBar | null): void;
     /** Rounds a coordinate to physical pixels. */
     round(value: number): number;
     /** Writes to bento's log. */

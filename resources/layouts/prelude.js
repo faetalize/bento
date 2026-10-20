@@ -166,6 +166,8 @@ class Instance {
         this.hintChanged = false;
         this.orderChanged = false;
         this.focusChanged = false;
+        this.tabBars = new Map();
+        this.tabsChanged = false;
 
         this.ws = this.makeWorkspace();
         this.layout = layoutModule.default(this.ws);
@@ -277,6 +279,25 @@ class Instance {
                 self.hint = rect === null ? null : copyRect(rect);
                 self.hintChanged = true;
             },
+            setTabBar(key, bar) {
+                key = String(key);
+                if (bar === null || bar === undefined) {
+                    if (self.tabBars.delete(key)) {
+                        self.tabsChanged = true;
+                    }
+                    return;
+                }
+                if (!isRect(bar.area)) {
+                    throw new Error(`invalid tab bar area: ${JSON.stringify(bar.area)}`);
+                }
+                const windows = bar.windows.map((win) => own(win).id);
+                const active = own(bar.active).id;
+                if (!windows.includes(active)) {
+                    throw new Error("the active tab must be one of the tabs");
+                }
+                self.tabBars.set(key, { key, area: copyRect(bar.area), windows, active });
+                self.tabsChanged = true;
+            },
             round(value) {
                 const scale = self.view.scale;
                 return Math.round(value * scale) / scale;
@@ -311,6 +332,18 @@ class Instance {
         this.windows.splice(this.windows.indexOf(win), 1);
         this.dirty.delete(id);
         this.orderChanged = true;
+        for (const [key, bar] of this.tabBars) {
+            if (bar.windows.includes(id)) {
+                const windows = bar.windows.filter((other) => other !== id);
+                if (windows.length === 0) {
+                    this.tabBars.delete(key);
+                } else {
+                    const active = bar.active === id ? windows[0] : bar.active;
+                    this.tabBars.set(key, { ...bar, windows, active });
+                }
+                this.tabsChanged = true;
+            }
+        }
         if (this.focusedId === id) {
             this.focusedId = null;
             this.focusChanged = true;
@@ -548,6 +581,7 @@ class Instance {
             focusedId: this.focusedId,
             camera: this.camera,
             hint: this.hint,
+            tabBars: new Map(this.tabBars),
         };
         let result = null;
         let error = null;
@@ -566,6 +600,8 @@ class Instance {
         this.focusedId = saved.focusedId;
         this.camera = saved.camera;
         this.hint = saved.hint;
+        this.tabBars = saved.tabBars;
+        this.tabsChanged = false;
         this.dirty.clear();
         this.animate.clear();
         this.cameraChange = null;
@@ -603,6 +639,9 @@ class Instance {
         if (this.hintChanged) {
             out.hint = this.hint;
         }
+        if (this.tabsChanged) {
+            out.tabs = [...this.tabBars.values()];
+        }
         if (typeof this.layout?.ipcPosition === "function" && (this.dirty.size > 0 || this.orderChanged)) {
             try {
                 out.ipc = this.windows.map((win) => [win.id, this.layout.ipcPosition(win) ?? null]);
@@ -617,6 +656,7 @@ class Instance {
         this.hintChanged = false;
         this.orderChanged = false;
         this.focusChanged = false;
+        this.tabsChanged = false;
         return out;
     }
 
