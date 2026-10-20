@@ -10,7 +10,7 @@
 // This file has two parts:
 //
 // 1. The cell grid: pure arithmetic on rectangles of cells, with no windows, pixels or camera.
-//    `Grid`, `Area`, `Arrangement` and `CellMetrics` are exported so that tests can check them on
+//    `Grid`, `Area` and `CellMetrics` are exported so that tests can check them on
 //    their own.
 // 2. The layout: it keeps one item on the grid per window, or per tabbed area of several windows,
 //    and maps the grid onto window rects, focus, the camera and actions.
@@ -20,24 +20,15 @@
 // the camera is at x = -gap. The camera never moves vertically: tiles sit at their y in the view.
 //
 // The camera only moves when the focused window would otherwise leave the view, and for actions
-// about the view itself: focusing another window, centering, fullscreen, arranging, swiping.
+// about the view itself: focusing another window, centering, fullscreen, swiping.
 // Layout changes like closing windows, pushes and gravity never move it; the windows that move
 // slide into place on screen while the rest stay still.
-//
-// Bindings for the layout's own action: `layout-action "arrange"`.
 
 export const meta = {
     api: 1,
     name: "bento",
     description: "Windows on a grid of near-square cells that scrolls horizontally.",
-    actions: {
-        // Bind as `layout-action "arrange"`.
-        arrange: {
-            description:
-                "Arrange the windows in view so that they fill it exactly. Running it again, " +
-                "before anything changes, goes on to the next arrangement.",
-        },
-    },
+    actions: {},
     options: {
         gravity: {
             type: "boolean",
@@ -858,95 +849,6 @@ function sameItems(a, b) {
     );
 }
 
-/** Ways to arrange windows so that they exactly fill a region of the grid. */
-export const Arrangement = Object.freeze({
-    /** Side by side, all equally wide. */
-    Columns: Object.freeze({ kind: "columns" }),
-    /** A main window on the left taking `num / den` of the width, the others stacked beside it. */
-    MainAndStack: (num, den) => Object.freeze({ kind: "main-and-stack", num, den }),
-    /** Equal columns, about as many as rows of windows in them, filled top to bottom. */
-    Tiles: Object.freeze({ kind: "tiles" }),
-
-    /** Arrangements for `n` windows, in the order the arrange action cycles through them. */
-    forCount(n) {
-        const { Columns, Tiles } = Arrangement;
-        if (n <= 1) return [Columns];
-        if (n === 2) return [Columns, MAIN_TWO_THIRDS];
-        if (n === 3) return [MAIN_HALF, Columns];
-        return [Tiles, MAIN_HALF, Columns];
-    },
-
-    /**
-     * Whether the first window gets a special place, so it should be the focused one rather than
-     * the first one from the left.
-     */
-    hasMain(arrangement) {
-        return arrangement.kind === "main-and-stack";
-    },
-
-    /**
-     * Areas for `n` windows filling `cols` × `rows` cells from column `col`, or `null` if they
-     * don't fit.
-     */
-    areas(arrangement, n, col, cols, rows) {
-        if (n < 1) {
-            return null;
-        }
-
-        // Windows in vertical stacks, given as the number of columns and windows in each stack.
-        let stacks;
-        if (arrangement.kind === "columns") {
-            const widths = splitEvenly(cols, n);
-            if (widths === null) return null;
-            stacks = widths.map((w) => [w, 1]);
-        } else if (arrangement.kind === "main-and-stack" && n === 1) {
-            stacks = [[cols, 1]];
-        } else if (arrangement.kind === "main-and-stack") {
-            if (cols < 2) return null;
-            const main = clamp(Math.floor((cols * arrangement.num) / arrangement.den), 1, cols - 1);
-            stacks = [
-                [main, 1],
-                [cols - main, n - 1],
-            ];
-        } else {
-            let k = 1;
-            while (k * k < n) k += 1;
-            const widths = splitEvenly(cols, k);
-            const counts = splitEvenly(n, k);
-            if (widths === null || counts === null) return null;
-            stacks = widths.map((w, i) => [w, counts[i]]);
-        }
-
-        const areas = [];
-        let x = col;
-        for (const [w, count] of stacks) {
-            const heights = splitEvenly(rows, count);
-            if (heights === null) return null;
-            let y = 0;
-            for (const h of heights) {
-                areas.push(new Area(x, y, w, h));
-                y += h;
-            }
-            x += w;
-        }
-        return areas;
-    },
-});
-
-const MAIN_HALF = Arrangement.MainAndStack(1, 2);
-const MAIN_TWO_THIRDS = Arrangement.MainAndStack(2, 3);
-
-/**
- * Splits `total` cells into `n` spans as equal as possible, larger ones first, or `null` if there
- * are fewer cells than spans.
- */
-function splitEvenly(total, n) {
-    if (!(0 < n && n <= total)) {
-        return null;
-    }
-    return Array.from({ length: n }, (_, i) => Math.floor(total / n) + (i < total % n ? 1 : 0));
-}
-
 /** Pixel geometry of the cell grid for a given view size. */
 export class CellMetrics {
     /**
@@ -1077,8 +979,6 @@ export default function create(ws) {
     let restore = null;
     /** Ongoing pointer resize, with the grid as it was when it started. */
     let resize = null;
-    /** Last arrangement that `arrange` applied: its index in the cycle and the areas it gave. */
-    let arrangement = null;
     /** Size of windows that left to float or to be dragged, by window id, for when they're back. */
     const remembered = new Map();
     /** Tab bars bento shows, by key, with what they showed, to only send changes. */
@@ -2622,86 +2522,6 @@ export default function create(ws) {
     }
 
     /**
-     * Arranges the windows in view to fill it exactly, or if they're still arranged the way this
-     * left them, rearranges them the next way.
-     */
-    function arrange() {
-        if (active === null || modeOf(active) !== "normal") {
-            return false;
-        }
-
-        // The columns of cells the view shows, once it's lined up with them.
-        const m = metrics;
-        const step = m.cellW + m.gap;
-        const viewLeft = ws.camera.x + workingArea.x + m.gap;
-        let first = round(viewLeft / step);
-        if (grid.gravity) {
-            first = Math.max(first, 0);
-        }
-        const cols = m.colsPerView;
-        const end = first + cols;
-
-        // Windows at least half in view, left to right.
-        const windows = items
-            .filter((item) => modeOf(item) === "normal")
-            .map((item) => [item, grid.area(item)])
-            .filter(([item, a]) => {
-                const inside = Math.min(a.right, end) - Math.max(a.col, first);
-                return item === active || inside * 2 >= a.cols;
-            });
-        sortBy(windows, ([, a]) => [a.col, a.row]);
-        const n = windows.length;
-        const isPlaced = ([item, area]) => windows.some(([w, a]) => w === item && a.equals(area));
-
-        // Go on to the next arrangement if the windows are still where the last one put them.
-        // Otherwise start from the first one that changes something.
-        const still =
-            arrangement !== null &&
-            arrangement.placed.length === n &&
-            arrangement.placed.every(isPlaced)
-                ? arrangement
-                : null;
-        const arrangements = Arrangement.forCount(n);
-        const start = still ? still.idx + 1 : 0;
-
-        let chosen = null;
-        for (let i = 0; i < arrangements.length; i++) {
-            const idx = (start + i) % arrangements.length;
-            const areas = Arrangement.areas(arrangements[idx], n, first, cols, m.rows);
-            if (areas === null) {
-                continue;
-            }
-
-            // The focused window is the main one; otherwise windows keep their order.
-            const order = windows.map(([item]) => item);
-            if (Arrangement.hasMain(arrangements[idx])) {
-                order.splice(order.indexOf(active), 1);
-                order.unshift(active);
-            }
-            const placed = order.map((item, k) => [item, areas[k]]);
-
-            if (still !== null || placed.some((p) => !isPlaced(p))) {
-                chosen = { idx, placed };
-                break;
-            }
-        }
-        if (chosen === null) {
-            return false;
-        }
-
-        for (const [item] of chosen.placed) {
-            stopResizeFor(item);
-        }
-        grid.place(chosen.placed);
-        sync();
-        arrangement = chosen;
-
-        // Line the view up with the arranged cells.
-        moveCameraTo(gridX(first) - m.gap - workingArea.x);
-        return true;
-    }
-
-    /**
      * Snaps the camera after a swipe to the window edges nearest to where it would coast, and
      * focuses the furthest window in view in the direction of the swipe, preferring the row focus
      * was in.
@@ -3219,16 +3039,6 @@ export default function create(ws) {
                 restore && ref(restore.item) !== null
                     ? { item: ref(restore.item), offset: restore.offset }
                     : null,
-            arrangement:
-                arrangement && arrangement.placed.every(([item]) => ref(item) !== null)
-                    ? {
-                          idx: arrangement.idx,
-                          placed: arrangement.placed.map(([item, area]) => [
-                              ref(item),
-                              area.toJSON(),
-                          ]),
-                      }
-                    : null,
             remembered: [...remembered],
         };
     }
@@ -3353,12 +3163,6 @@ export default function create(ws) {
         }
         if (state.restore && find(state.restore.item) && Number.isFinite(state.restore.offset)) {
             restore = { item: find(state.restore.item), offset: state.restore.offset };
-        }
-        if (state.arrangement && state.arrangement.placed?.every(([id]) => find(id))) {
-            arrangement = {
-                idx: toInt(state.arrangement.idx),
-                placed: state.arrangement.placed.map(([id, area]) => [find(id), Area.from(area)]),
-            };
         }
         for (const [id, saved] of Array.isArray(state.remembered) ? state.remembered : []) {
             const intent = readIntent(saved);
@@ -3552,9 +3356,6 @@ export default function create(ws) {
             const item = itemFor(target);
             return item !== null && changeMode(item, item.fullscreen, !item.maximized);
         },
-
-        // bento's own action, bound as `layout-action "arrange"`.
-        arrange: () => arrange(),
     };
 
     function runAction(name, args, target) {

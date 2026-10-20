@@ -591,11 +591,6 @@ binds {
     // Makes the column "fill the rest of the space".
     Mod+Ctrl+F { expand-column-to-available-width; }
 
-    // Actions that the tiling layout adds run with layout-action.
-    // The bento layout's "arrange" fits the windows in view to the screen:
-    // halves, a main window with a stack, tiles. Press again for the next way.
-    Mod+A { layout-action "arrange"; }
-
     Mod+C { center-column; }
 
     // Center all fully visible columns on screen.

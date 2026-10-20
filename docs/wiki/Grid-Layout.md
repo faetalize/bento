@@ -87,22 +87,6 @@ With left gravity, windows can't be pushed past the left edge of the grid, and t
 Without gravity, dragging a left edge grows the window to the left too, pushing the windows there further left.
 The window you're resizing stays put until you let go, then falls into place with left gravity.
 
-### Arranging windows
-
-`layout-action "arrange"` (<kbd>Mod</kbd><kbd>A</kbd> in the default config) resizes and moves the windows in view so that together they fill the screen exactly.
-Running it again, before you change anything, rearranges them the next way, and after the last way it starts over:
-
-| Windows | Arrangements |
-| ------- | ------------ |
-| 1 | The whole view. |
-| 2 | Halves, then ⅔ and ⅓. |
-| 3 | A main window on the left half with the other two stacked on the right, then three columns. |
-| 4 or more | Tiles: equal columns of windows stacked top to bottom, then a main window with the rest stacked beside it, then columns. |
-
-The focused window is the main one; otherwise windows keep their order from left to right.
-Windows count as in view when at least half of their width is.
-The view lines up with the cells it arranged, and windows elsewhere that are in the way get pushed to the right.
-
 ### Columns and stacks
 
 Some actions talk about columns.

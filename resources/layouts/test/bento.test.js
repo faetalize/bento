@@ -15,7 +15,6 @@ import assert from "node:assert/strict";
 import { TestHost } from "./host.js";
 import {
     Area,
-    Arrangement,
     CellMetrics,
     DEFAULT_ROWS,
     Direction,
@@ -696,36 +695,6 @@ describe("grid layout", () => {
         assert.equal(host.mode(2), "normal");
     });
 
-    test("arranging cycles through layouts that fill the view", async () => {
-        const host = await setup();
-        host.open();
-        host.open();
-        host.open();
-        host.activate(2);
-        assert.equal(host.action("arrange"), true);
-
-        // The focused window is the main one, with the others stacked beside it.
-        const mainAndStack = [
-            "616 × 336 at x:648 y:16",
-            "616 × 688 at x:16 y:16",
-            "616 × 336 at x:648 y:368",
-        ];
-        assert.deepEqual(tiles(host), mainAndStack);
-
-        // Then side by side, in their order on screen.
-        host.action("arrange");
-        assert.deepEqual(tiles(host), [
-            "386 × 688 at x:476 y:16",
-            "444 × 688 at x:16 y:16",
-            "386 × 688 at x:878 y:16",
-        ]);
-
-        // Then back to the first one.
-        host.action("arrange");
-        assert.deepEqual(tiles(host), mainAndStack);
-        assert.equal(host.focused, 2);
-    });
-
     test("expanding fills the free cells in view", async () => {
         const host = await setup();
         host.open();
@@ -878,10 +847,10 @@ describe("grid layout", () => {
 });
 
 describe("layout API", () => {
-    test("declares the gravity option and the arrange action", async () => {
+    test("declares the gravity option", async () => {
         const host = await setup();
         assert.equal(host.meta.name, "bento");
-        assert.deepEqual(host.meta.actions, ["arrange"]);
+        assert.deepEqual(host.meta.actions, []);
         assert.deepEqual(host.meta.options, { gravity: "boolean" });
     });
 
@@ -1561,35 +1530,6 @@ describe("grid", () => {
         assert.deepEqual(area(g, 1), at(0, 0, 14, 6));
         assert.deepEqual(area(g, 2), at(14, 0, 14, 6));
         assert.deepEqual(area(g, 3), at(0, 6, 14, 6));
-    });
-
-    test("arrangements fill the region", () => {
-        for (let n = 1; n <= 8; n++) {
-            for (const arrangement of Arrangement.forCount(n)) {
-                const areas = Arrangement.areas(arrangement, n, 3, 22, 12);
-                assert.equal(areas.length, n);
-                areas.forEach((a, i) => {
-                    assert.ok(a.col >= 3 && a.right <= 25 && a.row >= 0 && a.bottom <= 12);
-                    assert.ok(
-                        areas.slice(0, i).every((b) => !a.overlaps(b)),
-                        JSON.stringify(arrangement),
-                    );
-                });
-                const cells = areas.reduce((sum, a) => sum + a.cols * a.rows, 0);
-                assert.equal(cells, 22 * 12, `${JSON.stringify(arrangement)} with ${n} windows`);
-            }
-        }
-
-        const half = Arrangement.MainAndStack(1, 2);
-        assert.deepEqual(
-            Arrangement.areas(half, 3, 0, 22, 12).map((a) => a.toJSON()),
-            [at(0, 0, 11, 12), at(11, 0, 11, 6), at(11, 6, 11, 6)],
-        );
-        assert.deepEqual(
-            Arrangement.areas(Arrangement.Tiles, 5, 0, 22, 12).map((a) => a.toJSON()),
-            [at(0, 0, 8, 6), at(0, 6, 8, 6), at(8, 0, 7, 6), at(8, 6, 7, 6), at(15, 0, 7, 12)],
-        );
-        assert.equal(Arrangement.areas(Arrangement.Columns, 3, 0, 2, 12), null);
     });
 
     test("metrics near square", () => {

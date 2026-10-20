@@ -58,7 +58,7 @@ Bind them with `layout-action`, followed by the action's name and any arguments:
 
 ```kdl
 binds {
-    Mod+A { layout-action "arrange"; }
+    Mod+Shift+S { layout-action "swap-with-first"; }
     Mod+Shift+R { layout-action "resize" 2 "right"; }
 }
 ```
@@ -66,7 +66,7 @@ binds {
 Run them from the command line the same way:
 
 ```sh
-bento msg action layout-action arrange
+bento msg action layout-action swap-with-first
 ```
 
 `bento validate` checks that the layout has the actions your binds name.
