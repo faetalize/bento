@@ -40,6 +40,7 @@ pub mod layout;
 pub mod misc;
 pub mod output;
 pub mod recent_windows;
+pub mod tiling;
 pub mod utils;
 pub mod window_rule;
 pub mod workspace;
@@ -57,6 +58,7 @@ pub use crate::misc::*;
 pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
+pub use crate::tiling::{Tiling, TilingLayout, TilingOption};
 pub use crate::utils::FloatOrInt;
 use crate::utils::{expand_home_path, Flag, MergeWith as _};
 pub use crate::window_rule::{
@@ -73,6 +75,7 @@ pub struct Config {
     pub spawn_at_startup: Vec<SpawnAtStartup>,
     pub spawn_sh_at_startup: Vec<SpawnShAtStartup>,
     pub layout: Layout,
+    pub tiling: Tiling,
     pub prefer_no_csd: bool,
     pub cursor: Cursor,
     pub screenshot_path: ScreenshotPath,
@@ -236,6 +239,11 @@ where
                 "environment" => {
                     let part = Environment::decode_node(node, ctx)?;
                     config.borrow_mut().environment.0.extend(part.0);
+                }
+
+                "tiling" => {
+                    let part = Tiling::decode_node(node, ctx)?;
+                    config.borrow_mut().tiling.merge_with(&part);
                 }
 
                 "prefer-no-csd" => {

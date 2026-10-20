@@ -765,6 +765,16 @@ pub enum Action {
     },
     /// Expand the focused column to space not taken up by other fully visible columns.
     ExpandColumnToAvailableWidth {},
+    /// Run an action that the tiling layout provides.
+    LayoutAction {
+        /// Name of the action.
+        name: String,
+        /// Arguments for the action.
+        ///
+        /// Numbers and `true` or `false` go to the layout as numbers and booleans.
+        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
+        args: Vec<String>,
+    },
     /// Switch between keyboard layouts.
     SwitchLayout {
         /// Layout to switch to.

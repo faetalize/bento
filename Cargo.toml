@@ -105,6 +105,7 @@ wayland-scanner = "0.31.11"
 wayland-server = "0.31.14"
 xcursor = "0.3.11"
 zbus = { version = "5", optional = true }
+rquickjs = "0.14"
 
 [dependencies.smithay]
 workspace = true

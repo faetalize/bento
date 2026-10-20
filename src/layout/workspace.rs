@@ -18,11 +18,12 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
-use super::scrolling::{
-    Column, ColumnWidth, ScrollDirection, ScrollingSpace, ScrollingSpaceRenderElement,
-};
+use super::monitor::TiledDrop;
 use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
+use super::tiling::{
+    ColumnWidth, ScrollDirection, TileGroup, TilingSpace, TilingSpaceRenderElement,
+};
 use super::{
     ActivateWindow, HitType, InsertPosition, InteractiveResizeData, LayoutElement, Options,
     RemovedTile, SizeFrac,
@@ -45,8 +46,8 @@ use crate::window::ResolvedWindowRules;
 
 #[derive(Debug)]
 pub struct Workspace<W: LayoutElement> {
-    /// The scrollable-tiling layout.
-    scrolling: ScrollingSpace<W>,
+    /// The tiling layout, which a layout script controls.
+    scrolling: TilingSpace<W>,
 
     /// The floating layout.
     floating: FloatingSpace<W>,
@@ -145,7 +146,7 @@ impl WorkspaceId {
 
 niri_render_elements! {
     WorkspaceRenderElement<R> => {
-        Scrolling = ScrollingSpaceRenderElement<R>,
+        Scrolling = TilingSpaceRenderElement<R>,
         Floating = FloatingSpaceRenderElement<R>,
     }
 }
@@ -239,7 +240,7 @@ impl<W: LayoutElement> Workspace<W> {
         let view_size = output_size(&output);
         let working_area = compute_working_area(&output);
 
-        let scrolling = ScrollingSpace::new(
+        let scrolling = TilingSpace::new(
             view_size,
             working_area,
             scale.fractional_scale(),
@@ -301,7 +302,7 @@ impl<W: LayoutElement> Workspace<W> {
         let view_size = Size::from((1280., 720.));
         let working_area = Rectangle::from_size(Size::from((1280., 720.)));
 
-        let scrolling = ScrollingSpace::new(
+        let scrolling = TilingSpace::new(
             view_size,
             working_area,
             scale.fractional_scale(),
@@ -734,33 +735,17 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn add_tile_to_column(
+    pub fn add_group(
         &mut self,
-        col_idx: usize,
-        tile_idx: Option<usize>,
-        tile: Tile<W>,
-        activate: bool,
-    ) {
-        self.enter_output_for_window(tile.window());
-        self.scrolling
-            .add_tile_to_column(col_idx, tile_idx, tile, activate);
-
-        if activate {
-            self.floating_is_active = FloatingActive::No;
-        }
-    }
-
-    pub fn add_column(
-        &mut self,
-        column: Column<W>,
+        group: TileGroup<W>,
         activate: bool,
         anim: Option<niri_config::Animation>,
     ) {
-        for (tile, _) in column.tiles() {
+        for (tile, _) in group.tiles() {
             self.enter_output_for_window(tile.window());
         }
 
-        self.scrolling.add_column(None, column, activate, anim);
+        self.scrolling.add_group(group, activate, anim);
 
         if activate {
             self.floating_is_active = FloatingActive::No;
@@ -798,23 +783,29 @@ impl<W: LayoutElement> Workspace<W> {
         removed
     }
 
-    pub fn remove_active_column(&mut self) -> Option<Column<W>> {
+    /// Removes the focused tiled window, along with the windows the layout moves with it.
+    pub fn remove_active_group(&mut self) -> Option<TileGroup<W>> {
         let from_floating = self.floating_is_active.get();
         if from_floating {
             return None;
         }
 
-        let column = self.scrolling.remove_active_column()?;
+        let group = self.scrolling.remove_active_group()?;
 
         if let Some(output) = &self.output {
-            for (tile, _) in column.tiles() {
+            for (tile, _) in group.tiles() {
                 tile.window().output_leave(output);
             }
         }
 
         self.update_focus_floating_tiling_after_removing(from_floating);
 
-        Some(column)
+        Some(group)
+    }
+
+    /// Tells the tiling layout why `id` is about to be removed, when it isn't closing.
+    pub(super) fn set_remove_reason(&mut self, id: &W::Id, reason: &'static str) {
+        self.scrolling.set_remove_reason(id, reason);
     }
 
     pub fn resolve_default_width(
@@ -1300,18 +1291,13 @@ impl<W: LayoutElement> Workspace<W> {
             // The window is in the scrolling layout and we're requesting an unfullscreen. If it is
             // indeed fullscreen (i.e. this isn't a duplicate unfullscreen request), then we may
             // need to unfullscreen into floating.
-            let col = self
+            let tile = self
                 .scrolling
-                .columns()
-                .find(|col| col.contains(window))
+                .tiles()
+                .find(|tile| tile.window().id() == window)
                 .unwrap();
 
-            // When going from fullscreen to maximized, don't consider restore_to_floating yet.
-            if col.is_pending_fullscreen() && !col.is_pending_maximized() {
-                let (tile, _) = col
-                    .tiles()
-                    .find(|(tile, _)| tile.window().id() == window)
-                    .unwrap();
+            if tile.window().pending_sizing_mode().is_fullscreen() {
                 if tile.restore_to_floating {
                     // Unfullscreen and float in one call so it has a chance to notice and request a
                     // (0, 0) size, rather than the scrolling column size.
@@ -1403,13 +1389,13 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn toggle_maximized(&mut self, window: &W::Id) {
         let mut current = false;
 
-        // We have to check the column property in case the window is in the scrolling layout and
-        // both maximized and fullscreen. In this case, only the column knows whether it's
-        // maximized.
-        //
         // In the floating layout, windows cannot be maximized.
-        if let Some(col) = self.scrolling.columns().find(|col| col.contains(window)) {
-            current = col.is_pending_maximized();
+        if let Some(tile) = self
+            .scrolling
+            .tiles()
+            .find(|tile| tile.window().id() == window)
+        {
+            current = tile.window().pending_sizing_mode().is_maximized();
         }
 
         self.set_maximized(window, !current);
@@ -1422,27 +1408,25 @@ impl<W: LayoutElement> Workspace<W> {
             return;
         };
 
-        let (_, render_pos, _) = self
+        let (tile, render_pos, _) = self
             .tiles_with_render_positions()
             .find(|(tile, _, _)| *tile.window().id() == id)
             .unwrap();
+        let render_rect = Rectangle::new(render_pos, tile.tile_size());
 
         if self.floating.has_window(&id) {
             let removed = self.floating.remove_tile(&id);
-            // FIXME: compute closest pos?
-            self.scrolling.add_tile(
-                None,
+            self.scrolling.add_tile_from_floating(
                 removed.tile,
                 target_is_active,
                 removed.width,
-                removed.is_full_width,
-                None,
+                render_rect,
             );
             if target_is_active {
                 self.floating_is_active = FloatingActive::No;
             }
         } else {
-            let mut removed = self.scrolling.remove_tile(&id, Transaction::new());
+            let mut removed = self.scrolling.remove_tile_for_floating(&id);
             removed.tile.stop_move_animations();
 
             // Come up with a default floating position close to the tile position.
@@ -1897,8 +1881,24 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub(super) fn scrolling_insert_position(&self, pos: Point<f64, Logical>) -> InsertPosition {
-        self.scrolling.insert_position(pos)
+    /// Where a tile dragged with the pointer at `pos` would go, with the tile at `tile_pos`.
+    pub(super) fn scrolling_insert_position(
+        &self,
+        pos: Point<f64, Logical>,
+        tile: &Tile<W>,
+        tile_pos: Point<f64, Logical>,
+    ) -> InsertPosition {
+        self.scrolling.insert_position(pos, tile, tile_pos)
+    }
+
+    /// Makes a dropped window go where it was dropped when it's added next.
+    pub(super) fn set_tiling_drop(&mut self, window: W::Id, drop: TiledDrop) {
+        self.scrolling.set_drop(window, drop);
+    }
+
+    /// Runs an action that the tiling layout provides.
+    pub fn layout_action(&mut self, name: &str, args: &[niri_config::TilingOption]) -> bool {
+        self.scrolling.layout_action(name, args)
     }
 
     pub(super) fn insert_hint_area(
@@ -2017,11 +2017,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.layout_config.as_ref()
     }
 
-    pub fn scrolling(&self) -> &ScrollingSpace<W> {
+    pub fn scrolling(&self) -> &TilingSpace<W> {
         &self.scrolling
     }
 
-    pub fn scrolling_mut(&mut self) -> &mut ScrollingSpace<W> {
+    pub fn scrolling_mut(&mut self) -> &mut TilingSpace<W> {
         &mut self.scrolling
     }
 

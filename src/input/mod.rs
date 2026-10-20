@@ -50,7 +50,7 @@ use self::resize_grab::ResizeGrab;
 use self::spatial_movement_grab::SpatialMovementGrab;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
-use crate::layout::scrolling::ScrollDirection;
+use crate::layout::tiling::ScrollDirection;
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -2117,6 +2117,11 @@ impl State {
             }
             Action::ExpandColumnToAvailableWidth => {
                 self.niri.layout.expand_column_to_available_width();
+            }
+            Action::LayoutAction(name, args) => {
+                self.niri.layout.layout_action(&name, &args);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
             }
             Action::ShowHotkeyOverlay => {
                 if self.niri.hotkey_overlay.show() {

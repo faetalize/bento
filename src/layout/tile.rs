@@ -81,6 +81,10 @@ pub struct Tile<W: LayoutElement> {
     /// Currently selected preset height index when this tile is floating.
     pub(super) floating_preset_height_idx: Option<usize>,
 
+    /// Whether the tile has been in the tiling layout before, so that adding it again is a move
+    /// rather than a new window opening.
+    pub(super) was_tiled: bool,
+
     /// The animation upon opening a window.
     open_animation: Option<OpenAnimation>,
 
@@ -204,6 +208,7 @@ impl<W: LayoutElement> Tile<W> {
             floating_pos: None,
             floating_preset_width_idx: None,
             floating_preset_height_idx: None,
+            was_tiled: false,
             open_animation: None,
             resize_animation: None,
             move_x_animation: None,
