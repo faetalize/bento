@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context as _};
 use niri_config::{Tiling, TilingLayout, TilingOption};
@@ -101,6 +101,8 @@ pub struct LayoutMeta {
 struct Engine {
     /// Config the engine was loaded for.
     config: Tiling,
+    /// Modification time of the layout file, to reload it when it changes.
+    mtime: Option<SystemTime>,
     /// Source of the layout, to tell whether a reload changed anything.
     source: String,
     meta: LayoutMeta,
@@ -175,6 +177,7 @@ impl Engine {
 
         Ok(Self {
             config: config.clone(),
+            mtime: file_mtime(config),
             source,
             meta,
             generation,
@@ -229,6 +232,14 @@ impl Engine {
     }
 }
 
+/// Modification time of the layout file in `config`, if it's a file.
+fn file_mtime(config: &Tiling) -> Option<SystemTime> {
+    match &config.layout {
+        TilingLayout::BuiltIn(_) => None,
+        TilingLayout::File(path) => std::fs::metadata(path).and_then(|m| m.modified()).ok(),
+    }
+}
+
 /// Reads the source of the layout in `config`.
 fn read_source(config: &Tiling) -> anyhow::Result<(String, String)> {
     match &config.layout {
@@ -254,7 +265,7 @@ fn read_source(config: &Tiling) -> anyhow::Result<(String, String)> {
 pub fn ensure_loaded(config: &Tiling) -> u64 {
     ENGINE.with_borrow_mut(|engine| {
         if let Some(engine) = engine.as_ref() {
-            if engine.config == *config {
+            if engine.config == *config && engine.mtime == file_mtime(config) {
                 return engine.generation;
             }
         }
@@ -280,7 +291,9 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
             }
             Ok(None) => {
                 // Same source: only the options changed, which instances pick up on their own.
-                engine.as_mut().unwrap().config = config.clone();
+                let engine = engine.as_mut().unwrap();
+                engine.config = config.clone();
+                engine.mtime = file_mtime(config);
             }
             Err(err) => {
                 warn!("error loading tiling layout: {err:?}");
@@ -296,8 +309,10 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                         ..new
                     });
                 } else {
-                    // Keep running the previous layout, but don't retry until the config changes.
-                    engine.as_mut().unwrap().config = config.clone();
+                    // Keep running the previous layout, but don't retry until something changes.
+                    let engine = engine.as_mut().unwrap();
+                    engine.config = config.clone();
+                    engine.mtime = file_mtime(config);
                 }
             }
         }

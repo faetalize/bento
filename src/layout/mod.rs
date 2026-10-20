@@ -325,6 +325,16 @@ pub trait LayoutElement {
 
     fn is_child_of(&self, parent: &Self) -> bool;
 
+    /// App id of the window, for layouts.
+    fn app_id(&self) -> Option<String> {
+        None
+    }
+
+    /// Title of the window, for layouts.
+    fn title(&self) -> Option<String> {
+        None
+    }
+
     fn rules(&self) -> &ResolvedWindowRules;
 
     /// Runs periodic clean-up tasks.

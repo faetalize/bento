@@ -594,8 +594,8 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         WindowInfo {
             id: data.id,
-            app_id: None,
-            title: None,
+            app_id: win.app_id(),
+            title: win.title(),
             size: Wh::from_size(tile.tile_size()),
             min_size: Wh::from_size(tile.min_size_nonfullscreen()),
             max_size: Wh::from_size(tile.max_size_nonfullscreen()),
