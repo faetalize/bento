@@ -86,6 +86,8 @@ const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 
 thread_local! {
     static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
+    /// Why the configured layout last failed to load.
+    static LOAD_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
     static NEXT_INSTANCE: Cell<u64> = const { Cell::new(1) };
     static GENERATION: Cell<u64> = const { Cell::new(0) };
 }
@@ -281,6 +283,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
 
         match loaded {
             Ok(Some(mut new)) => {
+                LOAD_ERROR.set(None);
                 if let Some(old) = engine.take() {
                     let saved = old.save_all();
                     new.saved = old.saved;
@@ -290,6 +293,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                 *engine = Some(new);
             }
             Ok(None) => {
+                LOAD_ERROR.set(None);
                 // Same source: only the options changed, which instances pick up on their own.
                 let engine = engine.as_mut().unwrap();
                 engine.config = config.clone();
@@ -297,6 +301,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
             }
             Err(err) => {
                 warn!("error loading tiling layout: {err:?}");
+                LOAD_ERROR.set(Some(format!("{err:?}")));
                 if engine.is_none() {
                     let fallback = Tiling {
                         layout: TilingLayout::BuiltIn(String::from("fallback")),
@@ -378,4 +383,53 @@ pub fn take_state(instance: u64) -> Option<serde_json::Value> {
         let (name, state) = engine.saved.remove(&instance)?;
         (name == engine.meta.name).then_some(state)
     })
+}
+
+/// Checks the layout in `config` and what the config asks of it: that the layout loads, that the
+/// options exist and have the right types, and that `layout-action` binds name actions that the
+/// layout has.
+pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
+    ensure_loaded(&config.tiling);
+    if let Some(err) = LOAD_ERROR.with_borrow(Clone::clone) {
+        return Err(vec![format!("error loading the tiling layout: {err}")]);
+    }
+    let Some(meta) = meta() else {
+        return Err(vec![String::from("no tiling layout is loaded")]);
+    };
+
+    let mut problems = Vec::new();
+    for (name, value) in &config.tiling.options {
+        let given = match value {
+            TilingOption::Bool(_) => "boolean",
+            TilingOption::Number(_) => "number",
+            TilingOption::String(_) => "string",
+        };
+        match meta.options.get(name) {
+            None => problems.push(format!(
+                "the {} tiling layout has no option called {name:?}",
+                meta.name
+            )),
+            Some(expected) if expected != given => problems.push(format!(
+                "tiling layout option {name:?} must be a {expected}, not a {given}"
+            )),
+            Some(_) => (),
+        }
+    }
+
+    for bind in &config.binds.0 {
+        if let niri_config::Action::LayoutAction(name, _) = &bind.action {
+            if !meta.actions.contains(name) {
+                problems.push(format!(
+                    "the {} tiling layout has no action called {name:?}",
+                    meta.name
+                ));
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
 }
