@@ -1,11 +1,12 @@
 // bento's tiling layout: windows on a grid of cells.
 //
-// The workspace is a strip of near-square cells, 12 rows tall, that scrolls horizontally without
-// end. Every tiled window covers a rectangle of whole cells: a starting column and row plus a
-// span. Windows are independent of each other: they can sit in different rows, stack on top of
-// each other and leave holes. Moving or resizing one pushes the others out of the way, in order,
-// and with left gravity (the `gravity` option, on by default) windows slide left within their
-// rows until they touch another window or column 0, which is the fixed left edge of the strip.
+// The workspace is a strip of cells, 12 rows tall, that scrolls horizontally without end. The view
+// is a multiple of 12 columns wide, whichever makes the cells closest to square. Every tiled
+// window covers a rectangle of whole cells: a starting column and row plus a span. Windows are
+// independent of each other: they can sit in different rows, stack on top of each other and leave
+// holes. Moving or resizing one pushes the others out of the way, in order, and with left gravity
+// (the `gravity` option, on by default) windows slide left within their rows until they touch
+// another window or column 0, which is the fixed left edge of the strip.
 //
 // This file has two parts:
 //
@@ -27,7 +28,7 @@
 export const meta = {
     api: 1,
     name: "bento",
-    description: "Windows on a grid of near-square cells that scrolls horizontally.",
+    description: "Windows on a grid of cells that scrolls horizontally.",
     actions: {
         // Bind as `layout-action "split-h"` and so on. Each takes two presses: the first picks
         // the focused window, then focus another window and press again. Pressing again on the
@@ -64,11 +65,14 @@ export const meta = {
 // Part 1: the cell grid
 // =================================================================================================
 //
-// A port of bento's `grid.rs`. Positions never depend on where the windows are: column 0 stays
-// put, and nothing gets renumbered to start at the leftmost window.
+// Positions never depend on where the windows are: column 0 stays put, and nothing gets
+// renumbered to start at the leftmost window.
 
 /** Default number of rows in the grid. 12 divides evenly into halves, thirds, quarters, sixths. */
 export const DEFAULT_ROWS = 12;
+
+/** The number of columns across the view is a multiple of this, for the same reason. */
+export const COLS_MULTIPLE = 12;
 
 /** Largest width of a window in columns, which keeps cell arithmetic far from overflowing. */
 export const MAX_COLS = 10000;
@@ -872,16 +876,18 @@ function sameItems(a, b) {
 export class CellMetrics {
     /**
      * Computes cells that fill the view height with `rows` rows and are as close to square as
-     * possible while fitting a whole, even number of columns in the view width.
+     * possible while fitting a whole multiple of `COLS_MULTIPLE` columns in the view width.
      *
-     * The column count is even so that two half-width windows fit the view exactly.
+     * Like the rows, the column count divides evenly into halves, thirds, quarters and sixths,
+     * so windows sized by those proportions fit the view exactly. Cells may come out stretched,
+     * but they're only a unit: windows span several of them.
      */
     constructor(viewSize, rows, gap) {
         const cellH = Math.max((viewSize.h - gap * (rows + 1)) / rows, 1);
 
         // n columns take n * cellW + (n + 1) * gap.
         const squareCols = (viewSize.w - gap) / (cellH + gap);
-        const n = Math.max(round(squareCols / 2) * 2, 2);
+        const n = Math.max(round(squareCols / COLS_MULTIPLE) * COLS_MULTIPLE, COLS_MULTIPLE);
         const cellW = Math.max((viewSize.w - gap * (n + 1)) / n, 1);
 
         /** Cell width in logical pixels. */

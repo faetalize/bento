@@ -1,13 +1,11 @@
 // Tests for bento's grid layout, `bento.js`.
 //
-// The first part ports the behaviour tests from bento's `src/layout/tests/grid.rs`. The output is
-// 1280 × 720 with 16 px gaps, which makes the grid 22 columns by 12 rows of roughly 41 × 43 px
-// cells. Like the Rust tests, windows open 100 px wide, so 2 cells wide: the Rust test windows
-// pick that width themselves, here it comes from `default-column-width`. Positions are on screen,
-// relative to the view, rounded like bento renders them, so the expectations are the Rust
-// snapshots.
+// The first part tests the layout through the layout API. The output is 1280 × 720 with 16 px
+// gaps, which makes the grid 24 columns by 12 rows of roughly 37 × 43 px cells. Windows open
+// 100 px wide, from `default-column-width`, so 2 cells wide. Positions are on screen, relative to
+// the view, rounded like bento renders them.
 //
-// The second part ports the unit tests of the grid arithmetic from `src/layout/grid.rs`.
+// The second part tests the grid arithmetic on its own.
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -26,10 +24,11 @@ import {
 
 const { Left, Right, Up, Down } = Direction;
 
+const METRICS = new CellMetrics({ w: 1280, h: 720 }, DEFAULT_ROWS, 16);
 /** Distance between the left edges of neighboring grid columns in the test output. */
-const COL_STEP = (1280 - 16 * 23) / 22 + 16;
+const COL_STEP = METRICS.cellW + METRICS.gap;
 /** Distance between the top edges of neighboring grid rows in the test output. */
-const ROW_STEP = (720 - 16 * 13) / 12 + 16;
+const ROW_STEP = METRICS.cellH + METRICS.gap;
 
 async function setup(opts = {}) {
     return TestHost.load("../bento.js", {
@@ -43,7 +42,7 @@ function px(value) {
     return Math.sign(value) * Math.round(Math.abs(value)) + 0;
 }
 
-/** Tiles in the order they opened, on screen, like `format_tiles` in the Rust tests. */
+/** Tiles in the order they opened, on screen. */
 function tiles(host, ids = [...host.windows.keys()]) {
     return ids
         .sort((a, b) => a - b)
@@ -575,7 +574,7 @@ describe("grid layout", () => {
     });
 
     test("adjusting width goes by the requested amount", async () => {
-        // 10% of 22 columns is 2 columns.
+        // 10% of 24 columns is 2 columns.
         const host = await setup();
         host.open();
         host.actionOn(1, "set-window-width", adjust(10));
@@ -1513,8 +1512,7 @@ describe("grid", () => {
         g.verifyInvariants();
 
         // Positions are fixed, so 3 goes one column left of column 0 rather than everything else
-        // moving right. (grid.rs still expects 3 at column 0, 2 at 1 and 1 at 7, from before
-        // columns stopped being renumbered to start at the leftmost window.)
+        // moving right.
         assert.deepEqual(area(g, 3), at(-1, 6, 6, 6));
         assert.deepEqual(area(g, 2), at(0, 0, 6, 6));
         assert.deepEqual(area(g, 1), at(6, 0, 6, 6));
@@ -1785,10 +1783,10 @@ describe("grid", () => {
         assert.deepEqual(area(g, 3), at(0, 6, 14, 6));
     });
 
-    test("metrics near square", () => {
+    test("metrics in twelfths", () => {
         const m = new CellMetrics({ w: 1920, h: 1080 }, R, 16);
-        assert.equal(m.colsPerView, 22);
-        assert.ok(Math.abs(m.cellW / m.cellH - 1) < 0.05);
+        // 22 columns would be closer to square, but 24 is the nearest multiple of 12.
+        assert.equal(m.colsPerView, 24);
 
         // The cells exactly fill the view.
         const full = m.rect(A(0, 0, m.colsPerView, R));
@@ -1800,14 +1798,20 @@ describe("grid", () => {
         assert.equal(m.rowsForProportion(0.25), 3);
         assert.equal(m.rowsForProportion(0.33333), 4);
 
-        // Complementary proportions fit in the view.
-        assert.equal(m.colsForProportion(0.5), 11);
-        assert.equal(m.colsForProportion(0.33333), 7);
-        assert.equal(m.colsForProportion(0.66667), 14);
+        // Halves, thirds and quarters of the width are whole numbers of columns.
+        assert.equal(m.colsForProportion(0.5), 12);
+        assert.equal(m.colsForProportion(0.33333), 8);
+        assert.equal(m.colsForProportion(0.66667), 16);
+        assert.equal(m.colsForProportion(0.25), 6);
+        assert.equal(m.colsForProportion(0.75), 18);
+
+        // A wider view gets the next multiple of 12.
+        assert.equal(new CellMetrics({ w: 3440, h: 1080 }, R, 16).colsPerView, 36);
+        // A narrow one still gets 12.
+        assert.equal(new CellMetrics({ w: 400, h: 1080 }, R, 16).colsPerView, 12);
 
         // The test output.
-        const test = new CellMetrics({ w: 1280, h: 720 }, R, 16);
-        assert.equal(test.colsPerView, 22);
+        assert.equal(METRICS.colsPerView, 24);
     });
 
     test("size helpers", () => {

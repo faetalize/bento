@@ -8,7 +8,8 @@ Every window covers a rectangle of whole cells: a starting column and row, plus 
 So windows can sit in different rows, stack on top of each other, and span several cells in either direction.
 
 The grid has 12 rows.
-Cells are close to square: bento works out an even number of columns across the view from the output size and the [gaps](./Configuration:-Layout.md#gaps).
+The view is a multiple of 12 columns wide, like the rows: bento picks the multiple that makes cells closest to square, from the output size and the [gaps](./Configuration:-Layout.md#gaps).
+So halves, thirds, quarters and sixths of the view are whole numbers of cells, in both directions.
 Gaps go between cells.
 
 > [!NOTE]
@@ -21,7 +22,7 @@ Window sizes snap to whole cells.
 
 - `proportion` sizes round down to whole cells.
 Complementary proportions like <sup>1</sup>&frasl;<sub>3</sub> and <sup>2</sup>&frasl;<sub>3</sub> fit together, but may leave a cell free.
-For example, if the view is 16 cells wide, <sup>1</sup>&frasl;<sub>3</sub> is 5 cells and <sup>2</sup>&frasl;<sub>3</sub> is 10 cells, leaving one cell free.
+For example, if the view is 24 cells wide, <sup>2</sup>&frasl;<sub>5</sub> is 9 cells and <sup>3</sup>&frasl;<sub>5</sub> is 14 cells, leaving one cell free.
 - `fixed` sizes in logical pixels go to the nearest number of cells.
 Like in niri, a fixed width or height is for the window itself, without its border.
 
