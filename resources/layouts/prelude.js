@@ -113,6 +113,39 @@ function copyRect(rect) {
     return { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
 }
 
+function sameRect(a, b) {
+    return a !== null && b !== null && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+}
+
+/** Summary of a tab bar, to tell whether it changed. */
+function tabBarKey(bar) {
+    const { x, y, w, h } = bar.area;
+    return [x, y, w, h, bar.active, ...bar.windows].join();
+}
+
+/**
+ * The view as engines see it: what bento sends, plus `tilingArea`, the working area minus the
+ * struts from the config, starting at a physical pixel.
+ */
+function layoutView(view, config) {
+    const parent = view.workingArea;
+    const struts = config.struts;
+    const scale = view.scale;
+    const x = parent.x + struts.left;
+    const y = parent.y + struts.top;
+    const w = Math.max(0, parent.w - struts.left - struts.right);
+    const h = Math.max(0, parent.h - struts.top - struts.bottom);
+    const px = Math.ceil(x * scale) / scale;
+    const py = Math.ceil(y * scale) / scale;
+    const tilingArea = Object.freeze({
+        x: px,
+        y: py,
+        w: w - Math.min(w, px - x),
+        h: h - Math.min(h, py - y),
+    });
+    return Object.freeze({ ...view, tilingArea });
+}
+
 function isRect(rect) {
     return (
         rect !== null &&
@@ -154,8 +187,8 @@ class Instance {
         this.byId = new Map();
         this.focusedId = null;
         this.camera = { ...event.camera };
-        this.view = Object.freeze(event.view);
         this.config = Object.freeze(event.config);
+        this.view = layoutView(event.view, this.config);
         this.logs = [];
         this.setOptions(event.options);
 
@@ -200,6 +233,7 @@ class Instance {
             }
             return win;
         };
+        const round = (value) => Math.round(value * self.view.scale) / self.view.scale;
 
         return Object.freeze({
             get windows() {
@@ -227,6 +261,9 @@ class Instance {
                 own(win);
                 if (!isRect(rect)) {
                     throw new Error(`invalid rect for window ${win.id}: ${JSON.stringify(rect)}`);
+                }
+                if (sameRect(win.rect, rect)) {
+                    return;
                 }
                 win.rect = Object.freeze(copyRect(rect));
                 self.dirty.add(win.id);
@@ -284,6 +321,9 @@ class Instance {
                 if (rect !== null && !isRect(rect)) {
                     throw new Error(`invalid hint rect: ${JSON.stringify(rect)}`);
                 }
+                if (rect === null ? self.hint === null : sameRect(self.hint, rect)) {
+                    return;
+                }
                 self.hint = rect === null ? null : copyRect(rect);
                 self.hintChanged = true;
             },
@@ -303,13 +343,40 @@ class Instance {
                 if (!windows.includes(active)) {
                     throw new Error("the active tab must be one of the tabs");
                 }
-                self.tabBars.set(key, { key, area: copyRect(bar.area), windows, active });
+                const next = { key, area: copyRect(bar.area), windows, active };
+                const shown = self.tabBars.get(key);
+                if (shown !== undefined && tabBarKey(shown) === tabBarKey(next)) {
+                    return;
+                }
+                self.tabBars.set(key, next);
                 self.tabsChanged = true;
             },
-            round(value) {
-                const scale = self.view.scale;
-                return Math.round(value * scale) / scale;
+            get tabBars() {
+                return [...self.tabBars.keys()];
             },
+            tabIndicatorSpace(count) {
+                const config = self.config.tabIndicator;
+                if (
+                    !config ||
+                    config.off ||
+                    !config.placeWithinColumn ||
+                    (config.hideWhenSingleTab && count === 1)
+                ) {
+                    return { x: 0, y: 0, w: 0, h: 0 };
+                }
+                const size = Math.max(0, round(config.width) + round(config.gap));
+                switch (config.position) {
+                    case "left":
+                        return { x: size, y: 0, w: size, h: 0 };
+                    case "right":
+                        return { x: 0, y: 0, w: size, h: 0 };
+                    case "top":
+                        return { x: 0, y: size, w: 0, h: size };
+                    default:
+                        return { x: 0, y: 0, w: 0, h: size };
+                }
+            },
+            round,
             log(...args) {
                 self.logs.push(
                     args
@@ -433,10 +500,11 @@ class Instance {
                 });
             }
             case "view":
-                this.view = Object.freeze(event.view);
+                this.view = layoutView(event.view, this.config);
                 return this.run(false, () => layout.viewChanged?.());
             case "config":
                 this.config = Object.freeze(event.config);
+                this.view = layoutView(this.view, this.config);
                 this.setOptions(event.options);
                 return this.run(false, () => layout.configChanged?.());
             case "camera":

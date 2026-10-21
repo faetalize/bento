@@ -1006,23 +1006,19 @@ export default function create(ws) {
     let resize = null;
     /** Size of windows that left to float or to be dragged, by window id, for when they're back. */
     const remembered = new Map();
-    /** Tab bars bento shows, by key, with what they showed, to only send changes. */
-    const tabBars = new Map();
     /**
      * Two-step action waiting for its second step: `{ action, first }`, with `first` the item
      * picked first, and for `stuff`, `seam`, the seam it would go into. Only lasts until the
      * action finishes or is cancelled; it isn't saved.
      */
     let picking = null;
-    /** Rect of the highlight on the first pick, as last shown. */
-    let pickHint = null;
     let nextItemId = 1;
 
     // View geometry, see `updateGeometry`.
     let viewSize;
     /** Part of the view not covered by panels. Maximized windows fill it. */
     let parentArea;
-    /** `parentArea` without the struts from the config, where tiles go. */
+    /** Where tiles go: `parentArea` without the struts from the config. */
     let workingArea;
     let metrics;
 
@@ -1036,7 +1032,7 @@ export default function create(ws) {
     function updateGeometry() {
         viewSize = ws.view.size;
         parentArea = ws.view.workingArea;
-        workingArea = computeWorkingArea(parentArea, ws.view.scale, ws.config.struts);
+        workingArea = ws.view.tilingArea;
         metrics = new CellMetrics(workingArea, DEFAULT_ROWS, ws.config.gaps);
     }
 
@@ -1254,42 +1250,20 @@ export default function create(ws) {
     }
 
     /**
-     * Space the tab indicator takes inside a tabbed area of `count` tabs, as `{ w, h }`, when the
-     * config places it within the area rather than outside it.
-     */
-    function tabIndicatorSize(count) {
-        const config = ws.config.tabIndicator;
-        if (
-            !config ||
-            config.off ||
-            !config.placeWithinColumn ||
-            (config.hideWhenSingleTab && count === 1)
-        ) {
-            return { w: 0, h: 0 };
-        }
-        const size = Math.max(0, ws.round(config.width) + ws.round(config.gap));
-        return config.position === "left" || config.position === "right"
-            ? { w: size, h: 0 }
-            : { w: 0, h: size };
-    }
-
-    /**
      * Rect of the windows of an item. Tabs share the item's rect, minus the space for the tab
-     * indicator, which goes on its left or top side, or right or bottom.
+     * indicator.
      */
     function windowRect(item) {
         const rect = itemRect(item);
         if (!item.tabbed || modeOf(item) !== "normal") {
             return rect;
         }
-        const extra = tabIndicatorSize(item.windows.length);
-        const position = ws.config.tabIndicator?.position;
-        const before = position === "left" || position === "top";
+        const space = ws.tabIndicatorSpace(item.windows.length);
         return {
-            x: rect.x + (before ? extra.w : 0),
-            y: rect.y + (before ? extra.h : 0),
-            w: Math.max(rect.w - extra.w, 1),
-            h: Math.max(rect.h - extra.h, 1),
+            x: rect.x + space.x,
+            y: rect.y + space.y,
+            w: Math.max(rect.w - space.w, 1),
+            h: Math.max(rect.h - space.h, 1),
         };
     }
 
@@ -1350,58 +1324,37 @@ export default function create(ws) {
         if (picking?.action === "stuff") {
             checkSeam();
         }
-        const hint =
+        ws.setHint(
             picking === null
                 ? null
                 : picking.action === "stuff"
                   ? stuffPreview(picking.first, picking.seam)
-                  : itemRect(picking.first);
-        const same = hint === null ? pickHint === null : pickHint !== null && sameRect(hint, pickHint);
-        if (!same) {
-            ws.setHint(hint);
-            pickHint = hint;
-        }
+                  : itemRect(picking.first),
+        );
 
-        const bars = new Map();
+        const bars = new Set();
         for (const item of items) {
             const rect = windowRect(item);
             const mode = modeOf(item);
             item.windows.forEach((win, i) => {
                 ws.setMode(win, mode);
                 ws.setVisible(win, !item.tabbed || i === item.active);
-                if (!sameRect(win.rect, rect)) {
-                    ws.place(win, rect, { animate });
-                }
+                ws.place(win, rect, { animate });
             });
 
             // Tabbed areas get a tab indicator, except while they cover the view.
             if (item.tabbed && mode === "normal") {
-                bars.set(item.key, {
+                ws.setTabBar(item.key, {
                     area: rect,
                     windows: item.windows,
                     active: item.windows[item.active],
                 });
+                bars.add(item.key);
             }
         }
-
-        for (const [key, bar] of bars) {
-            const shown = [
-                bar.area.x,
-                bar.area.y,
-                bar.area.w,
-                bar.area.h,
-                bar.active.id,
-                ...bar.windows.map((w) => w.id),
-            ].join();
-            if (tabBars.get(key) !== shown) {
-                ws.setTabBar(key, bar);
-                tabBars.set(key, shown);
-            }
-        }
-        for (const key of [...tabBars.keys()]) {
+        for (const key of ws.tabBars) {
             if (!bars.has(key)) {
                 ws.setTabBar(key, null);
-                tabBars.delete(key);
             }
         }
 
@@ -3611,14 +3564,19 @@ export default function create(ws) {
      */
     function newWindowSize(info) {
         const borders = info.borders;
+        const rules = info.rules;
         const extra =
-            ws.config.defaultColumnDisplay === "tabbed" ? tabIndicatorSize(1) : { w: 0, h: 0 };
-        const width = info.rules.defaultWidth
-            ? cellGeometry(new Area(0, 0, colsForPreset(info.rules.defaultWidth, borders.w), 1)).w -
-              extra.w
-            : 0;
-        const rows = info.rules.defaultHeight
-            ? rowsForPreset(info.rules.defaultHeight, borders.h)
+            (rules.defaultColumnDisplay ?? ws.config.defaultColumnDisplay) === "tabbed"
+                ? ws.tabIndicatorSpace(1)
+                : { w: 0, h: 0 };
+        const cols = rules.openFullWidth
+            ? metrics.colsPerView
+            : rules.defaultWidth
+              ? colsForPreset(rules.defaultWidth, borders.w)
+              : null;
+        const width = cols === null ? 0 : cellGeometry(new Area(0, 0, cols, 1)).w - extra.w;
+        const rows = rules.defaultHeight
+            ? rowsForPreset(rules.defaultHeight, borders.h)
             : metrics.rows;
         const height = cellGeometry(new Area(0, 0, 1, rows)).h - extra.h;
         let size = {
@@ -3841,23 +3799,6 @@ function computeNewViewOffset(curX, viewWidth, newColX, newColWidth, gaps) {
     const distToLeft = Math.abs(curX - newX);
     const distToRight = Math.abs(curX + viewWidth - newRightX);
     return distToLeft <= distToRight ? -padding : -(viewWidth - padding - newColWidth);
-}
-
-/** The working area: the part of the view without panels, minus the struts from the config. */
-function computeWorkingArea(parent, scale, struts) {
-    const x = parent.x + struts.left;
-    const y = parent.y + struts.top;
-    const w = Math.max(0, parent.w - struts.left - struts.right);
-    const h = Math.max(0, parent.h - struts.top - struts.bottom);
-
-    // Start at a physical pixel.
-    const px = Math.ceil(x * scale) / scale;
-    const py = Math.ceil(y * scale) / scale;
-    return { x: px, y: py, w: w - Math.min(w, px - x), h: h - Math.min(h, py - y) };
-}
-
-function sameRect(a, b) {
-    return a !== null && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
 }
 
 /** Middle of an area, in cells. */

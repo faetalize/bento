@@ -42,7 +42,10 @@ export interface Rect {
     h: number;
 }
 
-/** A size from the config or window rules: a proportion of the working area, or fixed pixels. */
+/**
+ * A size from the config or window rules: a proportion of the working area, or fixed pixels. Like
+ * in niri, a fixed size is for the window itself, without its borders.
+ */
 export type Preset = { proportion: number } | { fixed: number };
 
 /** How a window is sized, as the window is told. */
@@ -107,6 +110,11 @@ export interface View {
     readonly size: Size;
     /** Part of the view not covered by panels and other exclusive layer surfaces. */
     readonly workingArea: Rect;
+    /**
+     * `workingArea` minus the struts from the config, starting at a physical pixel: where tiled
+     * windows go, if the engine follows the config's struts.
+     */
+    readonly tilingArea: Rect;
     /** Output scale. Place windows on physical pixels to keep them sharp, see `Workspace.round`. */
     readonly scale: number;
 }
@@ -114,6 +122,7 @@ export interface View {
 /** The `layout {}` section of the config, which layouts may follow or ignore. */
 export interface LayoutConfig {
     readonly gaps: number;
+    /** Space to leave around tiled windows, already taken out of `View.tilingArea`. */
     readonly struts: { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number };
     readonly centerFocusedColumn: "never" | "always" | "on-overflow";
     readonly alwaysCenterSingleColumn: boolean;
@@ -134,7 +143,7 @@ export interface TabIndicatorConfig {
     readonly gap: number;
     /**
      * Whether the indicator goes inside the tabbed area, so the windows should leave
-     * `width + gap` free on the indicator's side.
+     * `width + gap` free on the indicator's side, see `Workspace.tabIndicatorSpace`.
      */
     readonly placeWithinColumn: boolean;
     readonly hideWhenSingleTab: boolean;
@@ -241,7 +250,10 @@ export interface Workspace {
     /** Finds a window by id. */
     window(id: number): Window | null;
 
-    /** Puts a window at `rect` on the canvas and asks it to take that size. */
+    /**
+     * Puts a window at `rect` on the canvas and asks it to take that size. Placing a window where
+     * it already is does nothing, so an engine can place every window after each change.
+     */
     place(win: Window, rect: Rect, opts?: { animate?: boolean }): void;
     /** Shows or hides a window, for example the inactive tabs of a tabbed column. */
     setVisible(win: Window, visible: boolean): void;
@@ -261,14 +273,24 @@ export interface Workspace {
     /**
      * Shows a highlight on the canvas, like around a window picked for a two-step action, or
      * hides it with `null`. While a window is dragged, bento highlights `dropTarget` instead.
+     * Setting the same highlight again does nothing.
      */
     setHint(rect: Rect | null): void;
     /**
      * Draws a tab indicator for windows shown as tabs, or removes it with `null`. `key` tells
      * tab bars apart, so that each keeps its animations; any string. Clicking a tab activates its
-     * window through `Layout.activate`. Hiding inactive tabs is up to the layout.
+     * window through `Layout.activate`. Hiding inactive tabs is up to the engine. Setting the same
+     * tab bar again does nothing.
      */
     setTabBar(key: string, bar: TabBar | null): void;
+    /** Keys of the tab bars shown, to remove the ones that went away. */
+    readonly tabBars: readonly string[];
+    /**
+     * Space the tab indicator takes inside a tabbed area of `count` tabs, from the config: `w` and
+     * `h` to leave free across and down, and `x` and `y` for how far the tabs start from the
+     * area's left and top edges. All 0 when the indicator goes outside the area or is hidden.
+     */
+    tabIndicatorSpace(count: number): Rect;
     /** Rounds a coordinate to physical pixels. */
     round(value: number): number;
     /** Writes to bento's log. */

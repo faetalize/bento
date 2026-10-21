@@ -32,7 +32,6 @@ function applyLimits(value, min, max) {
 }
 
 const sameSize = (a, b) => a !== null && b !== null && a.w === b.w && a.h === b.h;
-const sameRect = (a, b) => a !== null && sameSize(a, b) && a.x === b.x && a.y === b.y;
 const sizeKey = (size) => `${size.w}x${size.h}`;
 const samePresets = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -112,8 +111,6 @@ export default function create(ws) {
     /** What `ws.focused` was at the end of the last call. */
     let lastFocused = null;
     let nextColumnId = 1;
-    /** Tab bars shown, by key, with what they showed. */
-    let shownTabBars = new Map();
 
     // Per call: set while a call runs, and handled at its end.
     let skipCameraAnimation = false;
@@ -127,22 +124,7 @@ export default function create(ws) {
     const parentArea = () => ws.view.workingArea;
 
     /** The area that columns fit in: the parent area minus struts, starting at a physical pixel. */
-    function workingArea() {
-        const parent = parentArea();
-        const { left, right, top, bottom } = ws.config.struts;
-        const scale = ws.view.scale;
-        const x = parent.x + left;
-        const y = parent.y + top;
-        const loc = { x: Math.ceil(x * scale) / scale, y: Math.ceil(y * scale) / scale };
-        const w = Math.max(0, parent.w - left - right);
-        const h = Math.max(0, parent.h - top - bottom);
-        return {
-            x: loc.x,
-            y: loc.y,
-            w: w - Math.min(w, loc.x - x),
-            h: h - Math.min(h, loc.y - y),
-        };
-    }
+    const workingArea = () => ws.view.tilingArea;
 
     // Window sizes in this API are tile sizes, borders included. niri's fixed sizes (like
     // `set-window-height 500` or a `fixed` preset) are for the window inside the borders.
@@ -178,41 +160,24 @@ export default function create(ws) {
     // The tab indicator. bento draws it, but tabbed columns leave room for it when it's placed
     // within the column.
 
-    /** Space the indicator takes for `tabCount` tabs, niri's `TabIndicator::extra_size`. */
-    function tabIndicatorExtraSize(tabCount) {
-        const config = ws.config.tabIndicator;
-        if (
-            !config ||
-            config.off ||
-            !config.placeWithinColumn ||
-            (config.hideWhenSingleTab && tabCount === 1)
-        ) {
-            return { w: 0, h: 0 };
-        }
-        const size = Math.max(0, ws.round(config.width) + ws.round(config.gap));
-        return config.position === "left" || config.position === "right"
-            ? { w: size, h: 0 }
-            : { w: 0, h: size };
-    }
-
+    /** Space the indicator takes in a column, niri's `TabIndicator::extra_size`. */
     function extraSize(col) {
-        return col.display === "tabbed" ? tabIndicatorExtraSize(col.tiles.length) : { w: 0, h: 0 };
+        return col.display === "tabbed"
+            ? ws.tabIndicatorSpace(col.tiles.length)
+            : { x: 0, y: 0, w: 0, h: 0 };
     }
 
     /** Extra size for a new column with one window. */
     function newColumnExtraSize() {
         return ws.config.defaultColumnDisplay === "tabbed"
-            ? tabIndicatorExtraSize(1)
-            : { w: 0, h: 0 };
+            ? ws.tabIndicatorSpace(1)
+            : { x: 0, y: 0, w: 0, h: 0 };
     }
 
     /** Where the tiles start because of the indicator, niri's `TabIndicator::content_offset`. */
     function contentOffset(col) {
-        const position = ws.config.tabIndicator?.position;
-        const extra = extraSize(col);
-        return position === "left" || position === "top"
-            ? { x: extra.w, y: extra.h }
-            : { x: 0, y: 0 };
+        const { x, y } = extraSize(col);
+        return { x, y };
     }
 
     // Tiles and columns.
@@ -1943,25 +1908,15 @@ export default function create(ws) {
                     w: tile.size.w,
                     h: tile.size.h,
                 };
-                if (!sameRect(win.rect, rect)) ws.place(win, rect, { animate });
+                ws.place(win, rect, { animate });
             });
             x += columnWidth(col) + gaps();
         }
 
-        const shown = new Map();
-        for (const [key, bar] of tabBars) {
-            const summary = JSON.stringify({
-                area: bar.area,
-                windows: bar.windows.map((win) => win.id),
-                active: bar.active.id,
-            });
-            if (shownTabBars.get(key) !== summary) ws.setTabBar(key, bar);
-            shown.set(key, summary);
+        for (const [key, bar] of tabBars) ws.setTabBar(key, bar);
+        for (const key of ws.tabBars) {
+            if (!tabBars.has(key)) ws.setTabBar(key, null);
         }
-        for (const key of shownTabBars.keys()) {
-            if (!shown.has(key)) ws.setTabBar(key, null);
-        }
-        shownTabBars = shown;
 
         if (columns.length > 0) {
             const camera = { x: ws.round(columnX(activeColumnIdx) + viewOffset), y: 0 };
