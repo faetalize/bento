@@ -1,4 +1,4 @@
-// bento's tiling layout: windows on a grid of cells.
+// bento's layout engine: windows on a grid of cells.
 //
 // The workspace is a strip of cells, 12 rows tall, that scrolls horizontally without end. The view
 // is a multiple of 12 columns wide, whichever makes the cells closest to square. Every tiled
@@ -13,7 +13,7 @@
 // 1. The cell grid: pure arithmetic on rectangles of cells, with no windows, pixels or camera.
 //    `Grid`, `Area` and `CellMetrics` are exported so that tests can check them on
 //    their own.
-// 2. The layout: it keeps one item on the grid per window, or per tabbed area of several windows,
+// 2. The engine: it keeps one item on the grid per window, or per tabbed area of several windows,
 //    and maps the grid onto window rects, focus, the camera and actions.
 //
 // Coordinates: column 0 of the grid starts at x = 0 on the canvas, and the camera's x is where
@@ -967,7 +967,7 @@ export function nextPresetSpan(current, spans, forwards) {
 }
 
 // =================================================================================================
-// Part 2: the layout
+// Part 2: the engine
 // =================================================================================================
 
 /** How many windows that left to float or be dragged elsewhere to remember the size of. */
@@ -1083,7 +1083,7 @@ export default function create(ws) {
         };
     }
 
-    /** Size of a window that already has one, like from the layout before this one. */
+    /** Size of a window that already has one, like from the engine before this one. */
     function intentForSize(win, size) {
         if (win.mode !== "normal" || !(size.w > 0 && size.h > 0)) {
             return intentForNewWindow(win);
@@ -1369,7 +1369,7 @@ export default function create(ws) {
         }
     }
 
-    /** Wraps a layout call so that bento gets what it changed. */
+    /** Wraps an engine call so that bento gets what it changed. */
     function changes(call) {
         return (...args) => {
             const result = call(...args);
@@ -1700,7 +1700,7 @@ export default function create(ws) {
 
     function addWindow(win, how) {
         // Windows coming back from floating or a drag keep the size they had, and windows that
-        // were on the workspace before this layout keep theirs.
+        // were on the workspace before this engine keep theirs.
         const saved = remembered.get(win.id) ?? null;
         remembered.delete(win.id);
         let intent = saved ?? intentForNewWindow(win);
@@ -1725,7 +1725,7 @@ export default function create(ws) {
             grid.place(areas);
         } else if (how.rect && (how.reason === "tile" || how.reason === "adopt")) {
             // A window that stops floating goes to the cells under where it was, at its size from
-            // the last time it was tiled; one from the layout before this one, at its own size.
+            // the last time it was tiled; one from the engine before this one, at its own size.
             grid.place([[item, areaAt(how.rect.x, how.rect.y, cols, rows)]]);
         } else {
             // New windows open right of the focused one, or of the window they belong to, lined
@@ -3294,7 +3294,7 @@ export default function create(ws) {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Moving between workspaces, reloading, switching layouts
+    // Moving between workspaces, reloading, switching engines
     // ---------------------------------------------------------------------------------------------
 
     /** Reads a size intent from saved or transferred data, or `null` if it doesn't make sense. */
@@ -3357,7 +3357,7 @@ export default function create(ws) {
         });
     }
 
-    /** State to come back to when the layout reloads. */
+    /** State to come back to when the engine reloads. */
     function save() {
         const ref = (item) => (item && items.includes(item) ? item.windows[0].id : null);
         return {
@@ -3397,7 +3397,7 @@ export default function create(ws) {
 
     /**
      * Takes over windows: from saved state after a reload, or otherwise from where they are, like
-     * when switching from another layout.
+     * when switching from another engine.
      */
     function adopt(windows, focused, state) {
         // The grid is a horizontal strip, so the camera stays at the top.
@@ -3524,7 +3524,7 @@ export default function create(ws) {
     }
 
     /**
-     * Adds windows that the layout takes over without saved state. Windows with a place on the
+     * Adds windows that the engine takes over without saved state. Windows with a place on the
      * canvas go to the cells nearest to it at their size, left to right; the others go after
      * them, in order.
      */

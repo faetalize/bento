@@ -1,4 +1,4 @@
-// A stand-in for bento, to test layouts with node:
+// A stand-in for bento, to test layout engines with node:
 //
 //     import { TestHost } from "./host.js";
 //     const host = await TestHost.load("../bento.js", { options: { gravity: true } });
@@ -6,7 +6,7 @@
 //     host.action("focus-column-left");
 //     assert.deepEqual(host.rect(a), { x: 16, y: 16, w: 616, h: 688 });
 //
-// It talks to the layout through `prelude.js` with the same JSON events as bento, and windows
+// It talks to the engine through `prelude.js` with the same JSON events as bento, and windows
 // behave like simple clients: they take the size they're given, within their size limits.
 
 import * as prelude from "../prelude.js";
@@ -32,7 +32,7 @@ const DEFAULT_CONFIG = {
 
 export class TestHost {
     /**
-     * Loads a layout module and creates it for an empty workspace.
+     * Loads a layout engine's module and creates it for an empty workspace.
      *
      * `opts.view` is the output size, 1280 × 720 by default; `opts.workingArea` defaults to all of
      * it. `opts.config` overrides parts of the `layout {}` config.
@@ -138,7 +138,7 @@ export class TestHost {
         }
     }
 
-    /** Runs a built-in or layout action. Returns whether the layout did anything. */
+    /** Runs a built-in or engine action. Returns whether the engine did anything. */
     action(name, ...args) {
         return this.send({ type: "action", name, args, target: null }).result;
     }
@@ -210,7 +210,7 @@ export class TestHost {
     }
 
     /**
-     * Drags a window and drops it: it leaves the layout, then comes back where it was dropped.
+     * Drags a window and drops it: it leaves the engine, then comes back where it was dropped.
      * `rect` is where the dragged tile is on the canvas when it's dropped.
      */
     drag(id, pointer, rect) {
@@ -238,7 +238,7 @@ export class TestHost {
         return true;
     }
 
-    /** Asks the layout which windows go along with `id` to another workspace. */
+    /** Asks the engine which windows go along with `id` to another workspace. */
     transferOut(id) {
         return this.send({ type: "transfer-out", id }).result;
     }
@@ -255,7 +255,7 @@ export class TestHost {
         }).result;
     }
 
-    /** Saves the layout's state and creates the layout again, like reloading the layout file. */
+    /** Saves the engine's state and creates the engine again, like reloading its file. */
     reload() {
         const state = this.send({ type: "destroy" }).result;
         this.instance = TestHost.nextInstance++;
@@ -314,7 +314,7 @@ export class TestHost {
         this.logs.push(...out.logs);
         if (out.error !== null) {
             this.errors.push(out.error);
-            throw new Error(`layout error: ${out.error}`);
+            throw new Error(`layout engine error: ${out.error}`);
         }
 
         for (const change of out.windows ?? []) {
@@ -332,7 +332,7 @@ export class TestHost {
         if (out.tabs) this.tabs = new Map(out.tabs.map((bar) => [bar.key, bar]));
         for (const [id, pos] of out.ipc ?? []) this.ipc.set(id, pos);
 
-        // Windows that couldn't take their size tell the layout, like clients committing.
+        // Windows that couldn't take their size tell the engine, like clients committing.
         const changed = [...this.windows.values()].filter((win) => win.reported !== sizeKey(win.size));
         for (const win of changed) win.reported = sizeKey(win.size);
         const resized = changed.filter((win) => win.rect && (win.rect.w !== win.size.w || win.rect.h !== win.size.h));

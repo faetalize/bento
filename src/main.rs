@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         error!("{problem}");
                     }
                     return Err(
-                        anyhow::anyhow!("the tiling layout doesn't match the config").into(),
+                        anyhow::anyhow!("the layout engine doesn't match the config").into(),
                     );
                 }
                 info!("config is valid");

@@ -1,4 +1,4 @@
-//! The tiling layout, where a layout script decides where windows go.
+//! The tiling layout, where a layout engine decides where windows go.
 //!
 //! This is the compositor half of bento's scriptable layouts. The space holds the tiled windows
 //! of a workspace and a camera over an unbounded canvas. A layout instance in the JS engine (see
@@ -843,17 +843,17 @@ impl<W: LayoutElement> TilingSpace<W> {
         match res {
             Ok(out) => {
                 for log in &out.logs {
-                    info!("tiling layout: {log}");
+                    info!("layout engine: {log}");
                 }
                 if let Some(error) = &out.error {
-                    warn!("error in the tiling layout: {error}");
+                    warn!("error in the layout engine: {error}");
                 }
                 let result = self.apply(out, apply);
                 self.place_unplaced();
                 Some(result)
             }
             Err(err) => {
-                warn!("error in the tiling layout, starting it over: {err:?}");
+                warn!("error in the layout engine, starting it over: {err:?}");
                 // Create the instance again next time, from where the windows are now.
                 self.generation = 0;
                 self.place_unplaced();
@@ -876,7 +876,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         match res {
             Ok(out) => {
                 if let Some(error) = &out.error {
-                    warn!("error in the tiling layout: {error}");
+                    warn!("error in the layout engine: {error}");
                     return None;
                 }
                 Some(out.result)

@@ -1,4 +1,4 @@
-// niri's scrollable tiling, as a bento layout.
+// niri's scrollable tiling, as a bento layout engine.
 //
 // Windows live in columns on an infinite horizontal strip. A column holds one or more tiles,
 // stacked vertically or shown as tabs. Opening a window adds a column next to the focused one, and
@@ -85,7 +85,7 @@ function computeNewViewOffset(curX, viewWidth, newColX, newColWidth, gaps) {
 }
 
 export default function create(ws) {
-    // Layout state. `save()` writes all of it out, and `adopt()` reads it back.
+    // Engine state. `save()` writes all of it out, and `adopt()` reads it back.
 
     /** Columns from left to right. */
     let columns = [];
@@ -189,7 +189,7 @@ export default function create(ws) {
      * column, `{ kind: "fixed", px }` is a window height, `{ kind: "preset", idx }` one of the
      * preset window heights. Only one tile in a column can be non-auto.
      *
-     * `request` is the size the layout wants for the tile, and `size` the size it takes, which is
+     * `request` is the size the engine wants for the tile, and `size` the size it takes, which is
      * what everything is laid out from.
      */
     function makeTile(win, height = { kind: "auto", weight: 1 }) {
@@ -1930,7 +1930,7 @@ export default function create(ws) {
      * Runs a call that changes the layout, then applies it.
      *
      * `focus` says when to focus the active window afterwards: `"always"`, `"changed"` when it
-     * changed, or `"follow"` when it changed and the layout had focus, so that closing a window
+     * changed, or `"follow"` when it changed and the engine had focus, so that closing a window
      * doesn't take focus from somewhere else.
      */
     function mutate(fn, { animate = true, focus = "follow", hadFocus = ws.focused !== null } = {}) {
@@ -2124,7 +2124,7 @@ export default function create(ws) {
         }
     }
 
-    // The layout.
+    // The engine.
 
     return {
         windowAdded(win, how) {

@@ -164,8 +164,8 @@ impl Engine {
                 .call((layout,))
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))?;
-            let meta: LayoutMeta =
-                serde_json::from_str(&meta).context("error reading the layout metadata")?;
+            let meta: LayoutMeta = serde_json::from_str(&meta)
+                .context("error reading the layout engine's metadata")?;
 
             let handle: Function = prelude.get("handle")?;
             let save_all: Function = prelude.get("saveAll")?;
@@ -213,7 +213,7 @@ impl Engine {
         {
             Ok(states) => states,
             Err(err) => {
-                warn!("error saving tiling layout state: {err:?}");
+                warn!("error saving layout engine state: {err:?}");
                 HashMap::new()
             }
         };
@@ -253,7 +253,7 @@ fn read_source(config: &Tiling) -> anyhow::Result<(String, String)> {
             let (_, source) = BUILT_IN
                 .iter()
                 .find(|(built_in, _)| built_in == name)
-                .ok_or_else(|| anyhow!("there's no built-in layout called {name:?}"))?;
+                .ok_or_else(|| anyhow!("there's no built-in layout engine called {name:?}"))?;
             Ok((name.clone(), String::from(*source)))
         }
         TilingLayout::File(path) => {
@@ -293,7 +293,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                     new.saved = old.saved;
                     new.saved.extend(saved);
                 }
-                info!("loaded tiling layout {}", new.meta.name);
+                info!("loaded layout engine {}", new.meta.name);
                 *engine = Some(new);
             }
             Ok(None) => {
@@ -304,7 +304,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                 engine.mtime = file_mtime(config);
             }
             Err(err) => {
-                warn!("error loading tiling layout: {err:?}");
+                warn!("error loading layout engine: {err:?}");
                 LOAD_ERROR.set(Some(format!("{err:?}")));
                 if engine.is_none() {
                     let fallback = Tiling {
@@ -312,7 +312,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                         options: Vec::new(),
                     };
                     let new = Engine::load(&fallback, String::from(FALLBACK), "fallback")
-                        .expect("the fallback layout must load");
+                        .expect("the fallback layout engine must load");
                     *engine = Some(Engine {
                         config: config.clone(),
                         ..new
@@ -365,7 +365,7 @@ pub fn call(event: &str) -> anyhow::Result<String> {
     ENGINE.with_borrow(|engine| {
         let engine = engine
             .as_ref()
-            .ok_or_else(|| anyhow!("no layout is loaded"))?;
+            .ok_or_else(|| anyhow!("no layout engine is loaded"))?;
         engine.call(event)
     })
 }
@@ -389,16 +389,16 @@ pub fn take_state(instance: u64) -> Option<serde_json::Value> {
     })
 }
 
-/// Checks the layout in `config` and what the config asks of it: that the layout loads, that the
-/// options exist and have the right types, and that `layout-action` binds name actions that the
-/// layout has.
+/// Checks the layout engine in `config` and what the config asks of it: that the engine loads,
+/// that the options exist and have the right types, and that `layout-action` binds name actions
+/// that the engine has.
 pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     ensure_loaded(&config.tiling);
     if let Some(err) = LOAD_ERROR.with_borrow(Clone::clone) {
-        return Err(vec![format!("error loading the tiling layout: {err}")]);
+        return Err(vec![format!("error loading the layout engine: {err}")]);
     }
     let Some(meta) = meta() else {
-        return Err(vec![String::from("no tiling layout is loaded")]);
+        return Err(vec![String::from("no layout engine is loaded")]);
     };
 
     let mut problems = Vec::new();
@@ -410,11 +410,11 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
         };
         match meta.options.get(name) {
             None => problems.push(format!(
-                "the {} tiling layout has no option called {name:?}",
+                "the {} layout engine has no option called {name:?}",
                 meta.name
             )),
             Some(expected) if expected != given => problems.push(format!(
-                "tiling layout option {name:?} must be a {expected}, not a {given}"
+                "layout engine option {name:?} must be a {expected}, not a {given}"
             )),
             Some(_) => (),
         }
@@ -424,7 +424,7 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
         if let niri_config::Action::LayoutAction(name, _) = &bind.action {
             if !meta.actions.contains(name) {
                 problems.push(format!(
-                    "the {} tiling layout has no action called {name:?}",
+                    "the {} layout engine has no action called {name:?}",
                     meta.name
                 ));
             }

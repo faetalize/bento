@@ -1,31 +1,33 @@
-// Host side of bento's layout API, running next to the layout in the same JS engine.
+// Host side of bento's layout engine API, running next to the engine in the same JS runtime.
 //
-// bento talks to layouts with JSON events and gets JSON results back. This module turns events into
-// calls on layout objects, keeps the windows, camera and focus that layouts see in `Workspace`, and
-// collects what changed into the result. The node test harness in `test/host.js` uses it the same
-// way, so layouts behave the same in tests and in bento.
+// bento talks to layout engines with JSON events and gets JSON results back. This module turns
+// events into calls on engine objects, keeps the windows, camera and focus that engines see in
+// `Workspace`, and collects what changed into the result. The node test harness in `test/host.js`
+// uses it the same way, so engines behave the same in tests and in bento.
 //
-// See `bento-layout.d.ts` for the API that layouts see.
+// See `bento-layout.d.ts` for the API that engines see.
 
 const API_VERSION = 1;
 
 let layoutModule = null;
 const instances = new Map();
 
-/** Sets the layout module, with its `meta` and default export. Returns the layout's metadata. */
+/** Sets the engine's module, with its `meta` and default export. Returns the engine's metadata. */
 export function load(module) {
     const meta = module.meta;
     if (meta === null || typeof meta !== "object") {
-        throw new Error("the layout must export `meta`");
+        throw new Error("the layout engine must export `meta`");
     }
     if (meta.api !== API_VERSION) {
-        throw new Error(`the layout is for API version ${meta.api}, bento has version ${API_VERSION}`);
+        throw new Error(
+            `the layout engine is for API version ${meta.api}, bento has version ${API_VERSION}`,
+        );
     }
     if (typeof meta.name !== "string") {
         throw new Error("`meta.name` must be a string");
     }
     if (typeof module.default !== "function") {
-        throw new Error("the layout must export a default function that creates the layout");
+        throw new Error("the layout engine must export a default function that creates the engine");
     }
 
     const actions = meta.actions ?? {};
@@ -61,7 +63,7 @@ export function handle(eventJson) {
 
     const instance = instances.get(event.instance);
     if (instance === undefined) {
-        throw new Error(`no layout instance ${event.instance}`);
+        throw new Error(`no layout engine instance ${event.instance}`);
     }
     if (event.type === "destroy") {
         instances.delete(event.instance);
@@ -70,7 +72,7 @@ export function handle(eventJson) {
 }
 
 /**
- * Saves the state of every instance, before bento loads another version of the layout. Returns
+ * Saves the state of every instance, before bento loads another version of the engine. Returns
  * the states by instance id, as JSON.
  */
 export function saveAll() {
@@ -82,13 +84,13 @@ export function saveAll() {
         try {
             states[id] = instance.layout.save() ?? null;
         } catch (e) {
-            // The layout starts from the window positions instead.
+            // The engine starts from the window positions instead.
         }
     }
     return JSON.stringify(states);
 }
 
-/** Options with defaults filled in from the layout's `meta.options`, and types checked. */
+/** Options with defaults filled in from the engine's `meta.options`, and types checked. */
 function resolveOptions(given) {
     const specs = layoutModule.meta.options ?? {};
     const options = {};
@@ -99,9 +101,9 @@ function resolveOptions(given) {
     for (const [name, value] of Object.entries(given ?? {})) {
         const spec = specs[name];
         if (spec === undefined) {
-            errors.push(`unknown layout option: ${name}`);
+            errors.push(`unknown layout engine option: ${name}`);
         } else if (typeof value !== spec.type) {
-            errors.push(`layout option ${name} must be a ${spec.type}`);
+            errors.push(`layout engine option ${name} must be a ${spec.type}`);
         } else {
             options[name] = value;
         }
@@ -156,7 +158,7 @@ function isRect(rect) {
     );
 }
 
-/** A window as layouts see it, with what bento reports about it and what the layout did to it. */
+/** A window as engines see it, with what bento reports about it and what the engine did to it. */
 class LayoutWindow {
     constructor(info) {
         this.id = info.id;
@@ -179,7 +181,7 @@ class LayoutWindow {
     }
 }
 
-/** A layout for one workspace, with the `Workspace` it sees. */
+/** A layout engine for one workspace, with the `Workspace` it sees. */
 class Instance {
     constructor(event) {
         this.id = event.instance;
@@ -207,11 +209,11 @@ class Instance {
         this.ws = this.makeWorkspace();
         this.layout = layoutModule.default(this.ws);
         if (this.layout === null || typeof this.layout !== "object") {
-            throw new Error("the layout's default export must return an object");
+            throw new Error("the layout engine's default export must return an object");
         }
         for (const required of ["windowAdded", "windowRemoved"]) {
             if (typeof this.layout[required] !== "function") {
-                throw new Error(`the layout must have a ${required} method`);
+                throw new Error(`the layout engine must have a ${required} method`);
             }
         }
     }
@@ -229,7 +231,7 @@ class Instance {
         const own = (win) => {
             const found = win && self.byId.get(win.id);
             if (found !== win) {
-                throw new Error("not a window in this layout");
+                throw new Error("not a window in this layout engine");
             }
             return win;
         };
@@ -389,7 +391,7 @@ class Instance {
 
     addWindow(info) {
         if (this.byId.has(info.id)) {
-            throw new Error(`window ${info.id} is already in the layout`);
+            throw new Error(`window ${info.id} is already in the layout engine`);
         }
         const win = new LayoutWindow(info);
         this.windows.push(win);
@@ -401,7 +403,7 @@ class Instance {
     removeWindow(id) {
         const win = this.byId.get(id);
         if (win === undefined) {
-            throw new Error(`window ${id} is not in the layout`);
+            throw new Error(`window ${id} is not in the layout engine`);
         }
         this.byId.delete(id);
         this.windows.splice(this.windows.indexOf(win), 1);
@@ -430,7 +432,7 @@ class Instance {
     mustWindow(id) {
         const win = this.byId.get(id);
         if (win === undefined) {
-            throw new Error(`window ${id} is not in the layout`);
+            throw new Error(`window ${id} is not in the layout engine`);
         }
         return win;
     }
@@ -438,7 +440,7 @@ class Instance {
     create(event) {
         const windows = event.windows.map((info) => {
             const win = this.addWindow(info);
-            // The window is where it was; the layout moves it if it likes.
+            // The window is where it was; the engine moves it if it likes.
             win.rect = info.rect ? Object.freeze(copyRect(info.rect)) : null;
             return win;
         });
@@ -624,7 +626,7 @@ class Instance {
         }
     }
 
-    /** Runs a call on the layout and returns what changed. */
+    /** Runs a call on the engine and returns what changed. */
     run(isQuery, call) {
         let result = null;
         let error = null;
@@ -637,7 +639,7 @@ class Instance {
             return this.finish(result, error);
         }
 
-        // Every window needs a place. Put windows the layout forgot in the middle of the view.
+        // Every window needs a place. Put windows the engine forgot in the middle of the view.
         for (const win of this.windows) {
             if (win.rect === null) {
                 const area = this.view.workingArea;
@@ -650,7 +652,7 @@ class Instance {
                     h,
                 });
                 this.dirty.add(win.id);
-                this.logs.push(`the layout didn't place window ${win.id}`);
+                this.logs.push(`the layout engine didn't place window ${win.id}`);
             }
         }
 

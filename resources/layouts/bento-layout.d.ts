@@ -1,28 +1,30 @@
-// Types for bento tiling layouts, API version 1.
+// Types for bento layout engines, API version 1.
 //
-// A layout is a single ES module that bento loads from the `tiling` section of its config:
+// A layout engine decides how a whole workspace behaves, out of the small primitives that bento
+// gives it: where tiled windows go, focus, the camera, and what actions do. It's a single ES module
+// that bento loads from the `tiling` section of its config:
 //
 //     tiling {
 //         layout "bento"              // built in; also "niri", or a path to a .js file
 //         options {
-//             gravity true            // options that the layout declares in `meta.options`
+//             gravity true            // options that the engine declares in `meta.options`
 //         }
 //     }
 //
-// The module exports `meta`, describing the layout, and a default function that creates the layout
+// The module exports `meta`, describing the engine, and a default function that creates the engine
 // for one workspace:
 //
-//     export const meta = { api: 1, name: "my-layout", actions: { ... }, options: { ... } };
+//     export const meta = { api: 1, name: "my-engine", actions: { ... }, options: { ... } };
 //     export default function create(ws) { return { windowAdded(win, how) { ... }, ... }; }
 //
-// bento owns windows, rendering, animations, and the camera's motion. The layout owns everything
+// bento owns windows, rendering, animations, and the camera's motion. The engine owns everything
 // else: where windows go, which window has focus, where the camera points, and what actions do.
 //
 // Coordinates are logical pixels on the workspace canvas, which is unbounded in every direction.
 // The camera is the top-left corner of the visible view on the canvas. Window rects are tile rects:
 // they include borders, see `Window.borders`.
 //
-// Layouts run in a sandbox: there is no file, network or module access, and every call has a time
+// Engines run in a sandbox: there is no file, network or module access, and every call has a time
 // and memory limit. Calls are synchronous, and bento applies what a call did when it returns.
 
 export interface Point {
@@ -91,8 +93,8 @@ export interface Window {
     readonly rules: WindowRules;
     readonly isUrgent: boolean;
     /**
-     * Where the layout last placed the window, or `null` if it hasn't yet. In `adopt`, where the
-     * window was before the layout took over.
+     * Where the engine last placed the window, or `null` if it hasn't yet. In `adopt`, where the
+     * window was before the engine took over.
      */
     readonly rect: Rect | null;
     /** Whether the window is shown. */
@@ -100,7 +102,7 @@ export interface Window {
     /**
      * What this layout stored on the window with `Workspace.setWindowData`, or `null`. It stays
      * with the window when it moves to another workspace, floats and comes back, or is dragged,
-     * as long as the same layout gets it.
+     * as long as the same engine gets it.
      */
     readonly data: unknown;
 }
@@ -119,7 +121,7 @@ export interface View {
     readonly scale: number;
 }
 
-/** The `layout {}` section of the config, which layouts may follow or ignore. */
+/** The `layout {}` section of the config, which engines may follow or ignore. */
 export interface LayoutConfig {
     readonly gaps: number;
     /** Space to leave around tiled windows, already taken out of `View.tilingArea`. */
@@ -161,14 +163,14 @@ export interface TabBar {
 
 export type OptionValue = boolean | number | string;
 
-/** Options a layout accepts in the `tiling { options {} }` section of the config. */
+/** Options an engine accepts in the `tiling { options {} }` section of the config. */
 export interface OptionSpec {
     type: "boolean" | "number" | "string";
     default: OptionValue;
     description?: string;
 }
 
-/** An action a layout provides, to bind as `layout-action "name" args...`. */
+/** An action an engine provides, to bind as `layout-action "name" args...`. */
 export interface ActionSpec {
     description?: string;
     /** Names of the arguments, for documentation. */
@@ -176,12 +178,12 @@ export interface ActionSpec {
 }
 
 export interface Meta {
-    /** API version the layout is written for. */
+    /** API version the engine is written for. */
     api: 1;
     name: string;
     description?: string;
     /**
-     * Actions the layout provides on top of niri's built-in ones.
+     * Actions the engine provides on top of niri's built-in ones.
      *
      * niri's built-in layout actions, like `focus-column-left` or `set-column-width`, go to every
      * engine under their own names, so an engine can give them its own meaning. That includes
@@ -193,11 +195,11 @@ export interface Meta {
     options?: Record<string, OptionSpec>;
 }
 
-/** Why a window is added to the layout. */
+/** Why a window is added to the engine. */
 export type AddReason =
     /** A new window opened. */
     | "open"
-    /** The window was on the workspace when the layout took over, see `Layout.adopt`. */
+    /** The window was on the workspace when the engine took over, see `Layout.adopt`. */
     | "adopt"
     /** The window was moved here from another workspace or output. */
     | "move"
@@ -211,8 +213,8 @@ export interface AddInfo {
     /** Whether the window should get focus. */
     activate: boolean;
     /**
-     * Where the window was on this canvas: before the layout took over, while floating, or where a
-     * dragged window was dropped. A hint, which the layout is free to ignore.
+     * Where the window was on this canvas: before the engine took over, while floating, or where a
+     * dragged window was dropped. A hint, which the engine is free to ignore.
      */
     rect: Rect | null;
     /** Pointer position on the canvas, when the window was dropped. */
@@ -221,13 +223,13 @@ export interface AddInfo {
     nextTo: Window | null;
 }
 
-/** Why a window is removed from the layout. */
+/** Why a window is removed from the engine. */
 export type RemoveReason = "close" | "move" | "drag" | "float";
 
 /** Windows that move to another workspace together, see `Layout.transferOut`. */
 export interface Transfer {
     windows: Window[];
-    /** Anything JSON-serializable, given to the layout on the other workspace. */
+    /** Anything JSON-serializable, given to the engine on the other workspace. */
     data?: unknown;
 }
 
@@ -238,16 +240,16 @@ export interface Resize {
     delta: Point;
 }
 
-/** The workspace a layout instance manages, and everything the layout can do to it. */
+/** The workspace an engine instance manages, and everything the engine can do to it. */
 export interface Workspace {
-    /** Windows in the layout, bottom to top. */
+    /** Tiled windows the engine manages, bottom to top. */
     readonly windows: readonly Window[];
     readonly focused: Window | null;
     readonly view: View;
     /** Where the camera is going, if it's moving, or where it is. */
     readonly camera: Point;
     readonly config: LayoutConfig;
-    /** Values of the layout's options, with defaults filled in. */
+    /** Values of the engine's options, with defaults filled in. */
     readonly options: Readonly<Record<string, OptionValue>>;
 
     /** Finds a window by id. */
@@ -268,7 +270,7 @@ export interface Workspace {
     focus(win: Window | null): void;
     /**
      * Moves the camera. Coordinates left out stay as they are. While a swipe gesture moves the
-     * camera, bento ignores this; the layout gets `gestureEnd` when the swipe ends.
+     * camera, bento ignores this; the engine gets `gestureEnd` when the swipe ends.
      */
     moveCamera(to: Partial<Point>, opts?: { animate?: boolean }): void;
     /** Stores anything JSON-serializable on a window, see `Window.data`. */
@@ -301,9 +303,9 @@ export interface Workspace {
 }
 
 /**
- * A layout for one workspace, as returned by the module's default export.
+ * A layout engine for one workspace, as returned by the module's default export.
  *
- * Every window in the layout must have a rect after each call; a new window that the layout
+ * Every window in the engine must have a rect after each call; a new window that the engine
  * doesn't place gets put in the middle of the view.
  */
 export interface Layout {
@@ -313,14 +315,14 @@ export interface Layout {
     windowRemoved(win: Window, how: { reason: RemoveReason }): void;
 
     /**
-     * The layout takes over a workspace that already has windows: at startup of the layout, when
-     * the config switches layouts, or when the layout file is reloaded. The windows' `rect` is
-     * where they were. If the same layout saved state with `save`, it gets it back as `state`.
+     * The engine takes over a workspace that already has windows: when it starts, when the
+     * config switches engines, or when the engine's file is reloaded. The windows' `rect` is
+     * where they were. If the same engine saved state with `save`, it gets it back as `state`.
      *
      * Defaults to adding each window with reason `"adopt"`.
      */
     adopt?(windows: Window[], focused: Window | null, state: unknown): void;
-    /** State to keep when the layout is reloaded. Anything JSON-serializable. */
+    /** State to keep when the engine is reloaded. Anything JSON-serializable. */
     save?(): unknown;
 
     /** Runs an action. Returns whether it did anything, for actions that fall back to others. */
@@ -356,7 +358,7 @@ export interface Layout {
     /**
      * A swipe gesture that moved the camera ended. The camera is at `ws.camera`, moving at
      * `velocity` (px/s), and would coast to `projected`. Snap it somewhere with `ws.moveCamera`;
-     * the animation continues from the swipe's speed. If the layout doesn't move it, the camera
+     * the animation continues from the swipe's speed. If the engine doesn't move it, the camera
      * stays where the swipe left it.
      */
     gestureEnd?(velocity: Point, projected: Point): void;
