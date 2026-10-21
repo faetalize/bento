@@ -41,6 +41,22 @@ jobs:
       - name: Test
         run: cargo test --all --exclude niri-visual-tests -- --nocapture
 
+  layout-engines:
+    name: layout engine tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          show-progress: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test
+        run: node --test "resources/layouts/**/*.test.js"
+
   build:
     strategy:
       fail-fast: false

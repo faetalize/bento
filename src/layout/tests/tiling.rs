@@ -144,8 +144,8 @@ fn bento_layout_runs_in_the_engine() {
     ops.extend(settle());
     let layout = check_ops_with_options(options_for("bento"), ops);
     assert_snapshot!(format_tiles(&layout), @"
-      99 × 688 at x:   16 y: 16
-      99 × 336 at x:  131 y: 16
-      99 × 336 at x:  246 y: 16 focused
+      89 × 688 at x:   16 y: 16
+      90 × 336 at x:  121 y: 16
+      89 × 336 at x:  227 y: 16 focused
     ");
 }

@@ -34,7 +34,7 @@ fn create_window(f: &mut Fixture, id: ClientId, w: u16, h: u16) -> WlSurface {
 }
 
 #[test]
-fn column_resize_waits_for_both_windows() {
+fn stack_resize_waits_for_both_windows() {
     let mut f = Fixture::new();
     f.add_output(1, (1920, 1080));
     let id = f.add_client();
@@ -46,11 +46,11 @@ fn column_resize_waits_for_both_windows() {
     let _ = f.client(id).window(&surface1).recent_configures();
     let _ = f.client(id).window(&surface2).recent_configures();
 
-    // Consume into one column.
+    // Stack the second window under the first.
     f.niri().layout.consume_or_expel_window_left(None);
     f.double_roundtrip(id);
 
-    // Commit for the column consume.
+    // Commit for the stacking.
     let window = f.client(id).window(&surface1);
     assert_snapshot!(
         window.format_recent_configures(),
@@ -67,16 +67,17 @@ fn column_resize_waits_for_both_windows() {
 
     f.double_roundtrip(id);
 
-    // This should say 100 × 100 and 200 × 200.
+    // This should say 200 × 200 and 100 × 100 (the bottom window comes first).
     assert_snapshot!(format_window_sizes(f.niri()), @r"
-    100 × 100
     200 × 200
+    100 × 100
     ");
 
-    // Issue a resize.
+    // Make the bottom window taller. The window above it is stuck to it, so it gets shorter, and
+    // both resize together.
     f.niri()
         .layout
-        .set_column_width(SizeChange::AdjustFixed(10));
+        .set_window_height(None, SizeChange::SetProportion(75.));
     f.double_roundtrip(id);
 
     // Commit window 1 in response to resize.
@@ -87,8 +88,8 @@ fn column_resize_waits_for_both_windows() {
 
     // This should still say 100 × 100 as we're waiting in a transaction for the second window.
     assert_snapshot!(format_window_sizes(f.niri()), @r"
-    100 × 100
     200 × 200
+    100 × 100
     ");
 
     // Commit window 2 in response to resize.
@@ -99,7 +100,7 @@ fn column_resize_waits_for_both_windows() {
 
     // This should say 300 × 300 and 400 × 400 as the transaction completed.
     assert_snapshot!(format_window_sizes(f.niri()), @r"
-    300 × 300
     400 × 400
+    300 × 300
     ");
 }

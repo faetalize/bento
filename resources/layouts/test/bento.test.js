@@ -1,9 +1,11 @@
-// Tests for bento's grid layout, `bento.js`.
+// Tests for bento's grid layout engine, `bento.js`.
 //
-// The first part tests the layout through the layout API. The output is 1280 × 720 with 16 px
+// The first part tests the engine through the layout API. The output is 1280 × 720 with 16 px
 // gaps, which makes the grid 24 columns by 12 rows of roughly 37 × 43 px cells. Windows open
-// 100 px wide, from `default-column-width`, so 2 cells wide. Positions are on screen, relative to
-// the view, rounded like bento renders them.
+// 100 px wide, from `default-column-width`, so 2 cells wide. Expectations are in cells, so they
+// don't depend on the output size: `cells()` gives windows' sizes and places on screen in cells,
+// and `cellRect()` the rect of some cells on the canvas, rounded like the engine does. `tiles()`
+// keeps pixels for windows that cover the view instead of cells, like fullscreen ones.
 //
 // The second part tests the grid arithmetic on its own.
 
@@ -66,6 +68,22 @@ function cells(host, ids = [...host.windows.keys()]) {
             const size = `${span(r.w, COL_STEP)} × ${span(r.h, ROW_STEP)}`;
             return `${size} at ${at(r.x, COL_STEP)}, ${at(r.y, ROW_STEP)}`;
         });
+}
+
+/**
+ * Canvas rect of `cols` × `rows` cells from column `col` and row `row`, with the edges rounded like
+ * bento does, so that neighbors line up.
+ */
+function cellRect(col, row, cols, rows) {
+    const x = px(col * COL_STEP);
+    const top = METRICS.gap + row * ROW_STEP;
+    const y = px(top);
+    return {
+        x,
+        y,
+        w: px((col + cols) * COL_STEP) - METRICS.gap - x,
+        h: px(top + rows * METRICS.cellH + (rows - 1) * METRICS.gap) - y,
+    };
 }
 
 const set = (value) => ({ op: "set", value, unit: "%" });
@@ -183,24 +201,24 @@ describe("grid layout", () => {
         const host = await setup();
         host.open();
         host.open();
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
         assert.equal(host.focused, 2);
         assert.deepEqual(host.errors, []);
     });
 
     test("shrinking height leaves a hole", async () => {
         const host = await setUpHole();
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 336 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0"]);
     });
 
     test("moving down into a hole goes one cell at a time", async () => {
         const host = await setUpHole();
         host.action("move-window-down");
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 336 at x:131 y:75"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 1"]);
 
         // Moving past the bottom does nothing.
         repeat(10, () => host.action("move-window-down"));
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 336 at x:131 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 6"]);
         assert.equal(host.action("move-window-down"), false);
     });
 
@@ -211,7 +229,7 @@ describe("grid layout", () => {
         assert.equal(host.action("move-column-left"), true);
 
         // Window 2 is now on the left.
-        assert.deepEqual(tiles(host), ["99 × 688 at x:131 y:16", "99 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 2, 0", "2 × 12 at 0, 0"]);
         assert.equal(host.focused, 2);
 
         // Column 0 is the left edge of the grid with gravity.
@@ -226,11 +244,7 @@ describe("grid layout", () => {
         host.open();
         halfHeight(host, 3);
         repeat(6, () => host.action("move-window-down"));
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:131 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 2, 6"]);
 
         // Focus moves geometrically.
         host.action("focus-window-up");
@@ -243,11 +257,7 @@ describe("grid layout", () => {
         // Growing 2 down moves the edge it shares with 3, which gets shorter instead of being
         // pushed away.
         host.actionOn(2, "set-window-height", set(75));
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 512 at x:131 y:16",
-            "99 × 160 at x:131 y:544",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 9 at 2, 0", "2 × 3 at 2, 9"]);
     });
 
     test("closing a window collapses empty columns", async () => {
@@ -258,24 +268,24 @@ describe("grid layout", () => {
         host.close(2);
 
         // Window 3 slides into the place of window 2, and the view stays still.
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
     });
 
     test("switching preset width snaps to cells", async () => {
         const host = await setup();
         host.open();
 
-        // From 2 cells to the next larger preset, 1/3 (7 cells).
+        // From 2 cells to the next larger preset, 1/3 (8 cells).
         host.action("switch-preset-column-width");
-        assert.deepEqual(tiles(host), ["386 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["8 × 12 at 0, 0"]);
 
-        // Then 1/2 (11 cells).
+        // Then 1/2 (12 cells).
         host.action("switch-preset-column-width");
-        assert.deepEqual(tiles(host), ["616 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["12 × 12 at 0, 0"]);
 
         // And back.
         host.action("switch-preset-column-width-back");
-        assert.deepEqual(tiles(host), ["386 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["8 × 12 at 0, 0"]);
     });
 
     test("dragging the right edge snaps and pushes", async () => {
@@ -288,12 +298,12 @@ describe("grid layout", () => {
         resizeUpdate(host, 1, { right: true }, COL_STEP * 2.6, 0);
 
         // Window 1 is 5 cells wide and pushed window 2 along.
-        assert.deepEqual(tiles(host), ["271 × 688 at x:16 y:16", "99 × 688 at x:303 y:16"]);
+        assert.deepEqual(cells(host), ["5 × 12 at 0, 0", "2 × 12 at 5, 0"]);
 
         // Dragging back puts window 2 back where it was.
         resizeUpdate(host, 1, { right: true }, COL_STEP * 0.4, 0);
         resizeEnd(host, 1);
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
     });
 
     test("dragging the bottom edge leaves a hole", async () => {
@@ -302,7 +312,7 @@ describe("grid layout", () => {
         host.resize(1, { bottom: true }, { x: 0, y: -ROW_STEP * 4 });
 
         // 8 rows tall.
-        assert.deepEqual(tiles(host), ["99 × 453 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 8 at 0, 0"]);
     });
 
     test("dragging the left edge stops at the start of the grid", async () => {
@@ -314,15 +324,15 @@ describe("grid layout", () => {
 
         // Window 1 is already at the start of the grid, so window 2 can't push it any further,
         // and doesn't grow.
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
 
         // Shrinking from the left still works, keeping the right edge still.
         resizeUpdate(host, 2, { left: true }, COL_STEP, 0);
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "42 × 688 at x:188 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "1 × 12 at 3, 0"]);
 
         // Letting go drops it next to window 1.
         resizeEnd(host, 2);
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "41 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "1 × 12 at 2, 0"]);
     });
 
     test("dropping a window into a cell", async () => {
@@ -333,11 +343,7 @@ describe("grid layout", () => {
         halfHeight(host, 2);
         host.open();
         halfHeight(host, 3);
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:246 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 4, 0"]);
 
         // Grab window 3 near its top-left corner and drop it into the hole under window 2.
         const start = { x: 16 + 4 * COL_STEP + 4, y: 16 + 4 };
@@ -347,14 +353,10 @@ describe("grid layout", () => {
         const r = host.rect(3);
         const pointer = { x: end.x + host.camera.x, y: end.y };
         const rect = { x: r.x + end.x - start.x, y: r.y + end.y - start.y, w: r.w, h: r.h };
-        assert.deepEqual(host.dropTarget(3, pointer, rect), { x: 115, y: 368, w: 99, h: 336 });
+        assert.deepEqual(host.dropTarget(3, pointer, rect), cellRect(2, 6, 2, 6));
 
         drag(host, 3, start, end);
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:131 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 2, 6"]);
         assert.equal(host.focused, 3);
     });
 
@@ -366,28 +368,15 @@ describe("grid layout", () => {
 
         // Drop window 3 at the top edge of window 1: 3 takes the top half and 1 keeps the bottom.
         drag(host, 3, { x: 16 + 4 * COL_STEP + 50, y: 300 }, { x: 16 + 50, y: 16 + 10 });
-        assert.deepEqual(tiles(host), [
-            "99 × 336 at x:16 y:368",
-            "99 × 688 at x:131 y:16",
-            "99 × 336 at x:16 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 6", "2 × 12 at 2, 0", "2 × 6 at 0, 0"]);
 
         // The highlight for dropping window 2 at the left edge of window 1 is the left column.
         const pointer = { x: 16 + 5 + host.camera.x, y: 16 + 9 * ROW_STEP };
-        assert.deepEqual(host.dropTarget(2, pointer, host.rect(2)), {
-            x: 0,
-            y: 368,
-            w: 41,
-            h: 336,
-        });
+        assert.deepEqual(host.dropTarget(2, pointer, host.rect(2)), cellRect(0, 6, 1, 6));
 
         // Drop window 2 at the left edge of window 1: 2 takes the left column, 1 the right one.
         drag(host, 2, { x: 16 + 2 * COL_STEP + 50, y: 300 }, { x: 16 + 5, y: 16 + 9 * ROW_STEP });
-        assert.deepEqual(tiles(host), [
-            "42 × 336 at x:73 y:368",
-            "41 × 336 at x:16 y:368",
-            "99 × 336 at x:16 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["1 × 6 at 1, 6", "1 × 6 at 0, 6", "2 × 6 at 0, 0"]);
     });
 
     test("dragging the bottom window of a stack keeps the view still", async () => {
@@ -400,11 +389,11 @@ describe("grid layout", () => {
         repeat(6, () => host.action("move-window-down"));
         host.action("move-column-left");
         assert.equal(host.focused, 2);
-        assert.deepEqual(tiles(host), ["99 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
         // Lift window 2 out of the layout. Window 1 hasn't jumped.
         lift(host, 2);
-        assert.deepEqual(tiles(host, [1]), ["99 × 336 at x:16 y:16"]);
+        assert.deepEqual(cells(host, [1]), ["2 × 6 at 0, 0"]);
         assert.equal(host.focused, 1);
     });
 
@@ -413,30 +402,22 @@ describe("grid layout", () => {
         // window 1 when moved to the bottom half.
         const host = await setUpTwoOverOne();
         assert.equal(host.focused, 3);
-        assert.deepEqual(tiles(host), [
-            "99 × 336 at x:16 y:16",
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:16 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 0, 6"]);
 
         // Windows 1 and 2 stay where they were.
         lift(host, 3);
-        assert.deepEqual(tiles(host, [1, 2]), ["99 × 336 at x:16 y:16", "99 × 336 at x:131 y:16"]);
+        assert.deepEqual(cells(host, [1, 2]), ["2 × 6 at 0, 0", "2 × 6 at 2, 0"]);
     });
 
     test("closing a window keeps focus on another", async () => {
         const host = await setUpTwoOverOne();
         host.activate(2);
-        assert.deepEqual(tiles(host), [
-            "99 × 336 at x:16 y:16",
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:16 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 0, 6"]);
 
         // Closing window 1 lets window 2 slide left, which reorders the windows.
         host.close(1);
         assert.equal(host.focused, 2);
-        assert.deepEqual(tiles(host), ["99 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
     });
 
     test("closing the focused window focuses the one above", async () => {
@@ -459,7 +440,7 @@ describe("grid layout", () => {
         repeat(6, () => host.action("move-window-down"));
         host.action("move-column-left");
         host.activate(1);
-        assert.deepEqual(tiles(host), ["99 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
         // Window 3 opens right of window 1, after window 2 in the order.
         host.open();
@@ -482,11 +463,11 @@ describe("grid layout", () => {
         repeat(6, () => host.action("move-window-down"));
         host.action("move-column-left");
         host.activate(1);
-        assert.deepEqual(tiles(host), [
-            "616 × 336 at x:16 y:16",
-            "616 × 336 at x:16 y:368",
-            "616 × 688 at x:648 y:16",
-            "616 × 688 at x:1280 y:16",
+        assert.deepEqual(cells(host), [
+            "12 × 6 at 0, 0",
+            "12 × 6 at 0, 6",
+            "12 × 12 at 12, 0",
+            "12 × 12 at 24, 0",
         ]);
 
         // Swipe right by a bit over one window.
@@ -495,11 +476,11 @@ describe("grid layout", () => {
         // The view snaps to window 3 on the left and window 4 on the right, focusing window 4 as
         // the furthest in the direction of the swipe.
         assert.equal(host.focused, 4);
-        assert.deepEqual(tiles(host), [
-            "616 × 336 at x:-616 y:16",
-            "616 × 336 at x:-616 y:368",
-            "616 × 688 at x:16 y:16",
-            "616 × 688 at x:648 y:16",
+        assert.deepEqual(cells(host), [
+            "12 × 6 at -12, 0",
+            "12 × 6 at -12, 6",
+            "12 × 12 at 0, 0",
+            "12 × 12 at 12, 0",
         ]);
     });
 
@@ -514,10 +495,7 @@ describe("grid layout", () => {
         // A small swipe that would coast far snaps to the far end.
         host.swipe(100, { x: 3000, y: 0 }, { x: host.camera.x + 2000, y: 0 });
         assert.equal(host.focused, 4);
-        assert.deepEqual(tiles(host, [3, 4]), [
-            "616 × 688 at x:16 y:16",
-            "616 × 688 at x:648 y:16",
-        ]);
+        assert.deepEqual(cells(host, [3, 4]), ["12 × 12 at 0, 0", "12 × 12 at 12, 0"]);
     });
 
     test("stacked windows count as a single column for centering", async () => {
@@ -528,17 +506,13 @@ describe("grid layout", () => {
         halfHeight(host, 2);
         repeat(6, () => host.action("move-window-down"));
         host.action("move-column-left");
-        assert.deepEqual(tiles(host), ["99 × 336 at x:591 y:16", "99 × 336 at x:591 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 6 at 11, 0", "2 × 6 at 11, 6"]);
     });
 
     test("centering visible columns uses their span on the grid", async () => {
         const host = await setUpStackAndOne(20);
         host.action("center-visible-columns");
-        assert.deepEqual(tiles(host), [
-            "214 × 336 at x:418 y:16",
-            "214 × 336 at x:418 y:368",
-            "214 × 688 at x:648 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["4 × 6 at 8, 0", "4 × 6 at 8, 6", "4 × 12 at 12, 0"]);
     });
 
     test("center on overflow compares with the window beside", async () => {
@@ -547,11 +521,7 @@ describe("grid layout", () => {
         assert.equal(host.focused, 1);
         // Window 1 and window 3 beside it don't fit together, so window 1 is centered. Window 2
         // under it is in the same column of cells and doesn't count.
-        assert.deepEqual(tiles(host), [
-            "731 × 336 at x:275 y:16",
-            "731 × 336 at x:275 y:368",
-            "731 × 688 at x:1022 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["14 × 6 at 5, 0", "14 × 6 at 5, 6", "14 × 12 at 19, 0"]);
     });
 
     test("moving a resized window to another workspace keeps its size", async () => {
@@ -574,7 +544,7 @@ describe("grid layout", () => {
             data: transfer.data,
             activate: true,
         });
-        assert.deepEqual(tiles(to), ["386 × 336 at x:16 y:16"]);
+        assert.deepEqual(cells(to), ["7 × 6 at 0, 0"]);
         assert.equal(to.focused, 1);
     });
 
@@ -583,10 +553,10 @@ describe("grid layout", () => {
         host.open();
         host.actionOn(1, "set-window-width", set(33));
         host.action("maximize-column");
-        assert.deepEqual(tiles(host), ["1248 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["24 × 12 at 0, 0"]);
 
         host.action("maximize-column");
-        assert.deepEqual(tiles(host), ["386 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["7 × 12 at 0, 0"]);
     });
 
     test("adjusting width goes by the requested amount", async () => {
@@ -594,11 +564,11 @@ describe("grid layout", () => {
         const host = await setup();
         host.open();
         host.actionOn(1, "set-window-width", adjust(10));
-        assert.deepEqual(tiles(host), ["214 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["4 × 12 at 0, 0"]);
 
         // A small adjustment still changes the size by a cell.
         host.action("set-column-width", { op: "adjust", value: -10, unit: "px" });
-        assert.deepEqual(tiles(host), ["156 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["3 × 12 at 0, 0"]);
     });
 
     test("floating and tiling again keeps the size and place", async () => {
@@ -607,7 +577,7 @@ describe("grid layout", () => {
         host.open();
         host.actionOn(2, "set-window-width", set(33));
         host.actionOn(2, "set-window-height", set(50));
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "386 × 336 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "7 × 6 at 2, 0"]);
 
         // The window floats where it was tiled, then is tiled again from there.
         const rect = host.rect(2);
@@ -617,7 +587,7 @@ describe("grid layout", () => {
             window: host.info(host.windows.get(2)),
             how: { reason: "tile", activate: true, rect, pointer: null, nextTo: null },
         });
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "386 × 336 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "7 × 6 at 2, 0"]);
     });
 
     test("default window height opens next to the active window", async () => {
@@ -629,18 +599,14 @@ describe("grid layout", () => {
 
         // Window 2 opens half height, lined up with window 1.
         host.open({ defaultHeight: { proportion: 0.5 } });
-        assert.deepEqual(tiles(host), ["99 × 336 at x:16 y:368", "99 × 336 at x:131 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 6", "2 × 6 at 2, 6"]);
     });
 
     test("focusing the last column stays in the row", async () => {
         const host = await setUpOneAndStack();
         host.activate(1);
         host.action("focus-column-last");
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:131 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 2, 6"]);
 
         // Window 3 comes last in the order, but window 2 is the last one in the top row.
         assert.equal(host.focused, 2);
@@ -694,20 +660,13 @@ describe("grid layout", () => {
         host.requestMode(2, "fullscreen");
 
         // Window 2 covers the view, and window 3 is pushed past it rather than drawn under it.
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:-115 y:16",
-            "1280 × 720 at x:0 y:0",
-            "99 × 336 at x:1321 y:368",
-        ]);
+        assert.deepEqual(tiles(host, [2]), ["1280 × 720 at x:0 y:0"]);
+        assert.deepEqual(cells(host, [1, 3]), ["2 × 12 at -2.3, 0", "2 × 6 at 24.7, 6"]);
         assert.equal(host.mode(2), "fullscreen");
 
         // Everything goes back once it ends.
         host.requestMode(2, "normal");
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:131 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 2, 6"]);
         assert.equal(host.mode(2), "normal");
     });
 
@@ -718,7 +677,7 @@ describe("grid layout", () => {
         host.action("expand-column-to-available-width");
 
         // Window 2 grows up to the right edge of the view, and window 1 stays as is.
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "1133 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "22 × 12 at 2, 0"]);
         assert.equal(host.action("expand-column-to-available-width"), false);
     });
 
@@ -727,20 +686,12 @@ describe("grid layout", () => {
 
         // Window 2 goes under window 1, which keeps the top half, and window 3 slides left.
         assert.equal(host.focused, 2);
-        assert.deepEqual(tiles(host), [
-            "99 × 336 at x:16 y:16",
-            "99 × 336 at x:16 y:368",
-            "99 × 688 at x:131 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6", "2 × 12 at 2, 0"]);
 
         // Window 2 is stacked now, so this expels it back out to the right.
         host.action("consume-or-expel-window-right");
         assert.equal(host.focused, 2);
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 688 at x:131 y:16",
-            "99 × 688 at x:246 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0", "2 × 12 at 4, 0"]);
     });
 
     test("consuming into column brings the window on the right under", async () => {
@@ -750,12 +701,12 @@ describe("grid layout", () => {
         host.activate(1);
         host.action("consume-window-into-column");
         assert.equal(host.focused, 1);
-        assert.deepEqual(tiles(host), ["99 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
         // Expelling the focused window gives window 2 its rows back.
         host.action("expel-window-from-column");
         assert.equal(host.focused, 1);
-        assert.deepEqual(tiles(host), ["99 × 688 at x:131 y:16", "99 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 2, 0", "2 × 12 at 0, 0"]);
     });
 
     test("tabbing gathers the stack and untabbing splits it", async () => {
@@ -765,11 +716,7 @@ describe("grid layout", () => {
 
         // Windows 1 and 2 are tabs in the area they shared, with window 1 in front.
         assert.equal(host.focused, 1);
-        assert.deepEqual(tiles(host), [
-            "99 × 688 at x:16 y:16",
-            "99 × 688 at x:16 y:16",
-            "99 × 688 at x:131 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
         assert.equal(host.isVisible(1), true);
         assert.equal(host.isVisible(2), false);
 
@@ -781,11 +728,7 @@ describe("grid layout", () => {
 
         host.action("toggle-column-tabbed-display");
         assert.equal(host.focused, 2);
-        assert.deepEqual(tiles(host), [
-            "99 × 336 at x:16 y:16",
-            "99 × 336 at x:16 y:368",
-            "99 × 688 at x:131 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6", "2 × 12 at 2, 0"]);
         assert.equal(host.isVisible(1), true);
         assert.equal(host.tabs.size, 0);
     });
@@ -801,7 +744,7 @@ describe("grid layout", () => {
 
         // Window 2 is a second tab in window 1's area.
         assert.equal(host.focused, 2);
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 0, 0"]);
         assert.deepEqual(
             [...host.ipc].sort((a, b) => a[0] - b[0]),
             [
@@ -812,7 +755,7 @@ describe("grid layout", () => {
 
         host.action("consume-or-expel-window-right");
         assert.equal(host.focused, 2);
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
     });
 
     test("swapping past a stack keeps the view still", async () => {
@@ -830,22 +773,22 @@ describe("grid layout", () => {
         host.actionOn(4, "set-window-width", set(18.2));
         host.actionOn(4, "set-window-height", rows(2));
         repeat(3, () => host.action("move-window-down"));
-        assert.deepEqual(tiles(host), [
-            "99 × 160 at x:16 y:16",
-            "99 × 101 at x:131 y:16",
-            "99 × 43 at x:131 y:133",
-            "214 × 101 at x:16 y:192",
+        assert.deepEqual(cells(host), [
+            "2 × 3 at 0, 0",
+            "2 × 2 at 2, 0",
+            "2 × 1 at 2, 2",
+            "4 × 2 at 0, 3",
         ]);
 
         // Window 1 trades places with the stack of windows 2 and 3. Window 4 isn't involved, so
         // it stays where it is on screen, and so does the view.
         host.activate(1);
         host.action("move-column-right");
-        assert.deepEqual(tiles(host), [
-            "99 × 160 at x:131 y:16",
-            "99 × 101 at x:16 y:16",
-            "99 × 43 at x:16 y:133",
-            "214 × 101 at x:16 y:192",
+        assert.deepEqual(cells(host), [
+            "2 × 3 at 2, 0",
+            "2 × 2 at 0, 0",
+            "2 × 1 at 0, 2",
+            "4 × 2 at 0, 3",
         ]);
     });
 
@@ -858,7 +801,7 @@ describe("grid layout", () => {
 
         // Without gravity there's no left edge to stop at: window 2 grows 3 cells to the left,
         // pushing window 1 past column 0, and its right edge stays at x = 230.
-        assert.deepEqual(tiles(host), ["99 × 688 at x:-156 y:16", "271 × 688 at x:-41 y:16"]);
+        assert.deepEqual(cells(host), ["2 × 12 at -3, 0", "5 × 12 at -1, 0"]);
     });
 });
 
@@ -893,11 +836,7 @@ describe("split and swap", () => {
         const b = host.open();
         host.action("consume-or-expel-window-left");
         const c = host.open();
-        assert.deepEqual(tiles(host), [
-            "616 × 336 at x:16 y:16",
-            "616 × 336 at x:16 y:368",
-            "616 × 688 at x:648 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["12 × 6 at 0, 0", "12 × 6 at 0, 6", "12 × 12 at 12, 0"]);
         return { host, a, b, c };
     }
 
@@ -907,17 +846,13 @@ describe("split and swap", () => {
         // The first press picks A and highlights it.
         host.activate(a);
         assert.equal(host.action("split-h"), true);
-        assert.deepEqual(host.hint, { x: 0, y: 16, w: 616, h: 336 });
+        assert.deepEqual(host.hint, cellRect(0, 0, 12, 6));
 
-        // The second press moves C into A's right half; A keeps the larger half.
+        // The second press moves C into A's right half.
         host.activate(c);
         assert.equal(host.action("split-h"), true);
         assert.equal(host.hint, null);
-        assert.deepEqual(tiles(host), [
-            "329 × 336 at x:16 y:16",
-            "616 × 336 at x:16 y:368",
-            "271 × 336 at x:361 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["6 × 6 at 0, 0", "12 × 6 at 0, 6", "6 × 6 at 6, 0"]);
         assert.equal(host.focused, c);
     });
 
@@ -927,11 +862,7 @@ describe("split and swap", () => {
         host.action("split-h");
         host.activate(c);
         host.action("split-h");
-        assert.deepEqual(tiles(host), [
-            "616 × 336 at x:16 y:16",
-            "329 × 336 at x:16 y:368",
-            "271 × 336 at x:361 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["12 × 6 at 0, 0", "6 × 6 at 0, 6", "6 × 6 at 6, 6"]);
     });
 
     test("splitting stacked gives the window the half facing it", async () => {
@@ -943,7 +874,7 @@ describe("split and swap", () => {
         host.action("split-v");
 
         // A and B are level, so A goes below B, and the column it left collapses.
-        assert.deepEqual(tiles(host), ["616 × 336 at x:16 y:368", "616 × 336 at x:16 y:16"]);
+        assert.deepEqual(cells(host), ["12 × 6 at 0, 6", "12 × 6 at 0, 0"]);
         assert.equal(host.focused, a);
         assert.equal(host.action("focus-window-up"), true);
         assert.equal(host.focused, b);
@@ -955,11 +886,7 @@ describe("split and swap", () => {
         host.action("swap");
         host.activate(c);
         host.action("swap");
-        assert.deepEqual(tiles(host), [
-            "616 × 688 at x:648 y:16",
-            "616 × 336 at x:16 y:368",
-            "616 × 336 at x:16 y:16",
-        ]);
+        assert.deepEqual(cells(host), ["12 × 12 at 12, 0", "12 × 6 at 0, 6", "12 × 6 at 0, 0"]);
     });
 
     test("picking the same window again cancels", async () => {
@@ -1008,36 +935,36 @@ describe("sticky vertical resizing", () => {
         host.open();
         host.open();
         host.action("consume-or-expel-window-left");
-        assert.deepEqual(tiles(host), ["99 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
         return host;
     }
 
     test("shrinking gives the rows to the window stacked below", async () => {
         const host = await setUpStack();
         host.actionOn(1, "set-window-height", set(25));
-        assert.deepEqual(tiles(host), ["99 × 160 at x:16 y:16", "99 × 512 at x:16 y:192"]);
+        assert.deepEqual(cells(host), ["2 × 3 at 0, 0", "2 × 9 at 0, 3"]);
     });
 
     test("the bottom window grows up, taking rows from the one above", async () => {
         const host = await setUpStack();
         host.actionOn(2, "set-window-height", set(75));
-        assert.deepEqual(tiles(host), ["99 × 160 at x:16 y:16", "99 × 512 at x:16 y:192"]);
+        assert.deepEqual(cells(host), ["2 × 3 at 0, 0", "2 × 9 at 0, 3"]);
     });
 
     test("the edge stops where the other window can't shrink any further", async () => {
         const host = await setUpStack();
         host.actionOn(1, "set-window-height", set(100));
-        assert.deepEqual(tiles(host), ["99 × 629 at x:16 y:16", "99 × 43 at x:16 y:661"]);
+        assert.deepEqual(cells(host), ["2 × 11 at 0, 0", "2 × 1 at 0, 11"]);
     });
 
     test("dragging an edge moves the window across it too", async () => {
         const host = await setUpStack();
         assert.equal(host.resize(1, { bottom: true }, { x: 0, y: 2 * row }), true);
-        assert.deepEqual(tiles(host), ["99 × 453 at x:16 y:16", "99 × 219 at x:16 y:485"]);
+        assert.deepEqual(cells(host), ["2 × 8 at 0, 0", "2 × 4 at 0, 8"]);
 
         const other = await setUpStack();
         assert.equal(other.resize(2, { top: true }, { x: 0, y: -2 * row }), true);
-        assert.deepEqual(tiles(other), ["99 × 219 at x:16 y:16", "99 × 453 at x:16 y:251"]);
+        assert.deepEqual(cells(other), ["2 × 4 at 0, 0", "2 × 8 at 0, 4"]);
     });
 
     /** Windows 1 and 2 side by side on the top half, window 3 under both on the bottom half. */
@@ -1122,15 +1049,15 @@ describe("stuff", () => {
 
         // The first press shows where the window would go.
         assert.equal(host.action("stuff"), true);
-        assert.deepEqual(host.hint, rect(402, 16, 444, 688));
+        assert.deepEqual(host.hint, cellRect(8, 0, 8, 12));
 
-        // The second press puts it there: 11 + 11 cells become 7, 8 and 7, and A and B keep
+        // The second press puts it there: 12 + 12 cells become 8, 8 and 8, and A and B keep
         // their outer edges.
         assert.equal(host.action("stuff"), true);
         assert.equal(host.hint, null);
-        assert.deepEqual(host.rect(a), rect(0, 16, 386, 688));
-        assert.deepEqual(host.rect(w), rect(402, 16, 444, 688));
-        assert.deepEqual(host.rect(b), rect(862, 16, 386, 688));
+        assert.deepEqual(host.rect(a), cellRect(0, 0, 8, 12));
+        assert.deepEqual(host.rect(w), cellRect(8, 0, 8, 12));
+        assert.deepEqual(host.rect(b), cellRect(16, 0, 8, 12));
         assert.equal(host.focused, w);
     });
 
@@ -1142,9 +1069,9 @@ describe("stuff", () => {
         const w = host.open();
         host.action("stuff");
         host.action("stuff");
-        assert.deepEqual(host.rect(a), rect(0, 16, 616, 219));
-        assert.deepEqual(host.rect(w), rect(0, 251, 616, 218));
-        assert.deepEqual(host.rect(b), rect(0, 485, 616, 219));
+        assert.deepEqual(host.rect(a), cellRect(0, 0, 12, 4));
+        assert.deepEqual(host.rect(w), cellRect(0, 4, 12, 4));
+        assert.deepEqual(host.rect(b), cellRect(0, 8, 12, 4));
     });
 
     test("the window takes the rows the two windows share", async () => {
@@ -1156,9 +1083,9 @@ describe("stuff", () => {
         host.action("stuff");
 
         // A is full height and B half, so W gets the top half, and A shrinks at full height.
-        assert.deepEqual(host.rect(a), rect(0, 16, 386, 688));
-        assert.deepEqual(host.rect(w), rect(402, 16, 444, 336));
-        assert.deepEqual(host.rect(b), rect(862, 16, 386, 336));
+        assert.deepEqual(host.rect(a), cellRect(0, 0, 8, 12));
+        assert.deepEqual(host.rect(w), cellRect(8, 0, 8, 6));
+        assert.deepEqual(host.rect(b), cellRect(16, 0, 8, 6));
     });
 
     test("direction keys move between seams, and other actions cancel", async () => {
@@ -1169,13 +1096,14 @@ describe("stuff", () => {
         host.open(third);
         const w = host.open();
 
-        // The seam nearest to W is the one between B and C.
+        // The seam nearest to W is the one between B and C. Their 8 + 8 cells would become 5, 6
+        // and 5.
         host.action("stuff");
         const bc = host.hint;
-        assert.deepEqual(bc, rect(689, 16, 272, 688));
+        assert.deepEqual(bc, cellRect(13, 0, 6, 12));
 
         host.action("focus-column-left");
-        assert.deepEqual(host.hint, rect(287, 16, 272, 688));
+        assert.deepEqual(host.hint, cellRect(5, 0, 6, 12));
         host.action("focus-column-right");
         assert.deepEqual(host.hint, bc);
         assert.equal(host.focused, w);
@@ -1236,11 +1164,7 @@ describe("layout API", () => {
         // Window 2 moves to the first column, pushing window 1 along in its rows.
         host.activate(2);
         assert.equal(host.action("move-column-to-index", 1), true);
-        assert.deepEqual(tiles(host), [
-            "99 × 336 at x:131 y:16",
-            "99 × 336 at x:16 y:16",
-            "99 × 336 at x:16 y:368",
-        ]);
+        assert.deepEqual(cells(host), ["2 × 6 at 2, 0", "2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
     });
 
     test("focus-window-in-column counts the stack", async () => {
@@ -1261,8 +1185,8 @@ describe("layout API", () => {
         host.open();
         host.open({ nextTo: 1 });
         assert.deepEqual(
-            [1, 4, 2, 3].map((id) => host.screenRect(id).x),
-            [16, 131, 246, 361],
+            [1, 4, 2, 3].map((id) => host.rect(id).x),
+            [0, 2, 4, 6].map((col) => cellRect(col, 0, 2, 12).x),
         );
     });
 
@@ -1278,17 +1202,17 @@ describe("layout API", () => {
         for (let i = 0; i < 12; i++) host.open();
 
         // The last window is in view at the right edge.
-        assert.deepEqual(tiles(host, [12]), ["99 × 688 at x:1165 y:16"]);
+        assert.deepEqual(cells(host, [12]), ["2 × 12 at 22, 0"]);
         const camera = host.camera.x;
 
         // Closing a window to the left doesn't move the view; the windows slide instead.
         host.close(11);
         assert.equal(host.camera.x, camera);
-        assert.deepEqual(tiles(host, [12]), ["99 × 688 at x:1050 y:16"]);
+        assert.deepEqual(cells(host, [12]), ["2 × 12 at 20, 0"]);
 
         // Focusing a window out of view scrolls to it.
         host.activate(1);
-        assert.deepEqual(tiles(host, [1]), ["99 × 688 at x:16 y:16"]);
+        assert.deepEqual(cells(host, [1]), ["2 × 12 at 0, 0"]);
     });
 
     test("maximized windows fill the working area and push the others", async () => {
@@ -1296,22 +1220,23 @@ describe("layout API", () => {
         host.open();
         host.open();
         host.activate(1);
-        assert.equal(host.action("maximize-window-to-edges"), true);
+        host.requestMode(1, "maximized");
         assert.equal(host.mode(1), "maximized");
-        assert.deepEqual(tiles(host), ["1280 × 720 at x:0 y:0", "99 × 688 at x:1321 y:16"]);
+        assert.deepEqual(tiles(host, [1]), ["1280 × 720 at x:0 y:0"]);
+        assert.deepEqual(cells(host, [2]), ["2 × 12 at 24.7, 0"]);
 
-        host.action("maximize-window-to-edges");
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        host.requestMode(1, "normal", { maximized: false });
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
     });
 
-    test("fullscreen-window toggles fullscreen", async () => {
+    test("mode requests make a window fullscreen and back", async () => {
         const host = await setup();
         host.open();
-        assert.equal(host.action("fullscreen-window"), true);
+        host.requestMode(1, "fullscreen");
         assert.equal(host.mode(1), "fullscreen");
         assert.deepEqual(tiles(host), ["1280 × 720 at x:0 y:0"]);
-        host.action("fullscreen-window");
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16"]);
+        host.requestMode(1, "normal");
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0"]);
     });
 
     test("tabbed areas get a tab bar, which switches tabs", async () => {
@@ -1322,7 +1247,7 @@ describe("layout API", () => {
         const [bar] = host.tabs.values();
         assert.deepEqual(bar.windows, [1, 2]);
         assert.equal(bar.active, 1);
-        assert.deepEqual(bar.area, { x: 0, y: 16, w: 99, h: 688 });
+        assert.deepEqual(bar.area, cellRect(0, 0, 2, 12));
 
         host.clickTab(bar.key, 1);
         assert.equal(host.focused, 2);
@@ -1342,7 +1267,7 @@ describe("layout API", () => {
 
         // Closing a tab keeps the area's cells.
         host.close(2);
-        assert.deepEqual(tiles(host, [1, 3]), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        assert.deepEqual(cells(host, [1, 3]), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
         assert.equal(host.focused, 1);
     });
 
@@ -1363,28 +1288,29 @@ describe("layout API", () => {
         host.open();
         host.activate(1);
         host.action("toggle-column-tabbed-display");
-        assert.deepEqual(tiles(host), ["90 × 688 at x:25 y:16", "99 × 688 at x:131 y:16"]);
+        // Window 1 leaves the indicator's 4 + 5 px free on the left of its cells.
+        const area = cellRect(0, 0, 2, 12);
+        assert.deepEqual(host.rect(1), { ...area, x: area.x + 9, w: area.w - 9 });
+        assert.deepEqual(cells(host, [2]), ["2 × 12 at 2, 0"]);
     });
 
     test("new windows are asked to open at the size of their cells", async () => {
         const host = await setup();
-        assert.deepEqual(host.newWindowSize({ rules: { defaultWidth: { fixed: 100 } } }), {
-            w: 99,
-            h: 688,
-        });
+        const { w, h } = cellRect(0, 0, 2, 12);
+        assert.deepEqual(host.newWindowSize({ rules: { defaultWidth: { fixed: 100 } } }), { w, h });
         assert.deepEqual(
             host.newWindowSize({
                 rules: { defaultWidth: { proportion: 0.5 }, defaultHeight: { proportion: 0.5 } },
             }),
-            { w: 616, h: 336 },
+            { w: cellRect(0, 0, 12, 6).w, h: cellRect(0, 0, 12, 6).h },
         );
-        assert.deepEqual(host.newWindowSize({ rules: { defaultWidth: null } }), { w: 0, h: 688 });
+        assert.deepEqual(host.newWindowSize({ rules: { defaultWidth: null } }), { w: 0, h });
         assert.deepEqual(
             host.newWindowSize({
                 rules: { defaultWidth: { fixed: 100 } },
                 minSize: { w: 300, h: 0 },
             }),
-            { w: 300, h: 688 },
+            { w: 300, h },
         );
     });
 
@@ -1420,10 +1346,10 @@ describe("layout API", () => {
                 how: { reason: "adopt", activate, rect, pointer: null, nextTo: null },
             });
         };
-        // 11 cells by 12, and 6 cells by 5.
+        // 12 cells by 12, and 6 cells by 5.
         adopt({ x: 10, y: 10, w: 600, h: 700 }, true);
         adopt({ x: 640, y: 20, w: 300, h: 300 }, false);
-        assert.deepEqual(tiles(host), ["616 × 688 at x:16 y:16", "329 × 277 at x:648 y:16"]);
+        assert.deepEqual(cells(host), ["12 × 12 at 0, 0", "6 × 5 at 12, 0"]);
     });
 
     test("turning gravity off and on", async () => {
@@ -1435,10 +1361,10 @@ describe("layout API", () => {
         // Without gravity, windows stay where they're moved.
         host.setOptions({ gravity: false });
         repeat(5, () => host.action("move-window-down"));
-        assert.deepEqual(tiles(host, [3]), ["99 × 336 at x:246 y:368"]);
+        assert.deepEqual(cells(host, [3]), ["2 × 6 at 4, 6"]);
         assert.equal(host.action("move-column-left"), true);
         assert.equal(host.action("move-column-left"), true);
-        assert.deepEqual(tiles(host, [3]), ["99 × 336 at x:131 y:368"]);
+        assert.deepEqual(cells(host, [3]), ["2 × 6 at 2, 6"]);
 
         // The leftmost window can go left of column 0 without gravity, but moving it alone left
         // just shifts everything, which isn't a change.
@@ -1449,7 +1375,7 @@ describe("layout API", () => {
         host.activate(3);
         host.action("move-column-right");
         host.setOptions({ gravity: true });
-        assert.deepEqual(tiles(host, [3]), ["99 × 336 at x:131 y:368"]);
+        assert.deepEqual(cells(host, [3]), ["2 × 6 at 2, 6"]);
     });
 
     test("sizes stay proportional on a view with different cells", async () => {
@@ -1459,11 +1385,12 @@ describe("layout API", () => {
         host.open();
         host.actionOn(2, "set-window-width", set(50));
         host.activate(1);
-        assert.deepEqual(tiles(host), ["616 × 688 at x:16 y:16", "616 × 688 at x:648 y:16"]);
+        assert.deepEqual(cells(host), ["12 × 12 at 0, 0", "12 × 12 at 12, 0"]);
 
-        // 28 columns across instead of 22.
-        host.resizeView({ size: { w: 2560, h: 1080 } });
-        assert.deepEqual(tiles(host), ["1256 × 1048 at x:16 y:16", "1256 × 1048 at x:1288 y:16"]);
+        // 36 columns across instead of 24: each window still covers half of them.
+        host.resizeView({ size: { w: 3440, h: 1080 } });
+        assert.equal(new CellMetrics({ w: 3440, h: 1080 }, R, 16).colsPerView, 36);
+        assert.deepEqual(tiles(host), ["1696 × 1048 at x:16 y:16", "1696 × 1048 at x:1728 y:16"]);
 
         // Struts shrink the working area.
         host.config = { ...host.config, struts: { left: 0, right: 0, top: 100, bottom: 0 } };
@@ -1475,8 +1402,8 @@ describe("layout API", () => {
         const host = await setup();
         host.open({ minSize: { w: 300, h: 0 } });
         host.open();
-        assert.deepEqual(host.windows.get(1).size, { w: 300, h: 688 });
-        assert.deepEqual(tiles(host), ["99 × 688 at x:16 y:16", "99 × 688 at x:131 y:16"]);
+        assert.deepEqual(host.windows.get(1).size, { w: 300, h: cellRect(0, 0, 2, 12).h });
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
         assert.deepEqual(host.errors, []);
     });
 
@@ -1490,9 +1417,10 @@ describe("layout API", () => {
             { x: 5600, y: 300 },
             { x: 5500, y: 20, w: 99, h: 336 },
         );
+        const cell = cellRect(0, 0, 2, 6);
         assert.deepEqual(
             { x: target.x - host.camera.x, y: target.y, w: target.w, h: target.h },
-            { x: 16, y: 16, w: 99, h: 336 },
+            { ...cell, x: cell.x + METRICS.gap },
         );
     });
 });

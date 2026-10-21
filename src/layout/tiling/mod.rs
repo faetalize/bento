@@ -197,20 +197,6 @@ struct TileData {
     reported: Option<WindowInfo>,
 }
 
-/// What tests can see of the camera.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy)]
-pub(super) struct CameraState {
-    is_animation_ongoing: bool,
-}
-
-#[cfg(test)]
-impl CameraState {
-    pub fn is_animation_ongoing(&self) -> bool {
-        self.is_animation_ongoing
-    }
-}
-
 /// Windows that the layout shows as tabs in one area.
 #[derive(Debug)]
 struct TabBar {
@@ -2100,14 +2086,6 @@ impl<W: LayoutElement> TilingSpace<W> {
     /// Camera x on the canvas, like niri's view position.
     pub fn view_pos(&self) -> f64 {
         self.camera.current().x
-    }
-
-    /// The camera, for tests written against niri's view offset.
-    #[cfg(test)]
-    pub(super) fn view_offset(&self) -> CameraState {
-        CameraState {
-            is_animation_ongoing: !self.camera.is_static() && self.camera.gesture.is_none(),
-        }
     }
 
     /// Index of the focused window's column, from the layout's IPC positions.
