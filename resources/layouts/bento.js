@@ -2300,8 +2300,25 @@ export default function create(ws) {
         if (item === null || modeOf(item) !== "normal") {
             return false;
         }
+        // The height changes first, then the width. The bottom edge moves, together with the
+        // window stacked right below; a window that reaches the bottom of the grid grows up for
+        // the rest, together with the window stacked right above.
         const area = grid.area(item);
-        if (!grid.resize(item, cols ?? area.cols, rows ?? area.rows)) {
+        let changed = false;
+        if (rows !== null && rows !== area.rows) {
+            const down = Math.min(rows, grid.rows - area.row);
+            changed = stickyResize(grid, item, area.with({ rows: down }), Down) || changed;
+            if (rows > down) {
+                const at = grid.area(item);
+                const up = at.with({ row: Math.max(at.bottom - rows, 0), rows: Math.min(rows, at.bottom) });
+                changed = stickyResize(grid, item, up, Up) || changed;
+            }
+        }
+        const cur = grid.area(item);
+        if (cols !== null && cols !== cur.cols) {
+            changed = grid.resize(item, cols, cur.rows) || changed;
+        }
+        if (!changed) {
             return false;
         }
         sync();
@@ -2311,6 +2328,68 @@ export default function create(ws) {
             cameraToItem(active);
         }
         return true;
+    }
+
+    /**
+     * Gives `item` on grid `g` the new `area`, which moves its bottom edge (`dir` down) or its
+     * top edge (`dir` up), and moves the window stacked right across that edge along with it:
+     * growing takes rows from it, and shrinking gives them to it, and the edge stops where that
+     * window can't shrink any further. Only a window in exactly the same columns sticks; others
+     * get pushed like with `Grid.setArea`.
+     */
+    function stickyResize(g, item, area, dir) {
+        const orig = g.area(item);
+        const partner =
+            area.row >= 0 && area.bottom <= g.rows
+                ? (g.items.find(
+                      ({ key, area: b }) =>
+                          key !== item &&
+                          modeOf(key) === "normal" &&
+                          b.col === orig.col &&
+                          b.cols === orig.cols &&
+                          (dir === Down ? b.row === orig.bottom : b.bottom === orig.row),
+                  ) ?? null)
+                : null;
+        if (partner === null) {
+            return g.setArea(item, area, dir);
+        }
+
+        const { key: p, area: b } = partner;
+        // Rows that the edge moves by, positive when the window grows.
+        const delta = dir === Down ? area.bottom - orig.bottom : orig.row - area.row;
+        const take = Math.min(delta, b.rows - minRows(p));
+        if (take === delta) {
+            const moved = dir === Down
+                ? b.with({ row: b.row + delta, rows: b.rows - delta })
+                : b.with({ rows: b.rows - delta });
+            return g.place([
+                [item, area],
+                [p, moved],
+            ]);
+        }
+
+        // The partner can only give some of it: the edge stops there.
+        if (take <= 0) {
+            return false;
+        }
+        const rest = delta - take;
+        const partial =
+            dir === Down
+                ? area.with({ rows: area.rows - rest })
+                : area.with({ row: area.row + rest, rows: area.rows - rest });
+        const moved = dir === Down
+            ? b.with({ row: b.row + take, rows: b.rows - take })
+            : b.with({ rows: b.rows - take });
+        return g.place([
+            [item, partial],
+            [p, moved],
+        ]);
+    }
+
+    /** Fewest rows the windows of `item` fit in, from their minimum height. */
+    function minRows(item) {
+        const height = Math.max(0, ...item.windows.map((win) => win.minSize.h));
+        return height > 0 ? rowsForHeight(height) : 1;
     }
 
     function isSizeChange(change) {
@@ -3094,10 +3173,10 @@ export default function create(ws) {
         if (edges.top || edges.bottom) {
             if (edges.top) {
                 const row = clamp(orig.row + dy, 0, orig.bottom - 1);
-                next.setArea(item, orig.with({ row, rows: orig.bottom - row }), Up);
+                stickyResize(next, item, orig.with({ row, rows: orig.bottom - row }), Up);
             } else {
                 const rows = clamp(orig.rows + dy, 1, m.rows - orig.row);
-                next.setArea(item, orig.with({ rows }), Down);
+                stickyResize(next, item, orig.with({ rows }), Down);
             }
         }
         if (edges.left || edges.right) {

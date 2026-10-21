@@ -203,7 +203,7 @@ describe("grid layout", () => {
         assert.equal(host.action("move-column-left"), false);
     });
 
-    test("growing down pushes the window below", async () => {
+    test("growing down takes rows from the window stacked below", async () => {
         const host = await setUpHole();
 
         // Put window 3 below window 2 by opening it and moving it down. Left gravity slides it
@@ -225,12 +225,13 @@ describe("grid layout", () => {
         host.action("focus-column-left");
         assert.equal(host.focused, 1);
 
-        // Growing 2 down pushes 3, which doesn't fit below anymore and goes to the right.
+        // Growing 2 down moves the edge it shares with 3, which gets shorter instead of being
+        // pushed away.
         host.actionOn(2, "set-window-height", set(75));
         assert.deepEqual(tiles(host), [
             "99 × 688 at x:16 y:16",
             "99 × 512 at x:131 y:16",
-            "99 × 336 at x:246 y:368",
+            "99 × 160 at x:131 y:544",
         ]);
     });
 
@@ -956,6 +957,63 @@ describe("split and swap", () => {
         const before = tiles(host);
         assert.equal(host.action("split-h"), false);
         assert.deepEqual(tiles(host), before);
+    });
+});
+
+describe("sticky vertical resizing", () => {
+    const set = (value) => ({ op: "set", value, unit: "%" });
+    const row = 720 / 12 - 16 * (13 / 12) + 16;
+
+    /** Window 1 on top of window 2, half each. */
+    async function setUpStack() {
+        const host = await setup();
+        host.open();
+        host.open();
+        host.action("consume-or-expel-window-left");
+        assert.deepEqual(tiles(host), ["99 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+        return host;
+    }
+
+    test("shrinking gives the rows to the window stacked below", async () => {
+        const host = await setUpStack();
+        host.actionOn(1, "set-window-height", set(25));
+        assert.deepEqual(tiles(host), ["99 × 160 at x:16 y:16", "99 × 512 at x:16 y:192"]);
+    });
+
+    test("the bottom window grows up, taking rows from the one above", async () => {
+        const host = await setUpStack();
+        host.actionOn(2, "set-window-height", set(75));
+        assert.deepEqual(tiles(host), ["99 × 160 at x:16 y:16", "99 × 512 at x:16 y:192"]);
+    });
+
+    test("the edge stops where the other window can't shrink any further", async () => {
+        const host = await setUpStack();
+        host.actionOn(1, "set-window-height", set(100));
+        assert.deepEqual(tiles(host), ["99 × 629 at x:16 y:16", "99 × 43 at x:16 y:661"]);
+    });
+
+    test("dragging an edge moves the window across it too", async () => {
+        const host = await setUpStack();
+        assert.equal(host.resize(1, { bottom: true }, { x: 0, y: 2 * row }), true);
+        assert.deepEqual(tiles(host), ["99 × 453 at x:16 y:16", "99 × 219 at x:16 y:485"]);
+
+        const other = await setUpStack();
+        assert.equal(other.resize(2, { top: true }, { x: 0, y: -2 * row }), true);
+        assert.deepEqual(tiles(other), ["99 × 219 at x:16 y:16", "99 × 453 at x:16 y:251"]);
+    });
+
+    test("windows in other columns still get pushed", async () => {
+        const host = await setup();
+        host.open({ defaultWidth: { fixed: 200 } });
+        host.open();
+        host.action("consume-or-expel-window-left");
+        host.actionOn(2, "set-window-width", { op: "set", value: 100, unit: "px" });
+        assert.deepEqual(tiles(host), ["214 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+
+        // Window 2 is narrower than window 1, so it isn't stuck to it: it keeps its size, gets
+        // pushed off the bottom and goes to the right.
+        host.actionOn(1, "set-window-height", set(75));
+        assert.deepEqual(tiles(host), ["214 × 512 at x:16 y:16", "99 × 336 at x:246 y:368"]);
     });
 });
 

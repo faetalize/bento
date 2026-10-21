@@ -87,6 +87,13 @@ With left gravity, windows can't be pushed past the left edge of the grid, and t
 Without gravity, dragging a left edge grows the window to the left too, pushing the windows there further left.
 The window you're resizing stays put until you let go, then falls into place with left gravity.
 
+Resizing a window's height keeps stacks together.
+When a window is stacked right on top of another one in exactly the same columns, the edge they share moves for both: growing one takes rows from the other, and shrinking gives them back.
+The edge stops where the other window can't get any smaller.
+A window at the bottom of the grid grows upwards, taking rows from the window above it the same way.
+This works from the keyboard and when dragging a top or bottom edge with the mouse.
+Windows that only partly overlap the edge get pushed instead.
+
 ### Splitting and swapping
 
 The bento layout has three actions of its own for two windows at a time:
