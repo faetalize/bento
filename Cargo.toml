@@ -125,6 +125,10 @@ features = [
     "wayland_frontend",
 ]
 
+# rquickjs ships no prebuilt bindings for these targets, so generate them.
+[target.'cfg(any(target_os = "freebsd", target_env = "musl"))'.dependencies]
+rquickjs = { version = "0.14", features = ["bindgen"] }
+
 [dev-dependencies]
 approx = "0.5.1"
 calloop-wayland-source = "0.4.1"
