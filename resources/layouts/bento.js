@@ -41,6 +41,12 @@ export const meta = {
                 "Split a window in two stacked halves, giving the half facing it to another window.",
         },
         swap: { description: "Swap the places and sizes of two windows." },
+        // Also two presses: the first highlights where the window would go, the direction keys
+        // move the highlight between seams, and the second press puts it there.
+        stuff: {
+            description:
+                "Put the focused window between two windows that touch, which make room for it.",
+        },
     },
     options: {
         gravity: {
@@ -997,8 +1003,9 @@ export default function create(ws) {
     /** Tab bars bento shows, by key, with what they showed, to only send changes. */
     const tabBars = new Map();
     /**
-     * Two-step action waiting for its second window: `{ action, first }`, with `first` the item
-     * picked first. Only lasts until the action finishes or is cancelled; it isn't saved.
+     * Two-step action waiting for its second step: `{ action, first }`, with `first` the item
+     * picked first, and for `stuff`, `seam`, the seam it would go into. Only lasts until the
+     * action finishes or is cancelled; it isn't saved.
      */
     let picking = null;
     /** Rect of the highlight on the first pick, as last shown. */
@@ -1329,11 +1336,20 @@ export default function create(ws) {
      * others stay still.
      */
     function flush(animate = true) {
-        // Highlight the window picked first for a two-step action.
+        // Highlight the window picked first for a two-step action, or for `stuff`, where it would
+        // go.
         if (picking !== null && !items.includes(picking.first)) {
             picking = null;
         }
-        const hint = picking === null ? null : itemRect(picking.first);
+        if (picking?.action === "stuff") {
+            checkSeam();
+        }
+        const hint =
+            picking === null
+                ? null
+                : picking.action === "stuff"
+                  ? stuffPreview(picking.first, picking.seam)
+                  : itemRect(picking.first);
         const same = hint === null ? pickHint === null : pickHint !== null && sameRect(hint, pickHint);
         if (!same) {
             ws.setHint(hint);
@@ -2626,6 +2642,183 @@ export default function create(ws) {
         return true;
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Stuffing a window between two others
+    // ---------------------------------------------------------------------------------------------
+    //
+    // A seam is where two windows touch, side by side or stacked. Stuffing a window into a seam
+    // splits the span of the two windows in three: they keep their outer edges and shrink towards
+    // each other, and the window takes the middle third, along the part of the seam they share.
+
+    /** First and last-plus-one columns of cells in view. */
+    function visibleColumns() {
+        const m = metrics;
+        const first = round((ws.camera.x + workingArea.x + m.gap) / (m.cellW + m.gap));
+        return [first, first + m.colsPerView];
+    }
+
+    /**
+     * Seams in view that `item` could go into: `{ a, b, vertical }`, with `a` left of or above
+     * `b`, and `vertical` for side by side.
+     */
+    function seamsFor(item) {
+        const [first, end] = visibleColumns();
+        const others = items.filter((other) => other !== item && modeOf(other) === "normal");
+        const seams = [];
+        for (const a of others) {
+            const ra = grid.area(a);
+            for (const b of others) {
+                const rb = grid.area(b);
+                if (a === b) continue;
+                const rows = Math.min(ra.bottom, rb.bottom) - Math.max(ra.row, rb.row);
+                if (ra.right === rb.col && rows > 0 && ra.cols + rb.cols >= 3) {
+                    if (first < rb.col && rb.col < end) seams.push({ a, b, vertical: true });
+                }
+                const left = Math.max(ra.col, rb.col);
+                const right = Math.min(ra.right, rb.right);
+                if (ra.bottom === rb.row && left < right && ra.rows + rb.rows >= 3) {
+                    if (left < end && first < right) seams.push({ a, b, vertical: false });
+                }
+            }
+        }
+        return seams;
+    }
+
+    /** Middle of a seam, in cells. */
+    function seamPoint(seam) {
+        const ra = grid.area(seam.a);
+        const rb = grid.area(seam.b);
+        if (seam.vertical) {
+            return { x: rb.col, y: (Math.max(ra.row, rb.row) + Math.min(ra.bottom, rb.bottom)) / 2 };
+        }
+        return { x: (Math.max(ra.col, rb.col) + Math.min(ra.right, rb.right)) / 2, y: rb.row };
+    }
+
+    function sameSeam(a, b) {
+        return a.a === b.a && a.b === b.b && a.vertical === b.vertical;
+    }
+
+    /** The seam nearest to `point` among `seams`, or `null`. */
+    function nearestSeam(seams, point) {
+        let best = null;
+        let bestDist = Infinity;
+        for (const seam of seams) {
+            const p = seamPoint(seam);
+            const dist = Math.hypot(p.x - point.x, p.y - point.y);
+            if (dist < bestDist) {
+                best = seam;
+                bestDist = dist;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * New areas for stuffing `item` into `seam` on `g`, with `item` already out of it: pairs for
+     * `Grid.place`, or `null` if the seam isn't there anymore or is too small.
+     */
+    function stuffPlan(g, item, seam) {
+        const ra = g.area(seam.a);
+        const rb = g.area(seam.b);
+        if (ra === null || rb === null) return null;
+
+        const [t1, t2, t3] = thirds(seam.vertical ? ra.cols + rb.cols : ra.rows + rb.rows);
+        if (seam.vertical) {
+            const top = Math.max(ra.row, rb.row);
+            const bottom = Math.min(ra.bottom, rb.bottom);
+            if (ra.right !== rb.col || top >= bottom || t3 < 1) return null;
+            return [
+                [seam.a, ra.with({ cols: t1 })],
+                [item, new Area(ra.col + t1, top, t2, bottom - top)],
+                [seam.b, rb.with({ col: ra.col + t1 + t2, cols: t3 })],
+            ];
+        }
+        const left = Math.max(ra.col, rb.col);
+        const right = Math.min(ra.right, rb.right);
+        if (ra.bottom !== rb.row || left >= right || t3 < 1) return null;
+        return [
+            [seam.a, ra.with({ rows: t1 })],
+            [item, new Area(left, ra.row + t1, right - left, t2)],
+            [seam.b, rb.with({ row: ra.row + t1 + t2, rows: t3 })],
+        ];
+    }
+
+    /** Where `item` would end up stuffed into `seam`, after pushing and gravity, or `null`. */
+    function stuffPreview(item, seam) {
+        const g = grid.clone();
+        g.remove(item);
+        const plan = stuffPlan(g, item, seam);
+        if (plan === null) return null;
+        g.place(plan);
+        return areaRect(g.area(item));
+    }
+
+    /** Keeps the seam picked for `stuff` valid as windows change, or cancels. */
+    function checkSeam() {
+        const seams = seamsFor(picking.first);
+        if (!seams.some((seam) => sameSeam(seam, picking.seam))) {
+            const seam = nearestSeam(seams, centerOf(grid.area(picking.first)));
+            picking = seam === null ? null : { ...picking, seam };
+        }
+    }
+
+    /** Moves the seam picked for `stuff` to the nearest one in `dir`. */
+    function moveSeam(dir) {
+        const from = seamPoint(picking.seam);
+        const ahead = seamsFor(picking.first).filter((seam) => {
+            const p = seamPoint(seam);
+            return { [Left]: p.x < from.x, [Right]: p.x > from.x, [Up]: p.y < from.y, [Down]: p.y > from.y }[dir];
+        });
+        // Prefer seams straight ahead over ones off to the side.
+        let best = null;
+        let bestScore = Infinity;
+        for (const seam of ahead) {
+            const p = seamPoint(seam);
+            const along = isHorizontal(dir) ? Math.abs(p.x - from.x) : Math.abs(p.y - from.y);
+            const across = isHorizontal(dir) ? Math.abs(p.y - from.y) : Math.abs(p.x - from.x);
+            const score = along + across * 2;
+            if (score < bestScore) {
+                best = seam;
+                bestScore = score;
+            }
+        }
+        if (best !== null) {
+            picking = { ...picking, seam: best };
+        }
+    }
+
+    /**
+     * Starts picking a seam for the focused window, starting with the nearest one, or puts the
+     * window into the picked seam.
+     */
+    function stuff() {
+        if (picking?.action === "stuff") {
+            const { first, seam } = picking;
+            picking = null;
+            const g = grid.clone();
+            g.remove(first);
+            const plan = stuffPlan(g, first, seam);
+            return (
+                plan !== null &&
+                changeGrid(() => {
+                    grid.remove(first);
+                    grid.place(plan);
+                    return true;
+                })
+            );
+        }
+
+        if (active === null || modeOf(active) !== "normal") {
+            return false;
+        }
+        const seam = nearestSeam(seamsFor(active), centerOf(grid.area(active)));
+        if (seam === null) {
+            return false;
+        }
+        picking = { action: "stuff", first: active, seam };
+        return true;
+    }
+
     /** Swaps the cells of two windows, so that each takes the other's place and size. */
     function swap(first, second) {
         if (modeOf(first) !== "normal" || modeOf(second) !== "normal") {
@@ -3480,9 +3673,26 @@ export default function create(ws) {
         "split-h": () => pick("split-h", (first, second) => split(first, second, true)),
         "split-v": () => pick("split-v", (first, second) => split(first, second, false)),
         swap: () => pick("swap", swap),
+        stuff: () => stuff(),
     };
 
     function runAction(name, args, target) {
+        // While picking a seam for `stuff`, the direction keys move between seams, and anything
+        // else cancels it.
+        if (picking?.action === "stuff" && name !== "stuff") {
+            const dir = {
+                "focus-column-left": Left,
+                "focus-column-right": Right,
+                "focus-window-up": Up,
+                "focus-window-down": Down,
+            }[name];
+            if (dir !== undefined) {
+                moveSeam(dir);
+                return true;
+            }
+            picking = null;
+        }
+
         const run = Object.hasOwn(actions, name) ? actions[name] : null;
         return run !== null && !!run(Array.isArray(args) ? args : [], target ?? null);
     }
@@ -3561,4 +3771,16 @@ function computeWorkingArea(parent, scale, struts) {
 
 function sameRect(a, b) {
     return a !== null && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+}
+
+/** Middle of an area, in cells. */
+function centerOf(area) {
+    return { x: area.col + area.cols / 2, y: area.row + area.rows / 2 };
+}
+
+/** Splits `total` cells in three, as evenly as possible, giving the middle the extra cell first. */
+function thirds(total) {
+    const base = Math.floor(total / 3);
+    const rest = total % 3;
+    return [base + (rest > 1 ? 1 : 0), base + (rest > 0 ? 1 : 0), base];
 }

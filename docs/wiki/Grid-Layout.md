@@ -107,6 +107,15 @@ For example, with A and B stacked on the left and C beside them, focusing A, pre
 The cells the second window leaves free up, and with left gravity the windows around them slide in.
 So a window that moves into cells to the right of where it was can slide back into its old place if nothing else takes it.
 
+`layout-action "stuff"` puts the focused window between two windows that touch, side by side or stacked.
+The first press highlights where the window would go, at the seam nearest to it.
+While the highlight is up, `focus-column-left`, `focus-column-right`, `focus-window-up` and `focus-window-down` move it to the next seam in that direction, and any other action cancels.
+The second press puts the window there.
+
+The two windows keep their outer edges and make room: their span is split in three, and the window takes the middle third, so two windows 11 cells wide become 7, 8 and 7.
+Across the seam, the window only takes the rows (or columns) that the two windows share; if one is taller, it shrinks at its full height.
+Only seams in view count.
+
 ### Columns and stacks
 
 Some actions talk about columns.

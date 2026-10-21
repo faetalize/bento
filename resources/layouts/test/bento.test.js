@@ -959,11 +959,93 @@ describe("split and swap", () => {
     });
 });
 
+describe("stuff", () => {
+    const half = { config: { defaultColumnWidth: { proportion: 0.5 } } };
+    const rect = (x, y, w, h) => ({ x, y, w, h });
+
+    test("stuffing between windows side by side splits their span in three", async () => {
+        const host = await setup(half);
+        const a = host.open();
+        const b = host.open();
+        const w = host.open({ defaultWidth: { fixed: 100 } });
+
+        // The first press shows where the window would go.
+        assert.equal(host.action("stuff"), true);
+        assert.deepEqual(host.hint, rect(402, 16, 444, 688));
+
+        // The second press puts it there: 11 + 11 cells become 7, 8 and 7, and A and B keep
+        // their outer edges.
+        assert.equal(host.action("stuff"), true);
+        assert.equal(host.hint, null);
+        assert.deepEqual(host.rect(a), rect(0, 16, 386, 688));
+        assert.deepEqual(host.rect(w), rect(402, 16, 444, 688));
+        assert.deepEqual(host.rect(b), rect(862, 16, 386, 688));
+        assert.equal(host.focused, w);
+    });
+
+    test("stuffing between stacked windows", async () => {
+        const host = await setup(half);
+        const a = host.open();
+        const b = host.open();
+        host.action("consume-or-expel-window-left");
+        const w = host.open();
+        host.action("stuff");
+        host.action("stuff");
+        assert.deepEqual(host.rect(a), rect(0, 16, 616, 219));
+        assert.deepEqual(host.rect(w), rect(0, 251, 616, 218));
+        assert.deepEqual(host.rect(b), rect(0, 485, 616, 219));
+    });
+
+    test("the window takes the rows the two windows share", async () => {
+        const host = await setup(half);
+        const a = host.open();
+        const b = host.open({ defaultHeight: { proportion: 0.5 } });
+        const w = host.open({ defaultWidth: { fixed: 100 } });
+        host.action("stuff");
+        host.action("stuff");
+
+        // A is full height and B half, so W gets the top half, and A shrinks at full height.
+        assert.deepEqual(host.rect(a), rect(0, 16, 386, 688));
+        assert.deepEqual(host.rect(w), rect(402, 16, 444, 336));
+        assert.deepEqual(host.rect(b), rect(862, 16, 386, 336));
+    });
+
+    test("direction keys move between seams, and other actions cancel", async () => {
+        const host = await setup();
+        const third = { defaultWidth: { proportion: 1 / 3 } };
+        host.open(third);
+        host.open(third);
+        host.open(third);
+        const w = host.open();
+
+        // The seam nearest to W is the one between B and C.
+        host.action("stuff");
+        const bc = host.hint;
+        assert.deepEqual(bc, rect(689, 16, 272, 688));
+
+        host.action("focus-column-left");
+        assert.deepEqual(host.hint, rect(287, 16, 272, 688));
+        host.action("focus-column-right");
+        assert.deepEqual(host.hint, bc);
+        assert.equal(host.focused, w);
+
+        host.action("maximize-column");
+        assert.equal(host.hint, null);
+    });
+
+    test("there's nothing to stuff into without two windows touching", async () => {
+        const host = await setup(half);
+        host.open();
+        assert.equal(host.action("stuff"), false);
+        assert.equal(host.hint, null);
+    });
+});
+
 describe("layout API", () => {
     test("declares the gravity option", async () => {
         const host = await setup();
         assert.equal(host.meta.name, "bento");
-        assert.deepEqual(host.meta.actions, ["split-h", "split-v", "swap"]);
+        assert.deepEqual(host.meta.actions, ["split-h", "split-v", "swap", "stuff"]);
         assert.deepEqual(host.meta.options, { gravity: "boolean" });
     });
 
