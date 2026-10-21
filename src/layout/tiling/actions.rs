@@ -28,6 +28,13 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.action(name, Vec::new(), None)
     }
 
+    /// Runs one of niri's actions that combine others, like `focus-column-or-monitor-left`, under
+    /// its own name, so that the layout engine decides what it means. Returns whether it did
+    /// anything, for the caller to fall back to the rest, like focusing the next monitor.
+    pub fn combined_action(&mut self, name: &str) -> bool {
+        self.simple(name)
+    }
+
     fn on(&mut self, name: &str, window: Option<&W::Id>) -> bool {
         self.action(name, Vec::new(), window)
     }

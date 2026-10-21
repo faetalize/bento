@@ -1900,10 +1900,8 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_column_left_or_to_output(&mut self, output: &Output) -> bool {
-        if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.move_left() {
-                return false;
-            }
+        if self.combined_action("move-column-left-or-to-monitor-left", Workspace::move_left) {
+            return false;
         }
 
         self.move_column_to_output(output, None, true);
@@ -1911,10 +1909,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_column_right_or_to_output(&mut self, output: &Output) -> bool {
-        if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.move_right() {
-                return false;
-            }
+        if self.combined_action(
+            "move-column-right-or-to-monitor-right",
+            Workspace::move_right,
+        ) {
+            return false;
         }
 
         self.move_column_to_output(output, None, true);
@@ -2030,6 +2029,17 @@ impl<W: LayoutElement> Layout<W> {
         workspace.focus_column_last();
     }
 
+    /// Runs one of niri's actions that combine others on the active workspace, see
+    /// `Workspace::combined_action`. Returns whether it did anything.
+    pub fn combined_action(
+        &mut self,
+        name: &str,
+        floating: impl FnOnce(&mut Workspace<W>) -> bool,
+    ) -> bool {
+        self.active_workspace_mut()
+            .is_some_and(|workspace| workspace.combined_action(name, floating))
+    }
+
     pub fn focus_column_right_or_first(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
@@ -2052,10 +2062,8 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_window_up_or_output(&mut self, output: &Output) -> bool {
-        if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.focus_up() {
-                return false;
-            }
+        if self.combined_action("focus-window-or-monitor-up", Workspace::focus_up) {
+            return false;
         }
 
         self.focus_output(output);
@@ -2063,10 +2071,8 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_window_down_or_output(&mut self, output: &Output) -> bool {
-        if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.focus_down() {
-                return false;
-            }
+        if self.combined_action("focus-window-or-monitor-down", Workspace::focus_down) {
+            return false;
         }
 
         self.focus_output(output);
@@ -2074,10 +2080,8 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_column_left_or_output(&mut self, output: &Output) -> bool {
-        if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.focus_left() {
-                return false;
-            }
+        if self.combined_action("focus-column-or-monitor-left", Workspace::focus_left) {
+            return false;
         }
 
         self.focus_output(output);
@@ -2085,10 +2089,8 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_column_right_or_output(&mut self, output: &Output) -> bool {
-        if let Some(workspace) = self.active_workspace_mut() {
-            if workspace.focus_right() {
-                return false;
-            }
+        if self.combined_action("focus-column-or-monitor-right", Workspace::focus_right) {
+            return false;
         }
 
         self.focus_output(output);

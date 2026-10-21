@@ -184,7 +184,10 @@ export interface Meta {
      * Actions the layout provides on top of niri's built-in ones.
      *
      * niri's built-in layout actions, like `focus-column-left` or `set-column-width`, go to every
-     * layout under their own names, so a layout can give them its own meaning.
+     * engine under their own names, so an engine can give them its own meaning. That includes
+     * actions that combine others: for `focus-column-or-monitor-left`, the engine decides what
+     * happens within the workspace, and if `Layout.action` returns false, bento focuses the
+     * monitor to the left. Fullscreen and maximize actions arrive as `Layout.modeRequested`.
      */
     actions?: Record<string, ActionSpec>;
     options?: Record<string, OptionSpec>;

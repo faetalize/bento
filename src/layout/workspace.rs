@@ -958,16 +958,38 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn focus_column_right_or_first(&mut self) {
-        if !self.focus_right() {
-            self.focus_column_first();
+    /// Runs one of niri's actions that combine others, like `focus-column-or-monitor-left`. The
+    /// tiling layout engine gets it under its own name and decides what it means; the floating
+    /// layout does `floating`, the part of it within the workspace. Returns whether it did
+    /// anything, for the caller to fall back to the rest, like focusing the next monitor.
+    pub fn combined_action(
+        &mut self,
+        name: &str,
+        floating: impl FnOnce(&mut Self) -> bool,
+    ) -> bool {
+        if self.floating_is_active.get() {
+            floating(self)
+        } else {
+            self.scrolling.combined_action(name)
         }
     }
 
+    pub fn focus_column_right_or_first(&mut self) {
+        self.combined_action("focus-column-right-or-first", |ws| {
+            if !ws.focus_right() {
+                ws.focus_column_first();
+            }
+            true
+        });
+    }
+
     pub fn focus_column_left_or_last(&mut self) {
-        if !self.focus_left() {
-            self.focus_column_last();
-        }
+        self.combined_action("focus-column-left-or-last", |ws| {
+            if !ws.focus_left() {
+                ws.focus_column_last();
+            }
+            true
+        });
     }
 
     pub fn focus_column(&mut self, index: usize) {
@@ -1049,15 +1071,21 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn focus_window_down_or_top(&mut self) {
-        if !self.focus_down() {
-            self.focus_window_top();
-        }
+        self.combined_action("focus-window-down-or-top", |ws| {
+            if !ws.focus_down() {
+                ws.focus_window_top();
+            }
+            true
+        });
     }
 
     pub fn focus_window_up_or_bottom(&mut self) {
-        if !self.focus_up() {
-            self.focus_window_bottom();
-        }
+        self.combined_action("focus-window-up-or-bottom", |ws| {
+            if !ws.focus_up() {
+                ws.focus_window_bottom();
+            }
+            true
+        });
     }
 
     pub fn move_left(&mut self) -> bool {

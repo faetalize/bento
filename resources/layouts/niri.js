@@ -1979,10 +1979,15 @@ export default function create(ws) {
         if (columns.length === 0) return;
         const col = columns[activeColumnIdx];
 
+        // Actions that combine others, like `focus-column-or-monitor-left`, do their basic part
+        // here, like in niri; bento does the rest, like focusing the next monitor, when nothing
+        // changed.
         switch (name) {
             case "focus-column-left":
+            case "focus-column-or-monitor-left":
                 return focusLeft();
             case "focus-column-right":
+            case "focus-column-or-monitor-right":
                 return focusRight();
             case "focus-column-first":
                 return focusColumnFirst();
@@ -1999,8 +2004,12 @@ export default function create(ws) {
             case "focus-window-in-column":
                 return activateTile(col, clamp(index(args) - 1, 0, col.tiles.length - 1));
             case "focus-window-down":
+            case "focus-window-or-monitor-down":
+            case "focus-window-or-workspace-down":
                 return focusDown();
             case "focus-window-up":
+            case "focus-window-or-monitor-up":
+            case "focus-window-or-workspace-up":
                 return focusUp();
             case "focus-window-down-or-column-left":
                 if (!focusDown()) focusLeft();
@@ -2026,8 +2035,10 @@ export default function create(ws) {
                 return;
 
             case "move-column-left":
+            case "move-column-left-or-to-monitor-left":
                 return moveLeft();
             case "move-column-right":
+            case "move-column-right-or-to-monitor-right":
                 return moveRight();
             case "move-column-to-first":
                 return moveColumnTo(0);
@@ -2036,8 +2047,10 @@ export default function create(ws) {
             case "move-column-to-index":
                 return moveColumnTo(clamp(index(args) - 1, 0, columns.length - 1));
             case "move-window-down":
+            case "move-window-down-or-to-workspace-down":
                 return moveInColumn(1);
             case "move-window-up":
+            case "move-window-up-or-to-workspace-up":
                 return moveInColumn(-1);
 
             case "consume-or-expel-window-left":

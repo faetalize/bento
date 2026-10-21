@@ -3705,15 +3705,6 @@ export default function create(ws) {
         "maximize-column": () => toggleFullWidth(),
         "expand-column-to-available-width": () => expandToAvailableWidth(),
 
-        "fullscreen-window": (args, target) => {
-            const item = itemFor(target);
-            return item !== null && changeMode(item, !item.fullscreen, item.maximized);
-        },
-        "maximize-window-to-edges": (args, target) => {
-            const item = itemFor(target);
-            return item !== null && changeMode(item, item.fullscreen, !item.maximized);
-        },
-
         // bento's own actions.
         "split-h": () => pick("split-h", (first, second) => split(first, second, true)),
         "split-v": () => pick("split-v", (first, second) => split(first, second, false)),
@@ -3727,9 +3718,15 @@ export default function create(ws) {
         if (picking?.action === "stuff" && name !== "stuff") {
             const dir = {
                 "focus-column-left": Left,
+                "focus-column-or-monitor-left": Left,
                 "focus-column-right": Right,
+                "focus-column-or-monitor-right": Right,
                 "focus-window-up": Up,
+                "focus-window-or-monitor-up": Up,
+                "focus-window-or-workspace-up": Up,
                 "focus-window-down": Down,
+                "focus-window-or-monitor-down": Down,
+                "focus-window-or-workspace-down": Down,
             }[name];
             if (dir !== undefined) {
                 moveSeam(dir);

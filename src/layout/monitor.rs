@@ -769,25 +769,38 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn move_down_or_to_workspace_down(&mut self) {
-        if !self.active_workspace().move_down() {
+        let moved = self.active_workspace().combined_action(
+            "move-window-down-or-to-workspace-down",
+            Workspace::move_down,
+        );
+        if !moved {
             self.move_to_workspace_down(ActivateWindow::Smart);
         }
     }
 
     pub fn move_up_or_to_workspace_up(&mut self) {
-        if !self.active_workspace().move_up() {
+        let moved = self
+            .active_workspace()
+            .combined_action("move-window-up-or-to-workspace-up", Workspace::move_up);
+        if !moved {
             self.move_to_workspace_up(ActivateWindow::Smart);
         }
     }
 
     pub fn focus_window_or_workspace_down(&mut self) {
-        if !self.active_workspace().focus_down() {
+        let focused = self
+            .active_workspace()
+            .combined_action("focus-window-or-workspace-down", Workspace::focus_down);
+        if !focused {
             self.switch_workspace_down();
         }
     }
 
     pub fn focus_window_or_workspace_up(&mut self) {
-        if !self.active_workspace().focus_up() {
+        let focused = self
+            .active_workspace()
+            .combined_action("focus-window-or-workspace-up", Workspace::focus_up);
+        if !focused {
             self.switch_workspace_up();
         }
     }
