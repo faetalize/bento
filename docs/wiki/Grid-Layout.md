@@ -89,11 +89,16 @@ Without gravity, dragging a left edge grows the window to the left too, pushing 
 The window you're resizing stays put until you let go, then falls into place with left gravity.
 
 Resizing a window's height keeps stacks together.
-When a window is stacked right on top of another one in exactly the same columns, the edge they share moves for both: growing one takes rows from the other, and shrinking gives them back.
-The edge stops where the other window can't get any smaller.
-A window at the bottom of the grid grows upwards, taking rows from the window above it the same way.
+A window touching the bottom of the grid stays there: its height changes at its top edge, and dragging its bottom edge does nothing.
+A window as tall as the grid isn't held there, and shrinks from its bottom edge.
+Other windows resize from their bottom edge, and one that grows down to the bottom of the grid grows upwards for the rest.
+
+The windows right across the edge that moves stick to it when their whole edge lies along it: growing takes rows from them, and shrinking gives them back.
+For example, with two windows side by side above a window as wide as both, resizing the bottom window moves the edge of both windows above it.
+The edge stops where one of them can't get any smaller.
+The opposite isn't true: resizing one of the top windows doesn't move the bottom window, which only lies partly along its edge.
+Windows that aren't stuck get pushed instead, and a window that would be pushed past the bottom or top of the grid goes to the right of the window pushing it, keeping its rows.
 This works from the keyboard and when dragging a top or bottom edge with the mouse.
-Windows that only partly overlap the edge get pushed instead.
 
 ### Splitting and swapping
 

@@ -52,6 +52,22 @@ function tiles(host, ids = [...host.windows.keys()]) {
         });
 }
 
+/**
+ * Tiles in the order they opened, in cells on screen: their size, then their column and row
+ * relative to the view.
+ */
+function cells(host, ids = [...host.windows.keys()]) {
+    const at = (value, step) => Number(((value - METRICS.gap) / step).toFixed(1));
+    const span = (size, step) => Math.round((size + METRICS.gap) / step);
+    return ids
+        .sort((a, b) => a - b)
+        .map((id) => {
+            const r = host.screenRect(id);
+            const size = `${span(r.w, COL_STEP)} × ${span(r.h, ROW_STEP)}`;
+            return `${size} at ${at(r.x, COL_STEP)}, ${at(r.y, ROW_STEP)}`;
+        });
+}
+
 const set = (value) => ({ op: "set", value, unit: "%" });
 const adjust = (value) => ({ op: "adjust", value, unit: "%" });
 /** A proportion that gives exactly `n` rows. */
@@ -1001,18 +1017,73 @@ describe("sticky vertical resizing", () => {
         assert.deepEqual(tiles(other), ["99 × 219 at x:16 y:16", "99 × 453 at x:16 y:251"]);
     });
 
-    test("windows in other columns still get pushed", async () => {
+    /** Windows 1 and 2 side by side on the top half, window 3 under both on the bottom half. */
+    async function setUpTwoOverWide() {
+        const host = await setup();
+        for (const id of [1, 2, 3]) {
+            host.open();
+            host.actionOn(id, "set-window-height", rows(6));
+        }
+        host.actionOn(3, "set-window-width", set((4 * 100) / METRICS.colsPerView + 0.1));
+        repeat(6, () => host.action("move-window-down"));
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 2, 0", "4 × 6 at 0, 6"]);
+        return host;
+    }
+
+    test("a narrower window sticks to the edge it lies along", async () => {
         const host = await setup();
         host.open({ defaultWidth: { fixed: 200 } });
         host.open();
         host.action("consume-or-expel-window-left");
         host.actionOn(2, "set-window-width", { op: "set", value: 100, unit: "px" });
-        assert.deepEqual(tiles(host), ["214 × 336 at x:16 y:16", "99 × 336 at x:16 y:368"]);
+        assert.deepEqual(cells(host), ["4 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
-        // Window 2 is narrower than window 1, so it isn't stuck to it: it keeps its size, gets
-        // pushed off the bottom and goes to the right.
-        host.actionOn(1, "set-window-height", set(75));
-        assert.deepEqual(tiles(host), ["214 × 512 at x:16 y:16", "99 × 336 at x:246 y:368"]);
+        host.actionOn(1, "set-window-height", rows(9));
+        assert.deepEqual(cells(host), ["4 × 9 at 0, 0", "2 × 3 at 0, 9"]);
+    });
+
+    test("a window under two windows moves both", async () => {
+        const host = await setUpTwoOverWide();
+        host.actionOn(3, "set-window-height", rows(8));
+        assert.deepEqual(cells(host), ["2 × 4 at 0, 0", "2 × 4 at 2, 0", "4 × 8 at 0, 4"]);
+        host.actionOn(3, "set-window-height", rows(3));
+        assert.deepEqual(cells(host), ["2 × 9 at 0, 0", "2 × 9 at 2, 0", "4 × 3 at 0, 9"]);
+    });
+
+    test("the edge stops where one of the stuck windows can't shrink any further", async () => {
+        const host = await setUpTwoOverWide();
+        host.setLimits(2, { minSize: { w: 0, h: 5 * ROW_STEP - 16 }, maxSize: { w: 0, h: 0 } });
+        host.actionOn(3, "set-window-height", rows(10));
+        assert.deepEqual(cells(host), ["2 × 5 at 0, 0", "2 × 5 at 2, 0", "4 × 7 at 0, 5"]);
+    });
+
+    test("a wider window isn't stuck: it gets pushed", async () => {
+        // Window 3 can't go down past the bottom, so it goes right of window 1, keeping its rows.
+        const host = await setUpTwoOverWide();
+        host.actionOn(1, "set-window-height", rows(7));
+        assert.deepEqual(cells(host), ["2 × 7 at 0, 0", "2 × 6 at 2, 0", "4 × 6 at 2, 6"]);
+
+        // Shrinking leaves it where it is.
+        const other = await setUpTwoOverWide();
+        other.actionOn(1, "set-window-height", rows(4));
+        assert.deepEqual(cells(other), ["2 × 4 at 0, 0", "2 × 6 at 2, 0", "4 × 6 at 0, 6"]);
+    });
+
+    test("a window on the bottom stays there", async () => {
+        const host = await setUpTwoOverWide();
+        // Its bottom edge doesn't move when dragged.
+        host.resize(3, { bottom: true }, { x: 0, y: -2 * ROW_STEP });
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 2, 0", "4 × 6 at 0, 6"]);
+        // Dragging its top edge moves the windows stuck to it.
+        host.resize(3, { top: true }, { x: 0, y: -2 * ROW_STEP });
+        assert.deepEqual(cells(host), ["2 × 4 at 0, 0", "2 × 4 at 2, 0", "4 × 8 at 0, 4"]);
+    });
+
+    test("a window as tall as the grid shrinks from the bottom", async () => {
+        const host = await setup();
+        host.open();
+        host.actionOn(1, "set-window-height", rows(6));
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0"]);
     });
 });
 
