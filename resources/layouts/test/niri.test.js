@@ -25,6 +25,11 @@ function openStacked(host) {
     return [a, b];
 }
 
+/** Whether each window counts as the active one in its column, for `is-active-in-column`. */
+function activeInColumn(host, ids) {
+    return ids.map((id) => host.windows.get(id).activeInColumn);
+}
+
 /** Starts dragging a window: it leaves the layout. */
 function startDrag(host, id) {
     host.send({ type: "remove", id, reason: "drag" });
@@ -1342,4 +1347,14 @@ describe("random operations", () => {
             }
         });
     }
+});
+
+test("only the active window of a column is active in it", async () => {
+    const host = await load();
+    const [a, b] = openStacked(host);
+    const c = host.open();
+    assert.deepEqual(activeInColumn(host, [a, b, c]), [false, true, true]);
+
+    host.activate(a);
+    assert.deepEqual(activeInColumn(host, [a, b, c]), [true, false, true]);
 });

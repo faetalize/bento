@@ -947,7 +947,7 @@ pub enum Action {
     /// Reload the config file.
     ///
     /// Can be useful for scripts changing the config file, to avoid waiting the small duration for
-    /// niri's config file watcher to notice the changes.
+    /// the config file watcher to notice the changes.
     LoadConfigFile {
         /// Path of a new config file to load.
         ///

@@ -100,7 +100,12 @@ export interface Window {
     /** Whether the window is shown. */
     readonly visible: boolean;
     /**
-     * What this layout stored on the window with `Workspace.setWindowData`, or `null`. It stays
+     * Whether the engine marked the window as the active one in its column, see
+     * `Workspace.setActiveInColumn`, or `null` if it hasn't.
+     */
+    readonly activeInColumn: boolean | null;
+    /**
+     * What this engine stored on the window with `Workspace.setWindowData`, or `null`. It stays
      * with the window when it moves to another workspace, floats and comes back, or is dragged,
      * as long as the same engine gets it.
      */
@@ -262,7 +267,13 @@ export interface Workspace {
     place(win: Window, rect: Rect, opts?: { animate?: boolean }): void;
     /** Shows or hides a window, for example the inactive tabs of a tabbed column. */
     setVisible(win: Window, visible: boolean): void;
-    /** Tells a window to be fullscreen, maximized or normal. The layout still places it. */
+    /**
+     * Marks whether a window is the active one in its column, for the `is-active-in-column`
+     * window rule, like the window of a column that was focused last. What a column is is up to
+     * the engine. Windows the engine doesn't mark count as active while they're shown.
+     */
+    setActiveInColumn(win: Window, active: boolean): void;
+    /** Tells a window to be fullscreen, maximized or normal. The engine still places it. */
     setMode(win: Window, mode: SizingMode): void;
     /** Moves a window to the top, so it draws above windows that it overlaps. */
     raise(win: Window): void;

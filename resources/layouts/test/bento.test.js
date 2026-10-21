@@ -862,6 +862,29 @@ describe("grid layout", () => {
     });
 });
 
+describe("window rules", () => {
+    test("open-maximized opens a window as wide as the view", async () => {
+        const host = await setup();
+        host.open();
+        host.open({ openFullWidth: true });
+        assert.deepEqual(cells(host, [2]), [`${METRICS.colsPerView} × 12 at 0, 0`]);
+
+        // Like after maximize-column, it toggles back to its own width.
+        host.action("maximize-column");
+        assert.deepEqual(cells(host, [2]), ["2 × 12 at 0, 0"]);
+    });
+
+    test("default-column-display can make a new window tabbed", async () => {
+        const host = await setup();
+        host.open();
+        host.open({ defaultColumnDisplay: "tabbed" });
+        assert.deepEqual(
+            [...host.tabs.values()].map((bar) => bar.windows),
+            [[2]],
+        );
+    });
+});
+
 describe("split and swap", () => {
     /** A and B stacked on the left half, C on the right half at full height. */
     async function setUpStackAndOne() {

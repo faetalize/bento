@@ -164,6 +164,7 @@ class LayoutWindow {
         this.id = info.id;
         this.rect = null;
         this.visible = true;
+        this.activeInColumn = null;
         this.data = info.data ?? null;
         this.update(info);
     }
@@ -281,6 +282,13 @@ class Instance {
                 own(win);
                 if (win.visible !== !!visible) {
                     win.visible = !!visible;
+                    self.dirty.add(win.id);
+                }
+            },
+            setActiveInColumn(win, active) {
+                own(win);
+                if (win.activeInColumn !== !!active) {
+                    win.activeInColumn = !!active;
                     self.dirty.add(win.id);
                 }
             },
@@ -663,7 +671,14 @@ class Instance {
     query(call) {
         const saved = {
             windows: this.windows.slice(),
-            rects: this.windows.map((win) => [win, win.rect, win.visible, win.mode, win.data]),
+            rects: this.windows.map((win) => [
+                win,
+                win.rect,
+                win.visible,
+                win.activeInColumn,
+                win.mode,
+                win.data,
+            ]),
             focusedId: this.focusedId,
             camera: this.camera,
             hint: this.hint,
@@ -678,9 +693,10 @@ class Instance {
         }
 
         this.windows = saved.windows;
-        for (const [win, rect, visible, mode, data] of saved.rects) {
+        for (const [win, rect, visible, activeInColumn, mode, data] of saved.rects) {
             win.rect = rect;
             win.visible = visible;
+            win.activeInColumn = activeInColumn;
             win.mode = mode;
             win.data = data;
         }
@@ -710,6 +726,7 @@ class Instance {
                     id,
                     rect: win.rect,
                     visible: win.visible,
+                    activeInColumn: win.activeInColumn,
                     mode: win.mode,
                     animate: this.animate.get(id) ?? true,
                 };

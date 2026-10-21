@@ -1,6 +1,6 @@
 # This flake file is community maintained
 {
-  description = "Niri: A scrollable-tiling Wayland compositor.";
+  description = "bento: a Wayland compositor with scriptable tiling, forked from niri.";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
@@ -11,7 +11,7 @@
     }:
     let
       revision = self.shortRev or self.dirtyShortRev or "unknown";
-      niri-package =
+      bento-package =
         {
           lib,
           cairo,
@@ -36,7 +36,7 @@
         }:
 
         rustPlatform.buildRustPackage {
-          pname = "niri";
+          pname = "bento";
           version = revision;
 
           src = lib.fileset.toSource {
@@ -54,9 +54,9 @@
           };
 
           postPatch = ''
-            patchShebangs resources/niri-session
-            substituteInPlace resources/niri.service \
-              --replace-fail 'ExecStart=niri' "ExecStart=$out/bin/niri"
+            patchShebangs resources/bento-session
+            substituteInPlace resources/bento.service \
+              --replace-fail 'ExecStart=bento' "ExecStart=$out/bin/bento"
           '';
 
           cargoLock = {
@@ -115,18 +115,18 @@
 
           postInstall =
             ''
-              installShellCompletion --cmd niri \
-                --bash <($out/bin/niri completions bash) \
-                --fish <($out/bin/niri completions fish) \
-                --nushell <($out/bin/niri completions nushell) \
-                --zsh <($out/bin/niri completions zsh)
+              installShellCompletion --cmd bento \
+                --bash <($out/bin/bento completions bash) \
+                --fish <($out/bin/bento completions fish) \
+                --nushell <($out/bin/bento completions nushell) \
+                --zsh <($out/bin/bento completions zsh)
 
-              install -Dm644 resources/niri.desktop -t $out/share/wayland-sessions
-              install -Dm644 resources/niri-portals.conf -t $out/share/xdg-desktop-portal
+              install -Dm644 resources/bento.desktop -t $out/share/wayland-sessions
+              install -Dm644 resources/bento-portals.conf -t $out/share/xdg-desktop-portal
             ''
             + lib.optionalString withSystemd ''
-              install -Dm755 resources/niri-session $out/bin/niri-session
-              install -Dm644 resources/niri{.service,-shutdown.target} -t $out/lib/systemd/user
+              install -Dm755 resources/bento-session $out/bin/bento-session
+              install -Dm644 resources/bento{.service,-shutdown.target} -t $out/lib/systemd/user
             '';
 
           env = {
@@ -144,14 +144,14 @@
           };
 
           passthru = {
-            providedSessions = [ "niri" ];
+            providedSessions = [ "bento" ];
           };
 
           meta = {
-            description = "Scrollable-tiling Wayland compositor";
-            homepage = "https://github.com/niri-wm/niri";
+            description = "Wayland compositor with scriptable tiling, forked from niri";
+            homepage = "https://github.com/faetalize/bento";
             license = lib.licenses.gpl3Only;
-            mainProgram = "niri";
+            mainProgram = "bento";
             platforms = lib.platforms.linux;
           };
         };
@@ -166,7 +166,7 @@
     {
       checks = forAllSystems (system: {
         # We use the debug build here to save a bit of time
-        inherit (self.packages.${system}) niri-debug;
+        inherit (self.packages.${system}) bento-debug;
       });
 
       devShells = forAllSystems (
@@ -174,7 +174,7 @@
         let
           pkgs = nixpkgsFor.${system};
           rustfmt' = pkgs.rustfmt.override { asNightly = true; };
-          inherit (self.packages.${system}) niri;
+          inherit (self.packages.${system}) bento;
         in
         {
           default = pkgs.mkShell {
@@ -194,7 +194,7 @@
               pkgs.wrapGAppsHook4 # For `niri-visual-tests`
             ];
 
-            buildInputs = niri.buildInputs ++ [
+            buildInputs = bento.buildInputs ++ [
               pkgs.libadwaita # For `niri-visual-tests`
             ];
 
@@ -204,7 +204,7 @@
               # in the package expression
               #
               # This should only be set with `RUSTFLAGS="$RUSTFLAGS -C your-flags"`
-              RUSTFLAGS = niri.RUSTFLAGS;
+              RUSTFLAGS = bento.RUSTFLAGS;
             };
           };
         }
@@ -215,17 +215,17 @@
       packages = forAllSystems (
         system:
         let
-          niri = nixpkgsFor.${system}.callPackage niri-package { };
+          bento = nixpkgsFor.${system}.callPackage bento-package { };
         in
         {
-          inherit niri;
+          inherit bento;
 
           # NOTE: This is for development purposes only
           #
           # It is primarily to help with quickly iterating on
           # changes made to the above expression - though it is
-          # also not stripped in order to better debug niri itself
-          niri-debug = niri.overrideAttrs (
+          # also not stripped in order to better debug bento itself
+          bento-debug = bento.overrideAttrs (
             newAttrs: oldAttrs: {
               pname = oldAttrs.pname + "-debug";
 
@@ -236,12 +236,12 @@
             }
           );
 
-          default = niri;
+          default = bento;
         }
       );
 
       overlays.default = final: _: {
-        niri = final.callPackage niri-package { };
+        bento = final.callPackage bento-package { };
       };
     };
 }

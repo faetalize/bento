@@ -1899,9 +1899,9 @@ export default function create(ws) {
 
             col.tiles.forEach((tile, idx) => {
                 const { win } = tile;
-                if (win.mode !== mode) ws.setMode(win, mode);
-                const visible = col.display !== "tabbed" || idx === col.activeTileIdx;
-                if (win.visible !== visible) ws.setVisible(win, visible);
+                ws.setMode(win, mode);
+                ws.setVisible(win, col.display !== "tabbed" || idx === col.activeTileIdx);
+                ws.setActiveInColumn(win, idx === col.activeTileIdx);
                 const rect = {
                     x: ws.round(x + offsets[idx].x),
                     y: ws.round(offsets[idx].y),

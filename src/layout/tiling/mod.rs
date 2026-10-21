@@ -19,7 +19,9 @@ use serde_json::{json, Value};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
-use self::protocol::{Mode, Output, Preset, Rect, Rules, TransferOut, Wh, WindowInfo, Xy};
+use self::protocol::{
+    Mode, Output, Preset, Rect, Rules, TransferOut, Wh, WindowChange, WindowInfo, Xy,
+};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
@@ -177,6 +179,9 @@ struct TileData {
     rect: Option<Rectangle<f64, Logical>>,
     /// Whether the layout shows the tile.
     visible: bool,
+    /// Whether the tile is the active one in its column, if the layout engine says; otherwise it's
+    /// whether it shows.
+    active_in_column: Option<bool>,
     /// Sizing mode the layout gave the tile.
     mode: Mode,
     /// Column and row for IPC.
@@ -890,6 +895,24 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     /// Carries out what a layout call changed.
     fn apply(&mut self, out: Output, apply: &Apply) -> Value {
+        // Like in niri, windows that change size together resize in one transaction, so that they
+        // show their new sizes in the same frame, and what moves because of a resize, other
+        // windows and the view, animates with `window-resize`, in sync with it.
+        let resizing = out.windows.iter().any(|change| self.resizes(change));
+        let apply = &if resizing {
+            Apply {
+                transaction: Some(apply.transaction.clone().unwrap_or_else(Transaction::new)),
+                anim: Some(
+                    apply
+                        .anim
+                        .unwrap_or(self.options.animations.window_resize.anim),
+                ),
+                camera_velocity: apply.camera_velocity,
+            }
+        } else {
+            apply.clone()
+        };
+
         if let Some(order) = out.order {
             // The layout lists windows bottom to top; tiles are top to bottom.
             let mut order: Vec<usize> = order
@@ -916,6 +939,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             let Some(idx) = self.idx_of_layout_id(change.id) else {
                 continue;
             };
+            self.data[idx].visible = change.visible;
+            self.data[idx].active_in_column = change.active_in_column;
             self.place(
                 idx,
                 change.rect.to_rect(),
@@ -923,7 +948,6 @@ impl<W: LayoutElement> TilingSpace<W> {
                 change.animate,
                 apply,
             );
-            self.data[idx].visible = change.visible;
         }
 
         if let Some(focused) = out.focused {
@@ -950,7 +974,11 @@ impl<W: LayoutElement> TilingSpace<W> {
                     .animate
                     .then(|| (self.clock.clone(), config, velocity))
             };
-            let config = self.options.animations.horizontal_view_movement.0;
+            let config = if resizing {
+                self.options.animations.window_resize.anim
+            } else {
+                self.options.animations.horizontal_view_movement.0
+            };
             let velocity = apply.camera_velocity;
             let to = |v: f64| v.clamp(-1e7, 1e7);
             self.camera
@@ -1007,6 +1035,16 @@ impl<W: LayoutElement> TilingSpace<W> {
         out.result
     }
 
+    /// Whether a change resizes a window that the layout already placed, or changes its mode.
+    fn resizes(&self, change: &WindowChange) -> bool {
+        self.idx_of_layout_id(change.id).is_some_and(|idx| {
+            let data = &self.data[idx];
+            data.rect.is_some_and(|prev| {
+                prev.size != change.rect.to_rect().size || data.mode != change.mode
+            })
+        })
+    }
+
     /// Puts a tile at `rect` on the canvas and asks it to take that size.
     fn place(
         &mut self,
@@ -1033,7 +1071,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         data.mode = mode;
 
         if resized {
-            let transaction = apply.transaction.clone();
+            // Like inactive tabs in niri, hidden windows don't hold up the others.
+            let transaction = apply.transaction.clone().filter(|_| data.visible);
             match mode {
                 Mode::Normal => tile.request_tile_size(rect.size, animate, transaction),
                 Mode::Fullscreen => tile.request_fullscreen(animate, transaction),
@@ -1189,6 +1228,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 id,
                 rect: None,
                 visible: true,
+                active_in_column: None,
                 mode: Mode::Normal,
                 ipc: None,
                 default_width: Some(default_width),
@@ -1253,6 +1293,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                     id,
                     rect: None,
                     visible: true,
+                    active_in_column: None,
                     mode: Mode::Normal,
                     ipc: None,
                     default_width: Some(Preset::Fixed(width)),
@@ -1946,7 +1987,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         for (tile, data) in zip(&mut self.tiles, &self.data) {
             let win = tile.window_mut();
 
-            win.set_active_in_column(data.visible);
+            win.set_active_in_column(data.active_in_column.unwrap_or(data.visible));
             win.set_floating(false);
 
             let mut is_active = is_active && Some(data.id) == active;

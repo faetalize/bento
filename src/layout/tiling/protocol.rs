@@ -147,6 +147,9 @@ pub struct WindowChange {
     pub id: u64,
     pub rect: Rect,
     pub visible: bool,
+    /// Whether the window is the active one in its column, if the layout engine says.
+    #[serde(default, rename = "activeInColumn")]
+    pub active_in_column: Option<bool>,
     pub mode: Mode,
     pub animate: bool,
 }

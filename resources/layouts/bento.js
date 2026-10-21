@@ -1047,7 +1047,8 @@ export default function create(ws) {
             windows,
             /** Index of the tab that shows. */
             active: 0,
-            tabbed: ws.config.defaultColumnDisplay === "tabbed",
+            // Like niri, the window rules can make a new area tabbed.
+            tabbed: displayOf(windows[0]) === "tabbed",
             width: intent.width,
             fullWidth: intent.fullWidth,
             cols: intent.cols,
@@ -1057,6 +1058,11 @@ export default function create(ws) {
             /** Row to go back to when the item stops being fullscreen or maximized. */
             rowToRestore: null,
         };
+    }
+
+    /** `default-column-display` for a new area of `win`: its window rule, or the config's. */
+    function displayOf(win) {
+        return win?.rules.defaultColumnDisplay ?? ws.config.defaultColumnDisplay;
     }
 
     function intentOf(item) {
@@ -1077,7 +1083,8 @@ export default function create(ws) {
         }
         return {
             width,
-            fullWidth: false,
+            // `open-maximized` opens the window as wide as the view, like `maximize-column`.
+            fullWidth: rules.openFullWidth === true,
             cols: null,
             rows: rules.defaultHeight ? { preset: rules.defaultHeight } : null,
         };
@@ -1336,6 +1343,8 @@ export default function create(ws) {
         for (const item of items) {
             const rect = windowRect(item);
             const mode = modeOf(item);
+            // An area is its own column for `is-active-in-column`: its shown tab is the active one,
+            // which is what bento assumes for windows it isn't told about.
             item.windows.forEach((win, i) => {
                 ws.setMode(win, mode);
                 ws.setVisible(win, !item.tabbed || i === item.active);

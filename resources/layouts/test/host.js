@@ -305,7 +305,7 @@ export class TestHost {
     }
 
     info(win) {
-        const { rect, visible, ...info } = win;
+        const { rect, visible, activeInColumn, ...info } = win;
         return { ...info, rect };
     }
 
@@ -321,6 +321,7 @@ export class TestHost {
             const win = this.windows.get(change.id);
             win.rect = change.rect;
             win.visible = change.visible;
+            win.activeInColumn = change.activeInColumn;
             win.mode = change.mode;
             this.settleSize(win);
         }
