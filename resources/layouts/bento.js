@@ -2494,13 +2494,22 @@ export default function create(ws) {
     // Fullscreen and maximized windows
     // ---------------------------------------------------------------------------------------------
 
-    function requestMode(win, mode) {
+    function requestMode(win, mode, request) {
         const item = itemOf(win);
         if (item === null) {
             return;
         }
-        const fullscreen = mode === "fullscreen";
-        const maximized = mode === "maximized" || (fullscreen && item.maximized);
+        let { fullscreen, maximized } = item;
+        if (request?.fullscreen !== undefined) {
+            // Leaving fullscreen goes back to maximized if the window was.
+            fullscreen = request.fullscreen;
+        } else if (request?.maximized !== undefined) {
+            // A fullscreen window stays fullscreen, and leaving it goes back to maximized.
+            maximized = request.maximized;
+        } else {
+            fullscreen = mode === "fullscreen";
+            maximized = mode === "maximized" || (fullscreen && item.maximized);
+        }
         changeMode(item, fullscreen, maximized);
     }
 

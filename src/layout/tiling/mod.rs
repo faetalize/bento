@@ -184,6 +184,9 @@ struct TileData {
     active_in_column: Option<bool>,
     /// Sizing mode the layout gave the tile.
     mode: Mode,
+    /// Whether the tile was maximized when it went fullscreen, so that leaving fullscreen goes
+    /// back to maximized, like a maximized column in niri.
+    maximized_under_fullscreen: bool,
     /// Column and row for IPC.
     ipc: Option<(usize, usize)>,
     /// Width the tile came with, as its default width for the layout.
@@ -1068,6 +1071,13 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         let resized = data.rect.is_none_or(|prev| prev.size != rect.size) || data.mode != mode;
         data.rect = Some(rect);
+        if mode == Mode::Fullscreen {
+            if data.mode != Mode::Fullscreen {
+                data.maximized_under_fullscreen = data.mode == Mode::Maximized;
+            }
+        } else {
+            data.maximized_under_fullscreen = false;
+        }
         data.mode = mode;
 
         if resized {
@@ -1230,6 +1240,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 visible: true,
                 active_in_column: None,
                 mode: Mode::Normal,
+                maximized_under_fullscreen: false,
                 ipc: None,
                 default_width: Some(default_width),
                 open_full_width: is_full_width,
@@ -1295,6 +1306,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                     visible: true,
                     active_in_column: None,
                     mode: Mode::Normal,
+                    maximized_under_fullscreen: false,
                     ipc: None,
                     default_width: Some(Preset::Fixed(width)),
                     open_full_width: false,
@@ -1544,6 +1556,16 @@ impl<W: LayoutElement> TilingSpace<W> {
         true
     }
 
+    /// Whether a window is maximized, or fullscreen with maximized to go back to.
+    pub fn is_pending_maximized(&self, id: &W::Id) -> bool {
+        self.layout_id(id)
+            .and_then(|layout_id| self.idx_of_layout_id(layout_id))
+            .is_some_and(|idx| {
+                let data = &self.data[idx];
+                data.mode == Mode::Maximized || data.maximized_under_fullscreen
+            })
+    }
+
     pub fn set_fullscreen(&mut self, id: &W::Id, is_fullscreen: bool) -> bool {
         let mode = if is_fullscreen {
             "fullscreen"
@@ -1555,7 +1577,16 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn set_maximized(&mut self, id: &W::Id, maximize: bool) -> bool {
         let mode = if maximize { "maximized" } else { "normal" };
-        self.request_mode(id, mode, json!({ "maximized": maximize }))
+        let changed = self.request_mode(id, mode, json!({ "maximized": maximize }));
+
+        // A fullscreen window stays fullscreen, but leaving it goes to what was asked for since.
+        if let Some(idx) = self.layout_id(id).and_then(|id| self.idx_of_layout_id(id)) {
+            let data = &mut self.data[idx];
+            if data.mode == Mode::Fullscreen {
+                data.maximized_under_fullscreen = maximize;
+            }
+        }
+        changed
     }
 
     fn request_mode(&mut self, id: &W::Id, mode: &str, request: Value) -> bool {
@@ -1983,6 +2014,14 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
+        // Queries, like the size for a new window, need the layout engine's instance, so create it
+        // before they come: on an empty workspace, nothing else would until the first window.
+        let generation = engine::generation();
+        if generation != 0 && generation != self.generation && generation != self.failed_generation
+        {
+            self.ensure_instance();
+        }
+
         let active = self.active;
         for (tile, data) in zip(&mut self.tiles, &self.data) {
             let win = tile.window_mut();

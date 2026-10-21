@@ -1325,7 +1325,10 @@ impl<W: LayoutElement> Workspace<W> {
                 .find(|tile| tile.window().id() == window)
                 .unwrap();
 
-            if tile.window().pending_sizing_mode().is_fullscreen() {
+            // When going from fullscreen to maximized, don't consider restore_to_floating yet.
+            if tile.window().pending_sizing_mode().is_fullscreen()
+                && !self.scrolling.is_pending_maximized(window)
+            {
                 if tile.restore_to_floating {
                     // Unfullscreen and float in one call so it has a chance to notice and request a
                     // (0, 0) size, rather than the scrolling column size.
@@ -1415,17 +1418,10 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn toggle_maximized(&mut self, window: &W::Id) {
-        let mut current = false;
-
-        // In the floating layout, windows cannot be maximized.
-        if let Some(tile) = self
-            .scrolling
-            .tiles()
-            .find(|tile| tile.window().id() == window)
-        {
-            current = tile.window().pending_sizing_mode().is_maximized();
-        }
-
+        // A window can be both maximized and fullscreen, and then its sizing mode only says
+        // fullscreen, so ask the tiling layout. In the floating layout, windows cannot be
+        // maximized.
+        let current = self.scrolling.is_pending_maximized(window);
         self.set_maximized(window, !current);
     }
 
