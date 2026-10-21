@@ -27,8 +27,8 @@ Valid modifiers are:
 - `ISO_Level5_Shift`: can be used with an xkb lv5 option like `lv5:caps_switch`;
 - `Mod`.
 
-`Mod` is a special modifier that is equal to `Super` when running niri on a TTY, and to `Alt` when running niri as a nested winit window.
-This way, you can test niri in a window without causing too many conflicts with the host compositor's key bindings.
+`Mod` is a special modifier that is equal to `Super` when running bento on a TTY, and to `Alt` when running bento as a nested winit window.
+This way, you can test bento in a window without causing too many conflicts with the host compositor's key bindings.
 For this reason, most of the default keys use the `Mod` modifier.
 
 <sup>Since: 25.05</sup> You can customize the `Mod` key [in the `input` section of the config](./Configuration:-Input.md#mod-key-mod-key-nested).
@@ -59,7 +59,7 @@ For this reason, most of the default keys use the `Mod` modifier.
 > As another example, if you've configured the French [BÉPO](https://en.wikipedia.org/wiki/B%C3%89PO) XKB layout, your <kbd>&lt;</kbd> is on <kbd>AltGr</kbd> + <kbd>«</kbd>.
 > <kbd>AltGr</kbd> is `ISO_Level3_Shift`, or equivalently `Mod5`, so to bind it, you spell out something like `Mod+Mod5+guillemotleft`.
 >
-> When resolving latin keys, niri will search for the *first* configured XKB layout that has the latin key.
+> When resolving latin keys, bento will search for the *first* configured XKB layout that has the latin key.
 > So for example with US QWERTY and RU layouts configured, US QWERTY will be used for latin binds.
 
 <sup>Since: 0.1.8</sup> Binds will repeat by default (i.e. holding down a bind will make it trigger repeatedly).
@@ -98,7 +98,7 @@ binds {
 Similarly, you can bind touchpad scroll "ticks".
 Touchpad scrolling is continuous, so for these binds it is split into discrete intervals based on distance travelled.
 
-These binds are also affected by touchpad's `natural-scroll`, so these example binds are "inverted", since niri has `natural-scroll` enabled for touchpads by default.
+These binds are also affected by touchpad's `natural-scroll`, so these example binds are "inverted", since bento has `natural-scroll` enabled for touchpads by default.
 
 ```kdl
 binds {
@@ -108,10 +108,10 @@ binds {
 ```
 
 Both mouse wheel and touchpad scroll binds will prevent applications from receiving any scroll events when their modifiers are held down.
-For example, if you have a `Mod+WheelScrollDown` bind, then while holding `Mod`, all mouse wheel scrolling will be consumed by niri.
+For example, if you have a `Mod+WheelScrollDown` bind, then while holding `Mod`, all mouse wheel scrolling will be consumed by bento.
 
-<sup>Since: next release</sup> Mouse wheel bindings are consumed by niri per axis.
-If you bind just `Mod+WheelScrollDown` and hold `Mod`, niri will consume vertical scrolling, but not horizontal scrolling.
+<sup>Since: next release</sup> Mouse wheel bindings are consumed by bento per axis.
+If you bind just `Mod+WheelScrollDown` and hold `Mod`, bento will consume vertical scrolling, but not horizontal scrolling.
 
 ### Mouse Click Bindings
 
@@ -172,9 +172,9 @@ binds {
 
 > [!TIP]
 > When multiple key combinations are bound to the same action:
-> - If any of the binds has a custom hotkey overlay title, niri will show that bind.
-> - Otherwise, if any of the binds has a null title, niri will hide the bind.
-> - Otherwise, niri will show the first key combination.
+> - If any of the binds has a custom hotkey overlay title, bento will show that bind.
+> - Otherwise, if any of the binds has a null title, bento will hide the bind.
+> - Otherwise, bento will show the first key combination.
 
 Custom titles support [Pango markup](https://docs.gtk.org/Pango/pango_markup.html):
 
@@ -188,10 +188,42 @@ binds {
 
 ### Actions
 
-Every action that you can bind is also available for programmatic invocation via `niri msg action`.
-Run `niri msg action` to get a full list of actions along with their short descriptions.
+Every action that you can bind is also available for programmatic invocation via `bento msg action`.
+Run `bento msg action` to get a full list of actions along with their short descriptions.
 
 Here are a few actions that benefit from more explanation.
+
+#### Layout actions
+
+Actions that arrange tiled windows, like `focus-column-left`, `move-window-down`, `set-column-width` or `consume-or-expel-window-left`, go to the [layout engine](./Configuration:-Tiling-Layouts.md) under their own names, and each engine gives them its own meaning.
+The `niri` engine does what niri does, with columns.
+The `bento` engine, the default, works them out on its grid of cells; see [Grid Layout](./Grid-Layout.md) for what each one does there.
+So the same binds can behave quite differently after you switch engines.
+
+Combined actions, like `focus-column-or-monitor-left` or `focus-window-or-workspace-down`, also go to the engine by name.
+When the engine has nothing to do, for example because there's no window further left, bento does the monitor or workspace part itself.
+
+#### `layout-action`
+
+Engines can also provide actions of their own.
+Bind them with `layout-action`, followed by the action's name and any arguments.
+Numbers and `true` or `false` go to the engine as numbers and booleans, anything else as strings.
+
+For example, the `bento` engine has `split-h`, `split-v`, `swap` and `stuff`, which work on two windows at a time (see [Splitting and swapping](./Grid-Layout.md#splitting-and-swapping)):
+
+```kdl
+binds {
+    Mod+Alt+H { layout-action "split-h"; }
+    Mod+Alt+V { layout-action "split-v"; }
+    Mod+Alt+S { layout-action "swap"; }
+    Mod+Alt+B { layout-action "stuff"; }
+}
+```
+
+You can run them from the command line the same way, like `bento msg action layout-action swap`.
+
+`bento validate` checks that the loaded engine has the actions that your `layout-action` binds name.
+Since these actions belong to the engine, switching engines usually means changing these binds too.
 
 #### `spawn`
 
@@ -223,7 +255,7 @@ binds {
 > }
 > ```
 
-For `spawn`, niri *does not* use a shell to run commands, which means that you need to manually separate arguments.
+For `spawn`, bento *does not* use a shell to run commands, which means that you need to manually separate arguments.
 See [`spawn-sh`](#spawn-sh) below for an action that uses a shell.
 
 ```kdl
@@ -258,7 +290,7 @@ binds {
 }
 ```
 
-As a special case, niri will expand `~` to the home directory *only* at the beginning of the program name.
+As a special case, bento will expand `~` to the home directory *only* at the beginning of the program name.
 
 ```kdl
 binds {
@@ -300,7 +332,7 @@ If you want a different shell, write it out using `spawn`, e.g. `spawn "fish" "-
 
 #### `quit`
 
-Exit niri after showing a confirmation dialog to avoid accidentally triggering it.
+Exit bento after showing a confirmation dialog to avoid accidentally triggering it.
 
 ```kdl
 binds {
@@ -334,7 +366,7 @@ It makes transitions like this, where windows change their style one by one, loo
 For example, using the GNOME color scheme setting:
 
 ```shell
-niri msg action do-screen-transition
+bento msg action do-screen-transition
 dconf write /org/gnome/desktop/interface/color-scheme "\"prefer-dark\""
 ```
 
@@ -350,7 +382,7 @@ binds {
 Or, in scripts:
 
 ```shell
-niri msg action do-screen-transition --delay-ms 100
+bento msg action do-screen-transition --delay-ms 100
 ```
 
 #### `toggle-window-rule-opacity`
@@ -414,7 +446,7 @@ binds {
 
 <sup>Since: 25.02</sup>
 
-Applications such as remote-desktop clients and software KVM switches may request that niri stops processing its keyboard shortcuts so that they may, for example, forward the key presses as-is to a remote machine.
+Applications such as remote-desktop clients and software KVM switches may request that bento stops processing its keyboard shortcuts so that they may, for example, forward the key presses as-is to a remote machine.
 `toggle-keyboard-shortcuts-inhibit` is an escape hatch that toggles the inhibitor.
 It's a good idea to bind it, so a buggy application can't hold your session hostage.
 
@@ -425,7 +457,7 @@ binds {
 ```
 
 You can also make certain binds ignore inhibiting with the `allow-inhibiting=false` property.
-They will always be handled by niri and never passed to the window.
+They will always be handled by bento and never passed to the window.
 
 ```kdl
 binds {
@@ -448,4 +480,4 @@ binds {
 ```
 
 The toggle state is combined with the [`off` setting](./Configuration:-Input.md#pointing-devices) in the config: both the config and the toggle must allow the touchpad for it to be enabled.
-The toggle state resets when niri restarts, and applies to newly hot-plugged touchpads.
+The toggle state resets when bento restarts, and applies to newly hot-plugged touchpads.

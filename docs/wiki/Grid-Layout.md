@@ -1,6 +1,6 @@
 ### Overview
 
-The `bento` layout, bento's default [tiling layout](./Configuration:-Tiling-Layouts.md), puts tiled windows on a grid of cells.
+The `bento` engine, bento's default [layout engine](./Configuration:-Tiling-Layouts.md), puts tiled windows on a grid of cells.
 Like niri's strip of columns, the grid scrolls horizontally without end, and every workspace has its own grid.
 With [left gravity](#left-gravity), the grid starts at a fixed left edge that windows can't be pushed past; without it, the grid goes on to the left too.
 Unlike niri, a window doesn't have to fill a column from top to bottom.
@@ -37,7 +37,7 @@ By default, windows slide left within their rows until they touch another window
 This closes the gaps left by closed, shrunk or moved windows, much like columns close up in niri.
 Holes remain only where nothing fits.
 
-You can turn this off with the layout's `gravity` option:
+You can turn this off with the engine's `gravity` option:
 
 ```kdl
 tiling {
@@ -102,7 +102,7 @@ This works from the keyboard and when dragging a top or bottom edge with the mou
 
 ### Splitting and swapping
 
-The bento layout has three actions of its own for two windows at a time:
+The `bento` engine has three actions of its own for two windows at a time:
 
 - `layout-action "split-h"` splits a window's cells in two side by side, and gives one half to another window.
 - `layout-action "split-v"` does the same with stacked halves.
@@ -187,7 +187,7 @@ See the [Tabs](./Tabs.md) page for how consume and expel work with tabbed areas.
 
 ### IPC
 
-bento keeps niri's IPC and `NIRI_SOCKET`, so `niri msg` and other tools keep working.
+bento keeps niri's IPC protocol and `NIRI_SOCKET`, so `bento msg` and tools written for niri work with the grid too.
 
 A window's `pos_in_scrolling_layout` is (column, position in the stack), both starting at 1.
 It uses the [column numbering and stacks](#columns-and-stacks) above, so it matches `focus-column` and `focus-window-in-column`.

@@ -1,6 +1,6 @@
 ### Overview
 
-Niri has several animations which you can configure in the same way.
+bento has several animations which you can configure in the same way.
 Additionally, you can disable or slow down all animations at once.
 
 Here's a quick glance at the available animations with their default values.
@@ -88,7 +88,7 @@ animations {
 }
 ```
 
-Currently, niri only supports five curves.
+Currently, bento only supports five curves.
 You can get a feel for them on pages like [easings.net](https://easings.net/).
 
 - `ease-out-quad` <sup>Since: 0.1.5</sup>
@@ -187,8 +187,8 @@ You can write a custom shader for drawing the window during an open animation.
 
 See [this example shader](./examples/open_custom_shader.frag) for a full documentation with several animations to experiment with.
 
-If a custom shader fails to compile, niri will print a warning and fall back to the default, or previous successfully compiled shader.
-When running niri as a systemd service, you can see the warnings in the journal: `journalctl -ef /usr/bin/niri`
+If a custom shader fails to compile, bento will print a warning and fall back to the default, or previous successfully compiled shader.
+When running bento as a systemd service, you can see the warnings in the journal: `journalctl --user-unit=bento -ef`
 
 > [!WARNING]
 >
@@ -247,8 +247,8 @@ You can write a custom shader for drawing the window during a close animation.
 
 See [this example shader](./examples/close_custom_shader.frag) for a full documentation with several animations to experiment with.
 
-If a custom shader fails to compile, niri will print a warning and fall back to the default, or previous successfully compiled shader.
-When running niri as a systemd service, you can see the warnings in the journal: `journalctl -ef /usr/bin/niri`
+If a custom shader fails to compile, bento will print a warning and fall back to the default, or previous successfully compiled shader.
+When running bento as a systemd service, you can see the warnings in the journal: `journalctl --user-unit=bento -ef`
 
 > [!WARNING]
 >
@@ -281,11 +281,13 @@ animations {
 
 #### `horizontal-view-movement`
 
-All horizontal camera view movement animations, such as:
+All camera view movement animations within a workspace, such as:
 
 - When a window off-screen is focused and the camera scrolls to it.
 - When a new window appears off-screen and the camera scrolls to it.
 - After a horizontal touchpad gesture (a spring is recommended).
+
+The [layout engine](./Configuration:-Tiling-Layouts.md) decides where the camera goes, and bento animates it with this configuration, whatever the engine.
 
 ```kdl
 animations {
@@ -301,12 +303,13 @@ animations {
 
 Movement of individual windows within a workspace.
 
+The [layout engine](./Configuration:-Tiling-Layouts.md) decides where tiled windows go, and bento animates them moving there with this configuration, whatever the engine.
+
 Includes:
 
-- Moving window columns with `move-column-left` and `move-column-right`.
-- Moving windows inside a column with `move-window-up` and `move-window-down`.
+- Moving windows with actions like `move-column-left` or `move-window-down`.
 - Moving windows out of the way upon window opening and closing.
-- Window movement between columns when consuming/expelling.
+- Window movement when consuming/expelling.
 
 This animation *does not* include the camera view movement, such as scrolling the workspace left and right.
 
@@ -324,7 +327,7 @@ animations {
 
 Window resize animation.
 
-Only manual window resizes are animated, i.e. when you resize the window with `switch-preset-column-width` or `maximize-column`.
+Only resizes that the layout engine asks to animate are animated, such as when you resize the window with `switch-preset-column-width` or `maximize-column`.
 Also, very small resizes (up to 10 pixels) are not animated.
 
 ```kdl
@@ -343,8 +346,8 @@ You can write a custom shader for drawing the window during a resize animation.
 
 See [this example shader](./examples/resize_custom_shader.frag) for a full documentation with several animations to experiment with.
 
-If a custom shader fails to compile, niri will print a warning and fall back to the default, or previous successfully compiled shader.
-When running niri as a systemd service, you can see the warnings in the journal: `journalctl -ef /usr/bin/niri`
+If a custom shader fails to compile, bento will print a warning and fall back to the default, or previous successfully compiled shader.
+When running bento as a systemd service, you can see the warnings in the journal: `journalctl --user-unit=bento -ef`
 
 > [!WARNING]
 >
@@ -458,16 +461,14 @@ animations {
 
 <sup>Since: 0.1.5</sup>
 
-Sometimes, when two animations are meant to play together synchronized, niri will drive them both with the same configuration.
+Sometimes, when two animations are meant to play together synchronized, bento drives them both with the same configuration.
 
-For example, if a window resize causes the view to move, then that view movement animation will also use the `window-resize` configuration (rather than the `horizontal-view-movement` configuration).
+When the [layout engine](./Configuration:-Tiling-Layouts.md) resizes windows, everything that moves along with the resize uses the `window-resize` configuration, rather than `window-movement` for windows and `horizontal-view-movement` for the view.
+For example, when you resize a window, the windows next to it move into their new positions in sync with it, and so does the view if it moves to keep the window in view.
 This is especially important for animated resizes to look good when using `center-focused-column "always"`.
 
-As another example, resizing a window in a column vertically causes other windows to move up or down into their new position.
-This movement will use the `window-resize` configuration, rather than the `window-movement` configuration, to keep the animations synchronized.
-
-A few actions are still missing this synchronization logic, since in some cases it is difficult to implement properly.
-Therefore, for the best results, consider using the same parameters for related animations (they are all the same by default):
+Moves that happen without a resize, like moving a window or focusing another one, use their own configuration.
+For the best results, consider using the same parameters for related animations (they are all the same by default):
 
 - `horizontal-view-movement`
 - `window-movement`

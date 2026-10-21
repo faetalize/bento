@@ -1,14 +1,11 @@
-site_name: niri
+site_name: bento
 docs_dir: wiki
-site_url: https://niri-wm.github.io/niri
-repo_url: https://github.com/niri-wm/niri
+repo_url: https://github.com/faetalize/bento
 edit_uri: edit/main/docs/wiki/
 use_directory_urls: false
 
 theme:
   name: material
-  logo: _assets/icons/logo.svg
-  favicon: _assets/icons/logo.svg
   features:
     - navigation.instant
     - search.suggest
@@ -51,7 +48,7 @@ hooks:
   - hooks/shortcodes.py
   - hooks/remove-must-fail.py
 extra_css:
-  - _assets/stylesheets/niri.css
+  - _assets/stylesheets/bento.css
 strict: true
 validation:
   nav:
@@ -76,22 +73,21 @@ nav:
     - Workspaces: Workspaces.md
     - Floating Windows: Floating-Windows.md
     - Grid Layout: Grid-Layout.md
+    - The niri Engine: Niri-Engine.md
     - Tabs: Tabs.md
     - Overview: Overview.md
     - Screencasting: Screencasting.md
     - Layer‐Shell Components: Layer‐Shell-Components.md
-    - IPC, niri msg: IPC.md
+    - IPC, bento msg: IPC.md
     - Application-Specific Issues: Application-Issues.md
     - Nvidia: Nvidia.md
     - Xwayland: Xwayland.md
     - Gestures: Gestures.md
     - Fullscreen and Maximize: Fullscreen-and-Maximize.md
     - Window Effects: Window-Effects.md
-    - Packaging niri: Packaging-niri.md
-    - Integrating niri: Integrating-niri.md
+    - Integrating bento: Integrating-bento.md
     - Security Model: Security-Model.md
     - Accessibility: Accessibility.md
-    - Name and Logo: Name-and-Logo.md
     - FAQ: FAQ.md
   - Configuration:
     - Introduction: Configuration:-Introduction.md
@@ -112,9 +108,8 @@ nav:
     - Include: Configuration:-Include.md
   - Development:
     - Design Principles: Development:-Design-Principles.md
-    - Developing niri: Development:-Developing-niri.md
-    - Documenting niri: Development:-Documenting-niri.md
-    - Releasing niri: Development:-Releasing-niri.md
+    - Developing bento: Development:-Developing-bento.md
+    - Documenting bento: Development:-Documenting-bento.md
     - Fractional Layout: Development:-Fractional-Layout.md
     - Redraw Loop: Development:-Redraw-Loop.md
     - Animation Timing: Development:-Animation-Timing.md

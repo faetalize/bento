@@ -18,13 +18,17 @@ This repo follows a more permissive development stride, and thus may be less sta
 
 ## Features
 
-- Everything niri has, except that the tiling layout is a script
-- Layouts are JavaScript files that decide where windows go, which window has focus, where the view points and what actions do. Point the config at one, and bento reloads it as you edit it. See [Tiling Layouts](docs/wiki/Configuration:-Tiling-Layouts.md)
-- Layouts run in a sandbox, with no access to files or the network, so you can try ones other people share
-- Two layouts ship with bento:
+- Everything niri has, except that tiling is done by a layout engine
+- Layout engines are JavaScript files that decide how a whole workspace behaves: where windows go, which window has focus, where the view points and what actions do. Point the config at one, and bento reloads it as you edit it. See [Tiling Layouts](docs/wiki/Configuration:-Tiling-Layouts.md), and start from the [template](resources/layouts/examples/template.js) to write your own
+- Engines run in a sandbox, with no access to files or the network, so you can try ones other people share
+- Two engines ship with bento:
   - `bento`, the default: a grid of cells, 12 rows tall, that scrolls sideways. Windows cover rectangles of cells, push each other aside, and slide left with gravity. See [Grid Layout](docs/wiki/Grid-Layout.md)
-  - `niri`: niri's scrollable columns
+  - `niri`: niri's scrollable columns. See [The niri Engine](docs/wiki/Niri-Engine.md)
 - Support for more experimental Wayland protocols
+
+## Installing
+
+bento isn't packaged: build it from source. See [Getting Started](docs/wiki/Getting-Started.md).
 
 ## Status
 

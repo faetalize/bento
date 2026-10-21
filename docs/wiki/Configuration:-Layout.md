@@ -2,6 +2,17 @@
 
 In the `layout {}` section you can change various settings that influence how windows are positioned and sized.
 
+In bento, tiled windows are arranged by a [layout engine](./Configuration:-Tiling-Layouts.md), and the options here come in two kinds:
+
+- Rendering options apply the same way to every engine, because bento draws these itself: `focus-ring`, `border`, `shadow`, `tab-indicator`, `insert-hint` and `background-color`.
+`empty-workspace-above-first` doesn't depend on the engine either, since workspaces are bento's own.
+- Arrangement options are inputs that the engine follows in its own way, or ignores: `gaps`, `struts`, `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights` and `default-column-display`.
+Both built-in engines follow all of them.
+
+The descriptions below say how the `niri` engine, niri's scrollable columns, uses the arrangement options.
+Where the `bento` engine, the default grid of cells, works differently, there's a note; see [Grid Layout](./Grid-Layout.md) for the full picture.
+In short, the `bento` engine snaps sizes to whole cells: the grid is 12 rows tall and a multiple of 12 columns wide, `proportion` sizes round down to whole cells, and `fixed` sizes go to the nearest number of cells.
+
 Here are the contents of this section at a glance:
 
 ```kdl
@@ -109,6 +120,8 @@ For example, `gaps 0.5` on an output with `scale 2` will result in one physical-
 
 <sup>Since: 0.1.8</sup> You can emulate "inner" vs. "outer" gaps with negative `struts` values (see the struts section below).
 
+In the `bento` engine, gaps go between the cells of the grid, so they also change how many columns of cells fit across the view.
+
 ```kdl
 layout {
     gaps 16
@@ -124,6 +137,8 @@ This can be set to:
 - `"always"`, the focused column will always be centered.
 - `"on-overflow"`, focusing a column will center it if it doesn't fit on screen together with the previously focused column.
 
+In the `bento` engine, this centers the focused window, using the windows' spans on the grid.
+
 ```kdl
 layout {
     center-focused-column "always"
@@ -134,7 +149,9 @@ layout {
 
 <sup>Since: 0.1.9</sup>
 
-If set, niri will always center a single column on a workspace, regardless of the `center-focused-column` option.
+If set, a single column on a workspace is always centered, regardless of the `center-focused-column` option.
+
+In the `bento` engine, this applies when no two windows are side by side: windows stacked on top of each other count as a single column.
 
 ```kdl
 layout {
@@ -146,7 +163,7 @@ layout {
 
 <sup>Since: 25.01</sup>
 
-If set, niri will always add an empty workspace at the very start, in addition to the empty workspace at the very end.
+If set, bento will always add an empty workspace at the very start, in addition to the empty workspace at the very end.
 
 ```kdl
 layout {
@@ -160,6 +177,8 @@ layout {
 
 Sets the default display mode for new columns.
 Can be `normal` or `tabbed`.
+
+In the `bento` engine, `tabbed` makes every new window a [tabbed area](./Tabs.md) of its own, which other windows can join as tabs.
 
 ```kdl
 // Make all new columns tabbed by default.
@@ -185,6 +204,9 @@ The default preset widths are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&fras
 
 `fixed` sets the window width in logical pixels exactly.
 
+In the `bento` engine, preset widths snap to the grid: `proportion` widths round down to whole columns of cells, and `fixed` widths go to the nearest number of columns.
+Since the grid is a multiple of 12 columns wide, halves, thirds, quarters and sixths fit exactly.
+
 ```kdl
 layout {
     // Cycle between 1/3, 1/2, 2/3 of the output, and a fixed 1280 logical pixels.
@@ -202,6 +224,7 @@ layout {
 Set the default width of the new windows.
 
 The syntax is the same as in `preset-column-widths` above.
+In the `bento` engine, the width snaps to whole cells the same way.
 
 ```kdl
 layout {
@@ -220,7 +243,7 @@ layout {
 ```
 
 > [!NOTE]
-> `default-column-width {}` causes niri to send a (0, H) size in the initial configure request.
+> `default-column-width {}` causes bento to send a (0, H) size in the initial configure request.
 >
 > This is a bit [unclearly defined](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/issues/155) in the Wayland protocol, so some clients may misinterpret it.
 > Either way, `default-column-width {}` is most useful for specific windows, in form of a [window rule](./Configuration:-Window-Rules.md#default-column-width) with the same syntax.
@@ -236,6 +259,8 @@ Set the heights that the `switch-preset-window-height` action (Mod+Ctrl+Shift+R)
 The default preset heights are <sup>1</sup>&frasl;<sub>3</sub>, <sup>1</sup>&frasl;<sub>2</sub> and <sup>2</sup>&frasl;<sub>3</sub> of the output.
 
 `fixed` sets the height in logical pixels exactly.
+
+In the `bento` engine, heights snap to the grid's 12 rows: `proportion` heights round down to whole rows, and `fixed` heights go to the nearest number of rows.
 
 ```kdl
 layout {
@@ -266,7 +291,7 @@ The difference is that the focus ring is drawn only around the active window, wh
 > This is because windows using client-side decorations can have an arbitrary shape.
 >
 > If you don't like that, you should uncomment the [`prefer-no-csd` setting](./Configuration:-Miscellaneous.md#prefer-no-csd) at the top level of the config.
-> Niri will draw focus rings and borders *around* windows that agree to omit their client-side decorations.
+> bento will draw focus rings and borders *around* windows that agree to omit their client-side decorations.
 >
 > Alternatively, you can override this behavior with the [`draw-border-with-background` window rule](./Configuration:-Window-Rules.md#draw-border-with-background).
 
@@ -397,12 +422,12 @@ Setting `softness 0` will give you hard shadows.
 For example, `offset x=2 y=2` will move the shadow 2 logical pixels downwards and to the right.
 
 Set `draw-behind-window` to `true` to make shadows draw behind the window rather than just around it.
-Note that niri has no way of knowing about the CSD window corner radius.
+Note that bento has no way of knowing about the CSD window corner radius.
 It has to assume that windows have square corners, leading to shadow artifacts inside the CSD rounded corners.
 This setting fixes those artifacts.
 
 However, instead you may want to set `prefer-no-csd` and/or `geometry-corner-radius`.
-Then, niri will know the corner radius and draw the shadow correctly, without having to draw it behind the window.
+Then, bento will know the corner radius and draw the shadow correctly, without having to draw it behind the window.
 These will also remove client-side shadows if the window draws any.
 
 `color` is the shadow color and opacity.
@@ -434,6 +459,7 @@ prefer-no-csd
 <sup>Since: 25.02</sup>
 
 Controls the appearance of the tab indicator that appears next to columns in tabbed display mode.
+bento draws it the same way for every layout engine, next to the tabs that the engine shows, like a tabbed column in the `niri` engine or a tabbed area in the `bento` engine; see [Tabs](./Tabs.md).
 
 Set `off` to hide the tab indicator.
 
@@ -441,6 +467,7 @@ Set `hide-when-single-tab` to hide the indicator for tabbed columns that only ha
 
 Set `place-within-column` to put the tab indicator "within" the column, rather than outside.
 This will include it in column sizing and avoid overlaying adjacent columns.
+It's up to the engine to make room for the indicator; both built-in engines do.
 
 `gap` sets the gap between the tab indicator and the window in logical pixels.
 The gap can be negative, this will put the tab indicator on top of the window.
@@ -466,7 +493,7 @@ Tab colors are picked in this order:
 
 1. Colors from the `tab-indicator` window rule, if set.
 1. Colors from the `tab-indicator` layout options, if set (you're here).
-1. If neither are set, niri picks the color matching the window border or focus ring, whichever one is active.
+1. If neither are set, bento picks the color matching the window border or focus ring, whichever one is active.
 
 ```kdl
 // Make the tab indicator wider and match the window height,
@@ -487,6 +514,7 @@ layout {
 <sup>Since: 0.1.10</sup> 
 
 Settings for the window insert position hint during an interactive window move.
+Layout engines can also use the hint to highlight things: for example, the `bento` engine highlights the window picked first for its `split-h`, `split-v` and `swap` [actions](./Grid-Layout.md#splitting-and-swapping), and where `stuff` would put the window.
 
 `off` disables the insert hint altogether.
 
@@ -510,6 +538,7 @@ They are set in logical pixels.
 
 Left and right struts will cause the next window to the side to always peek out slightly.
 Top and bottom struts will simply add outer gaps in addition to the area occupied by layer-shell panels and regular gaps.
+In the `bento` engine, the grid's rows and columns of cells fill the area inside the struts.
 
 <sup>Since: 0.1.7</sup> You can use fractional values.
 The value will be rounded to physical pixels according to the scale factor of every output.
@@ -551,7 +580,7 @@ layout {
 
 <sup>Since: 25.05</sup>
 
-Set the default background color that niri draws for workspaces.
+Set the default background color that bento draws for workspaces.
 This is visible when you're not using any background tools like swaybg.
 
 ```kdl

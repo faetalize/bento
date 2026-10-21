@@ -1,6 +1,6 @@
 ### Overview
 
-Niri has several options that are only useful for debugging, or are experimental and have known issues.
+bento has several options that are only useful for debugging, or are experimental and have known issues.
 They are not meant for normal use.
 
 > [!CAUTION]
@@ -46,7 +46,7 @@ binds {
 
 ### `preview-render`
 
-Make niri render the monitors the same way as for a screencast or a screen capture.
+Make bento render the monitors the same way as for a screencast or a screen capture.
 
 Useful for previewing the `block-out-from` window rule.
 
@@ -111,10 +111,10 @@ debug {
 
 <sup>Since: 26.04</sup>
 
-Force-disables all outputs upon resuming niri (TTY switch or waking up from suspend).
+Force-disables all outputs upon resuming bento (TTY switch or waking up from suspend).
 This causes a modeset/screen blank on all outputs.
 
-If niri rendering is corrupted, or monitors don't light up after a TTY switch, you can try this flag.
+If bento rendering is corrupted, or monitors don't light up after a TTY switch, you can try this flag.
 
 ```kdl
 debug {
@@ -124,9 +124,9 @@ debug {
 
 ### `render-drm-device`
 
-Override the DRM device that niri will use for all rendering.
+Override the DRM device that bento will use for all rendering.
 
-You can set this to make niri use a different primary GPU than the default one.
+You can set this to make bento use a different primary GPU than the default one.
 
 ```kdl
 debug {
@@ -138,8 +138,8 @@ debug {
 
 <sup>Since: 25.11</sup>
 
-List DRM devices that niri will ignore.
-Useful for GPU passthrough when you don't want niri to open a certain device.
+List DRM devices that bento will ignore.
+Useful for GPU passthrough when you don't want bento to open a certain device.
 
 ```kdl
 debug {
@@ -178,12 +178,12 @@ debug {
 
 ### `dbus-interfaces-in-non-session-instances`
 
-Make niri create its D-Bus interfaces even if it's not running as a `--session`.
+Make bento create its D-Bus interfaces even if it's not running as a `--session`.
 
 Useful for testing screencasting changes without having to relogin.
 
 <sup>Since: next release</sup>
-The main niri instance will automatically take back the interfaces once the new instance quits.
+The main bento instance will automatically take back the interfaces once the new instance quits.
 
 ```kdl
 debug {
@@ -207,7 +207,7 @@ debug {
 
 Emulate zero (unknown) presentation time returned from DRM.
 
-This is a thing on NVIDIA proprietary drivers, so this flag can be used to test that niri doesn't break too hard on those systems.
+This is a thing on NVIDIA proprietary drivers, so this flag can be used to test that bento doesn't break too hard on those systems.
 
 ```kdl
 debug {
@@ -239,9 +239,10 @@ debug {
 Disable transactions (resize and close).
 
 By default, windows which must resize together, do resize together.
-For example, all windows in a column must resize at the same time to maintain the combined column height equal to the screen height, and to maintain the same window width.
+For example, when a window closes, the windows that the [layout engine](./Configuration:-Tiling-Layouts.md) resizes to take its space must resize at the same time as it disappears.
+Whenever the [layout engine](./Configuration:-Tiling-Layouts.md) resizes windows, they resize in one transaction, like when it splits a window or resizes a stack; hidden windows, like inactive tabs, don't take part.
 
-Transactions make niri wait until all windows finish resizing before showing them all on screen in one, synchronized frame.
+Transactions make bento wait until all windows finish resizing before showing them all on screen in one, synchronized frame.
 For them to work properly, resize throttling shouldn't be disabled (with the previous debug flag).
 
 ```kdl
@@ -254,7 +255,7 @@ debug {
 
 <sup>Since: 0.1.10</sup>
 
-By default, niri will disable the internal laptop monitor when the laptop lid is closed.
+By default, bento will disable the internal laptop monitor when the laptop lid is closed.
 This flag turns off this behavior and will leave the internal laptop monitor on.
 
 ```kdl
@@ -267,7 +268,7 @@ debug {
 
 <sup>Since: 0.1.10</sup>
 
-Disables the make/model/serial monitor names, as if niri fails to read them from the EDID.
+Disables the make/model/serial monitor names, as if bento fails to read them from the EDID.
 
 Use this flag to work around a crash present in 0.1.9 and 0.1.10 when connecting two monitors with matching make/model/serial.
 
@@ -297,10 +298,10 @@ debug {
 Widely-used clients such as Discord and Telegram make fresh xdg-activation tokens upon clicking on their tray icon or on their notification.
 Most of the time, these fresh tokens will have invalid serials, because the app needs to be focused to get a valid serial, and if the user clicks on a tray icon or a notification, it is usually because the app *isn't* focused, and the user wants to focus it.
 
-By default, niri ignores xdg-activation tokens with invalid serials, to prevent windows from randomly stealing focus.
-This debug flag makes niri honor such tokens, making the aforementioned widely-used apps get focus when clicking on their tray icon or notification.
+By default, bento ignores xdg-activation tokens with invalid serials, to prevent windows from randomly stealing focus.
+This debug flag makes bento honor such tokens, making the aforementioned widely-used apps get focus when clicking on their tray icon or notification.
 
-Use the [`on-xdg-activate` window rule](./Configuration:-Window-Rules.md#on-xdg-activate) to control what niri does for individual windows when it accepts an xdg-activation request.
+Use the [`on-xdg-activate` window rule](./Configuration:-Window-Rules.md#on-xdg-activate) to control what bento does for individual windows when it accepts an xdg-activation request.
 
 Amusingly, clicking on a notification sends the app a perfectly valid activation token from the notification daemon, but these apps seem to simply ignore it.
 Maybe in the future these apps/toolkits (Electron, Qt) are fixed, making this debug flag unnecessary.
@@ -332,10 +333,10 @@ debug {
 <sup>Since: 25.08</sup>
 
 Some clients (notably, Chromium- and Electron-based, like Teams or Slack) erroneously use the Activated xdg window state instead of keyboard focus for things like deciding whether to send notifications for new messages, or for picking where to show an IME popup.
-Niri keeps the Activated state on unfocused workspaces and invisible tabbed windows (to reduce unwanted animations), surfacing bugs in these applications.
+bento keeps the Activated state on unfocused workspaces (to reduce unwanted animations), surfacing bugs in these applications.
 
 Set this debug flag to work around these problems.
-It will cause niri to drop the Activated state for all unfocused windows.
+It will cause bento to drop the Activated state for all unfocused windows.
 
 ```kdl
 debug {
@@ -347,7 +348,7 @@ debug {
 
 <sup>Since: next release</sup>
 
-By default, niri will try to output a 10-bit color format to the monitor (before falling back to 8-bit).
+By default, bento will try to output a 10-bit color format to the monitor (before falling back to 8-bit).
 However, this can currently cause problems on some Intel + NVIDIA mixed-GPU setups: the screen doesn't light up, or displays only white, etc.
 
 Until this is fixed in Smithay, you can disable 10-bit color formats by setting this debug flag.
