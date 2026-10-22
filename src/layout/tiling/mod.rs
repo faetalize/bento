@@ -621,13 +621,16 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn new_window_toplevel_bounds(&self, rules: &ResolvedWindowRules) -> Size<i32, Logical> {
         let border = self.options.layout.border.merged_with(&rules.border);
-        let border = if border.off { 0. } else { border.width * 2. };
-        let gaps = self.options.layout.gaps;
-        Size::from((
-            f64::max(self.working_area.size.w - gaps * 2. - border, 1.),
-            f64::max(self.working_area.size.h - gaps * 2. - border, 1.),
-        ))
-        .to_i32_floor()
+        // A window that opens as a tab leaves room for the tab indicator, like in niri.
+        let display = rules
+            .default_column_display
+            .unwrap_or(self.options.layout.default_column_display);
+        let extra = if display == ColumnDisplay::Tabbed {
+            TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
+        } else {
+            Size::from((0., 0.))
+        };
+        toplevel_bounds(border, self.working_area.size, extra, self.options.layout.gaps)
     }
 
     /// Size to suggest to a new window before it opens, from the layout.
@@ -2039,15 +2042,17 @@ impl<W: LayoutElement> TilingSpace<W> {
                 .map(|resize| resize.data);
             win.set_interactive_resize(resize_data);
 
+            // Tabs leave room for the tab indicator.
             let border = self.options.layout.border.merged_with(&win.rules().border);
-            let border = if border.off { 0. } else { border.width * 2. };
+            let extra = self
+                .tab_bars
+                .iter()
+                .find(|bar| bar.windows.contains(&data.id))
+                .map_or(Size::from((0., 0.)), |bar| {
+                    bar.indicator.extra_size(bar.windows.len(), self.scale)
+                });
             let gaps = self.options.layout.gaps;
-            let bounds = Size::from((
-                f64::max(self.working_area.size.w - gaps * 2. - border, 1.),
-                f64::max(self.working_area.size.h - gaps * 2. - border, 1.),
-            ))
-            .to_i32_floor();
-            win.set_bounds(bounds);
+            win.set_bounds(toplevel_bounds(border, self.working_area.size, extra, gaps));
 
             // If transactions are disabled, also disable combined throttling, for more
             // intuitive behavior.
@@ -2239,4 +2244,19 @@ fn size_change_json(change: SizeChange) -> Value {
         SizeChange::AdjustProportion(value) => ("adjust", value, "%"),
     };
     json!({ "op": op, "value": value, "unit": unit })
+}
+
+/// Largest size a tiled window can take, which windows get as their configure bounds.
+fn toplevel_bounds(
+    border: niri_config::Border,
+    working_area: Size<f64, Logical>,
+    extra: Size<f64, Logical>,
+    gaps: f64,
+) -> Size<i32, Logical> {
+    let border = if border.off { 0. } else { border.width * 2. };
+    Size::from((
+        f64::max(working_area.w - gaps * 2. - extra.w - border, 1.),
+        f64::max(working_area.h - gaps * 2. - extra.h - border, 1.),
+    ))
+    .to_i32_floor()
 }
