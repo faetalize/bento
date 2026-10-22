@@ -4,7 +4,7 @@ description: "want fullscreen: BU\nconfig:\nwindow-rule {\n    open-fullscreen f
 expression: snapshot
 ---
 initial configure:
-size: 0 × 500, bounds: 1240 × 680, states: []
+size: 0 × 504, bounds: 1240 × 680, states: []
 
 post-map configures:
-size: 1 × 500, bounds: 1240 × 680, states: [Activated]
+size: 29 × 504, bounds: 1240 × 680, states: [Activated]

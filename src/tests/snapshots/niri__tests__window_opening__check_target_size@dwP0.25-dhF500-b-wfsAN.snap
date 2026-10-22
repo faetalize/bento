@@ -4,11 +4,11 @@ description: "want fullscreen: AN\nconfig:\nwindow-rule {\n    default-column-wi
 expression: snapshot
 ---
 initial configure:
-size: 292 × 500, bounds: 1240 × 680, states: []
+size: 292 × 504, bounds: 1240 × 680, states: []
 
 post-map configures:
 size: 1280 × 720, bounds: 1240 × 680, states: [Fullscreen]
 size: 1280 × 720, bounds: 1240 × 680, states: [Fullscreen, Activated]
 
 unfullscreen configure:
-size: 292 × 500, bounds: 1240 × 680, states: [Activated]
+size: 292 × 504, bounds: 1240 × 680, states: [Activated]

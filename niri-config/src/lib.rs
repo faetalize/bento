@@ -1516,6 +1516,12 @@ mod tests {
                     a: 1.0,
                 },
             },
+            tiling: Tiling {
+                layout: BuiltIn(
+                    "bento",
+                ),
+                options: [],
+            },
             prefer_no_csd: true,
             cursor: Cursor {
                 xcursor_theme: "breeze_cursors",
