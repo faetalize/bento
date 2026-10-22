@@ -308,6 +308,14 @@ impl Camera {
     }
 }
 
+impl<W: LayoutElement> Drop for TilingSpace<W> {
+    fn drop(&mut self) {
+        if self.generation != 0 {
+            engine::destroy(self.instance, self.generation);
+        }
+    }
+}
+
 impl<W: LayoutElement> TilingSpace<W> {
     pub fn new(
         view_size: Size<f64, Logical>,
@@ -318,7 +326,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
-        Self {
+        let mut space = Self {
             tiles: Vec::new(),
             data: Vec::new(),
             active: None,
@@ -347,7 +355,11 @@ impl<W: LayoutElement> TilingSpace<W> {
             scale,
             clock,
             options,
-        }
+        };
+        // Queries, like the size for the first window, need the layout engine's instance, so
+        // create it right away rather than at the first event.
+        space.ensure_instance();
+        space
     }
 
     pub fn update_config(
@@ -2000,8 +2012,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
-        // Queries, like the size for a new window, need the layout engine's instance, so create it
-        // before they come: on an empty workspace, nothing else would until the first window.
+        // After the layout engine reloads, create its instance again before queries come.
         let generation = engine::generation();
         if generation != 0 && generation != self.generation && generation != self.failed_generation
         {

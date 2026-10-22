@@ -353,6 +353,29 @@ pub fn options_json(config: &Tiling) -> serde_json::Value {
     serde_json::Value::Object(options.collect())
 }
 
+/// Forgets an instance whose workspace is gone, so that the layout engine frees what it kept for
+/// it. Without this, every workspace that comes and goes would add to the engine's memory until
+/// it runs out.
+pub fn destroy(instance: u64, generation: u64) {
+    // Workspaces can go away while bento shuts down, after the engine is gone.
+    let _ = ENGINE.try_with(|engine| {
+        let Ok(mut engine) = engine.try_borrow_mut() else {
+            return;
+        };
+        let Some(engine) = engine.as_mut() else {
+            return;
+        };
+        engine.saved.remove(&instance);
+        // An engine that reloaded since never knew this instance.
+        if engine.generation == generation {
+            let event = serde_json::json!({ "type": "destroy", "instance": instance });
+            if let Err(err) = engine.call(&event.to_string()) {
+                warn!("error destroying a layout engine instance: {err:?}");
+            }
+        }
+    });
+}
+
 /// A new unique instance id.
 pub fn next_instance() -> u64 {
     let id = NEXT_INSTANCE.get();
