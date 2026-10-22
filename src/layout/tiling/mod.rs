@@ -630,7 +630,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             Size::from((0., 0.))
         };
-        toplevel_bounds(border, self.working_area.size, extra, self.options.layout.gaps)
+        toplevel_bounds(
+            border,
+            self.working_area.size,
+            extra,
+            self.options.layout.gaps,
+        )
     }
 
     /// Size to suggest to a new window before it opens, from the layout.
