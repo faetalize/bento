@@ -1,11 +1,19 @@
 name: CI
 
 on:
+  # Other branches get checked through their pull requests.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
   schedule:
     - cron: '0 0 1 * *' # Monthly
+
+# A newer push to a pull request or branch cancels the run it replaces. Runs on main all finish, so
+# every commit there gets a result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   DEPS_APT: curl gcc clang libudev-dev libgbm-dev libxkbcommon-dev libegl1-mesa-dev libwayland-dev libinput-dev libdbus-1-dev libsystemd-dev libseat-dev libpipewire-0.3-dev libpango1.0-dev libdisplay-info-dev
