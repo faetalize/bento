@@ -33,7 +33,7 @@ fn simple_no_workspaces() {
     let window = f.client(id).window(&surface);
     assert_snapshot!(
         window.format_recent_configures(),
-        @"size: 100 × 688, bounds: 1248 × 688, states: []"
+        @"size: 89 × 688, bounds: 1248 × 688, states: []"
     );
 }
 

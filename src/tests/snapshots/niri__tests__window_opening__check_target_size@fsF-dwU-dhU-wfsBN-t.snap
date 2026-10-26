@@ -7,4 +7,4 @@ initial configure:
 size: 0 × 688, bounds: 1239 × 688, states: []
 
 post-map configures:
-size: 1 × 688, bounds: 1239 × 688, states: [Activated]
+size: 28 × 688, bounds: 1239 × 688, states: [Activated]

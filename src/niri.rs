@@ -1710,6 +1710,11 @@ impl State {
         }
 
         self.niri.layout.update_config(&config);
+        if let Err(problems) = crate::layout::tiling::engine::check(&config) {
+            for problem in problems {
+                warn!("{problem}");
+            }
+        }
         for mapped in self.niri.mapped_layer_surfaces.values_mut() {
             mapped.update_config(&config);
         }
@@ -2508,6 +2513,11 @@ impl Niri {
         animation_clock.set_complete_instantly(config_.animations.off);
 
         let layout = Layout::new(animation_clock.clone(), &config_);
+        if let Err(problems) = crate::layout::tiling::engine::check(&config_) {
+            for problem in problems {
+                warn!("{problem}");
+            }
+        }
 
         let (blocker_cleared_tx, blocker_cleared_rx) = mpsc::channel();
 

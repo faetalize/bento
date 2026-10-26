@@ -1354,6 +1354,14 @@ impl LayoutElement for Mapped {
         self.window.refresh();
     }
 
+    fn app_id(&self) -> Option<String> {
+        with_toplevel_role(self.toplevel(), |role| role.app_id.clone())
+    }
+
+    fn title(&self) -> Option<String> {
+        with_toplevel_role(self.toplevel(), |role| role.title.clone())
+    }
+
     fn rules(&self) -> &ResolvedWindowRules {
         &self.rules
     }

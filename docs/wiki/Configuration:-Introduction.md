@@ -7,6 +7,7 @@ You can find documentation for various sections of the config on these wiki page
 * [`binds {}`](./Configuration:-Key-Bindings.md)
 * [`switch-events {}`](./Configuration:-Switch-Events.md)
 * [`layout {}`](./Configuration:-Layout.md)
+* [`tiling {}`](./Configuration:-Tiling-Layouts.md)
 * [top-level options](./Configuration:-Miscellaneous.md)
 * [`window-rule {}`](./Configuration:-Window-Rules.md)
 * [`layer-rule {}`](./Configuration:-Layer-Rules.md)
@@ -18,17 +19,17 @@ You can find documentation for various sections of the config on these wiki page
 
 ### Loading
 
-Niri will load configuration from `$XDG_CONFIG_HOME/niri/config.kdl` or `~/.config/niri/config.kdl`, falling back to `/etc/niri/config.kdl`.
-If both of these files are missing, niri will create `$XDG_CONFIG_HOME/niri/config.kdl` with the contents of [the default configuration file](https://github.com/niri-wm/niri/blob/main/resources/default-config.kdl), which are embedded into the niri binary at build time.
+bento will load configuration from `$XDG_CONFIG_HOME/bento/config.kdl` or `~/.config/bento/config.kdl`, falling back to `/etc/bento/config.kdl`.
+If both of these files are missing, bento will create `$XDG_CONFIG_HOME/bento/config.kdl` with the contents of [the default configuration file](https://github.com/faetalize/bento/blob/main/resources/default-config.kdl), which are embedded into the bento binary at build time.
 Please use the default configuration file as the starting point for your custom configuration.
 
 The configuration is live-reloaded.
 Simply edit and save the config file, and your changes will be applied.
 This includes key bindings, output settings like mode, window rules, and everything else.
 
-You can run `niri validate` to parse the config and see any errors.
+You can run `bento validate` to parse the config and see any errors, including options and actions that your layout engine doesn't have.
 
-To use a different config file path, pass it in the `--config` or `-c` argument to `niri`.
+To use a different config file path, pass it in the `--config` or `-c` argument to `bento`.
 
 You can also set `$NIRI_CONFIG` to the path of the config file.
 `--config` always takes precedence.
@@ -56,7 +57,7 @@ Also, you can put `/-` in front of a section to comment out the entire section:
 
 #### Flags
 
-Toggle options in niri are commonly represented as flags.
+Toggle options in bento are commonly represented as flags.
 Writing out the flag enables it, and omitting it or commenting it out disables it.
 For example:
 
@@ -137,16 +138,9 @@ A notable exception is [`binds {}`](./Configuration:-Key-Bindings.md): they do n
 
 ### Breaking Change Policy
 
-As a rule, niri updates should not break existing config files.
-(For example, the default config from niri v0.1.0 still parses fine on v25.02 as I'm writing this.)
+bento reads niri's config format, with additions like the [`tiling {}`](./Configuration:-Tiling-Layouts.md) section and the `layout-action` bind.
 
-Exceptions can be made for parsing bugs.
-For example, niri used to accept multiple binds to the same key, but this was not intended and did not do anything (the first bind was always used).
-A patch release changed niri from silently accepting this to causing a parsing failure.
-This is not a blanket rule, I will consider the potential impact of every breaking change like this before deciding to carry on with it.
-
-Keep in mind that the breaking change policy applies only to niri releases.
-Commits between releases can and do occasionally break the config as new features are ironed out.
-However, I do try to limit these, since several people are running git builds.
+bento is not release-ready yet and doesn't guarantee stability.
+Commits can occasionally break the config as new features are ironed out.
 
 [KDL]: https://kdl.dev/

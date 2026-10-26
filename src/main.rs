@@ -103,7 +103,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Sub::Validate { config } => {
                 tracy_client::Client::start();
 
-                config_path(config).load().config?;
+                let config = config_path(config).load().config?;
+                if let Err(problems) = niri::layout::tiling::engine::check(&config) {
+                    for problem in &problems {
+                        error!("{problem}");
+                    }
+                    return Err(
+                        anyhow::anyhow!("the layout engine doesn't match the config").into(),
+                    );
+                }
                 info!("config is valid");
                 return Ok(());
             }

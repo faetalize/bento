@@ -765,6 +765,16 @@ pub enum Action {
     },
     /// Expand the focused column to space not taken up by other fully visible columns.
     ExpandColumnToAvailableWidth {},
+    /// Run an action that the tiling layout provides.
+    LayoutAction {
+        /// Name of the action.
+        name: String,
+        /// Arguments for the action.
+        ///
+        /// Numbers and `true` or `false` go to the layout as numbers and booleans.
+        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
+        args: Vec<String>,
+    },
     /// Switch between keyboard layouts.
     SwitchLayout {
         /// Layout to switch to.
@@ -937,7 +947,7 @@ pub enum Action {
     /// Reload the config file.
     ///
     /// Can be useful for scripts changing the config file, to avoid waiting the small duration for
-    /// niri's config file watcher to notice the changes.
+    /// the config file watcher to notice the changes.
     LoadConfigFile {
         /// Path of a new config file to load.
         ///

@@ -7,5 +7,5 @@ initial configure:
 size: 1280 × 720, bounds: 1239 × 688, states: [Fullscreen]
 
 post-map configures:
-size: 1000 × 336, bounds: 1239 × 688, states: []
-size: 1000 × 336, bounds: 1239 × 688, states: [Activated]
+size: 976 × 336, bounds: 1239 × 688, states: []
+size: 976 × 336, bounds: 1239 × 688, states: [Activated]

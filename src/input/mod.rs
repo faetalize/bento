@@ -50,7 +50,8 @@ use self::resize_grab::ResizeGrab;
 use self::spatial_movement_grab::SpatialMovementGrab;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
-use crate::layout::scrolling::ScrollDirection;
+use crate::layout::tiling::ScrollDirection;
+use crate::layout::workspace::Workspace;
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -1033,7 +1034,10 @@ impl State {
                         self.maybe_warp_cursor_to_focus();
                     }
                 } else {
-                    self.niri.layout.move_left();
+                    self.niri.layout.combined_action(
+                        "move-column-left-or-to-monitor-left",
+                        Workspace::move_left,
+                    );
                     self.maybe_warp_cursor_to_focus();
                 }
 
@@ -1052,7 +1056,10 @@ impl State {
                         self.maybe_warp_cursor_to_focus();
                     }
                 } else {
-                    self.niri.layout.move_right();
+                    self.niri.layout.combined_action(
+                        "move-column-right-or-to-monitor-right",
+                        Workspace::move_right,
+                    );
                     self.maybe_warp_cursor_to_focus();
                 }
 
@@ -1220,7 +1227,9 @@ impl State {
                         self.maybe_warp_cursor_to_focus();
                     }
                 } else {
-                    self.niri.layout.focus_up();
+                    self.niri
+                        .layout
+                        .combined_action("focus-window-or-monitor-up", Workspace::focus_up);
                     self.maybe_warp_cursor_to_focus();
                 }
                 self.niri.layer_shell_on_demand_focus = None;
@@ -1238,7 +1247,9 @@ impl State {
                         self.maybe_warp_cursor_to_focus();
                     }
                 } else {
-                    self.niri.layout.focus_down();
+                    self.niri
+                        .layout
+                        .combined_action("focus-window-or-monitor-down", Workspace::focus_down);
                     self.maybe_warp_cursor_to_focus();
                 }
                 self.niri.layer_shell_on_demand_focus = None;
@@ -1256,7 +1267,9 @@ impl State {
                         self.maybe_warp_cursor_to_focus();
                     }
                 } else {
-                    self.niri.layout.focus_left();
+                    self.niri
+                        .layout
+                        .combined_action("focus-column-or-monitor-left", Workspace::focus_left);
                     self.maybe_warp_cursor_to_focus();
                 }
                 self.niri.layer_shell_on_demand_focus = None;
@@ -1274,7 +1287,9 @@ impl State {
                         self.maybe_warp_cursor_to_focus();
                     }
                 } else {
-                    self.niri.layout.focus_right();
+                    self.niri
+                        .layout
+                        .combined_action("focus-column-or-monitor-right", Workspace::focus_right);
                     self.maybe_warp_cursor_to_focus();
                 }
                 self.niri.layer_shell_on_demand_focus = None;
@@ -2117,6 +2132,11 @@ impl State {
             }
             Action::ExpandColumnToAvailableWidth => {
                 self.niri.layout.expand_column_to_available_width();
+            }
+            Action::LayoutAction(name, args) => {
+                self.niri.layout.layout_action(&name, &args);
+                // FIXME: granular
+                self.niri.queue_redraw_all();
             }
             Action::ShowHotkeyOverlay => {
                 if self.niri.hotkey_overlay.show() {

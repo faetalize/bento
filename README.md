@@ -5,7 +5,7 @@
 > Config lives in `$XDG_CONFIG_HOME/bento/config.kdl`.
 
 <h1 align="center">bento</h1>
-<p align="center">A scrollable-tiling Wayland compositor, based on niri</p>
+<p align="center">A Wayland compositor with scriptable tiling, based on niri</p>
 <p align="center">
     <a href="https://github.com/faetalize/bento/blob/main/LICENSE"><img alt="GitHub License" src="https://img.shields.io/github/license/faetalize/bento"></a>
 </p>
@@ -18,10 +18,17 @@ This repo follows a more permissive development stride, and thus may be less sta
 
 ## Features
 
-- Everything niri has...
-- ... and nested tiling. We still follow the principle of never resizing or moving windows that already exist, however more complex manual layouts are possible
-- Grid columns replace the row-tag design for layouts. A column can be an N×M grid where each window covers a rectangular area (row/column start plus span)
+- Everything niri has, except that tiling is done by a layout engine
+- Layout engines are JavaScript files that decide how a whole workspace behaves: where windows go, which window has focus, where the view points and what actions do. Point the config at one, and bento reloads it as you edit it. See [Tiling Layouts](docs/wiki/Configuration:-Tiling-Layouts.md), and start from the [template](resources/layouts/examples/template.js) to write your own
+- Engines run in a sandbox, with no access to files or the network, so you can try ones other people share
+- Two engines ship with bento:
+  - `bento`, the default: a grid of cells, 12 rows tall, that scrolls sideways. Windows cover rectangles of cells, push each other aside, and slide left with gravity. See [Grid Layout](docs/wiki/Grid-Layout.md)
+  - `niri`: niri's scrollable columns. See [The niri Engine](docs/wiki/Niri-Engine.md)
 - Support for more experimental Wayland protocols
+
+## Installing
+
+bento isn't packaged: build it from source. See [Getting Started](docs/wiki/Getting-Started.md).
 
 ## Status
 

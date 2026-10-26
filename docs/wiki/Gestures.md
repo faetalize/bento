@@ -1,6 +1,7 @@
 ### Overview
 
-There are several gestures in niri.
+There are several gestures in bento.
+bento handles them itself, whichever [layout engine](./Configuration:-Tiling-Layouts.md) you use, while the engine decides what happens to tiled windows: where a moved window lands, how resizing works, and where swiping the view comes to rest.
 
 Also see the [gestures configuration](./Configuration:-Gestures.md) wiki page.
 
@@ -13,6 +14,7 @@ Also see the [gestures configuration](./Configuration:-Gestures.md) wiki page.
 You can move windows by holding <kbd>Mod</kbd> and the left mouse button.
 
 You can customize the look of the window insertion preview in the [`insert-hint` layout config](./Configuration:-Layout.md#insert-hint).
+In the `bento` engine, the preview shows the cells where the window will land, and holding the pointer near the edge of another window splits that window; see [Grid Layout](./Grid-Layout.md#moving-windows).
 
 <sup>Since: 25.01</sup> Right click while moving to toggle between floating and tiling layout to put the window into.
 
@@ -21,22 +23,25 @@ You can customize the look of the window insertion preview in the [`insert-hint`
 <sup>Since: 0.1.6</sup>
 
 You can resize windows by holding <kbd>Mod</kbd> and the right mouse button.
+In the `bento` engine, sizes snap to cells and neighbouring windows get pushed aside; see [Grid Layout](./Grid-Layout.md#resizing-windows).
 
 #### Reset Window Height
 
 <sup>Since: 0.1.6</sup>
 
 If you double-click on a top or bottom tiled window resize edge, the window height will reset to automatic.
+In the `bento` engine, the window takes the full height of the grid instead.
 
-This works with both window-initiated resizes (when using client-side decorations), and niri-initiated <kbd>Mod</kbd> + right click resizes.
+This works with both window-initiated resizes (when using client-side decorations), and bento-initiated <kbd>Mod</kbd> + right click resizes.
 
 #### Toggle Full Width
 
 <sup>Since: 0.1.6</sup>
 
 If you double-click on a left or right tiled window resize edge, the column will expand to the full workspace width.
+This runs `maximize-column`, so in the `bento` engine it toggles the window between the full width of the view and its previous width.
 
-This works with both window-initiated resizes (when using client-side decorations), and niri-initiated <kbd>Mod</kbd> + right click resizes.
+This works with both window-initiated resizes (when using client-side decorations), and bento-initiated <kbd>Mod</kbd> + right click resizes.
 
 #### Horizontal View Movement
 
@@ -59,6 +64,7 @@ Switch workspaces with three-finger vertical swipes.
 #### Horizontal View Movement
 
 Move the view horizontally with three-finger horizontal swipes.
+In the `bento` engine, the view snaps to window edges on the grid after the swipe.
 
 #### Open and Close the Overview
 
