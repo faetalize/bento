@@ -1,11 +1,11 @@
 // This config is in the KDL format: https://kdl.dev
 // "/-" comments out the following node.
 // Check the wiki for a full description of the configuration:
-// https://github.com/faetalize/bento/blob/main/docs/wiki/Configuration:-Introduction.md
+// https://niri-wm.github.io/niri/Configuration:-Introduction
 
 // Input device configuration.
 // Find the full list of options on the wiki:
-// https://github.com/faetalize/bento/blob/main/docs/wiki/Configuration:-Input.md
+// https://niri-wm.github.io/niri/Configuration:-Input
 input {
     keyboard {
         xkb {
@@ -74,7 +74,7 @@ input {
 // by running `bento msg outputs` while inside a bento instance.
 // The built-in laptop monitor is usually called "eDP-1".
 // Find more information on the wiki:
-// https://github.com/faetalize/bento/blob/main/docs/wiki/Configuration:-Outputs.md
+// https://niri-wm.github.io/niri/Configuration:-Outputs
 // Remember to uncomment the node by removing "/-"!
 /-output "eDP-1" {
     // Uncomment this line to disable this output.
@@ -110,7 +110,7 @@ input {
 // The layout engine: how the workspace works, where tiled windows go, and what the layout
 // actions do. "bento" puts windows on a grid of cells, "niri" gives niri's scrollable columns,
 // and a path loads an engine file. Switching engines usually means changing binds too.
-// https://github.com/faetalize/bento/blob/main/docs/wiki/Configuration:-Tiling-Layouts.md
+// https://github.com/faetalize/bento#layout-engines
 tiling {
     layout "bento"
 
@@ -123,7 +123,7 @@ tiling {
 
 // Settings that influence how windows are positioned and sized.
 // Find more information on the wiki:
-// https://github.com/faetalize/bento/blob/main/docs/wiki/Configuration:-Layout.md
+// https://niri-wm.github.io/niri/Configuration:-Layout
 layout {
     // Set gaps around windows in logical pixels.
     gaps 16
@@ -310,7 +310,7 @@ screenshot-path "~/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
 
 // Animation settings.
 // The wiki explains how to configure individual animations:
-// https://github.com/faetalize/bento/blob/main/docs/wiki/Configuration:-Animations.md
+// https://niri-wm.github.io/niri/Configuration:-Animations
 animations {
     // Uncomment to turn off all animations.
     // off
@@ -321,7 +321,7 @@ animations {
 
 // Window rules let you adjust behavior for individual windows.
 // Find more information on the wiki:
-// https://github.com/faetalize/bento/blob/main/docs/wiki/Configuration:-Window-Rules.md
+// https://niri-wm.github.io/niri/Configuration:-Window-Rules
 
 // Work around WezTerm's initial configure bug
 // by setting an empty default-column-width.

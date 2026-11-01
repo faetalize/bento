@@ -67,12 +67,19 @@ jobs:
             exit 0
           fi
 
-          if git merge --no-edit -m "Merge niri-wm/niri main (${upstream:0:12})" niri/main; then
-            echo "status=clean" >> "$GITHUB_OUTPUT"
-          else
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+          git merge --no-ff --no-commit -m "Merge niri-wm/niri main (${upstream:0:12})" niri/main || true
+
+          # bento has no wiki, so drop whatever niri changed or added there. Without this, every
+          # wiki edit in niri would conflict, and new pages would come back in clean merges.
+          git rm -r --quiet --force --ignore-unmatch docs niri-config/tests/wiki-parses.rs
+
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/conflicts.txt"
+          if [ -s "$RUNNER_TEMP/conflicts.txt" ]; then
             git merge --abort
             echo "status=conflict" >> "$GITHUB_OUTPUT"
+          else
+            git commit --no-edit
+            echo "status=clean" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Open or update sync PR
@@ -129,6 +136,7 @@ jobs:
             echo '```sh'
             echo 'git fetch niri'
             echo 'git merge niri/main'
+            echo 'git rm -r --quiet --force --ignore-unmatch docs niri-config/tests/wiki-parses.rs'
             echo '```'
             echo
             echo "[Workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)"
