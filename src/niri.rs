@@ -14,9 +14,11 @@ use _server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as 
 use anyhow::{bail, ensure, Context};
 use calloop::futures::Scheduler;
 use niri_config::debug::PreviewRender;
+use niri_config::input::XkbFile;
 use niri_config::output::MaxBpc;
+use niri_config::window_rule::VrrRule;
 use niri_config::{
-    Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
+    Bind, Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
     WorkspaceReference, Xkb,
 };
 use smithay::backend::allocator::Fourcc;
@@ -188,8 +190,8 @@ use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
-    center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
-    logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
+    center, center_f64, get_monotonic_time, ipc_transform_to_smithay, is_mapped, logical_output,
+    make_screenshot_path, output_matches_name, output_size, panel_orientation,
     send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::window::mapped::MappedId;
@@ -358,6 +360,12 @@ pub struct Niri {
     pub suppressed_keys: HashSet<Keycode>,
     /// Button codes of the mouse buttons to suppress.
     pub suppressed_buttons: HashSet<u32>,
+    /// Binds whose release action is pending, keyed by the key code.
+    pub pending_release_binds: HashMap<Keycode, Bind>,
+    /// Same as `pending_release_binds`, but for mouse buttons, keyed by the button code.
+    pub pending_mouse_release_binds: HashMap<u32, Bind>,
+    /// Same as `pending_release_binds`, but for tablet tool buttons, keyed by the button code.
+    pub pending_tablet_release_binds: HashMap<u32, Bind>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
@@ -1528,14 +1536,7 @@ impl State {
     }
 
     /// Loads the xkb keymap from a file config setting.
-    fn set_xkb_file(&mut self, xkb_file: String) -> anyhow::Result<()> {
-        let xkb_file = PathBuf::from(xkb_file);
-        let xkb_file = expand_home(&xkb_file)
-            .context("failed to expand ~")?
-            .unwrap_or(xkb_file);
-
-        let keymap = std::fs::read_to_string(xkb_file).context("failed to read xkb_file")?;
-
+    fn set_xkb_file_content(&mut self, keymap: String) -> anyhow::Result<()> {
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         let restore = self.keyboard_state_to_restore();
 
@@ -1551,8 +1552,8 @@ impl State {
 
     fn load_xkb_file(&mut self) {
         let xkb_file = self.niri.config.borrow().input.keyboard.xkb.file.clone();
-        if let Some(xkb_file) = xkb_file {
-            if let Err(err) = self.set_xkb_file(xkb_file) {
+        if let Some(XkbFile(Some(keymap))) = xkb_file {
+            if let Err(err) = self.set_xkb_file_content(keymap) {
                 warn!("error loading xkb_file: {err:?}");
             }
         }
@@ -1659,8 +1660,8 @@ impl State {
         let mut xkb = self.niri.config.borrow().input.keyboard.xkb.clone();
         let mut set_xkb_config = true;
 
-        if let Some(xkb_file) = xkb.file.take() {
-            if let Err(err) = self.set_xkb_file(xkb_file) {
+        if let Some(XkbFile(Some(keymap))) = xkb.file.take() {
+            if let Err(err) = self.set_xkb_file_content(keymap) {
                 warn!("error loading xkb_file: {err:?}");
             } else {
                 set_xkb_config = false;
@@ -1752,6 +1753,11 @@ impl State {
             self.niri.cursor_texture_cache.clear();
         }
 
+        if config.debug.nested_show_host_cursor != old_config.debug.nested_show_host_cursor {
+            self.backend
+                .set_host_cursor_visible(config.debug.nested_show_host_cursor);
+        }
+
         // We need &mut self to reload the xkb config, so just store it here.
         if config.input.keyboard.xkb != old_config.input.keyboard.xkb {
             reload_xkb = true;
@@ -1794,10 +1800,10 @@ impl State {
 
         let binds_changed = config.binds != old_config.binds;
         let new_mod_key = self.backend.mod_key(&config);
+        let mut hotkey_overlay_changed =
+            config.hotkey_overlay.hide_not_bound != old_config.hotkey_overlay.hide_not_bound;
         if new_mod_key != self.backend.mod_key(&old_config) || binds_changed {
-            self.niri
-                .hotkey_overlay
-                .on_hotkey_config_updated(new_mod_key);
+            hotkey_overlay_changed = true;
             self.niri.mods_with_mouse_binds = mods_with_mouse_binds(new_mod_key, &config.binds);
             self.niri.mods_with_horizontal_wheel_binds =
                 mods_with_horizontal_wheel_binds(new_mod_key, &config.binds);
@@ -1807,6 +1813,11 @@ impl State {
                 mods_with_tablet_stylus_binds(new_mod_key, &config.binds);
             self.niri.mods_with_finger_scroll_binds =
                 mods_with_finger_scroll_binds(new_mod_key, &config.binds);
+        }
+        if hotkey_overlay_changed {
+            self.niri
+                .hotkey_overlay
+                .on_hotkey_config_updated(new_mod_key);
         }
 
         if config.window_rules != old_config.window_rules {
@@ -2841,6 +2852,9 @@ impl Niri {
             popup_grab: None,
             suppressed_keys: HashSet::new(),
             suppressed_buttons: HashSet::new(),
+            pending_release_binds: HashMap::new(),
+            pending_mouse_release_binds: HashMap::new(),
+            pending_tablet_release_binds: HashMap::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
             presentation_state,
@@ -5026,19 +5040,34 @@ impl Niri {
             return;
         }
 
-        let current = self.layout.windows_for_output(output).any(|mapped| {
-            mapped.rules().variable_refresh_rate == Some(true) && {
-                let mut visible = false;
-                mapped.window.with_surfaces(|surface, states| {
-                    if !visible
-                        && surface_primary_scanout_output(surface, states).as_ref() == Some(output)
-                    {
-                        visible = true;
-                    }
-                });
-                visible
-            }
-        });
+        // Check for fullscreen-only VRR first as that's cheaper.
+        let mon = self.layout.monitor_for_output(output).unwrap();
+        // We allow the overlay layer and floating windows for this check
+        // so VRR keeps working with overlays.
+        let current = mon
+            .fullscreen_window_above_top_layer()
+            .is_some_and(|mapped| {
+                mapped.rules().variable_refresh_rate == Some(VrrRule::FullscreenOnly)
+            });
+
+        let current = current
+            || self.layout.windows_for_output(output).any(|mapped| {
+                mapped.rules().variable_refresh_rate == Some(VrrRule::On) && {
+                    let mut visible = false;
+                    mapped.window.with_surfaces(|surface, states| {
+                        if visible {
+                            // Skip checking.
+                            return;
+                        }
+
+                        if surface_primary_scanout_output(surface, states).as_ref() == Some(output)
+                        {
+                            visible = true;
+                        }
+                    });
+                    visible
+                }
+            });
 
         backend.set_output_on_demand_vrr(self, output, current);
     }
@@ -6577,6 +6606,19 @@ impl Niri {
         });
 
         Ok(())
+    }
+
+    pub fn clear_input_state(&mut self) {
+        self.suppressed_keys.clear();
+        self.suppressed_buttons.clear();
+        self.pending_release_binds.clear();
+        self.pending_mouse_release_binds.clear();
+        self.pending_tablet_release_binds.clear();
+
+        // Stop ongoing key repeat if any.
+        if let Some(token) = self.bind_repeat_timer.take() {
+            self.event_loop.remove(token);
+        }
     }
 
     pub fn is_locked(&self) -> bool {

@@ -444,12 +444,14 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     }
 
     for bind in &config.binds.0 {
-        if let niri_config::Action::LayoutAction(name, _) = &bind.action {
-            if !meta.actions.contains(name) {
-                problems.push(format!(
-                    "the {} layout engine has no action called {name:?}",
-                    meta.name
-                ));
+        for action in [bind.press_action(), bind.release_action()] {
+            if let Some(niri_config::Action::LayoutAction(name, _)) = action {
+                if !meta.actions.contains(name) {
+                    problems.push(format!(
+                        "the {} layout engine has no action called {name:?}",
+                        meta.name
+                    ));
+                }
             }
         }
     }

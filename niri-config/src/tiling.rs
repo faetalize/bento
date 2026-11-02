@@ -85,14 +85,17 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for Tiling {
                     let name: String = knuffel::traits::DecodeScalar::decode(value, ctx)?;
                     tiling.layout = if name.contains('/') || name.ends_with(".js") {
                         match expand_home_path(PathBuf::from(name), child, ctx) {
-                            Some(path) => {
+                            Ok(path) => {
                                 // Watch the layout file like the config, to reload it on changes.
                                 if let Some(includes) = ctx.get::<Rc<RefCell<Includes>>>() {
                                     includes.borrow_mut().0.push(path.clone());
                                 }
                                 TilingLayout::File(path)
                             }
-                            None => continue,
+                            Err(err) => {
+                                ctx.emit_error(err);
+                                continue;
+                            }
                         }
                     } else {
                         TilingLayout::BuiltIn(name)

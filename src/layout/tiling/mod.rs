@@ -1604,12 +1604,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         true
     }
 
-    pub fn render_above_top_layer(&self) -> bool {
+    pub fn fullscreen_window_above_top_layer(&self) -> Option<&W> {
         // Render above the top layer if we're on a fullscreen window and the view is stationary.
-        self.camera.is_static()
-            && self
-                .active_window()
-                .is_some_and(|win| win.sizing_mode().is_fullscreen())
+        if !self.camera.is_static() {
+            return None;
+        }
+
+        self.active_window()
+            .filter(|win| win.sizing_mode().is_fullscreen())
     }
 
     pub fn render<R: NiriRenderer>(
