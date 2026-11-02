@@ -607,9 +607,102 @@ pub fn cause_panic() {
     let _ = a - b;
 }
 
+/// Links niri's config directory to bento's next to it.
+///
+/// Tools made for niri hardcode `~/.config/niri`, so this is how their changes reach bento. It
+/// links the directory rather than `config.kdl` because a file link breaks when a tool saves by
+/// replacing the file, and files that tools add there need to end up here too.
+///
+/// A real niri config stays untouched, for people who also run niri.
+pub fn link_niri_config(bento_config: &Path) {
+    let Some(bento_dir) = bento_config.parent() else {
+        return;
+    };
+    let Some(niri_dir) = bento_dir.parent().map(|parent| parent.join("niri")) else {
+        return;
+    };
+
+    // Without a user config directory, bento is running from the system config.
+    if !bento_dir.is_dir() {
+        return;
+    }
+
+    match std::fs::symlink_metadata(&niri_dir) {
+        Ok(metadata) if metadata.is_symlink() => (),
+        Ok(_) => warn!("not linking {niri_dir:?} to {bento_dir:?}: it already exists"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(err) = std::os::unix::fs::symlink(bento_dir, &niri_dir) {
+                warn!("error linking {niri_dir:?} to {bento_dir:?}: {err:?}");
+            }
+        }
+        Err(err) => warn!("error checking {niri_dir:?}: {err:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use xshell::Shell;
+
     use super::*;
+
+    #[test]
+    fn link_niri_config_creates_link_when_missing() {
+        let sh = Shell::new().unwrap();
+        let temp_dir = sh.create_temp_dir().unwrap();
+        let bento_dir = temp_dir.path().join("bento");
+        fs::create_dir(&bento_dir).unwrap();
+
+        link_niri_config(&bento_dir.join("config.kdl"));
+
+        let niri_dir = temp_dir.path().join("niri");
+        assert_eq!(fs::read_link(niri_dir).unwrap(), bento_dir);
+    }
+
+    #[test]
+    fn link_niri_config_keeps_real_niri_config() {
+        let sh = Shell::new().unwrap();
+        let temp_dir = sh.create_temp_dir().unwrap();
+        let bento_dir = temp_dir.path().join("bento");
+        let niri_dir = temp_dir.path().join("niri");
+        fs::create_dir(&bento_dir).unwrap();
+        fs::create_dir(&niri_dir).unwrap();
+        fs::write(niri_dir.join("config.kdl"), "real").unwrap();
+
+        link_niri_config(&bento_dir.join("config.kdl"));
+
+        assert!(!fs::symlink_metadata(&niri_dir).unwrap().is_symlink());
+        assert_eq!(
+            fs::read_to_string(niri_dir.join("config.kdl")).unwrap(),
+            "real"
+        );
+    }
+
+    #[test]
+    fn link_niri_config_keeps_existing_link() {
+        let sh = Shell::new().unwrap();
+        let temp_dir = sh.create_temp_dir().unwrap();
+        let bento_dir = temp_dir.path().join("bento");
+        let niri_dir = temp_dir.path().join("niri");
+        let elsewhere = temp_dir.path().join("elsewhere");
+        fs::create_dir(&bento_dir).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &niri_dir).unwrap();
+
+        link_niri_config(&bento_dir.join("config.kdl"));
+
+        assert_eq!(fs::read_link(niri_dir).unwrap(), elsewhere);
+    }
+
+    #[test]
+    fn link_niri_config_skips_without_bento_dir() {
+        let sh = Shell::new().unwrap();
+        let temp_dir = sh.create_temp_dir().unwrap();
+
+        link_niri_config(&temp_dir.path().join("bento").join("config.kdl"));
+
+        assert!(fs::symlink_metadata(temp_dir.path().join("niri")).is_err());
+    }
 
     #[test]
     fn test_clamp_preferring_top_left() {

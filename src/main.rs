@@ -24,7 +24,7 @@ use niri::utils::spawning::{
     spawn, spawn_sh, store_and_increase_nofile_rlimit, CHILD_DISPLAY, CHILD_ENV,
     REMOVE_ENV_RUST_BACKTRACE, REMOVE_ENV_RUST_LIB_BACKTRACE,
 };
-use niri::utils::{cause_panic, version, watcher, xwayland, IS_SYSTEMD_SERVICE};
+use niri::utils::{cause_panic, link_niri_config, version, watcher, xwayland, IS_SYSTEMD_SERVICE};
 use niri_config::{Config, ConfigPath};
 use niri_ipc::socket::SOCKET_PATH_ENV;
 use sd_notify::NotifyState;
@@ -167,6 +167,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = config_path(cli.config);
     env::remove_var("NIRI_CONFIG");
     let (config_created_at, config_load_result) = config_path.load_or_create();
+    // An explicit config path means the config lives somewhere else, so leave ~/.config/niri alone.
+    if let (true, ConfigPath::Regular { user_path, .. }) = (cli.session, &config_path) {
+        link_niri_config(user_path);
+    }
     let config_errored = config_load_result.config.is_err();
     let mut config = config_load_result.config.unwrap_or_else(|err| {
         warn!("{err:?}");

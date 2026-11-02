@@ -80,6 +80,13 @@ Doing this will make bento appear in GDM and other display managers.
 
 `bento.service` and the dinit service start `bento` by name rather than by full path, so put it in `/usr/local/bin/` or `/usr/bin/` where they'll find it.
 
+Tools made for niri run the `niri` command, so link it to bento.
+This also keeps them working if you have niri installed, since an older `niri` client can't read newer events:
+
+```sh
+sudo ln -s /usr/local/bin/bento /usr/local/bin/niri
+```
+
 ## Starting bento
 
 After installing, start bento from your display manager like GDM.
@@ -103,7 +110,8 @@ Its advice applies to bento, with `~/.config/bento/config.kdl` in place of niri'
 
 ### Coming from niri
 
-bento reads niri's config format, so you can copy your niri config to `~/.config/bento/config.kdl`.
+bento reads niri's config format, though your config isn't guaranteed to work as is.
+To bring it over, rename `~/.config/niri` to `~/.config/bento`.
 Without a `tiling {}` section you get the `bento` engine, so add this to keep niri's columns:
 
 ```kdl
@@ -111,6 +119,10 @@ tiling {
     layout "niri"
 }
 ```
+
+When a session starts, bento links `~/.config/niri` to `~/.config/bento` if nothing is at that path, so tools that edit niri's config change bento's.
+A real `~/.config/niri` stays untouched, and bento won't see what tools write there.
+After linking, niri itself can't run from that config if it uses anything specific to bento, like `tiling {}`.
 
 ### Desktop shells
 
