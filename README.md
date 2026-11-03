@@ -183,6 +183,7 @@ tiling {
 
 Values are booleans, numbers or strings.
 `bento validate` checks the options against what the engine declares, and so does bento when it loads the config.
+`bento msg layout-engine` lists the running engine's options with their current values, and its actions, and `bento msg -j layout-engine` gives the same as JSON for tools like settings screens.
 
 The `layout {}` section of the config still applies too.
 Engines get its values, such as `gaps`, `struts`, `preset-column-widths` or `center-focused-column`, and decide what they mean.

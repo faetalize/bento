@@ -1124,8 +1124,14 @@ describe("layout API", () => {
     test("declares the gravity option", async () => {
         const host = await setup();
         assert.equal(host.meta.name, "bento");
-        assert.deepEqual(host.meta.actions, ["split-h", "split-v", "swap", "stuff"]);
-        assert.deepEqual(host.meta.options, { gravity: "boolean" });
+        assert.deepEqual(
+            host.meta.actions.map((action) => action.name),
+            ["split-h", "split-v", "swap", "stuff"],
+        );
+        assert.deepEqual(
+            host.meta.options.map(({ name, default: value }) => [name, value]),
+            [["gravity", true]],
+        );
     });
 
     test("unknown actions do nothing", async () => {

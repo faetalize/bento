@@ -112,6 +112,8 @@ pub enum Msg {
     OverviewState,
     /// List screencasts.
     Casts,
+    /// Print the layout engine's options and actions.
+    LayoutEngine,
     /// Send a raw JSON request to the compositor, reading from stdin.
     RawRequest,
 }

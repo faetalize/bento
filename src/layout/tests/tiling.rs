@@ -149,3 +149,33 @@ fn bento_layout_runs_in_the_engine() {
       89 × 336 at x:  227 y: 16 focused
     ");
 }
+
+#[test]
+fn layout_engine_ipc_info_has_options_and_actions() {
+    use niri_ipc::{LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource};
+
+    use crate::layout::tiling::engine;
+
+    let tiling = niri_config::Tiling {
+        layout: niri_config::TilingLayout::BuiltIn(String::from("bento")),
+        options: vec![(
+            String::from("gravity"),
+            niri_config::TilingOption::Bool(false),
+        )],
+    };
+    engine::ensure_loaded(&tiling);
+    let info = engine::ipc_info(&tiling).unwrap();
+
+    assert_eq!(info.name, "bento");
+    assert_eq!(info.source, LayoutEngineSource::BuiltIn {});
+
+    let gravity = &info.options[0];
+    assert_eq!(gravity.name, "gravity");
+    assert_eq!(gravity.r#type, LayoutEngineOptionType::Boolean);
+    assert_eq!(gravity.default, LayoutEngineOptionValue::Boolean(true));
+    assert_eq!(gravity.value, LayoutEngineOptionValue::Boolean(false));
+    assert!(gravity.description.is_some());
+
+    let actions: Vec<_> = info.actions.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(actions, ["split-h", "split-v", "swap", "stuff"]);
+}
