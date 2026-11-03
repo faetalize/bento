@@ -1640,6 +1640,10 @@ pub enum CastTarget {
 }
 
 /// A compositor event.
+// bento: don't add bento-only variants here, or bento-only values to enums used inside events
+// (like CastKind). Stock niri clients talk to bento too, and they fail to deserialize any variant
+// they don't know, so one unknown event breaks their whole event stream. Send bento-only events
+// on a separate stream that bento's own client opts into with a new Request instead.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Event {
