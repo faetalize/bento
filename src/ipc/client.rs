@@ -7,8 +7,9 @@ use anyhow::{anyhow, bail, Context};
 use niri_config::OutputName;
 use niri_ipc::socket::Socket;
 use niri_ipc::{
-    Action, Cast, CastKind, CastTarget, Event, KeyboardLayouts, LogicalOutput, Mode, Output,
-    OutputConfigChanged, Overview, Request, Response, Transform, Window, WindowLayout,
+    Action, Cast, CastKind, CastTarget, Event, KeyboardLayouts, LayoutEngine,
+    LayoutEngineOptionValue, LayoutEngineSource, LogicalOutput, Mode, Output, OutputConfigChanged,
+    Overview, Request, Response, Transform, Window, WindowLayout,
 };
 use serde_json::json;
 
@@ -49,6 +50,7 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
         Msg::RequestError => Request::ReturnError,
         Msg::OverviewState => Request::OverviewState,
         Msg::Casts => Request::Casts,
+        Msg::LayoutEngine => Request::LayoutEngine,
         Msg::RawRequest => {
             let mut buf = Vec::new();
             let mut stdin = std::io::stdin().lock();
@@ -569,6 +571,19 @@ pub fn handle_msg(mut msg: Msg, json: bool, print_request: bool) -> anyhow::Resu
                 println!();
             }
         }
+        Msg::LayoutEngine => {
+            let Response::LayoutEngine(engine) = response else {
+                bail!("unexpected response: expected LayoutEngine, got {response:?}");
+            };
+
+            if json {
+                let engine = serde_json::to_string(&engine).context("error formatting response")?;
+                println!("{engine}");
+                return Ok(());
+            }
+
+            print_layout_engine(&engine);
+        }
         Msg::RawRequest => {
             let output = serde_json::to_string(&response).context("error formatting response")?;
             println!("{output}");
@@ -809,6 +824,62 @@ fn print_cast(cast: &Cast) {
 
     if let Some(node_id) = cast.pw_node_id {
         println!("  PipeWire node ID: {node_id}");
+    }
+}
+
+fn print_layout_engine(engine: &LayoutEngine) {
+    match &engine.source {
+        LayoutEngineSource::BuiltIn {} => println!("Layout engine \"{}\" (built-in)", engine.name),
+        LayoutEngineSource::File { path } => {
+            println!("Layout engine \"{}\" ({path})", engine.name)
+        }
+    }
+    if let Some(description) = &engine.description {
+        println!("  {description}");
+    }
+
+    println!();
+    if engine.options.is_empty() {
+        println!("No options.");
+    } else {
+        println!("Options:");
+    }
+    for option in &engine.options {
+        let value = fmt_option_value(&option.value);
+        if option.value == option.default {
+            println!("  {}: {value} (default)", option.name);
+        } else {
+            let default = fmt_option_value(&option.default);
+            println!("  {}: {value} (default: {default})", option.name);
+        }
+        if let Some(description) = &option.description {
+            println!("    {description}");
+        }
+    }
+
+    println!();
+    if engine.actions.is_empty() {
+        println!("No actions.");
+    } else {
+        println!("Actions:");
+    }
+    for action in &engine.actions {
+        let mut usage = action.name.clone();
+        for arg in &action.args {
+            usage.push_str(&format!(" <{arg}>"));
+        }
+        println!("  {usage}");
+        if let Some(description) = &action.description {
+            println!("    {description}");
+        }
+    }
+}
+
+fn fmt_option_value(value: &LayoutEngineOptionValue) -> String {
+    match value {
+        LayoutEngineOptionValue::Boolean(value) => value.to_string(),
+        LayoutEngineOptionValue::Number(value) => value.to_string(),
+        LayoutEngineOptionValue::String(value) => format!("{value:?}"),
     }
 }
 

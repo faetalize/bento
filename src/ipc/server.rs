@@ -33,6 +33,7 @@ use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
 use crate::backend::IpcOutputMap;
 use crate::handlers::image_copy_capture;
 use crate::input::pick_window_grab::PickWindowGrab;
+use crate::layout::tiling::engine;
 use crate::layout::workspace::WorkspaceId;
 use crate::niri::State;
 use crate::utils::{version, with_toplevel_role};
@@ -455,6 +456,18 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let state = ctx.event_stream_state.borrow();
             let casts = state.casts.casts.values().cloned().collect();
             Response::Casts(casts)
+        }
+        Request::LayoutEngine => {
+            let (tx, rx) = async_channel::bounded(1);
+            // Idle callbacks run on the main thread, where the engine lives, with the config.
+            ctx.event_loop.insert_idle(move |state| {
+                let config = state.niri.config.borrow();
+                let _ = tx.send_blocking(engine::ipc_info(&config.tiling));
+            });
+            let result = rx.recv().await;
+            let info = result.map_err(|_| String::from("error getting layout engine info"))?;
+            let info = info.ok_or_else(|| String::from("no layout engine is loaded"))?;
+            Response::LayoutEngine(info)
         }
     };
 

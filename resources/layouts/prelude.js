@@ -43,12 +43,24 @@ export function load(module) {
 
     layoutModule = module;
     instances.clear();
+    // Descriptions are only documentation, so a malformed one is dropped instead of failing the
+    // load. Lists keep the order the engine declares things in, for settings screens.
+    const text = (value) => (typeof value === "string" ? value : null);
     return JSON.stringify({
         name: meta.name,
-        actions: Object.keys(actions),
-        options: Object.fromEntries(
-            Object.entries(options).map(([name, spec]) => [name, spec.type]),
-        ),
+        description: text(meta.description),
+        actions: Object.entries(actions).map(([name, spec]) => ({
+            name,
+            description: text(spec?.description),
+            args: Array.isArray(spec?.args)
+                ? spec.args.filter((arg) => typeof arg === "string")
+                : [],
+        })),
+        options: Object.entries(options).map(([name, spec]) => ({
+            name,
+            default: spec.default,
+            description: text(spec.description),
+        })),
     });
 }
 

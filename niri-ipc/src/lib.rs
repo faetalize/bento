@@ -119,6 +119,8 @@ pub enum Request {
     OverviewState,
     /// Request information about screencasts.
     Casts,
+    /// Request information about the layout engine: its options and actions.
+    LayoutEngine,
 }
 
 /// Reply from niri to client.
@@ -165,6 +167,8 @@ pub enum Response {
     OverviewState(Overview),
     /// Information about screencasts.
     Casts(Vec<Cast>),
+    /// Information about the layout engine.
+    LayoutEngine(LayoutEngine),
 }
 
 /// Overview information.
@@ -1637,6 +1641,103 @@ pub enum CastTarget {
         /// ID of the screencasted window.
         id: u64,
     },
+}
+
+/// The layout engine that does the tiling.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct LayoutEngine {
+    /// Name of the layout engine, from its `meta`.
+    pub name: String,
+    /// Description of the layout engine, from its `meta`.
+    pub description: Option<String>,
+    /// Where the layout engine comes from.
+    pub source: LayoutEngineSource,
+    /// Options of the layout engine, in the order it declares them.
+    pub options: Vec<LayoutEngineOption>,
+    /// Actions that the layout engine adds, in the order it declares them.
+    ///
+    /// These are bound with `layout-action`. niri's built-in layout actions also go to the layout
+    /// engine, but aren't listed here.
+    pub actions: Vec<LayoutEngineAction>,
+}
+
+/// Where a layout engine comes from.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum LayoutEngineSource {
+    /// A layout engine that ships with bento.
+    BuiltIn {},
+    /// A layout engine file.
+    File {
+        /// Path to the file.
+        path: String,
+    },
+}
+
+/// An option of a layout engine, set in the `tiling { options {} }` section of the config.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct LayoutEngineOption {
+    /// Name of the option.
+    pub name: String,
+    /// Type of the option's values.
+    pub r#type: LayoutEngineOptionType,
+    /// Value of the option when the config doesn't set it.
+    pub default: LayoutEngineOptionValue,
+    /// Description of the option.
+    pub description: Option<String>,
+    /// Current value of the option: the one from the config, or the default.
+    pub value: LayoutEngineOptionValue,
+}
+
+/// Type of a layout engine option.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum LayoutEngineOptionType {
+    /// `true` or `false`.
+    Boolean,
+    /// A number.
+    Number,
+    /// A string.
+    String,
+}
+
+/// Value of a layout engine option.
+// Untagged, so that values look the same as in the layout engine's `meta` and the config.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum LayoutEngineOptionValue {
+    /// A boolean value.
+    Boolean(bool),
+    /// A number value.
+    Number(f64),
+    /// A string value.
+    String(String),
+}
+
+impl LayoutEngineOptionValue {
+    /// Type of the value.
+    pub fn r#type(&self) -> LayoutEngineOptionType {
+        match self {
+            Self::Boolean(_) => LayoutEngineOptionType::Boolean,
+            Self::Number(_) => LayoutEngineOptionType::Number,
+            Self::String(_) => LayoutEngineOptionType::String,
+        }
+    }
+}
+
+/// An action that a layout engine adds.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct LayoutEngineAction {
+    /// Name of the action, to bind as `layout-action "name"`.
+    pub name: String,
+    /// Description of the action.
+    pub description: Option<String>,
+    /// Names of the action's arguments, for documentation.
+    pub args: Vec<String>,
 }
 
 /// A compositor event.

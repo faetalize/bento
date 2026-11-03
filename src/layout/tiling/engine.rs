@@ -14,6 +14,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context as _};
 use niri_config::{Tiling, TilingLayout, TilingOption};
+use niri_ipc::{
+    LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionType, LayoutEngineOptionValue,
+    LayoutEngineSource,
+};
 use rquickjs::{CatchResultExt as _, Context, Function, Module, Object, Persistent, Runtime};
 use serde::Deserialize;
 
@@ -100,13 +104,25 @@ thread_local! {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LayoutMeta {
     pub name: String,
-    pub actions: Vec<String>,
-    pub options: HashMap<String, String>,
+    pub description: Option<String>,
+    pub actions: Vec<LayoutEngineAction>,
+    pub options: Vec<OptionMeta>,
+}
+
+/// An option the layout declares.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptionMeta {
+    pub name: String,
+    /// Also gives the option's type: the prelude checks that it matches.
+    pub default: LayoutEngineOptionValue,
+    pub description: Option<String>,
 }
 
 struct Engine {
     /// Config the engine was loaded for.
     config: Tiling,
+    /// Layout that is running, which isn't the one in `config` when that one failed to load.
+    layout: TilingLayout,
     /// Modification time of the layout file, to reload it when it changes.
     mtime: Option<SystemTime>,
     /// Source of the layout, to tell whether a reload changed anything.
@@ -183,6 +199,7 @@ impl Engine {
 
         Ok(Self {
             config: config.clone(),
+            layout: config.layout.clone(),
             mtime: file_mtime(config),
             source,
             meta,
@@ -301,6 +318,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                 // Same source: only the options changed, which instances pick up on their own.
                 let engine = engine.as_mut().unwrap();
                 engine.config = config.clone();
+                engine.layout = config.layout.clone();
                 engine.mtime = file_mtime(config);
             }
             Err(err) => {
@@ -338,6 +356,65 @@ pub fn generation() -> u64 {
 /// Metadata of the current layout.
 pub fn meta() -> Option<LayoutMeta> {
     ENGINE.with_borrow(|engine| engine.as_ref().map(|engine| engine.meta.clone()))
+}
+
+/// The current layout engine for IPC, with the option values from `config`.
+pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
+    ENGINE.with_borrow(|engine| {
+        let engine = engine.as_ref()?;
+        let meta = &engine.meta;
+
+        let source = match &engine.layout {
+            TilingLayout::BuiltIn(_) => LayoutEngineSource::BuiltIn {},
+            TilingLayout::File(path) => LayoutEngineSource::File {
+                path: path.display().to_string(),
+            },
+        };
+
+        let options = meta.options.iter().map(|option| {
+            // Like the engine sees it: the last value wins, and one of the wrong type gives the
+            // default.
+            let value = config
+                .options
+                .iter()
+                .rev()
+                .find(|(name, _)| *name == option.name)
+                .map(|(_, value)| option_value(value))
+                .filter(|value| value.r#type() == option.default.r#type())
+                .unwrap_or_else(|| option.default.clone());
+            LayoutEngineOption {
+                name: option.name.clone(),
+                r#type: option.default.r#type(),
+                default: option.default.clone(),
+                description: option.description.clone(),
+                value,
+            }
+        });
+
+        Some(niri_ipc::LayoutEngine {
+            name: meta.name.clone(),
+            description: meta.description.clone(),
+            source,
+            options: options.collect(),
+            actions: meta.actions.clone(),
+        })
+    })
+}
+
+fn option_value(value: &TilingOption) -> LayoutEngineOptionValue {
+    match value {
+        TilingOption::Bool(value) => LayoutEngineOptionValue::Boolean(*value),
+        TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
+        TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
+    }
+}
+
+fn type_name(r#type: LayoutEngineOptionType) -> &'static str {
+    match r#type {
+        LayoutEngineOptionType::Boolean => "boolean",
+        LayoutEngineOptionType::Number => "number",
+        LayoutEngineOptionType::String => "string",
+    }
 }
 
 /// Options for the layout from the config, as JSON.
@@ -426,19 +503,19 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
 
     let mut problems = Vec::new();
     for (name, value) in &config.tiling.options {
-        let given = match value {
-            TilingOption::Bool(_) => "boolean",
-            TilingOption::Number(_) => "number",
-            TilingOption::String(_) => "string",
-        };
-        match meta.options.get(name) {
+        let given = option_value(value).r#type();
+        match meta.options.iter().find(|option| option.name == *name) {
             None => problems.push(format!(
                 "the {} layout engine has no option called {name:?}",
                 meta.name
             )),
-            Some(expected) if expected != given => problems.push(format!(
-                "layout engine option {name:?} must be a {expected}, not a {given}"
-            )),
+            Some(option) if option.default.r#type() != given => {
+                let expected = type_name(option.default.r#type());
+                let given = type_name(given);
+                problems.push(format!(
+                    "layout engine option {name:?} must be a {expected}, not a {given}"
+                ))
+            }
             Some(_) => (),
         }
     }
@@ -446,7 +523,7 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     for bind in &config.binds.0 {
         for action in [bind.press_action(), bind.release_action()] {
             if let Some(niri_config::Action::LayoutAction(name, _)) = action {
-                if !meta.actions.contains(name) {
+                if !meta.actions.iter().any(|action| action.name == *name) {
                     problems.push(format!(
                         "the {} layout engine has no action called {name:?}",
                         meta.name
