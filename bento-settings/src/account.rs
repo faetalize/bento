@@ -13,7 +13,10 @@ const USER: &str = "org.freedesktop.Accounts.User";
 pub struct Account {
     pub name: String,
     pub user: String,
+    pub email: String,
     pub picture: Option<PathBuf>,
+    /// When the user last logged in, in seconds since 1970.
+    pub last_login: Option<i64>,
     /// `None` when AccountsService isn't there to say.
     pub administrator: Option<bool>,
     /// The user's AccountsService object, needed to change anything.
@@ -51,7 +54,9 @@ pub fn current() -> Account {
     let mut account = Account {
         name: glib::real_name().to_string_lossy().into_owned(),
         user: user.clone(),
+        email: String::new(),
         picture: None,
+        last_login: None,
         administrator: None,
         path: None,
     };
@@ -61,6 +66,12 @@ pub fn current() -> Account {
             if let Some(name) = property(&bus, &path, "RealName").and_then(|v| v.get::<String>()) {
                 account.name = name;
             }
+            account.email = property(&bus, &path, "Email")
+                .and_then(|v| v.get::<String>())
+                .unwrap_or_default();
+            account.last_login = property(&bus, &path, "LoginTime")
+                .and_then(|v| v.get::<i64>())
+                .filter(|time| *time > 0);
             account.picture = property(&bus, &path, "IconFile")
                 .and_then(|v| v.get::<String>())
                 .filter(|path| !path.is_empty())
@@ -85,6 +96,10 @@ pub fn current() -> Account {
 
 pub fn set_name(account: &Account, name: &str, done: impl FnOnce(Result<(), String>) + 'static) {
     call_user(account, "SetRealName", (name,).to_variant(), done);
+}
+
+pub fn set_email(account: &Account, email: &str, done: impl FnOnce(Result<(), String>) + 'static) {
+    call_user(account, "SetEmail", (email,).to_variant(), done);
 }
 
 /// Sets the picture to a copy of the image at `path`, or removes it for `None`.

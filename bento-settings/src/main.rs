@@ -6,6 +6,7 @@ mod kdl;
 mod model;
 mod page;
 mod pages;
+mod password;
 mod search;
 mod store;
 mod window;

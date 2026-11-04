@@ -39,3 +39,7 @@ statuspage.compact > scrolledwindow > viewport > box {
   padding-top: 6px;
   padding-bottom: 6px;
 }
+
+.dialog-content {
+  margin: 12px;
+}
