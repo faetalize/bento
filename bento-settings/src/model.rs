@@ -26,7 +26,7 @@ pub struct Category {
     pub id: &'static str,
     pub title: &'static str,
     pub icon: &'static str,
-    pub description: &'static str,
+    /// Words search should match besides the title.
     pub keywords: &'static [&'static str],
     pub content: Content,
 }
@@ -56,7 +56,6 @@ impl Category {
             id,
             title,
             icon: "preferences-system-symbolic",
-            description: "",
             keywords: &[],
             content,
         }
@@ -87,11 +86,6 @@ impl Category {
 
     pub fn icon(mut self, icon: &'static str) -> Self {
         self.icon = icon;
-        self
-    }
-
-    pub fn description(mut self, description: &'static str) -> Self {
-        self.description = description;
         self
     }
 
@@ -127,23 +121,23 @@ impl Category {
 }
 
 pub struct Group {
-    pub title: &'static str,
-    pub description: Option<&'static str>,
+    pub title: Option<&'static str>,
     pub settings: Vec<Setting>,
 }
 
 impl Group {
     pub fn new(title: &'static str) -> Self {
         Self {
-            title,
-            description: None,
+            title: Some(title),
             settings: Vec::new(),
         }
     }
 
-    pub fn description(mut self, description: &'static str) -> Self {
-        self.description = Some(description);
-        self
+    pub fn untitled() -> Self {
+        Self {
+            title: None,
+            settings: Vec::new(),
+        }
     }
 
     pub fn setting(mut self, setting: Setting) -> Self {
@@ -206,10 +200,11 @@ pub enum Input {
 pub struct Setting {
     pub path: &'static str,
     pub title: &'static str,
-    pub subtitle: Option<&'static str>,
     pub keywords: &'static [&'static str],
     pub control: Control,
-    pub enabled_if: Option<Getter<bool>>,
+    /// Settings that only matter while this switch is on. The switch becomes an expander row
+    /// holding them.
+    pub children: Vec<Setting>,
 }
 
 impl Setting {
@@ -217,10 +212,9 @@ impl Setting {
         Self {
             path,
             title,
-            subtitle: None,
             keywords: &[],
             control,
-            enabled_if: None,
+            children: Vec::new(),
         }
     }
 
@@ -273,19 +267,18 @@ impl Setting {
         Self::new(title, path, Control::Color { get })
     }
 
-    pub fn subtitle(mut self, subtitle: &'static str) -> Self {
-        self.subtitle = Some(subtitle);
-        self
-    }
-
     pub fn keywords(mut self, keywords: &'static [&'static str]) -> Self {
         self.keywords = keywords;
         self
     }
 
-    /// Greys the row out unless the condition holds, like a width while its border is off.
-    pub fn enabled_if(mut self, condition: Getter<bool>) -> Self {
-        self.enabled_if = Some(condition);
+    /// Puts settings under this switch, shown when it's on.
+    pub fn expands(mut self, children: Vec<Setting>) -> Self {
+        assert!(
+            matches!(self.control, Control::Switch { .. }),
+            "only switches expand"
+        );
+        self.children = children;
         self
     }
 

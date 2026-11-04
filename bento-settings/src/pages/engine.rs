@@ -15,17 +15,36 @@ use niri_ipc::{LayoutEngine, LayoutEngineOption, LayoutEngineOptionValue, Layout
 use crate::ipc;
 use crate::kdl::{self, Value};
 use crate::model::Category;
-use crate::page::{reset_button, PageContext};
+use crate::page::{reset_menu, PageContext};
 use crate::store::{option_value, tilde};
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
         .icon("view-dual-symbolic")
-        .description("The layout engine places windows on each workspace. A new engine applies right away; binds to the old one's actions stop working.")
-        .keywords(&["tiling", "layout", "scrolling", "grid", "javascript", "bento.js", "niri"])
-        .search_item("engine.choice", "Layout engine", &["switch engine", "bento", "niri", "custom", "file"])
-        .search_item("engine.options", "Engine options", &["gravity", "configure"])
-        .search_item("engine.actions", "Engine actions", &["layout-action", "binds", "keybinds"])
+        .keywords(&[
+            "tiling",
+            "layout",
+            "scrolling",
+            "grid",
+            "javascript",
+            "bento.js",
+            "niri",
+        ])
+        .search_item(
+            "engine.choice",
+            "Layout Engine",
+            &["switch engine", "bento", "niri", "custom", "file"],
+        )
+        .search_item(
+            "engine.options",
+            "Engine Options",
+            &["gravity", "configure"],
+        )
+        .search_item(
+            "engine.actions",
+            "Engine Actions",
+            &["layout-action", "binds", "keybinds"],
+        )
 }
 
 struct View {
@@ -46,9 +65,7 @@ type Shape = (TilingLayout, Result<LayoutEngine, String>);
 type ShowValue = Box<dyn Fn(&LayoutEngineOptionValue)>;
 
 struct OptionRow {
-    path: String,
     show: ShowValue,
-    reset: gtk::Button,
 }
 
 fn shape(layout: TilingLayout, engine: &Result<LayoutEngine, String>) -> Shape {
@@ -115,12 +132,9 @@ fn refresh(view: &Rc<View>) {
 }
 
 fn show_values(view: &View, engine: &LayoutEngine) {
-    let doc = view.ctx.store.doc();
     view.updating.set(true);
     for (row, option) in view.options.borrow().iter().zip(&engine.options) {
         (row.show)(&option.value);
-        row.reset
-            .set_visible(kdl::get(&doc, &kdl::split(&row.path)).is_some());
     }
     view.updating.set(false);
 }
@@ -134,17 +148,14 @@ fn set_layout(ctx: &PageContext, layout: String) {
 }
 
 fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder()
-        .title("Layout engine")
-        .build();
+    let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.choice", &group);
 
     let configured = view.ctx.store.config().tiling.layout.clone();
-    let running_name = running.map(|engine| engine.name.as_str());
     let updating = Rc::new(Cell::new(true));
 
     let mut first: Option<gtk::CheckButton> = None;
-    let mut radio = |title: &str, subtitle: String, active: bool| {
+    let mut radio = |title: &str, subtitle: Option<String>, active: bool| {
         let check = gtk::CheckButton::builder()
             .valign(gtk::Align::Center)
             .active(active)
@@ -156,7 +167,7 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
         }
         let row = adw::ActionRow::builder()
             .title(title)
-            .subtitle(subtitle)
+            .subtitle(subtitle.unwrap_or_default())
             .activatable_widget(&check)
             .build();
         row.add_prefix(&check);
@@ -166,18 +177,11 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
 
     for name in ["bento", "niri"] {
         let active = configured == TilingLayout::BuiltIn(name.to_owned());
-        let mut subtitle = String::from("Built in");
-        if let Some(engine) =
-            running.filter(|e| e.name == name && matches!(e.source, LayoutEngineSource::BuiltIn {}))
-        {
-            if let Some(description) = &engine.description {
-                subtitle = format!("{subtitle}. {description}");
-            }
-        }
-        let (row, check) = radio(name, subtitle, active);
-        if active && running_name == Some(name) {
-            row.add_suffix(&badge("Running"));
-        }
+        // Only the running engine can describe itself.
+        let subtitle = running
+            .filter(|e| e.name == name && matches!(e.source, LayoutEngineSource::BuiltIn {}))
+            .and_then(|e| e.description.clone());
+        let (_, check) = radio(name, subtitle, active);
         let ctx = view.ctx.clone();
         let updating = updating.clone();
         check.connect_toggled(move |check| {
@@ -191,21 +195,12 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
         TilingLayout::File(path) => Some(path.clone()),
         TilingLayout::BuiltIn(_) => None,
     };
-    let subtitle = match &file {
-        Some(path) => tilde(path),
-        None => String::from("A JavaScript layout engine file"),
-    };
-    let (row, check) = radio("Custom file", subtitle, file.is_some());
-    if file.is_some() {
-        if let Some(engine) =
-            running.filter(|e| matches!(e.source, LayoutEngineSource::File { .. }))
-        {
-            row.add_suffix(&badge(&format!("Running {}", engine.name)));
-        }
-    }
+    let (row, check) = radio("Custom", file.as_deref().map(tilde), file.is_some());
     let choose = gtk::Button::builder()
-        .label("Choose…")
+        .icon_name("document-open-symbolic")
+        .tooltip_text("Choose File")
         .valign(gtk::Align::Center)
+        .css_classes(["flat"])
         .build();
     row.add_suffix(&choose);
     {
@@ -260,15 +255,12 @@ fn choose_file(ctx: &PageContext, widget: &impl IsA<gtk::Widget>) {
 }
 
 fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder()
-        .title("Options")
-        .description(format!("Declared by {}.", engine.name))
-        .build();
+    let group = adw::PreferencesGroup::builder().title("Options").build();
     view.ctx.anchor("engine.options", &group);
 
     if engine.options.is_empty() {
         let row = adw::ActionRow::builder()
-            .title("This engine has no options")
+            .title("No Options")
             .css_classes(["dim-label"])
             .build();
         group.add(&row);
@@ -304,25 +296,17 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
         }
     };
 
-    let reset = reset_button();
-    {
-        let ctx = view.ctx.clone();
-        let path = path.clone();
-        reset.connect_clicked(move |_| {
-            ctx.store.edit(&path, |doc| {
-                kdl::remove(doc, &kdl::split(&path));
-            });
-        });
-    }
-
+    let description = option.description.clone().unwrap_or_default();
     let (row, show): (gtk::Widget, ShowValue) = match &option.default {
         LayoutEngineOptionValue::Boolean(_) => {
-            let switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
-            switch.connect_active_notify(move |switch| {
-                write(LayoutEngineOptionValue::Boolean(switch.is_active()))
+            let row = adw::SwitchRow::builder()
+                .title(&title)
+                .subtitle(&description)
+                .build();
+            row.connect_active_notify(move |row| {
+                write(LayoutEngineOptionValue::Boolean(row.is_active()))
             });
-            let row = option_action_row(&title, option, &[reset.upcast_ref(), switch.upcast_ref()]);
-            row.set_activatable_widget(Some(&switch));
+            let switch = row.clone();
             let show = move |value: &LayoutEngineOptionValue| {
                 if let LayoutEngineOptionValue::Boolean(x) = value {
                     switch.set_active(*x);
@@ -331,14 +315,14 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             (row.upcast(), Box::new(show))
         }
         LayoutEngineOptionValue::Number(default) => {
-            let whole = default.fract() == 0.;
-            let spin = gtk::SpinButton::with_range(-1e9, 1e9, 1.);
-            spin.set_digits(if whole { 0 } else { 2 });
-            spin.set_valign(gtk::Align::Center);
-            spin.connect_value_changed(move |spin| {
-                write(LayoutEngineOptionValue::Number(spin.value()))
+            let row = adw::SpinRow::with_range(-1e9, 1e9, 1.);
+            row.set_title(&title);
+            row.set_subtitle(&description);
+            row.set_digits(if default.fract() == 0. { 0 } else { 2 });
+            row.connect_value_notify(move |row| {
+                write(LayoutEngineOptionValue::Number(row.value()))
             });
-            let row = option_action_row(&title, option, &[reset.upcast_ref(), spin.upcast_ref()]);
+            let spin = row.clone();
             let show = move |value: &LayoutEngineOptionValue| {
                 if let LayoutEngineOptionValue::Number(x) = value {
                     spin.set_value(*x);
@@ -351,13 +335,9 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
                 .title(&title)
                 .show_apply_button(true)
                 .build();
-            row.add_suffix(&reset);
             row.connect_apply(move |row| {
                 write(LayoutEngineOptionValue::String(row.text().to_string()))
             });
-            if let Some(description) = &option.description {
-                row.set_tooltip_text(Some(description));
-            }
             let entry = row.clone();
             let show = move |value: &LayoutEngineOptionValue| {
                 if let LayoutEngineOptionValue::String(x) = value {
@@ -370,38 +350,34 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             (row.upcast(), Box::new(show))
         }
     };
+    {
+        let (store_check, store_reset) = (view.ctx.store.clone(), view.ctx.store.clone());
+        let (path_check, path_reset) = (path.clone(), path.clone());
+        reset_menu(
+            &row,
+            move || kdl::get(&store_check.doc(), &kdl::split(&path_check)).is_some(),
+            move || {
+                store_reset.edit(&path_reset, |doc| {
+                    kdl::remove(doc, &kdl::split(&path_reset));
+                })
+            },
+        );
+    }
     view.ctx.anchor(&path, &row);
-    view.options
-        .borrow_mut()
-        .push(OptionRow { path, show, reset });
-    row
-}
-
-fn option_action_row(
-    title: &str,
-    option: &LayoutEngineOption,
-    suffixes: &[&gtk::Widget],
-) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).build();
-    if let Some(description) = &option.description {
-        row.set_subtitle(description);
-    }
-    for suffix in suffixes {
-        row.add_suffix(*suffix);
-    }
+    view.options.borrow_mut().push(OptionRow { show });
     row
 }
 
 fn actions_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Actions")
-        .description("Bind these in config.kdl, like Mod+V { layout-action \"split-v\"; }")
+        .description("Bind with layout-action.")
         .build();
     view.ctx.anchor("engine.actions", &group);
 
     if engine.actions.is_empty() {
         let row = adw::ActionRow::builder()
-            .title("This engine adds no actions")
+            .title("No Actions")
             .css_classes(["dim-label"])
             .build();
         group.add(&row);
@@ -415,7 +391,6 @@ fn actions_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
             .title(&action.name)
             .subtitle(action.description.as_deref().unwrap_or_default())
             .build();
-        row.add_css_class("property");
         let copy = gtk::Button::builder()
             .icon_name("edit-copy-symbolic")
             .tooltip_text(format!("Copy {bind}"))
@@ -425,7 +400,7 @@ fn actions_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
         let ctx = view.ctx.clone();
         copy.connect_clicked(move |button| {
             button.clipboard().set_text(&bind);
-            ctx.toast("Copied the bind action");
+            ctx.toast("Copied");
         });
         row.add_suffix(&copy);
         group.add(&row);
@@ -434,17 +409,13 @@ fn actions_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
 }
 
 fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder()
-        .title("Options and Actions")
-        .build();
+    let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.options", &group);
     view.ctx.anchor("engine.actions", &group);
 
     let row = adw::ActionRow::builder()
-        .title("Can't ask bento about its engine")
-        .subtitle(format!(
-            "{err}. Options and actions show up when this app runs inside a bento session."
-        ))
+        .title("Couldn't Reach bento")
+        .subtitle(err)
         .build();
     let retry = gtk::Button::builder()
         .label("Try Again")
@@ -460,14 +431,6 @@ fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
     row.add_suffix(&retry);
     group.add(&row);
     group
-}
-
-fn badge(text: &str) -> gtk::Label {
-    gtk::Label::builder()
-        .label(text)
-        .valign(gtk::Align::Center)
-        .css_classes(["caption-heading", "accent"])
-        .build()
 }
 
 fn sentence_case(text: &str) -> String {

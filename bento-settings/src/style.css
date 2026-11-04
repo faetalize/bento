@@ -12,13 +12,8 @@
   margin: 24px 12px;
 }
 
-.reset {
-  min-width: 28px;
-  min-height: 28px;
-  padding: 0;
-}
-
-image.warning {
+/* Rows whose value from settings.kdl something later in config.kdl overrides. */
+row.overridden .subtitle {
   color: @warning_color;
 }
 

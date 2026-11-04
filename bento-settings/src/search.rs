@@ -5,7 +5,7 @@
 //! spread over long descriptions match nearly anything. Matches at the start of words and runs of
 //! letters score higher, and the title counts for more than keywords and context.
 
-use crate::model::{Content, Section};
+use crate::model::{Content, Section, Setting};
 
 pub struct Entry {
     /// Index of the category in sidebar order.
@@ -28,32 +28,23 @@ pub struct Hit {
 pub fn index(sections: &[Section]) -> Vec<Entry> {
     let mut entries = Vec::new();
     for (category_idx, category) in sections.iter().flat_map(|s| &s.categories).enumerate() {
-        let mut keywords: Vec<String> = category.keywords.iter().map(|k| k.to_string()).collect();
-        keywords.push(category.description.to_owned());
         entries.push(Entry {
             category: category_idx,
             anchor: None,
             title: category.title.to_owned(),
             context: String::from("Page"),
-            keywords,
+            keywords: category.keywords.iter().map(|k| k.to_string()).collect(),
         });
 
         match &category.content {
             Content::Settings(groups) => {
                 for group in groups {
+                    let context = match group.title {
+                        Some(title) => format!("{} › {title}", category.title),
+                        None => category.title.to_owned(),
+                    };
                     for setting in &group.settings {
-                        let mut keywords: Vec<String> =
-                            setting.keywords.iter().map(|k| k.to_string()).collect();
-                        keywords.extend(setting.subtitle.map(str::to_owned));
-                        keywords.push(group.title.to_owned());
-                        keywords.push(setting.path.replace('.', " "));
-                        entries.push(Entry {
-                            category: category_idx,
-                            anchor: Some(setting.path.to_owned()),
-                            title: setting.title.to_owned(),
-                            context: format!("{} › {}", category.title, group.title),
-                            keywords,
-                        });
+                        index_setting(&mut entries, category_idx, &context, setting);
                     }
                 }
             }
@@ -72,6 +63,22 @@ pub fn index(sections: &[Section]) -> Vec<Entry> {
         }
     }
     entries
+}
+
+fn index_setting(entries: &mut Vec<Entry>, category: usize, context: &str, setting: &Setting) {
+    let mut keywords: Vec<String> = setting.keywords.iter().map(|k| k.to_string()).collect();
+    keywords.push(setting.path.replace('.', " "));
+    entries.push(Entry {
+        category,
+        anchor: Some(setting.path.to_owned()),
+        title: setting.title.to_owned(),
+        context: context.to_owned(),
+        keywords,
+    });
+    let context = format!("{context} › {}", setting.title);
+    for child in &setting.children {
+        index_setting(entries, category, &context, child);
+    }
 }
 
 pub fn search(entries: &[Entry], query: &str) -> Vec<Hit> {

@@ -1,10 +1,11 @@
-//! Building pages: the shared frame with its header, and a row for each kind of setting.
+//! Building pages: the shared frame, and a row for each kind of setting.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::{gdk, gio};
 use niri_config::Color;
 
 use crate::model::{Category, Control, Group, Input, Setting};
@@ -43,24 +44,13 @@ impl PageContext {
     }
 }
 
-/// Wraps a page's groups the way `AdwPreferencesPage` lays them out, with the category's
-/// description on top. Custom pages need their own widgets between groups, which
-/// `AdwPreferencesPage` doesn't allow.
-pub fn frame(category: &Category, content: &impl IsA<gtk::Widget>) -> gtk::Widget {
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
-    column.add_css_class("page-column");
-    if !category.description.is_empty() {
-        let description = gtk::Label::builder()
-            .label(category.description)
-            .xalign(0.)
-            .wrap(true)
-            .css_classes(["dim-label"])
-            .build();
-        column.append(&description);
-    }
-    column.append(content);
-
-    let clamp = adw::Clamp::builder().child(&column).build();
+/// Lays out a page's groups the way `AdwPreferencesPage` does. Custom pages rebuild their groups
+/// in place, which `AdwPreferencesPage` doesn't make easy.
+pub fn frame(content: &impl IsA<gtk::Widget>) -> gtk::Widget {
+    let clamp = adw::Clamp::builder()
+        .child(content)
+        .css_classes(["page-column"])
+        .build();
     gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&clamp)
@@ -71,14 +61,12 @@ pub fn frame(category: &Category, content: &impl IsA<gtk::Widget>) -> gtk::Widge
 pub fn settings_page(groups: &'static [Group], ctx: &PageContext) -> gtk::Widget {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
     for group in groups {
-        let widget = adw::PreferencesGroup::builder().title(group.title).build();
-        if let Some(description) = group.description {
-            widget.set_description(Some(description));
+        let widget = adw::PreferencesGroup::new();
+        if let Some(title) = group.title {
+            widget.set_title(title);
         }
         for setting in &group.settings {
-            let row = setting_row(setting, ctx);
-            widget.add(&row);
-            ctx.anchor(setting.path, &row);
+            widget.add(&setting_row(setting, ctx));
         }
         column.append(&widget);
     }
@@ -90,46 +78,81 @@ pub fn planned_page(category: &Category, ctx: &PageContext) -> gtk::Widget {
     let button = gtk::Button::builder()
         .label("Open config.kdl")
         .halign(gtk::Align::Center)
-        .css_classes(["pill", "suggested-action"])
+        .css_classes(["pill"])
         .build();
     let path = ctx.store.config_path().to_owned();
     button.connect_clicked(move |button| open_file(button, &path));
 
-    let status = adw::StatusPage::builder()
+    adw::StatusPage::builder()
         .icon_name(category.icon)
-        .title(format!("{} settings are coming", category.title))
-        .description(format!(
-            "{}\n\nUntil this page is ready, set them in config.kdl.",
-            category.description
-        ))
+        .title("Coming Soon")
+        .description("Set these in config.kdl for now.")
         .child(&button)
         .vexpand(true)
-        .build();
-    status.add_css_class("planned");
-    status.upcast()
+        .build()
+        .upcast()
 }
 
 pub fn open_file(widget: &impl IsA<gtk::Widget>, path: &std::path::Path) {
-    let launcher = gtk::FileLauncher::new(Some(&gtk::gio::File::for_path(path)));
+    let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
     let window = widget.root().and_downcast::<gtk::Window>();
-    launcher.launch(window.as_ref(), None::<&gtk::gio::Cancellable>, |_| ());
+    launcher.launch(window.as_ref(), None::<&gio::Cancellable>, |_| ());
 }
 
 pub fn open_uri(widget: &impl IsA<gtk::Widget>, uri: &str) {
     let launcher = gtk::UriLauncher::new(uri);
     let window = widget.root().and_downcast::<gtk::Window>();
-    launcher.launch(window.as_ref(), None::<&gtk::gio::Cancellable>, |_| ());
+    launcher.launch(window.as_ref(), None::<&gio::Cancellable>, |_| ());
 }
 
-/// A flat round button that undoes a setting, shown only while settings.kdl sets it.
-pub fn reset_button() -> gtk::Button {
-    gtk::Button::builder()
-        .icon_name("edit-undo-symbolic")
-        .tooltip_text("Reset to the value from config.kdl, or the default")
-        .valign(gtk::Align::Center)
-        .css_classes(["flat", "circular", "reset"])
-        .visible(false)
-        .build()
+/// Gives a row a right-click and long-press menu with "Reset", enabled while `can_reset` says so.
+///
+/// Native rows have no good place for a visible reset button: suffixes land after the switch or
+/// spin button.
+pub fn reset_menu(
+    row: &impl IsA<gtk::Widget>,
+    can_reset: impl Fn() -> bool + 'static,
+    reset: impl Fn() + 'static,
+) {
+    let row = row.as_ref();
+    let action = gio::SimpleAction::new("reset", None);
+    action.connect_activate(move |_, _| reset());
+    let actions = gio::SimpleActionGroup::new();
+    actions.add_action(&action);
+    row.insert_action_group("row", Some(&actions));
+
+    let menu = gio::Menu::new();
+    menu.append(Some("Reset"), Some("row.reset"));
+    let popover = gtk::PopoverMenu::from_model(Some(&menu));
+    popover.set_parent(row);
+    popover.set_has_arrow(false);
+    popover.set_halign(gtk::Align::Start);
+
+    let show = move |x: f64, y: f64| {
+        action.set_enabled(can_reset());
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popover.popup();
+    };
+    let show = Rc::new(show);
+
+    let click = gtk::GestureClick::builder()
+        .button(gdk::BUTTON_SECONDARY)
+        .build();
+    {
+        let show = show.clone();
+        click.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            show(x, y);
+        });
+    }
+    row.add_controller(click);
+
+    let press = gtk::GestureLongPress::builder().touch_only(true).build();
+    press.connect_pressed(move |gesture, x, y| {
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        show(x, y);
+    });
+    row.add_controller(press);
 }
 
 fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
@@ -147,33 +170,28 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
         }
     };
 
-    let reset = reset_button();
-    reset.connect_clicked({
-        let store = store.clone();
-        move |_| store.edit(setting.path, |doc| setting.reset(doc))
-    });
-
-    let warning = gtk::Image::builder()
-        .icon_name("dialog-warning-symbolic")
-        .tooltip_text("Something after the include in config.kdl overrides this")
-        .css_classes(["warning"])
-        .visible(false)
-        .build();
-
     let (row, show): (adw::PreferencesRow, Box<dyn Fn()>) = match &setting.control {
-        Control::Switch { get, inverted, .. } => {
-            let switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
-            let row = action_row(
-                setting,
-                &[
-                    warning.upcast_ref(),
-                    reset.upcast_ref(),
-                    switch.upcast_ref(),
-                ],
-            );
-            row.set_activatable_widget(Some(&switch));
-            switch.connect_active_notify(move |switch| edit(Input::Bool(switch.is_active())));
+        Control::Switch { get, inverted, .. } if !setting.children.is_empty() => {
+            let row = adw::ExpanderRow::builder()
+                .title(setting.title)
+                .show_enable_switch(true)
+                .build();
+            for child in &setting.children {
+                row.add_row(&setting_row(child, ctx));
+            }
+            row.connect_enable_expansion_notify(move |row| {
+                edit(Input::Bool(row.enables_expansion()))
+            });
             let (get, inverted, store) = (*get, *inverted, store.clone());
+            let expander = row.clone();
+            let show = move || expander.set_enable_expansion(get(&store.config()) != inverted);
+            (row.upcast(), Box::new(show))
+        }
+        Control::Switch { get, inverted, .. } => {
+            let row = adw::SwitchRow::builder().title(setting.title).build();
+            row.connect_active_notify(move |row| edit(Input::Bool(row.is_active())));
+            let (get, inverted, store) = (*get, *inverted, store.clone());
+            let switch = row.clone();
             let show = move || switch.set_active(get(&store.config()) != inverted);
             (row.upcast(), Box::new(show))
         }
@@ -184,42 +202,32 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
             step,
             digits,
         } => {
-            let spin = gtk::SpinButton::with_range(*min, *max, *step);
-            spin.set_digits(*digits);
-            // Equal widths keep the fields lined up whatever their range.
-            spin.set_width_chars(5);
-            spin.set_valign(gtk::Align::Center);
-            let row = action_row(
-                setting,
-                &[warning.upcast_ref(), reset.upcast_ref(), spin.upcast_ref()],
-            );
-            spin.connect_value_changed(move |spin| edit(Input::Number(spin.value())));
+            let row = adw::SpinRow::with_range(*min, *max, *step);
+            row.set_title(setting.title);
+            row.set_digits(*digits);
+            row.connect_value_notify(move |row| edit(Input::Number(row.value())));
             let (get, store) = (*get, store.clone());
+            let spin = row.clone();
             let show = move || spin.set_value(get(&store.config()));
             (row.upcast(), Box::new(show))
         }
         Control::Choice { get, choices } => {
             let labels: Vec<&str> = choices.iter().map(|(_, label)| *label).collect();
-            let dropdown = gtk::DropDown::from_strings(&labels);
-            dropdown.set_valign(gtk::Align::Center);
-            let row = action_row(
-                setting,
-                &[
-                    warning.upcast_ref(),
-                    reset.upcast_ref(),
-                    dropdown.upcast_ref(),
-                ],
-            );
-            dropdown.connect_selected_notify(move |dropdown| {
-                if let Some((value, _)) = choices.get(dropdown.selected() as usize) {
+            let row = adw::ComboRow::builder()
+                .title(setting.title)
+                .model(&gtk::StringList::new(&labels))
+                .build();
+            row.connect_selected_notify(move |row| {
+                if let Some((value, _)) = choices.get(row.selected() as usize) {
                     edit(Input::Choice(*value));
                 }
             });
             let (get, store) = (*get, store.clone());
+            let combo = row.clone();
             let show = move || {
                 let current = get(&store.config());
                 let idx = choices.iter().position(|(value, _)| *value == current);
-                dropdown.set_selected(idx.map_or(gtk::INVALID_LIST_POSITION, |i| i as u32));
+                combo.set_selected(idx.map_or(gtk::INVALID_LIST_POSITION, |i| i as u32));
             };
             (row.upcast(), Box::new(show))
         }
@@ -228,12 +236,7 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
                 .title(setting.title)
                 .show_apply_button(true)
                 .build();
-            row.add_suffix(&warning);
-            row.add_suffix(&reset);
-            {
-                let edit = edit.clone();
-                row.connect_apply(move |row| edit(Input::Text(row.text().trim().to_owned())));
-            }
+            row.connect_apply(move |row| edit(Input::Text(row.text().trim().to_owned())));
             let (get, store) = (*get, store.clone());
             let entry = row.clone();
             let show = move || {
@@ -248,14 +251,9 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
             let dialog = gtk::ColorDialog::builder().with_alpha(true).build();
             let button = gtk::ColorDialogButton::new(Some(dialog));
             button.set_valign(gtk::Align::Center);
-            let row = action_row(
-                setting,
-                &[
-                    warning.upcast_ref(),
-                    reset.upcast_ref(),
-                    button.upcast_ref(),
-                ],
-            );
+            let row = adw::ActionRow::builder().title(setting.title).build();
+            row.add_suffix(&button);
+            row.set_activatable_widget(Some(&button));
             button.connect_rgba_notify(move |button| {
                 let rgba = button.rgba();
                 edit(Input::Color(Color::from_array_unpremul([
@@ -268,43 +266,52 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
             let (get, store) = (*get, store.clone());
             let show = move || {
                 let [r, g, b, a] = get(&store.config()).to_array_unpremul();
-                button.set_rgba(&gtk::gdk::RGBA::new(r, g, b, a));
+                button.set_rgba(&gdk::RGBA::new(r, g, b, a));
             };
             (row.upcast(), Box::new(show))
         }
     };
+    ctx.anchor(setting.path, &row);
+
+    if setting.can_reset() {
+        let store_check = store.clone();
+        let store_reset = store.clone();
+        reset_menu(
+            &row,
+            move || setting.is_set(&store_check.doc()),
+            move || store_reset.edit(setting.path, |doc| setting.reset(doc)),
+        );
+    }
 
     let refresh = {
         let row = row.clone();
-        let store = store.clone();
         move || {
             updating.set(true);
             show();
             updating.set(false);
 
+            // Something after the include in config.kdl wins over settings.kdl.
             let doc = store.doc();
-            let config = store.config();
-            let is_set = setting.is_set(&doc);
-            reset.set_visible(is_set && setting.can_reset());
-            warning.set_visible(is_set && !setting.applied(&doc, &config));
-            if let Some(enabled) = setting.enabled_if {
-                row.set_sensitive(enabled(&config));
+            let overridden = setting.is_set(&doc) && !setting.applied(&doc, &store.config());
+            set_subtitle(&row, overridden.then_some("Overridden in config.kdl"));
+            if overridden {
+                row.add_css_class("overridden");
+            } else {
+                row.remove_css_class("overridden");
             }
         }
     };
     refresh();
-    store.subscribe(refresh);
+    ctx.store.subscribe(refresh);
 
     row.upcast()
 }
 
-fn action_row(setting: &Setting, suffixes: &[&gtk::Widget]) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(setting.title).build();
-    if let Some(subtitle) = setting.subtitle {
+fn set_subtitle(row: &adw::PreferencesRow, subtitle: Option<&str>) {
+    let subtitle = subtitle.unwrap_or_default();
+    if let Some(row) = row.downcast_ref::<adw::ActionRow>() {
+        row.set_subtitle(subtitle);
+    } else if let Some(row) = row.downcast_ref::<adw::ExpanderRow>() {
         row.set_subtitle(subtitle);
     }
-    for suffix in suffixes {
-        row.add_suffix(*suffix);
-    }
-    row
 }

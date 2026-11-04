@@ -61,10 +61,8 @@ pub fn build(
 
     // Sidebar.
     let search_entry = gtk::SearchEntry::builder()
-        .placeholder_text("Search settings")
-        .margin_start(12)
-        .margin_end(12)
-        .margin_bottom(6)
+        .placeholder_text("Search")
+        .hexpand(true)
         .build();
 
     let category_list = gtk::ListBox::builder()
@@ -103,11 +101,12 @@ pub fn build(
         .primary(true)
         .build();
 
-    let sidebar_header = adw::HeaderBar::new();
+    let sidebar_header = adw::HeaderBar::builder()
+        .title_widget(&search_entry)
+        .build();
     sidebar_header.pack_end(&menu_button);
     let sidebar_toolbar = adw::ToolbarView::new();
     sidebar_toolbar.add_top_bar(&sidebar_header);
-    sidebar_toolbar.add_top_bar(&search_entry);
     sidebar_toolbar.set_content(Some(&sidebar_stack));
     let sidebar_page = adw::NavigationPage::builder()
         .title("Bento Settings")
@@ -363,10 +362,8 @@ impl Ui {
         let category = self.categories[idx];
         if self.built.borrow_mut().insert(idx) {
             let content = match &category.content {
-                Content::Settings(groups) => {
-                    page::frame(category, &page::settings_page(groups, &self.ctx))
-                }
-                Content::Custom { build, .. } => page::frame(category, &build(&self.ctx)),
+                Content::Settings(groups) => page::frame(&page::settings_page(groups, &self.ctx)),
+                Content::Custom { build, .. } => page::frame(&build(&self.ctx)),
                 Content::Planned => page::planned_page(category, &self.ctx),
             };
             self.pages.add_named(&content, Some(category.id));
@@ -426,8 +423,27 @@ impl Ui {
     }
 }
 
-/// Scrolls a widget into view and flashes it.
+/// Scrolls a widget into view and flashes it, opening the expander row it's in first.
 fn reveal(widget: &gtk::Widget) {
+    let expander = widget
+        .parent()
+        .and_then(|parent| parent.ancestor(adw::ExpanderRow::static_type()))
+        .and_downcast::<adw::ExpanderRow>();
+    if let Some(expander) = expander.filter(|e| !e.is_expanded() && e.enables_expansion()) {
+        expander.set_expanded(true);
+        // Wait for the rows to slide open, so the scroll lands where they end up.
+        let widget = widget.downgrade();
+        glib::timeout_add_local_once(Duration::from_millis(300), move || {
+            if let Some(widget) = widget.upgrade() {
+                scroll_and_flash(&widget);
+            }
+        });
+    } else {
+        scroll_and_flash(widget);
+    }
+}
+
+fn scroll_and_flash(widget: &gtk::Widget) {
     if let Some(scrolled) = widget
         .ancestor(gtk::ScrolledWindow::static_type())
         .and_downcast::<gtk::ScrolledWindow>()
@@ -455,22 +471,13 @@ fn reveal(widget: &gtk::Widget) {
 fn update_banner(ui: &Ui) {
     let status = ui.ctx.store.status();
     let (title, button) = if status.settings_error.is_some() {
-        (
-            "settings.kdl has an error, so changes here are paused",
-            Some("Details"),
-        )
+        ("settings.kdl has an error", Some("Details"))
     } else if status.not_included {
-        (
-            "config.kdl doesn't include settings.kdl, so changes here don't apply yet",
-            Some("Add Include"),
-        )
+        ("config.kdl doesn't include settings.kdl", Some("Fix"))
     } else if status.write_error.is_some() {
-        ("The last change couldn't be saved", Some("Details"))
+        ("Couldn't save the last change", Some("Details"))
     } else if status.config_error.is_some() {
-        (
-            "The config has an error, so bento is still running the last one that worked",
-            Some("Details"),
-        )
+        ("The config has an error", Some("Details"))
     } else {
         ("", None)
     };
