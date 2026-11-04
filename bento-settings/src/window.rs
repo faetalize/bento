@@ -12,7 +12,6 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::account::{self, Account};
 use crate::model::{Category, Content, Section};
 use crate::page::{self, PageContext};
 use crate::search::{self, Entry};
@@ -90,10 +89,7 @@ pub fn build(
     let sidebar_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .build();
-    let categories_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    categories_box.append(&account_row(&account::current()));
-    categories_box.append(&category_list);
-    sidebar_stack.add_named(&scrolled(&categories_box), Some("categories"));
+    sidebar_stack.add_named(&scrolled(&category_list), Some("categories"));
     sidebar_stack.add_named(&scrolled(&results_list), Some("results"));
     sidebar_stack.add_named(&no_results, Some("no-results"));
 
@@ -204,9 +200,9 @@ fn connect(ui: &Rc<Ui>, window: &adw::ApplicationWindow) {
             let section = ui.section_of[row.index() as usize];
             let first =
                 before.is_none_or(|before| ui.section_of[before.index() as usize] != section);
-            if first {
+            if let Some(title) = ui.sections[section].title.filter(|_| first) {
                 let label = gtk::Label::builder()
-                    .label(ui.sections[section].title)
+                    .label(title)
                     .xalign(0.)
                     .css_classes(["heading", "dim-label", "sidebar-heading"])
                     .build();
@@ -507,44 +503,10 @@ fn banner_action(ui: &Ui, banner: &adw::Banner) {
     dialog.present(Some(banner));
 }
 
-fn account_row(account: &Account) -> gtk::Box {
-    let avatar = adw::Avatar::new(40, Some(&account.name), true);
-    if let Some(texture) = account
-        .picture
-        .as_ref()
-        .and_then(|path| gtk::gdk::Texture::from_filename(path).ok())
-    {
-        avatar.set_custom_image(Some(&texture));
-    }
-
-    let name = gtk::Label::builder()
-        .label(&account.name)
-        .xalign(0.)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .css_classes(["heading"])
-        .build();
-    let user = gtk::Label::builder()
-        .label(&account.user)
-        .xalign(0.)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .css_classes(["caption", "dim-label"])
-        .build();
-    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    text.set_valign(gtk::Align::Center);
-    text.append(&name);
-    // Without a full name, the name already is the username.
-    if account.user != account.name {
-        text.append(&user);
-    }
-
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-    row.add_css_class("account");
-    row.append(&avatar);
-    row.append(&text);
-    row
-}
-
 fn sidebar_row(category: &Category) -> gtk::ListBoxRow {
+    if let Some(build) = category.sidebar_row {
+        return gtk::ListBoxRow::builder().child(&build()).build();
+    }
     let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row_box.append(&gtk::Image::from_icon_name(category.icon));
     row_box.append(

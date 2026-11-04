@@ -2,6 +2,7 @@
 //! listing it in a section here.
 
 mod about;
+mod account;
 mod appearance;
 mod engine;
 mod input;
@@ -13,6 +14,7 @@ use crate::model::Section;
 
 pub fn sections() -> Vec<Section> {
     vec![
+        Section::untitled(vec![account::category()]),
         Section::new(
             "Look and Feel",
             vec![

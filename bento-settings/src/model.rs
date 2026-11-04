@@ -10,15 +10,25 @@ use crate::kdl::{self, Document, Value};
 
 pub type Getter<T> = fn(&Config) -> T;
 
-/// A titled group of categories in the sidebar.
+/// A group of categories in the sidebar, under a title if it has one.
 pub struct Section {
-    pub title: &'static str,
+    pub title: Option<&'static str>,
     pub categories: Vec<Category>,
 }
 
 impl Section {
     pub fn new(title: &'static str, categories: Vec<Category>) -> Self {
-        Self { title, categories }
+        Self {
+            title: Some(title),
+            categories,
+        }
+    }
+
+    pub fn untitled(categories: Vec<Category>) -> Self {
+        Self {
+            title: None,
+            categories,
+        }
     }
 }
 
@@ -28,6 +38,8 @@ pub struct Category {
     pub icon: &'static str,
     /// Words search should match besides the title.
     pub keywords: &'static [&'static str],
+    /// Builds the category's sidebar row in place of its icon and title.
+    pub sidebar_row: Option<fn() -> gtk::Widget>,
     pub content: Content,
 }
 
@@ -57,6 +69,7 @@ impl Category {
             title,
             icon: "ph-gear-six-symbolic",
             keywords: &[],
+            sidebar_row: None,
             content,
         }
     }
@@ -91,6 +104,11 @@ impl Category {
 
     pub fn keywords(mut self, keywords: &'static [&'static str]) -> Self {
         self.keywords = keywords;
+        self
+    }
+
+    pub fn sidebar_row(mut self, build: fn() -> gtk::Widget) -> Self {
+        self.sidebar_row = Some(build);
         self
     }
 

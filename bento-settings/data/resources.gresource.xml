@@ -17,8 +17,10 @@
     <file compressed="true" alias="ph-monitor-symbolic.svg">icons/scalable/actions/ph-monitor-symbolic.svg</file>
     <file compressed="true" alias="ph-mouse-simple-symbolic.svg">icons/scalable/actions/ph-mouse-simple-symbolic.svg</file>
     <file compressed="true" alias="ph-palette-symbolic.svg">icons/scalable/actions/ph-palette-symbolic.svg</file>
+    <file compressed="true" alias="ph-pencil-simple-symbolic.svg">icons/scalable/actions/ph-pencil-simple-symbolic.svg</file>
     <file compressed="true" alias="ph-rocket-launch-symbolic.svg">icons/scalable/actions/ph-rocket-launch-symbolic.svg</file>
     <file compressed="true" alias="ph-sparkle-symbolic.svg">icons/scalable/actions/ph-sparkle-symbolic.svg</file>
     <file compressed="true" alias="ph-squares-four-symbolic.svg">icons/scalable/actions/ph-squares-four-symbolic.svg</file>
+    <file compressed="true" alias="ph-user-circle-symbolic.svg">icons/scalable/actions/ph-user-circle-symbolic.svg</file>
   </gresource>
 </gresources>
