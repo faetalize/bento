@@ -1,130 +1,322 @@
-//! A small KDL document model for the files this app reads and writes.
+//! Edits to a hand-written KDL config that leave everything else in it alone.
 //!
-//! knuffel parses the text; the app then edits plain `Node` trees and writes them back out. Type
-//! annotations and the order of properties aren't kept, since bento's config doesn't use them.
+//! knuffel parses the text with byte positions for every node and value. A change replaces only
+//! the node it's about, or adds one line to the section it belongs in at the section's own
+//! indentation, so comments, ordering and spacing stay the way the person wrote them.
+//!
+//! Paths like `input.touchpad.tap` find the node bento actually uses: where a section appears more
+//! than once, the last one that has the setting wins, since later sections override earlier ones.
+//! Sections that bento replaces as a whole only count in their last copy, and window rules only
+//! count when they apply to every window.
 
 use std::fmt::Write as _;
 
-use knuffel::ast::{self, Literal};
+use knuffel::ast;
 use knuffel::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    Null,
     Bool(bool),
     Int(i64),
     Float(f64),
     Str(String),
 }
 
-impl Value {
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Value::Int(x) => Some(*x as f64),
-            Value::Float(x) => Some(*x),
-            _ => None,
-        }
-    }
+/// Sections that a later copy replaces as a whole, instead of merging into. Only the last copy of
+/// one of these is what bento uses.
+const WHOLE_SECTIONS: &[&str] = &[
+    "tiling",
+    "input.keyboard.xkb",
+    "input.touchpad",
+    "input.mouse",
+    "input.trackpoint",
+    "input.trackball",
+    "input.tablet",
+    "input.touch",
+];
 
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            Value::Str(x) => Some(x),
-            _ => None,
-        }
-    }
+/// Sections that hold rules, where only rules without `match` or `exclude` apply to every window.
+const RULES: &[&str] = &["window-rule", "layer-rule"];
+
+pub fn split(path: &str) -> Vec<&str> {
+    path.split('.').collect()
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+/// A node with where its parts sit in the text.
+#[derive(Debug, Clone)]
 pub struct Node {
     pub name: String,
-    pub args: Vec<Value>,
-    pub props: Vec<(String, Value)>,
+    /// Start of the node's name.
+    start: usize,
+    /// End of the node's name, arguments and properties, before any `{`.
+    head_end: usize,
+    /// End of the node, after its terminator.
+    end: usize,
+    /// Positions of the `{` and `}` around its children.
+    braces: Option<(usize, usize)>,
     pub children: Vec<Node>,
 }
 
-impl Node {
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_owned(),
-            ..Self::default()
+pub struct Document {
+    text: String,
+}
+
+impl Document {
+    /// Checks the text parses, so later edits can rely on it.
+    pub fn parse(text: String) -> Result<Self, knuffel::Error> {
+        knuffel::parse_ast::<Span>("config.kdl", &text)?;
+        Ok(Self { text })
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn nodes(&self) -> Vec<Node> {
+        let doc = knuffel::parse_ast::<Span>("config.kdl", &self.text)
+            .expect("edits keep the document valid");
+        doc.nodes
+            .iter()
+            .map(|node| locate(node, &self.text))
+            .collect()
+    }
+
+    /// The node bento uses at this path, if the document sets it.
+    pub fn get(&self, path: &[&str]) -> Option<Node> {
+        find(&self.nodes(), path, "")
+            .last()
+            .map(|node| (*node).clone())
+    }
+
+    /// Sets the arguments of the node at `path`, adding it and its sections if they're missing.
+    pub fn set(&mut self, path: &[&str], args: Vec<Value>) {
+        let nodes = self.nodes();
+        let head = head_text(path[path.len() - 1], &args);
+
+        if let Some(node) = find(&nodes, path, "").last() {
+            self.text.replace_range(node.start..node.head_end, &head);
+            return;
+        }
+
+        // Add it to the deepest section that exists, creating the ones in between.
+        for depth in (1..path.len()).rev() {
+            if let Some(parent) = find(&nodes, &path[..depth], "").last() {
+                self.insert_child(parent, &path[depth..], &args);
+                return;
+            }
+        }
+
+        // Nothing of the path exists: add the whole thing at the end.
+        if !self.text.is_empty() {
+            if !self.text.ends_with('\n') {
+                self.text.push('\n');
+            }
+            self.text.push('\n');
+        }
+        self.text.push_str(&block(path, &args, ""));
+        self.text.push('\n');
+    }
+
+    /// Removes every node at `path` that bento would use. Returns whether there was one.
+    pub fn remove(&mut self, path: &[&str]) -> bool {
+        let nodes = self.nodes();
+        let mut ranges: Vec<(usize, usize)> = find(&nodes, path, "")
+            .iter()
+            .map(|node| removal_range(&self.text, node))
+            .collect();
+        ranges.sort_unstable();
+        for (start, end) in ranges.iter().rev() {
+            self.text.replace_range(start..end, "");
+        }
+        !ranges.is_empty()
+    }
+
+    fn insert_child(&mut self, parent: &Node, rest: &[&str], args: &[Value]) {
+        let parent_indent = indent_at(&self.text, parent.start).to_owned();
+        let Some((_, close)) = parent.braces else {
+            // A node without a block, like `border`: give it one.
+            let child_indent = format!("{parent_indent}    ");
+            let text = format!(
+                " {{\n{}\n{parent_indent}}}",
+                block(rest, args, &child_indent)
+            );
+            self.text.insert_str(parent.head_end, &text);
+            return;
+        };
+
+        let close_line = line_start(&self.text, close);
+        if self.text[close_line..close].trim().is_empty() {
+            // `}` on its own line: add a line above it, indented like the other children.
+            let child_indent = match parent.children.last() {
+                Some(child) => indent_at(&self.text, child.start).to_owned(),
+                None => format!("{parent_indent}    "),
+            };
+            let text = format!("{}\n", block(rest, args, &child_indent));
+            self.text.insert_str(close_line, &text);
+        } else {
+            // A block on one line, like `touchpad { tap; }`: keep it on one line.
+            let space = if self.text[..close].ends_with(' ') {
+                ""
+            } else {
+                " "
+            };
+            let text = format!("{space}{}; ", inline(rest, args));
+            self.text.insert_str(close, &text);
         }
     }
-
-    pub fn arg(&self) -> Option<&Value> {
-        self.args.first()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.args.is_empty() && self.props.is_empty() && self.children.is_empty()
-    }
 }
 
-pub fn parse(file_name: &str, text: &str) -> Result<Vec<Node>, knuffel::Error> {
-    let doc = knuffel::parse_ast::<Span>(file_name, text)?;
-    Ok(doc.nodes.iter().map(|node| from_ast(node)).collect())
-}
-
-fn from_ast(node: &ast::Node<Span>) -> Node {
+fn locate(node: &ast::SpannedNode<Span>, text: &str) -> Node {
+    let start = node.node_name.span().0;
+    let mut head_end = node.node_name.span().1;
+    for value in &node.arguments {
+        head_end = head_end.max(value.literal.span().1);
+    }
+    for value in node.properties.values() {
+        head_end = head_end.max(value.literal.span().1);
+    }
+    let braces = node
+        .children
+        .as_ref()
+        .map(|children| (children.span().0, children.span().1 - 1));
+    debug_assert!(braces.is_none_or(|(_, close)| text.as_bytes()[close] == b'}'));
     Node {
         name: node.node_name.to_string(),
-        args: node
-            .arguments
-            .iter()
-            .map(|value| from_literal(&value.literal))
-            .collect(),
-        props: node
-            .properties
-            .iter()
-            .map(|(name, value)| (name.to_string(), from_literal(&value.literal)))
-            .collect(),
+        start,
+        head_end,
+        end: node.span().1,
+        braces,
         children: node
             .children
             .as_ref()
-            .map(|children| children.iter().map(|child| from_ast(child)).collect())
+            .map(|children| children.iter().map(|child| locate(child, text)).collect())
             .unwrap_or_default(),
     }
 }
 
-fn from_literal(literal: &Literal) -> Value {
-    match literal {
-        Literal::Null => Value::Null,
-        Literal::Bool(x) => Value::Bool(*x),
-        Literal::Int(x) => i64::try_from(x).map_or(Value::Null, Value::Int),
-        Literal::Decimal(x) => f64::try_from(x).map_or(Value::Null, Value::Float),
-        Literal::String(x) => Value::Str(x.to_string()),
+/// The nodes at `path` that bento uses, in document order.
+fn find<'a>(nodes: &'a [Node], path: &[&str], prefix: &str) -> Vec<&'a Node> {
+    let Some((first, rest)) = path.split_first() else {
+        return Vec::new();
+    };
+    let full = if prefix.is_empty() {
+        first.to_string()
+    } else {
+        format!("{prefix}.{first}")
+    };
+
+    let mut candidates: Vec<&Node> = nodes
+        .iter()
+        .filter(|node| node.name == *first)
+        .filter(|node| !RULES.contains(first) || applies_to_everything(node))
+        .collect();
+    if WHOLE_SECTIONS.contains(&full.as_str()) {
+        candidates = candidates.split_off(candidates.len().saturating_sub(1));
+    }
+
+    if rest.is_empty() {
+        return candidates;
+    }
+
+    // A section replaced as a whole further down, like `touchpad` under `input`: only its last
+    // copy counts, wherever it is, so don't fall back to an earlier one that has the setting.
+    let target = format!("{full}.{}", rest.join("."));
+    let whole_below = WHOLE_SECTIONS.iter().find(|section| {
+        section.starts_with(&format!("{full}."))
+            && (target == **section || target.starts_with(&format!("{section}.")))
+    });
+    if let Some(section) = whole_below {
+        let section_rest: Vec<&str> = section[full.len() + 1..].split('.').collect();
+        return candidates
+            .iter()
+            .rev()
+            .find(|node| !find(&node.children, &section_rest, &full).is_empty())
+            .map(|node| find(&node.children, rest, &full))
+            .unwrap_or_default();
+    }
+
+    // Where several sections have the setting, the last one wins.
+    candidates
+        .iter()
+        .rev()
+        .map(|node| find(&node.children, rest, &full))
+        .find(|found| !found.is_empty())
+        .unwrap_or_default()
+}
+
+fn applies_to_everything(rule: &Node) -> bool {
+    !rule
+        .children
+        .iter()
+        .any(|child| child.name == "match" || child.name == "exclude")
+}
+
+fn line_start(text: &str, pos: usize) -> usize {
+    text[..pos].rfind('\n').map_or(0, |i| i + 1)
+}
+
+fn indent_at(text: &str, pos: usize) -> &str {
+    let line = &text[line_start(text, pos)..pos];
+    &line[..line.len() - line.trim_start().len()]
+}
+
+/// What to delete to remove a node: its whole line when it's alone on it.
+fn removal_range(text: &str, node: &Node) -> (usize, usize) {
+    let line = line_start(text, node.start);
+    let alone_before = text[line..node.start].trim().is_empty();
+    // The terminator ends at a newline, or at a `;` with more of the line after it.
+    let ends_line = text[..node.end].ends_with('\n');
+    let rest_of_line = if ends_line {
+        ""
+    } else {
+        text[node.end..].split('\n').next().unwrap_or_default()
+    };
+    if alone_before && rest_of_line.trim().is_empty() {
+        let mut end = node.end + rest_of_line.len();
+        if !ends_line && text[end..].starts_with('\n') {
+            end += 1;
+        }
+        (line, end)
+    } else {
+        // Shares its line: take the node and the spaces after it.
+        let after = &text[node.end..];
+        (
+            node.start,
+            node.end + after.len() - after.trim_start_matches(' ').len(),
+        )
     }
 }
 
-pub fn to_string(nodes: &[Node]) -> String {
+fn head_text(name: &str, args: &[Value]) -> String {
     let mut out = String::new();
-    for node in nodes {
-        write_node(&mut out, node, 0);
+    write_ident(&mut out, name);
+    for arg in args {
+        out.push(' ');
+        write_value(&mut out, arg);
     }
     out
 }
 
-fn write_node(out: &mut String, node: &Node, depth: usize) {
-    out.push_str(&"    ".repeat(depth));
-    write_ident(out, &node.name);
-    for arg in &node.args {
-        out.push(' ');
-        write_value(out, arg);
+/// A path as nested sections, one node per line.
+fn block(path: &[&str], args: &[Value], indent: &str) -> String {
+    match path {
+        [] => String::new(),
+        [leaf] => format!("{indent}{}", head_text(leaf, args)),
+        [first, rest @ ..] => format!(
+            "{indent}{} {{\n{}\n{indent}}}",
+            head_text(first, &[]),
+            block(rest, args, &format!("{indent}    "))
+        ),
     }
-    for (name, value) in &node.props {
-        out.push(' ');
-        write_ident(out, name);
-        out.push('=');
-        write_value(out, value);
+}
+
+/// A path as nested sections on one line.
+fn inline(path: &[&str], args: &[Value]) -> String {
+    match path {
+        [] => String::new(),
+        [leaf] => head_text(leaf, args),
+        [first, rest @ ..] => format!("{} {{ {}; }}", head_text(first, &[]), inline(rest, args)),
     }
-    if !node.children.is_empty() {
-        out.push_str(" {\n");
-        for child in &node.children {
-            write_node(out, child, depth + 1);
-        }
-        out.push_str(&"    ".repeat(depth));
-        out.push('}');
-    }
-    out.push('\n');
 }
 
 fn write_ident(out: &mut String, name: &str) {
@@ -132,7 +324,7 @@ fn write_ident(out: &mut String, name: &str) {
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && name
             .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
         && !matches!(name, "true" | "false" | "null");
     if bare {
         out.push_str(name);
@@ -143,7 +335,6 @@ fn write_ident(out: &mut String, name: &str) {
 
 fn write_value(out: &mut String, value: &Value) {
     match value {
-        Value::Null => out.push_str("null"),
         Value::Bool(x) => write!(out, "{x}").unwrap(),
         Value::Int(x) => write!(out, "{x}").unwrap(),
         // KDL needs a decimal point to read a number as a decimal.
@@ -168,133 +359,139 @@ fn write_string(out: &mut String, text: &str) {
     out.push('"');
 }
 
-/// Splits a dotted path like `layout.focus-ring.width`.
-pub fn split(path: &str) -> Vec<&str> {
-    path.split('.').collect()
-}
-
-/// Finds the node at a path. Where a name repeats, the last one wins, as in bento's config.
-pub fn get<'a>(nodes: &'a [Node], path: &[&str]) -> Option<&'a Node> {
-    let (first, rest) = path.split_first()?;
-    let node = nodes.iter().rev().find(|node| node.name == *first)?;
-    if rest.is_empty() {
-        Some(node)
-    } else {
-        get(&node.children, rest)
-    }
-}
-
-/// Finds the node at a path, creating it and its parents if they don't exist.
-pub fn ensure<'a>(nodes: &'a mut Vec<Node>, path: &[&str]) -> &'a mut Node {
-    let (first, rest) = path.split_first().expect("path must not be empty");
-    let idx = match nodes.iter().rposition(|node| node.name == *first) {
-        Some(idx) => idx,
-        None => {
-            nodes.push(Node::new(first));
-            nodes.len() - 1
-        }
-    };
-    let node = &mut nodes[idx];
-    if rest.is_empty() {
-        node
-    } else {
-        ensure(&mut node.children, rest)
-    }
-}
-
-/// Removes every node at a path, then any parents left empty by it. Returns whether it removed
-/// anything.
-pub fn remove(nodes: &mut Vec<Node>, path: &[&str]) -> bool {
-    let Some((first, rest)) = path.split_first() else {
-        return false;
-    };
-    if rest.is_empty() {
-        let before = nodes.len();
-        nodes.retain(|node| node.name != *first);
-        return nodes.len() != before;
-    }
-
-    let mut removed = false;
-    for node in nodes.iter_mut().filter(|node| node.name == *first) {
-        removed |= remove(&mut node.children, rest);
-    }
-    if removed {
-        nodes.retain(|node| node.name != *first || !node.is_empty());
-    }
-    removed
-}
-
-/// Sets the arguments of the node at a path, replacing any it had.
-pub fn set_args(nodes: &mut Vec<Node>, path: &[&str], args: Vec<Value>) {
-    let node = ensure(nodes, path);
-    node.args = args;
-    node.props.clear();
-    node.children.clear();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn edit(text: &str, f: impl FnOnce(&mut Document)) -> String {
+        let mut doc = Document::parse(text.to_owned()).unwrap();
+        f(&mut doc);
+        Document::parse(doc.text().to_owned()).expect("edit must stay valid KDL");
+        doc.text().to_owned()
+    }
+
     #[test]
-    fn round_trip() {
-        let text = "layout {\n    gaps 16\n    focus-ring {\n        off\n        active-color \"#7fc8ff\"\n    }\n}\ninclude \"a b.kdl\" optional=true\n";
-        let nodes = parse("test.kdl", text).unwrap();
-        assert_eq!(to_string(&nodes), text);
+    fn replaces_a_value_and_keeps_comments() {
+        let text = "// Layout.\nlayout {\n    gaps 16 // between windows\n\n    // Focus.\n    focus-ring { width 4; }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("layout.gaps"), vec![Value::Int(8)])
+        });
+        assert_eq!(out, text.replace("gaps 16", "gaps 8"));
+    }
+
+    #[test]
+    fn adds_a_line_at_the_section_indent() {
+        let text = "input {\n  touchpad {\n    tap\n  }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("input.touchpad.dwt"), Vec::new())
+        });
+        assert_eq!(out, "input {\n  touchpad {\n    tap\n    dwt\n  }\n}\n");
+    }
+
+    #[test]
+    fn adds_to_a_block_on_one_line() {
+        let out = edit("layout { gaps 4; }\n", |doc| {
+            doc.set(&split("layout.focus-ring.width"), vec![Value::Float(2.5)])
+        });
+        assert_eq!(out, "layout { gaps 4; focus-ring { width 2.5; }; }\n");
+    }
+
+    #[test]
+    fn creates_missing_sections() {
+        let out = edit(
+            "input {\n    keyboard {\n        numlock\n    }\n}\n",
+            |doc| {
+                doc.set(
+                    &split("input.touchpad.accel-speed"),
+                    vec![Value::Float(0.5)],
+                )
+            },
+        );
+        assert_eq!(
+            out,
+            "input {\n    keyboard {\n        numlock\n    }\n    touchpad {\n        accel-speed 0.5\n    }\n}\n"
+        );
+
+        let out = edit("// Nothing yet.\n", |doc| {
+            doc.set(&split("cursor.xcursor-size"), vec![Value::Int(32)])
+        });
+        assert_eq!(out, "// Nothing yet.\n\ncursor {\n    xcursor-size 32\n}\n");
+    }
+
+    #[test]
+    fn gives_a_bare_node_a_block() {
+        let out = edit("layout {\n    border\n}\n", |doc| {
+            doc.set(&split("layout.border.width"), vec![Value::Int(2)])
+        });
+        assert_eq!(out, "layout {\n    border {\n        width 2\n    }\n}\n");
+    }
+
+    #[test]
+    fn removes_whole_lines() {
+        let text = "input {\n    touchpad {\n        tap\n        natural-scroll // yes\n        dwt\n    }\n}\n";
+        let out = edit(text, |doc| {
+            assert!(doc.remove(&split("input.touchpad.natural-scroll")));
+        });
+        assert_eq!(
+            out,
+            "input {\n    touchpad {\n        tap\n        dwt\n    }\n}\n"
+        );
+
+        let out = edit("touchpad { tap; dwt; }\n", |doc| {
+            assert!(doc.remove(&["touchpad", "tap"]));
+        });
+        assert_eq!(out, "touchpad { dwt; }\n");
+        assert!(!Document::parse(out).unwrap().remove(&["touchpad", "tap"]));
+    }
+
+    #[test]
+    fn edits_the_section_bento_uses() {
+        // Merged sections: the last one with the setting.
+        let text = "layout {\n    gaps 1\n}\nlayout {\n    gaps 2\n}\nlayout {\n    struts {}\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("layout.gaps"), vec![Value::Int(3)])
+        });
+        assert_eq!(out, text.replace("gaps 2", "gaps 3"));
+
+        // Sections replaced as a whole: only the last one, even if an earlier one has it.
+        let text = "input {\n    touchpad {\n        tap\n    }\n}\ninput {\n    touchpad {\n        dwt\n    }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("input.touchpad.tap"), Vec::new())
+        });
+        assert_eq!(
+            out,
+            "input {\n    touchpad {\n        tap\n    }\n}\ninput {\n    touchpad {\n        dwt\n        tap\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn edits_only_rules_for_every_window() {
+        let text = "window-rule {\n    geometry-corner-radius 12\n}\nwindow-rule {\n    match app-id=\"foot\"\n    geometry-corner-radius 0\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(
+                &split("window-rule.geometry-corner-radius"),
+                vec![Value::Int(15)],
+            )
+        });
+        assert_eq!(out, text.replacen("radius 12", "radius 15", 1));
+    }
+
+    #[test]
+    fn positions_are_bytes() {
+        let text = "// fæ ✨\nlayout {\n    gaps 16\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("layout.gaps"), vec![Value::Int(8)])
+        });
+        assert_eq!(out, "// fæ ✨\nlayout {\n    gaps 8\n}\n");
     }
 
     #[test]
     fn writes_values() {
-        let mut nodes = Vec::new();
-        set_args(&mut nodes, &["a"], vec![Value::Float(2.)]);
-        set_args(&mut nodes, &["b"], vec![Value::Float(0.25), Value::Int(-3)]);
-        set_args(
-            &mut nodes,
-            &["c"],
-            vec![Value::Str(String::from("x \"y\" \\z"))],
-        );
-        set_args(&mut nodes, &["d e"], vec![Value::Bool(false), Value::Null]);
-        assert_eq!(
-            to_string(&nodes),
-            "a 2.0\nb 0.25 -3\nc \"x \\\"y\\\" \\\\z\"\n\"d e\" false null\n"
-        );
-        assert_eq!(parse("test.kdl", &to_string(&nodes)).unwrap(), nodes);
-    }
-
-    #[test]
-    fn edits_paths() {
-        let mut nodes = parse(
-            "test.kdl",
-            "input {\n    keyboard {\n        numlock\n    }\n}\n",
-        )
-        .unwrap();
-        set_args(
-            &mut nodes,
-            &split("input.touchpad.accel-speed"),
-            vec![Value::Float(0.5)],
-        );
-        assert_eq!(
-            get(&nodes, &split("input.touchpad.accel-speed"))
-                .unwrap()
-                .arg(),
-            Some(&Value::Float(0.5))
-        );
-
-        assert!(remove(&mut nodes, &split("input.touchpad.accel-speed")));
-        assert!(get(&nodes, &["input", "touchpad"]).is_none());
-        assert!(get(&nodes, &split("input.keyboard.numlock")).is_some());
-
-        assert!(remove(&mut nodes, &split("input.keyboard.numlock")));
-        assert!(nodes.is_empty());
-        assert!(!remove(&mut nodes, &["input"]));
-    }
-
-    #[test]
-    fn last_node_wins() {
-        let nodes = parse("test.kdl", "layout { gaps 1; }\nlayout { gaps 2; }\n").unwrap();
-        assert_eq!(
-            get(&nodes, &["layout", "gaps"]).unwrap().arg(),
-            Some(&Value::Int(2))
-        );
+        let out = edit("", |doc| {
+            doc.set(&["a"], vec![Value::Float(2.)]);
+            doc.set(&["b"], vec![Value::Str(String::from("x \"y\" \\z"))]);
+            doc.set(&["Mod+T"], vec![Value::Bool(false)]);
+        });
+        assert_eq!(out, "a 2.0\n\nb \"x \\\"y\\\" \\\\z\"\n\nMod+T false\n");
     }
 }

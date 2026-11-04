@@ -17,7 +17,7 @@ use niri_ipc::{LayoutEngine, LayoutEngineOption, LayoutEngineOptionValue};
 use crate::ipc;
 use crate::kdl::{self, Value};
 use crate::model::Category;
-use crate::page::{reset_menu, PageContext};
+use crate::page::PageContext;
 use crate::store::{option_value, tilde};
 
 pub fn category() -> Category {
@@ -142,10 +142,10 @@ fn show_values(view: &View, engine: &LayoutEngine) {
 }
 
 fn set_layout(ctx: &PageContext, layout: String) {
-    ctx.store.edit("tiling.layout", |doc| {
-        kdl::set_args(doc, &["tiling", "layout"], vec![Value::Str(layout)]);
+    ctx.store.edit(|doc| {
+        doc.set(&["tiling", "layout"], vec![Value::Str(layout)]);
         // Options belong to the engine that declared them; bento rejects unknown ones.
-        kdl::remove(doc, &["tiling", "options"]);
+        doc.remove(&["tiling", "options"]);
     });
 }
 
@@ -273,13 +273,13 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             if updating.get() {
                 return;
             }
-            ctx.store.edit(&path, |doc| {
+            ctx.store.edit(|doc| {
                 let parts = kdl::split(&path);
-                // An option at its default stays out of the file.
+                // An option at its default stays out of the config.
                 if value == default {
-                    kdl::remove(doc, &parts);
+                    doc.remove(&parts);
                 } else {
-                    kdl::set_args(doc, &parts, vec![option_value(&value)]);
+                    doc.set(&parts, vec![option_value(&value)]);
                 }
             });
         }
@@ -339,19 +339,6 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             (row.upcast(), Box::new(show))
         }
     };
-    {
-        let (store_check, store_reset) = (view.ctx.store.clone(), view.ctx.store.clone());
-        let (path_check, path_reset) = (path.clone(), path.clone());
-        reset_menu(
-            &row,
-            move || kdl::get(&store_check.doc(), &kdl::split(&path_check)).is_some(),
-            move || {
-                store_reset.edit(&path_reset, |doc| {
-                    kdl::remove(doc, &kdl::split(&path_reset));
-                })
-            },
-        );
-    }
     view.ctx.anchor(&path, &row);
     view.options.borrow_mut().push(OptionRow { show });
     row

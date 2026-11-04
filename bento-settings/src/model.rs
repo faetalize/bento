@@ -1,12 +1,12 @@
 //! What the app shows: sections of categories in the sidebar, each a page of setting groups.
 //!
 //! A setting names its place in the config as a dotted path (`layout.focus-ring.width`), reads its
-//! current value from the parsed bento config, and knows how to write itself into settings.kdl.
+//! current value from the parsed bento config, and knows how to write itself into config.kdl.
 //! Adding a setting to a page is one builder chain; see `pages/appearance.rs`.
 
 use niri_config::{Color, Config};
 
-use crate::kdl::{self, Node, Value};
+use crate::kdl::{self, Document, Value};
 
 pub type Getter<T> = fn(&Config) -> T;
 
@@ -153,7 +153,7 @@ pub enum BoolStyle {
     Flag,
     /// `draw-behind-window true` or `draw-behind-window false`.
     Arg,
-    /// `tap` for true, nothing for false. Only inside sections that bento replaces as a whole.
+    /// `tap` for true, nothing for false.
     Presence,
     /// The path is a section, which gets an `on` or `off` child.
     OnOff,
@@ -332,8 +332,8 @@ impl Setting {
         kdl::split(self.path)
     }
 
-    /// Writes a value into the settings document.
-    pub fn write(&self, doc: &mut Vec<Node>, input: Input) {
+    /// Writes a value into the config.
+    pub fn write(&self, doc: &mut Document, input: Input) {
         let path = self.path_parts();
         match (&self.control, input) {
             (
@@ -344,22 +344,23 @@ impl Setting {
             ) => {
                 let value = on != *inverted;
                 match style {
-                    BoolStyle::Flag if value => kdl::set_args(doc, &path, Vec::new()),
-                    BoolStyle::Flag | BoolStyle::Arg => {
-                        kdl::set_args(doc, &path, vec![Value::Bool(value)])
+                    BoolStyle::Flag if value => doc.set(&path, Vec::new()),
+                    BoolStyle::Flag | BoolStyle::Arg => doc.set(&path, vec![Value::Bool(value)]),
+                    BoolStyle::Presence if value => {
+                        if doc.get(&path).is_none() {
+                            doc.set(&path, Vec::new());
+                        }
                     }
-                    BoolStyle::Presence if value => kdl::set_args(doc, &path, Vec::new()),
                     BoolStyle::Presence => {
-                        kdl::remove(doc, &path);
+                        doc.remove(&path);
                     }
                     BoolStyle::OnOff => {
-                        let section = kdl::ensure(doc, &path);
-                        section
-                            .children
-                            .retain(|c| c.name != "on" && c.name != "off");
-                        section
-                            .children
-                            .insert(0, Node::new(if value { "on" } else { "off" }));
+                        let [mut on, mut off] = [path.clone(), path];
+                        on.push("on");
+                        off.push("off");
+                        doc.remove(&on);
+                        doc.remove(&off);
+                        doc.set(if value { &on } else { &off }, Vec::new());
                     }
                 }
             }
@@ -369,118 +370,25 @@ impl Setting {
                 } else {
                     Value::Float(round_to(x, *digits))
                 };
-                kdl::set_args(doc, &path, vec![value]);
+                doc.set(&path, vec![value]);
             }
             (Control::Choice { .. }, Input::Choice(Some(word))) => {
-                kdl::set_args(doc, &path, vec![Value::Str(word.to_owned())]);
+                doc.set(&path, vec![Value::Str(word.to_owned())]);
             }
+            // Leaving a choice or text unset gives the default.
             (Control::Choice { .. }, Input::Choice(None)) => {
-                kdl::remove(doc, &path);
+                doc.remove(&path);
             }
             (Control::Text { .. }, Input::Text(text)) if text.is_empty() => {
-                kdl::remove(doc, &path);
+                doc.remove(&path);
             }
             (Control::Text { .. }, Input::Text(text)) => {
-                kdl::set_args(doc, &path, vec![Value::Str(text)]);
+                doc.set(&path, vec![Value::Str(text)]);
             }
             (Control::Color { .. }, Input::Color(color)) => {
-                kdl::set_args(doc, &path, vec![Value::Str(color_to_hex(color))]);
+                doc.set(&path, vec![Value::Str(color_to_hex(color))]);
             }
             (_, input) => panic!("{input:?} doesn't fit the setting at {}", self.path),
-        }
-    }
-
-    /// Whether settings.kdl sets this setting.
-    pub fn is_set(&self, doc: &[Node]) -> bool {
-        let path = self.path_parts();
-        match self.control {
-            Control::Switch {
-                style: BoolStyle::OnOff,
-                ..
-            } => kdl::get(doc, &path).is_some_and(|section| {
-                section
-                    .children
-                    .iter()
-                    .any(|c| c.name == "on" || c.name == "off")
-            }),
-            _ => kdl::get(doc, &path).is_some(),
-        }
-    }
-
-    /// Removes this setting from settings.kdl, so it falls back to config.kdl or the default.
-    pub fn reset(&self, doc: &mut Vec<Node>) {
-        let path = self.path_parts();
-        match self.control {
-            Control::Switch {
-                style: BoolStyle::OnOff,
-                ..
-            } => {
-                let mut on = path.clone();
-                on.push("on");
-                let mut off = path;
-                off.push("off");
-                kdl::remove(doc, &on);
-                kdl::remove(doc, &off);
-            }
-            _ => {
-                kdl::remove(doc, &path);
-            }
-        }
-    }
-
-    /// Whether resetting means anything. A switch spelled by presence alone has no "unset".
-    pub fn can_reset(&self) -> bool {
-        !matches!(
-            self.control,
-            Control::Switch {
-                style: BoolStyle::Presence,
-                ..
-            }
-        )
-    }
-
-    /// The value settings.kdl asks for, to tell when something later in the config overrides it.
-    pub fn wanted(&self, doc: &[Node]) -> Option<Input> {
-        let path = self.path_parts();
-        let node = kdl::get(doc, &path);
-        Some(match &self.control {
-            Control::Switch {
-                style, inverted, ..
-            } => {
-                let value = match style {
-                    BoolStyle::Flag | BoolStyle::Arg => match node?.arg() {
-                        None => true,
-                        Some(Value::Bool(x)) => *x,
-                        Some(_) => return None,
-                    },
-                    BoolStyle::Presence => node.is_some(),
-                    BoolStyle::OnOff => {
-                        let section = node?;
-                        let last = section
-                            .children
-                            .iter()
-                            .rev()
-                            .find(|c| c.name == "on" || c.name == "off")?;
-                        last.name == "on"
-                    }
-                };
-                Input::Bool(value != *inverted)
-            }
-            Control::Number { .. } => Input::Number(node?.arg()?.as_f64()?),
-            Control::Choice { .. } | Control::Text { .. } | Control::Color { .. } => return None,
-        })
-    }
-
-    /// Whether the config ended up with what settings.kdl asks for.
-    pub fn applied(&self, doc: &[Node], config: &Config) -> bool {
-        match (self.wanted(doc), &self.control) {
-            (Some(Input::Bool(want)), Control::Switch { get, inverted, .. }) => {
-                (get(config) != *inverted) == want
-            }
-            (Some(Input::Number(want)), Control::Number { get, .. }) => {
-                (get(config) - want).abs() < 1e-6
-            }
-            _ => true,
         }
     }
 }

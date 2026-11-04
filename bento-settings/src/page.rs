@@ -105,56 +105,6 @@ pub fn open_uri(widget: &impl IsA<gtk::Widget>, uri: &str) {
     launcher.launch(window.as_ref(), None::<&gio::Cancellable>, |_| ());
 }
 
-/// Gives a row a right-click and long-press menu with "Reset", enabled while `can_reset` says so.
-///
-/// Native rows have no good place for a visible reset button: suffixes land after the switch or
-/// spin button.
-pub fn reset_menu(
-    row: &impl IsA<gtk::Widget>,
-    can_reset: impl Fn() -> bool + 'static,
-    reset: impl Fn() + 'static,
-) {
-    let row = row.as_ref();
-    let action = gio::SimpleAction::new("reset", None);
-    action.connect_activate(move |_, _| reset());
-    let actions = gio::SimpleActionGroup::new();
-    actions.add_action(&action);
-    row.insert_action_group("row", Some(&actions));
-
-    let menu = gio::Menu::new();
-    menu.append(Some("Reset"), Some("row.reset"));
-    let popover = gtk::PopoverMenu::from_model(Some(&menu));
-    popover.set_parent(row);
-    popover.set_has_arrow(false);
-    popover.set_halign(gtk::Align::Start);
-
-    let show = move |x: f64, y: f64| {
-        action.set_enabled(can_reset());
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.popup();
-    };
-    let show = Rc::new(show);
-
-    let click = gtk::GestureClick::builder()
-        .button(gdk::BUTTON_SECONDARY)
-        .build();
-    {
-        let show = show.clone();
-        click.connect_pressed(move |gesture, _, x, y| {
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            show(x, y);
-        });
-    }
-    row.add_controller(click);
-
-    let press = gtk::GestureLongPress::builder().touch_only(true).build();
-    press.connect_pressed(move |gesture, x, y| {
-        gesture.set_state(gtk::EventSequenceState::Claimed);
-        show(x, y);
-    });
-    row.add_controller(press);
-}
-
 fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
     let store = ctx.store.clone();
     // Set while the row shows a new value, so its own change signal doesn't write it back.
@@ -165,7 +115,7 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
         let updating = updating.clone();
         move |input: Input| {
             if !updating.get() {
-                store.edit(setting.path, |doc| setting.write(doc, input));
+                store.edit(|doc| setting.write(doc, input));
             }
         }
     };
@@ -273,45 +223,13 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
     };
     ctx.anchor(setting.path, &row);
 
-    if setting.can_reset() {
-        let store_check = store.clone();
-        let store_reset = store.clone();
-        reset_menu(
-            &row,
-            move || setting.is_set(&store_check.doc()),
-            move || store_reset.edit(setting.path, |doc| setting.reset(doc)),
-        );
-    }
-
-    let refresh = {
-        let row = row.clone();
-        move || {
-            updating.set(true);
-            show();
-            updating.set(false);
-
-            // Something after the include in config.kdl wins over settings.kdl.
-            let doc = store.doc();
-            let overridden = setting.is_set(&doc) && !setting.applied(&doc, &store.config());
-            set_subtitle(&row, overridden.then_some("Overridden in config.kdl"));
-            if overridden {
-                row.add_css_class("overridden");
-            } else {
-                row.remove_css_class("overridden");
-            }
-        }
+    let refresh = move || {
+        updating.set(true);
+        show();
+        updating.set(false);
     };
     refresh();
     ctx.store.subscribe(refresh);
 
     row.upcast()
-}
-
-fn set_subtitle(row: &adw::PreferencesRow, subtitle: Option<&str>) {
-    let subtitle = subtitle.unwrap_or_default();
-    if let Some(row) = row.downcast_ref::<adw::ActionRow>() {
-        row.set_subtitle(subtitle);
-    } else if let Some(row) = row.downcast_ref::<adw::ExpanderRow>() {
-        row.set_subtitle(subtitle);
-    }
 }

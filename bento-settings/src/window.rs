@@ -462,34 +462,22 @@ fn scroll_and_flash(widget: &gtk::Widget) {
 
 fn update_banner(ui: &Ui) {
     let status = ui.ctx.store.status();
-    let (title, button) = if status.settings_error.is_some() {
-        ("settings.kdl has an error", Some("Details"))
-    } else if status.not_included {
-        ("config.kdl doesn't include settings.kdl", Some("Fix"))
-    } else if status.write_error.is_some() {
-        ("Couldn't save the last change", Some("Details"))
+    let title = if status.write_error.is_some() {
+        "Couldn't save the last change"
     } else if status.config_error.is_some() {
-        ("The config has an error", Some("Details"))
+        "The config has an error"
     } else {
-        ("", None)
+        ""
     };
     ui.banner.set_title(title);
-    ui.banner.set_button_label(button);
-    ui.banner.set_revealed(button.is_some());
+    ui.banner.set_button_label(Some("Details"));
+    ui.banner.set_revealed(!title.is_empty());
 }
 
 fn banner_action(ui: &Ui, banner: &adw::Banner) {
     let status = ui.ctx.store.status();
-    if status.settings_error.is_none() && status.not_included {
-        if let Err(err) = ui.ctx.store.add_include() {
-            ui.ctx.toast(&err);
-        }
-        return;
-    }
-
     let details = status
-        .settings_error
-        .or(status.write_error)
+        .write_error
         .or(status.config_error)
         .unwrap_or_default();
     let text = gtk::Label::builder()

@@ -140,16 +140,8 @@ To fix this, stop Waybar with `pkill waybar` command, then open `~/.config/bento
 Bento Settings is a GTK app for changing bento's settings without editing the config.
 Run `bento-settings`, or `bento-settings engine` to open a page directly, or `bento-settings --search gaps` to search.
 
-It writes only `~/.config/bento/settings.kdl`, which `config.kdl` includes:
-
-```kdl
-include optional=true "settings.kdl"
-```
-
-Keep the include at the end of `config.kdl`, so the app's settings override the ones above it.
-If the include is missing, the app offers to add it.
-Some sections, like `touchpad`, `mouse` or `tiling`, replace earlier ones as a whole instead of merging.
-Changing one of their settings copies the whole section from `config.kdl` into `settings.kdl`, and after that, edits to the section in `config.kdl` no longer apply.
+It edits `~/.config/bento/config.kdl` in place and changes only the values you set, so your comments and layout stay as they are.
+It checks every change with bento's own parser before saving, and bento applies it right away.
 
 ### Default applications
 

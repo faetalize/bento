@@ -17,11 +17,7 @@ pub fn category() -> Category {
             "Version",
             &["bento version", "compositor", "update"],
         )
-        .search_item(
-            "about.files",
-            "Config Files",
-            &["config.kdl", "settings.kdl", "folder"],
-        )
+        .search_item("about.files", "Config Files", &["config.kdl", "folder"])
         .search_item(
             "about.links",
             "Source Code",
@@ -44,7 +40,6 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     let config = ctx.store.config_path().to_owned();
     let folder = config.parent().map(|p| p.to_owned()).unwrap_or_default();
     files.add(&file_row("Config", &config));
-    files.add(&file_row("Settings", ctx.store.settings_path()));
     files.add(&file_row("Config Folder", &folder));
     column.append(&files);
 
