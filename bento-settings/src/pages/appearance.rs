@@ -17,18 +17,17 @@ pub fn category() -> Category {
                     &["highlight", "color", "theme"],
                 ),
         )
+        .group(Group::custom(super::wallpaper::build).search_item(
+            "appearance.wallpaper",
+            "Wallpaper",
+            &["background", "picture", "image", "desktop"],
+        ))
         .group(
             Group::untitled()
                 .setting(
                     Setting::switch("App Title Bars", "prefer-no-csd", |c| c.prefer_no_csd)
                         .inverted()
                         .keywords(&["csd", "client-side decorations", "header bar"]),
-                )
-                .setting(
-                    Setting::image("Wallpaper", "layout.background-image", |c| {
-                        c.layout.background_image.clone()
-                    })
-                    .keywords(&["background", "picture", "image", "desktop"]),
                 )
                 .setting(
                     Setting::color("Background Color", "layout.background-color", |c| {

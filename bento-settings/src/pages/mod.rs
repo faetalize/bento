@@ -12,6 +12,7 @@ mod planned;
 mod preview;
 mod system;
 mod theme;
+mod wallpaper;
 
 use crate::model::{Content, Section};
 

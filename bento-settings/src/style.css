@@ -61,3 +61,34 @@ statuspage.compact > scrolledwindow > viewport > box {
 .accent-pink { background: #d56199; }
 .accent-purple { background: #9141ac; }
 .accent-slate { background: #6f8396; }
+
+/* Wallpapers: the current one large, the others as tiles to pick. */
+.wallpaper-preview {
+  border-radius: 12px;
+  background-color: alpha(currentColor, 0.06);
+}
+
+.wallpaper-name {
+  padding: 24px 14px 10px;
+  color: white;
+  background-image: linear-gradient(to bottom, transparent, alpha(black, 0.55));
+}
+
+flowbox.wallpapers > flowboxchild {
+  padding: 3px;
+  border-radius: 11px;
+  outline-offset: -3px;
+}
+
+flowbox.wallpapers > flowboxchild.current {
+  outline: 3px solid @accent_bg_color;
+}
+
+.wallpaper-thumbnail {
+  border-radius: 8px;
+}
+
+.wallpaper-add {
+  border-radius: 8px;
+  border: 2px dashed alpha(currentColor, 0.25);
+}
