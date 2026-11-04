@@ -234,6 +234,10 @@ pub enum Control {
     Color {
         get: Getter<Color>,
     },
+    /// A path to an image, picked with a file chooser.
+    Image {
+        get: Getter<Option<String>>,
+    },
 }
 
 /// The value a row hands back to its setting.
@@ -316,6 +320,10 @@ impl Setting {
 
     pub fn color(title: &'static str, path: &'static str, get: Getter<Color>) -> Self {
         Self::new(title, path, Control::Color { get })
+    }
+
+    pub fn image(title: &'static str, path: &'static str, get: Getter<Option<String>>) -> Self {
+        Self::new(title, path, Control::Image { get })
     }
 
     pub fn keywords(mut self, keywords: &'static [&'static str]) -> Self {
@@ -450,6 +458,12 @@ impl Setting {
                 doc.remove(&path);
             }
             (Control::Text { .. }, Input::Text(text)) => {
+                doc.set(&path, vec![Value::Str(text)]);
+            }
+            (Control::Image { .. }, Input::Text(text)) if text.is_empty() => {
+                doc.remove(&path);
+            }
+            (Control::Image { .. }, Input::Text(text)) => {
                 doc.set(&path, vec![Value::Str(text)]);
             }
             (Control::Color { .. }, Input::Color(color)) => {

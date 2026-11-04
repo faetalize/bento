@@ -222,6 +222,58 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
             };
             (row.upcast(), Box::new(show))
         }
+        Control::Image { get } => {
+            let row = adw::ActionRow::builder().title(setting.title).build();
+            let remove = gtk::Button::builder()
+                .icon_name("ph-x-symbolic")
+                .tooltip_text("Remove")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat", "circular"])
+                .build();
+            let choose = gtk::Button::builder()
+                .icon_name("ph-folder-open-symbolic")
+                .tooltip_text("Choose Image")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            row.add_suffix(&remove);
+            row.add_suffix(&choose);
+            row.set_activatable_widget(Some(&choose));
+            {
+                let edit = edit.clone();
+                remove.connect_clicked(move |_| edit(Input::Text(String::new())));
+            }
+            choose.connect_clicked(move |button| {
+                let filter = gtk::FileFilter::new();
+                filter.set_name(Some("Images"));
+                filter.add_pixbuf_formats();
+                let filters = gio::ListStore::new::<gtk::FileFilter>();
+                filters.append(&filter);
+                let dialog = gtk::FileDialog::builder()
+                    .title(setting.title)
+                    .filters(&filters)
+                    .build();
+                let window = button.root().and_downcast::<gtk::Window>();
+                let edit = edit.clone();
+                dialog.open(window.as_ref(), None::<&gio::Cancellable>, move |result| {
+                    if let Some(path) = result.ok().and_then(|file| file.path()) {
+                        edit(Input::Text(crate::store::tilde(&path)));
+                    }
+                });
+            });
+            let (get, store, image_row) = (*get, store.clone(), row.clone());
+            let show = move || {
+                let current = get(&store.config());
+                let name = current.as_deref().map(|path| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .map_or(path.to_owned(), |name| name.to_string_lossy().into_owned())
+                });
+                image_row.set_subtitle(name.as_deref().unwrap_or("None"));
+                remove.set_visible(current.is_some());
+            };
+            (row.upcast(), Box::new(show))
+        }
         Control::Color { get } => {
             let dialog = gtk::ColorDialog::builder().with_alpha(true).build();
             let button = gtk::ColorDialogButton::new(Some(dialog));

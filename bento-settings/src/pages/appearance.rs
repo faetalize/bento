@@ -25,7 +25,13 @@ pub fn category() -> Category {
                         .keywords(&["csd", "client-side decorations", "header bar"]),
                 )
                 .setting(
-                    Setting::color("Background", "layout.background-color", |c| {
+                    Setting::image("Wallpaper", "layout.background-image", |c| {
+                        c.layout.background_image.clone()
+                    })
+                    .keywords(&["background", "picture", "image", "desktop"]),
+                )
+                .setting(
+                    Setting::color("Background Color", "layout.background-color", |c| {
                         c.layout.background_color
                     })
                     .keywords(&[
