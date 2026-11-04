@@ -22,7 +22,7 @@ use crate::store::{option_value, tilde};
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
-        .icon("view-dual-symbolic")
+        .icon("ph-layout-symbolic")
         .keywords(&[
             "tiling",
             "layout",
@@ -201,7 +201,7 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
             .subtitle(tilde(&path))
             .activatable(true)
             .build();
-        row.add_suffix(&gtk::Image::from_icon_name("document-open-symbolic"));
+        row.add_suffix(&gtk::Image::from_icon_name("ph-folder-open-symbolic"));
         let view = Rc::downgrade(view);
         row.connect_activated(move |row| {
             if let Some(view) = view.upgrade() {

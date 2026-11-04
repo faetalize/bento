@@ -82,7 +82,7 @@ pub fn build(
     // A page of its own rather than the list's placeholder, which gets no height in a scrolled
     // list.
     let no_results = adw::StatusPage::builder()
-        .icon_name("edit-find-symbolic")
+        .icon_name("ph-magnifying-glass-symbolic")
         .title("No Results")
         .css_classes(["compact"])
         .build();

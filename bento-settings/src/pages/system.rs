@@ -2,7 +2,7 @@ use crate::model::{Category, Group, Setting};
 
 pub fn category() -> Category {
     Category::settings("system", "System")
-        .icon("preferences-system-symbolic")
+        .icon("ph-gear-six-symbolic")
         .keywords(&["general", "misc"])
         .group(
             Group::untitled()

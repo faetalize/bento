@@ -16,3 +16,6 @@ knuffel = "3.2.0"
 miette = { version = "5.10.0", features = ["fancy-no-backtrace"] }
 niri-config = { version = "26.4.0", path = "../niri-config" }
 niri-ipc = { version = "26.4.0", path = "../niri-ipc" }
+
+[build-dependencies]
+glib-build-tools = "0.21"

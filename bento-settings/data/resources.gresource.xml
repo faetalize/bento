@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/faetalize/bento/Settings/icons/scalable/actions">
+    <file compressed="true" alias="ph-app-window-symbolic.svg">icons/scalable/actions/ph-app-window-symbolic.svg</file>
+    <file compressed="true" alias="ph-arrow-square-out-symbolic.svg">icons/scalable/actions/ph-arrow-square-out-symbolic.svg</file>
+    <file compressed="true" alias="ph-browsers-symbolic.svg">icons/scalable/actions/ph-browsers-symbolic.svg</file>
+    <file compressed="true" alias="ph-command-symbolic.svg">icons/scalable/actions/ph-command-symbolic.svg</file>
+    <file compressed="true" alias="ph-cursor-symbolic.svg">icons/scalable/actions/ph-cursor-symbolic.svg</file>
+    <file compressed="true" alias="ph-folder-open-symbolic.svg">icons/scalable/actions/ph-folder-open-symbolic.svg</file>
+    <file compressed="true" alias="ph-gear-six-symbolic.svg">icons/scalable/actions/ph-gear-six-symbolic.svg</file>
+    <file compressed="true" alias="ph-hand-swipe-right-symbolic.svg">icons/scalable/actions/ph-hand-swipe-right-symbolic.svg</file>
+    <file compressed="true" alias="ph-hand-tap-symbolic.svg">icons/scalable/actions/ph-hand-tap-symbolic.svg</file>
+    <file compressed="true" alias="ph-info-symbolic.svg">icons/scalable/actions/ph-info-symbolic.svg</file>
+    <file compressed="true" alias="ph-keyboard-symbolic.svg">icons/scalable/actions/ph-keyboard-symbolic.svg</file>
+    <file compressed="true" alias="ph-layout-symbolic.svg">icons/scalable/actions/ph-layout-symbolic.svg</file>
+    <file compressed="true" alias="ph-magnifying-glass-symbolic.svg">icons/scalable/actions/ph-magnifying-glass-symbolic.svg</file>
+    <file compressed="true" alias="ph-monitor-symbolic.svg">icons/scalable/actions/ph-monitor-symbolic.svg</file>
+    <file compressed="true" alias="ph-mouse-simple-symbolic.svg">icons/scalable/actions/ph-mouse-simple-symbolic.svg</file>
+    <file compressed="true" alias="ph-palette-symbolic.svg">icons/scalable/actions/ph-palette-symbolic.svg</file>
+    <file compressed="true" alias="ph-rocket-launch-symbolic.svg">icons/scalable/actions/ph-rocket-launch-symbolic.svg</file>
+    <file compressed="true" alias="ph-sparkle-symbolic.svg">icons/scalable/actions/ph-sparkle-symbolic.svg</file>
+    <file compressed="true" alias="ph-squares-four-symbolic.svg">icons/scalable/actions/ph-squares-four-symbolic.svg</file>
+  </gresource>
+</gresources>

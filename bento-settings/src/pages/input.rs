@@ -11,7 +11,7 @@ fn accel_profile(profile: Option<AccelProfile>) -> Option<&'static str> {
 
 pub fn keyboard() -> Category {
     Category::settings("keyboard", "Keyboard")
-        .icon("input-keyboard-symbolic")
+        .icon("ph-keyboard-symbolic")
         .keywords(&["xkb", "typing", "language"])
         .group(
             Group::new("Layout")
@@ -72,7 +72,7 @@ pub fn keyboard() -> Category {
 
 pub fn mouse() -> Category {
     Category::settings("mouse", "Mouse")
-        .icon("input-mouse-symbolic")
+        .icon("ph-mouse-simple-symbolic")
         .keywords(&["pointer"])
         .group(
             Group::untitled()
@@ -121,7 +121,7 @@ pub fn mouse() -> Category {
 
 pub fn touchpad() -> Category {
     Category::settings("touchpad", "Touchpad")
-        .icon("input-touchpad-symbolic")
+        .icon("ph-hand-tap-symbolic")
         .keywords(&["trackpad", "laptop"])
         .group(
             Group::untitled()
@@ -226,7 +226,7 @@ pub fn touchpad() -> Category {
 
 pub fn cursor() -> Category {
     Category::settings("cursor", "Cursor")
-        .icon("find-location-symbolic")
+        .icon("ph-cursor-symbolic")
         .keywords(&["pointer", "mouse", "xcursor"])
         .group(
             Group::untitled()

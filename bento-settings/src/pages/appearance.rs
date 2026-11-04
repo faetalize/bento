@@ -15,7 +15,7 @@ fn every_window<T>(config: &Config, get: impl Fn(&WindowRule) -> Option<T>) -> O
 
 pub fn category() -> Category {
     Category::settings("appearance", "Appearance")
-        .icon("applications-graphics-symbolic")
+        .icon("ph-palette-symbolic")
         .keywords(&["look", "style", "theme", "decorations"])
         .group(
             Group::untitled()

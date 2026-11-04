@@ -5,31 +5,31 @@ use crate::model::Category;
 
 pub fn workspaces() -> Category {
     Category::planned("workspaces", "Workspaces")
-        .icon("view-paged-symbolic")
+        .icon("ph-browsers-symbolic")
         .keywords(&["virtual desktops", "spaces"])
 }
 
 pub fn window_rules() -> Category {
     Category::planned("window-rules", "Window Rules")
-        .icon("window-new-symbolic")
+        .icon("ph-app-window-symbolic")
         .keywords(&["apps", "floating", "opacity", "rounded corners", "match"])
 }
 
 pub fn shortcuts() -> Category {
     Category::planned("shortcuts", "Shortcuts")
-        .icon("preferences-desktop-keyboard-shortcuts-symbolic")
+        .icon("ph-command-symbolic")
         .keywords(&["binds", "keybinds", "hotkeys", "keyboard"])
 }
 
 pub fn gestures() -> Category {
     Category::planned("gestures", "Gestures")
-        .icon("view-fullscreen-symbolic")
+        .icon("ph-hand-swipe-right-symbolic")
         .keywords(&["swipe", "hot corners", "dnd", "edge"])
 }
 
 pub fn displays() -> Category {
     Category::planned("displays", "Displays")
-        .icon("video-display-symbolic")
+        .icon("ph-monitor-symbolic")
         .keywords(&[
             "monitors",
             "outputs",
@@ -42,6 +42,6 @@ pub fn displays() -> Category {
 
 pub fn startup() -> Category {
     Category::planned("startup", "Startup Apps")
-        .icon("system-run-symbolic")
+        .icon("ph-rocket-launch-symbolic")
         .keywords(&["autostart", "spawn at startup", "environment", "login"])
 }

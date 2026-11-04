@@ -10,7 +10,7 @@ const NIRI_DOCS: &str = "https://niri-wm.github.io/niri/Configuration:-Introduct
 
 pub fn category() -> Category {
     Category::custom("about", "About", build)
-        .icon("help-about-symbolic")
+        .icon("ph-info-symbolic")
         .keywords(&["version", "license", "help", "info"])
         .search_item(
             "about.version",
@@ -74,7 +74,7 @@ fn file_row(title: &str, path: &std::path::Path) -> adw::ActionRow {
         .subtitle(tilde(path))
         .activatable(true)
         .build();
-    row.add_suffix(&gtk::Image::from_icon_name("document-open-symbolic"));
+    row.add_suffix(&gtk::Image::from_icon_name("ph-folder-open-symbolic"));
     let path = path.to_owned();
     row.connect_activated(move |row| open_file(row, &path));
     row
@@ -85,7 +85,7 @@ fn link_row(title: &str, uri: &str) -> adw::ActionRow {
         .title(title)
         .activatable(true)
         .build();
-    row.add_suffix(&gtk::Image::from_icon_name("adw-external-link-symbolic"));
+    row.add_suffix(&gtk::Image::from_icon_name("ph-arrow-square-out-symbolic"));
     let uri = uri.to_owned();
     row.connect_activated(move |row| open_uri(row, &uri));
     row

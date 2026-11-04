@@ -30,6 +30,8 @@ Opens bento's settings, on PAGE if given, like `bento-settings engine`.
 type OpenWindow = (adw::ApplicationWindow, Rc<window::Ui>);
 
 fn main() -> glib::ExitCode {
+    gio::resources_register_include!("resources.gresource").expect("resources are built in");
+
     let app = adw::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
@@ -44,6 +46,9 @@ fn main() -> glib::ExitCode {
                 &css,
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
+            // Phosphor icons, bundled in the binary (MIT, see data/icons/LICENSE).
+            gtk::IconTheme::for_display(&display)
+                .add_resource_path("/io/github/faetalize/bento/Settings/icons");
         }
 
         let quit = gio::ActionEntry::builder("quit")

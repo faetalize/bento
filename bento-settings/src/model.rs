@@ -55,7 +55,7 @@ impl Category {
         Self {
             id,
             title,
-            icon: "preferences-system-symbolic",
+            icon: "ph-gear-six-symbolic",
             keywords: &[],
             content,
         }

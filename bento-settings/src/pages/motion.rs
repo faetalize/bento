@@ -2,7 +2,7 @@ use crate::model::{BoolStyle, Category, Group, Setting};
 
 pub fn animations() -> Category {
     Category::settings("animations", "Animations")
-        .icon("media-playback-start-symbolic")
+        .icon("ph-sparkle-symbolic")
         .keywords(&["motion", "transitions", "reduce motion"])
         .group(
             Group::untitled().setting(
@@ -23,7 +23,7 @@ pub fn animations() -> Category {
 
 pub fn overview() -> Category {
     Category::settings("overview", "Overview")
-        .icon("view-grid-symbolic")
+        .icon("ph-squares-four-symbolic")
         .keywords(&["expose", "mission control", "workspaces"])
         .group(
             Group::untitled()
