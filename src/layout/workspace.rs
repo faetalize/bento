@@ -1714,6 +1714,12 @@ impl<W: LayoutElement> Workspace<W> {
         self.shadow.render(renderer, Point::from((0., 0.)), push);
     }
 
+    /// The image to draw behind this workspace instead of its background color, as the config
+    /// writes it.
+    pub fn background_image(&self) -> Option<&str> {
+        self.options.layout.background_image.as_deref()
+    }
+
     pub fn render_background(&self) -> SolidColorRenderElement {
         SolidColorRenderElement::from_buffer(
             &self.background_buffer,

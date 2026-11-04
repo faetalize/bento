@@ -50,6 +50,7 @@ fn main() -> glib::ExitCode {
             // Phosphor icons, bundled in the binary (MIT, see data/icons/LICENSE).
             gtk::IconTheme::for_display(&display)
                 .add_resource_path("/io/github/faetalize/bento/Settings/icons");
+            follow_user_css(&display);
         }
 
         let quit = gio::ActionEntry::builder("quit")
@@ -104,4 +105,44 @@ fn main() -> glib::ExitCode {
     });
 
     app.run()
+}
+
+/// Reloads the user's GTK stylesheet when it changes. GTK reads it only at startup, but shells like
+/// Noctalia rewrite it to switch between light and dark.
+fn follow_user_css(display: &gdk::Display) {
+    let dir = glib::user_config_dir().join("gtk-4.0");
+    let css = dir.join("gtk.css");
+    // Empty until the file changes, since GTK already loaded what's there now. Above GTK's own
+    // copy, so the new rules win.
+    let provider = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
+    );
+
+    let Ok(monitor) = gio::File::for_path(&dir).monitor_directory(
+        gio::FileMonitorFlags::WATCH_MOVES,
+        None::<&gio::Cancellable>,
+    ) else {
+        return;
+    };
+    // Shells write several files at once; reload once they're done.
+    let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    monitor.connect_changed(move |_, _, _, _| {
+        if let Some(source) = pending.take() {
+            source.remove();
+        }
+        let (provider, css, pending_done) = (provider.clone(), css.clone(), pending.clone());
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+                pending_done.take();
+                if css.exists() {
+                    provider.load_from_path(&css);
+                }
+            });
+        pending.replace(Some(source));
+    });
+    // The monitor lives as long as the app.
+    std::mem::forget(monitor);
 }

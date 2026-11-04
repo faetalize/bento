@@ -2002,6 +2002,7 @@ mod tests {
                     b: 0.0,
                     a: 1.0,
                 },
+                background_image: None,
             },
             tiling: Tiling {
                 layout: BuiltIn(

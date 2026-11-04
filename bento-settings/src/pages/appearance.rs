@@ -17,6 +17,11 @@ pub fn category() -> Category {
                     &["highlight", "color", "theme"],
                 ),
         )
+        .group(Group::custom(super::wallpaper::build).search_item(
+            "appearance.wallpaper",
+            "Wallpaper",
+            &["background", "picture", "image", "desktop"],
+        ))
         .group(
             Group::untitled()
                 .setting(
@@ -25,7 +30,7 @@ pub fn category() -> Category {
                         .keywords(&["csd", "client-side decorations", "header bar"]),
                 )
                 .setting(
-                    Setting::color("Background", "layout.background-color", |c| {
+                    Setting::color("Background Color", "layout.background-color", |c| {
                         c.layout.background_color
                     })
                     .keywords(&[
