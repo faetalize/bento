@@ -28,35 +28,23 @@
 export const meta = {
     api: 1,
     name: "bento",
-    description: "Windows on a grid of cells that scrolls horizontally.",
+    description: "Windows on a scrolling grid.",
     actions: {
         // Bind as `layout-action "split-h"` and so on. Each takes two presses: the first picks
         // the focused window, then focus another window and press again. Pressing again on the
         // same window cancels.
-        "split-h": {
-            description:
-                "Split a window in two side by side, giving the half facing it to another window.",
-        },
-        "split-v": {
-            description:
-                "Split a window in two stacked halves, giving the half facing it to another window.",
-        },
-        swap: { description: "Swap the places and sizes of two windows." },
+        "split-h": { description: "Share a window's space with another, side by side." },
+        "split-v": { description: "Share a window's space with another, stacked." },
+        swap: { description: "Swap two windows." },
         // Also two presses: the first highlights where the window would go, the direction keys
         // move the highlight between seams, and the second press puts it there.
-        stuff: {
-            description:
-                "Put the focused window between two windows that touch, which make room for it.",
-        },
+        stuff: { description: "Squeeze the focused window between two others." },
     },
     options: {
         gravity: {
             type: "boolean",
             default: true,
-            description:
-                "Windows slide left within their rows until they touch another window or the " +
-                "left edge of the grid. Without gravity, windows stay where they're put and the " +
-                "grid goes on to the left too.",
+            description: "Windows fall to the left.",
         },
     },
 };
