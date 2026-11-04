@@ -33,6 +33,7 @@ const WHOLE_SECTIONS: &[&str] = &[
     "input.trackball",
     "input.tablet",
     "input.touch",
+    "layout.struts",
 ];
 
 /// Sections that hold rules, where only rules without `match` or `exclude` apply to every window.

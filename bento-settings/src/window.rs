@@ -347,7 +347,7 @@ impl Ui {
             let content = match &category.content {
                 Content::Settings(groups) => page::frame(&page::settings_page(groups, &self.ctx)),
                 Content::Custom { build, .. } => page::frame(&build(&self.ctx)),
-                Content::Planned => page::planned_page(category, &self.ctx),
+                Content::Planned => unreachable!("planned pages stay out of the sidebar"),
             };
             self.pages.add_named(&content, Some(category.id));
         }

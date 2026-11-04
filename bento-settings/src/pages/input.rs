@@ -13,26 +13,15 @@ pub fn keyboard() -> Category {
     Category::settings("keyboard", "Keyboard")
         .icon("ph-keyboard-symbolic")
         .keywords(&["xkb", "typing", "language"])
+        .group(Group::custom(super::layouts::build).search_item(
+            "keyboard.layouts",
+            "Layouts",
+            &[
+                "language", "xkb", "us", "qwerty", "azerty", "dvorak", "colemak",
+            ],
+        ))
         .group(
-            Group::new("Layout")
-                .setting(
-                    Setting::text("Layouts", "input.keyboard.xkb.layout", |c| {
-                        c.input.keyboard.xkb.layout.clone()
-                    })
-                    .keywords(&["language", "us", "qwerty", "azerty"]),
-                )
-                .setting(
-                    Setting::text("Variants", "input.keyboard.xkb.variant", |c| {
-                        c.input.keyboard.xkb.variant.clone()
-                    })
-                    .keywords(&["dvorak", "colemak"]),
-                )
-                .setting(
-                    Setting::text("Options", "input.keyboard.xkb.options", |c| {
-                        c.input.keyboard.xkb.options.clone().unwrap_or_default()
-                    })
-                    .keywords(&["compose", "caps lock", "switch layout"]),
-                )
+            Group::untitled()
                 .setting(
                     Setting::choice("Switch Layouts", "input.keyboard.track-layout", |c| {
                         Some(match c.input.keyboard.track_layout {
@@ -43,6 +32,12 @@ pub fn keyboard() -> Category {
                     .option(Some("global"), "Everywhere")
                     .option(Some("window"), "Per Window")
                     .keywords(&["track layout"]),
+                )
+                .setting(
+                    Setting::text("Options", "input.keyboard.xkb.options", |c| {
+                        c.input.keyboard.xkb.options.clone().unwrap_or_default()
+                    })
+                    .keywords(&["compose", "caps lock", "xkb options"]),
                 ),
         )
         .group(
@@ -51,14 +46,16 @@ pub fn keyboard() -> Category {
                     Setting::number("Repeat Delay", "input.keyboard.repeat-delay", |c| {
                         c.input.keyboard.repeat_delay.into()
                     })
-                    .range(100., 2000., 25.)
+                    .range(150., 1000., 10.)
+                    .slider()
                     .keywords(&["key repeat", "hold"]),
                 )
                 .setting(
                     Setting::number("Repeat Rate", "input.keyboard.repeat-rate", |c| {
                         c.input.keyboard.repeat_rate.into()
                     })
-                    .range(1., 100., 1.)
+                    .range(5., 80., 1.)
+                    .slider()
                     .keywords(&["key repeat", "speed"]),
                 )
                 .setting(
@@ -73,7 +70,7 @@ pub fn keyboard() -> Category {
 pub fn mouse() -> Category {
     Category::settings("mouse", "Mouse")
         .icon("ph-mouse-simple-symbolic")
-        .keywords(&["pointer"])
+        .keywords(&["pointer", "cursor"])
         .group(
             Group::untitled()
                 .setting(
@@ -82,6 +79,7 @@ pub fn mouse() -> Category {
                     })
                     .range(-1., 1., 0.05)
                     .digits(2)
+                    .slider()
                     .keywords(&["sensitivity", "dpi"]),
                 )
                 .setting(
@@ -116,6 +114,27 @@ pub fn mouse() -> Category {
                     .style(BoolStyle::Presence)
                     .keywords(&["middle button"]),
                 ),
+        )
+        .group(
+            Group::new("Cursor")
+                .setting(
+                    Setting::text("Theme", "cursor.xcursor-theme", |c| {
+                        c.cursor.xcursor_theme.clone()
+                    })
+                    .keywords(&["xcursor"]),
+                )
+                .setting(
+                    Setting::number("Size", "cursor.xcursor-size", |c| {
+                        c.cursor.xcursor_size.into()
+                    })
+                    .range(8., 255., 1.)
+                    .keywords(&["big", "large", "accessibility"]),
+                )
+                .setting(Setting::switch(
+                    "Hide While Typing",
+                    "cursor.hide-when-typing",
+                    |c| c.cursor.hide_when_typing,
+                )),
         )
 }
 
@@ -188,6 +207,7 @@ pub fn touchpad() -> Category {
                     })
                     .range(-1., 1., 0.05)
                     .digits(2)
+                    .slider()
                     .keywords(&["sensitivity"]),
                 )
                 .setting(
@@ -221,32 +241,5 @@ pub fn touchpad() -> Category {
                     .style(BoolStyle::Presence)
                     .keywords(&["swap buttons"]),
                 ),
-        )
-}
-
-pub fn cursor() -> Category {
-    Category::settings("cursor", "Cursor")
-        .icon("ph-cursor-symbolic")
-        .keywords(&["pointer", "mouse", "xcursor"])
-        .group(
-            Group::untitled()
-                .setting(
-                    Setting::text("Theme", "cursor.xcursor-theme", |c| {
-                        c.cursor.xcursor_theme.clone()
-                    })
-                    .keywords(&["xcursor"]),
-                )
-                .setting(
-                    Setting::number("Size", "cursor.xcursor-size", |c| {
-                        c.cursor.xcursor_size.into()
-                    })
-                    .range(8., 255., 1.)
-                    .keywords(&["big", "large", "accessibility"]),
-                )
-                .setting(Setting::switch(
-                    "Hide While Typing",
-                    "cursor.hide-when-typing",
-                    |c| c.cursor.hide_when_typing,
-                )),
         )
 }

@@ -141,13 +141,17 @@ impl Category {
 pub struct Group {
     pub title: Option<&'static str>,
     pub settings: Vec<Setting>,
+    /// Builds the group's widgets itself, for things rows can't show, like a preview.
+    pub build: Option<fn(&crate::page::PageContext) -> gtk::Widget>,
+    /// What search finds in a group that builds itself.
+    pub search: Vec<SearchItem>,
 }
 
 impl Group {
     pub fn new(title: &'static str) -> Self {
         Self {
             title: Some(title),
-            settings: Vec::new(),
+            ..Self::untitled()
         }
     }
 
@@ -155,7 +159,30 @@ impl Group {
         Self {
             title: None,
             settings: Vec::new(),
+            build: None,
+            search: Vec::new(),
         }
+    }
+
+    pub fn custom(build: fn(&crate::page::PageContext) -> gtk::Widget) -> Self {
+        Self {
+            build: Some(build),
+            ..Self::untitled()
+        }
+    }
+
+    pub fn search_item(
+        mut self,
+        anchor: &'static str,
+        title: &'static str,
+        keywords: &'static [&'static str],
+    ) -> Self {
+        self.search.push(SearchItem {
+            anchor,
+            title,
+            keywords,
+        });
+        self
     }
 
     pub fn setting(mut self, setting: Setting) -> Self {
@@ -191,6 +218,8 @@ pub enum Control {
         max: f64,
         step: f64,
         digits: u32,
+        /// Shown as a slider, for values where the feel matters more than the exact number.
+        slider: bool,
     },
     /// One of a fixed set of words. `None` is "leave it unset".
     Choice {
@@ -258,6 +287,7 @@ impl Setting {
                 max: 100.,
                 step: 1.,
                 digits: 0,
+                slider: false,
             },
         )
     }
@@ -334,6 +364,14 @@ impl Setting {
         match &mut self.control {
             Control::Number { digits, .. } => *digits = new_digits,
             _ => panic!("only numbers have digits"),
+        }
+        self
+    }
+
+    pub fn slider(mut self) -> Self {
+        match &mut self.control {
+            Control::Number { slider, .. } => *slider = true,
+            _ => panic!("only numbers can be sliders"),
         }
         self
     }

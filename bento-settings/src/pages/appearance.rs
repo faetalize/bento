@@ -4,7 +4,10 @@ use crate::model::{BoolStyle, Category, Group, Setting};
 
 /// The value from the last window rule that matches every window. That's what windows get unless
 /// a rule for specific apps says otherwise.
-fn every_window<T>(config: &Config, get: impl Fn(&WindowRule) -> Option<T>) -> Option<T> {
+pub(super) fn every_window<T>(
+    config: &Config,
+    get: impl Fn(&WindowRule) -> Option<T>,
+) -> Option<T> {
     config
         .window_rules
         .iter()
@@ -17,6 +20,11 @@ pub fn category() -> Category {
     Category::settings("appearance", "Appearance")
         .icon("ph-palette-symbolic")
         .keywords(&["look", "style", "theme", "decorations"])
+        .group(Group::custom(super::preview::build).search_item(
+            "appearance.preview",
+            "Preview",
+            &["example"],
+        ))
         .group(
             Group::untitled()
                 .setting(
@@ -99,16 +107,75 @@ pub fn category() -> Category {
                             Setting::number("Softness", "layout.shadow.softness", |c| {
                                 c.layout.shadow.softness
                             })
-                            .range(0., 256., 1.)
+                            .range(0., 128., 1.)
+                            .slider()
                             .keywords(&["blur"]),
                             Setting::number("Spread", "layout.shadow.spread", |c| {
                                 c.layout.shadow.spread
                             })
-                            .range(-256., 256., 1.),
+                            .range(-64., 64., 1.)
+                            .slider(),
                             Setting::color("Color", "layout.shadow.color", |c| {
                                 c.layout.shadow.color
                             }),
                         ]),
+                ),
+        )
+        .group(
+            Group::new("Reserved Space")
+                .setting(
+                    Setting::number("Top", "layout.struts.top", |c| c.layout.struts.top.0)
+                        .range(0., 512., 1.)
+                        .keywords(&["struts", "edge", "margin"]),
+                )
+                .setting(
+                    Setting::number("Bottom", "layout.struts.bottom", |c| {
+                        c.layout.struts.bottom.0
+                    })
+                    .range(0., 512., 1.)
+                    .keywords(&["struts", "edge", "margin"]),
+                )
+                .setting(
+                    Setting::number("Left", "layout.struts.left", |c| c.layout.struts.left.0)
+                        .range(0., 512., 1.)
+                        .keywords(&["struts", "edge", "margin"]),
+                )
+                .setting(
+                    Setting::number("Right", "layout.struts.right", |c| c.layout.struts.right.0)
+                        .range(0., 512., 1.)
+                        .keywords(&["struts", "edge", "margin"]),
+                ),
+        )
+        .group(
+            Group::new("Motion").setting(
+                Setting::switch("Animations", "animations", |c| !c.animations.off)
+                    .style(BoolStyle::OnOff)
+                    .keywords(&["reduce motion", "transitions"])
+                    .expands(vec![Setting::number(
+                        "Slowdown",
+                        "animations.slowdown",
+                        |c| c.animations.slowdown,
+                    )
+                    .range(0.1, 4., 0.05)
+                    .digits(2)
+                    .slider()
+                    .keywords(&["speed", "duration", "slow", "fast"])]),
+            ),
+        )
+        .group(
+            Group::new("Overview")
+                .setting(
+                    Setting::number("Zoom", "overview.zoom", |c| c.overview.zoom)
+                        .range(0.1, 0.75, 0.05)
+                        .digits(2)
+                        .slider()
+                        .keywords(&["expose", "mission control", "scale"]),
+                )
+                .setting(
+                    Setting::color("Backdrop", "overview.backdrop-color", |c| {
+                        c.overview.backdrop_color
+                    })
+                    .keywords(&["expose", "background", "color"]),
                 ),
         )
 }

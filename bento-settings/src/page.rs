@@ -8,7 +8,7 @@ use adw::prelude::*;
 use gtk::{gdk, gio};
 use niri_config::Color;
 
-use crate::model::{Category, Control, Group, Input, Setting};
+use crate::model::{Control, Group, Input, Setting};
 use crate::store::Store;
 
 /// What a page gets to build itself.
@@ -61,6 +61,10 @@ pub fn frame(content: &impl IsA<gtk::Widget>) -> gtk::Widget {
 pub fn settings_page(groups: &'static [Group], ctx: &PageContext) -> gtk::Widget {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
     for group in groups {
+        if let Some(build) = group.build {
+            column.append(&build(ctx));
+            continue;
+        }
         let widget = adw::PreferencesGroup::new();
         if let Some(title) = group.title {
             widget.set_title(title);
@@ -71,26 +75,6 @@ pub fn settings_page(groups: &'static [Group], ctx: &PageContext) -> gtk::Widget
         column.append(&widget);
     }
     column.upcast()
-}
-
-/// Shown for pages that aren't in the app yet.
-pub fn planned_page(category: &Category, ctx: &PageContext) -> gtk::Widget {
-    let button = gtk::Button::builder()
-        .label("Open config.kdl")
-        .halign(gtk::Align::Center)
-        .css_classes(["pill"])
-        .build();
-    let path = ctx.store.config_path().to_owned();
-    button.connect_clicked(move |button| open_file(button, &path));
-
-    adw::StatusPage::builder()
-        .icon_name(category.icon)
-        .title("Coming Soon")
-        .description("Set these in config.kdl for now.")
-        .child(&button)
-        .vexpand(true)
-        .build()
-        .upcast()
 }
 
 pub fn open_file(widget: &impl IsA<gtk::Widget>, path: &std::path::Path) {
@@ -150,7 +134,28 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
             min,
             max,
             step,
+            digits: _,
+            slider: true,
+        } => {
+            let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, *min, *max, *step);
+            scale.set_draw_value(false);
+            scale.set_hexpand(true);
+            scale.set_valign(gtk::Align::Center);
+            scale.set_width_request(200);
+            let row = adw::ActionRow::builder().title(setting.title).build();
+            row.add_suffix(&scale);
+            scale.connect_value_changed(move |scale| edit(Input::Number(scale.value())));
+            let (get, store) = (*get, store.clone());
+            let show = move || scale.set_value(get(&store.config()));
+            (row.upcast(), Box::new(show))
+        }
+        Control::Number {
+            get,
+            min,
+            max,
+            step,
             digits,
+            slider: false,
         } => {
             let row = adw::SpinRow::with_range(*min, *max, *step);
             row.set_title(setting.title);

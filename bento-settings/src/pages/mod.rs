@@ -6,26 +6,20 @@ mod account;
 mod appearance;
 mod engine;
 mod input;
-mod motion;
+mod layouts;
 mod planned;
+mod preview;
 mod system;
 
-use crate::model::Section;
+use crate::model::{Content, Section};
 
 pub fn sections() -> Vec<Section> {
-    vec![
+    let sections = vec![
         Section::untitled(vec![account::category()]),
         Section::new(
-            "Look and Feel",
+            "Desktop",
             vec![
                 appearance::category(),
-                motion::animations(),
-                motion::overview(),
-            ],
-        ),
-        Section::new(
-            "Tiling",
-            vec![
                 engine::category(),
                 planned::workspaces(),
                 planned::window_rules(),
@@ -37,7 +31,6 @@ pub fn sections() -> Vec<Section> {
                 input::keyboard(),
                 input::mouse(),
                 input::touchpad(),
-                input::cursor(),
                 planned::gestures(),
                 planned::shortcuts(),
             ],
@@ -51,5 +44,17 @@ pub fn sections() -> Vec<Section> {
                 about::category(),
             ],
         ),
-    ]
+    ];
+
+    // Pages that aren't ready stay out of the sidebar and search until they work.
+    sections
+        .into_iter()
+        .map(|mut section| {
+            section
+                .categories
+                .retain(|category| !matches!(category.content, Content::Planned));
+            section
+        })
+        .filter(|section| !section.categories.is_empty())
+        .collect()
 }

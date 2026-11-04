@@ -1,5 +1,5 @@
-//! Pages that aren't in the app yet. They keep their place in the sidebar and in search, and point
-//! at config.kdl meanwhile.
+//! Pages that aren't in the app yet. They keep their place in the catalog, and stay out of the
+//! sidebar and search until they're built.
 
 use crate::model::Category;
 

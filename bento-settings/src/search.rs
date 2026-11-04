@@ -46,6 +46,15 @@ pub fn index(sections: &[Section]) -> Vec<Entry> {
                     for setting in &group.settings {
                         index_setting(&mut entries, category_idx, &context, setting);
                     }
+                    for item in &group.search {
+                        entries.push(Entry {
+                            category: category_idx,
+                            anchor: Some(item.anchor.to_owned()),
+                            title: item.title.to_owned(),
+                            context: context.clone(),
+                            keywords: item.keywords.iter().map(|k| k.to_string()).collect(),
+                        });
+                    }
                 }
             }
             Content::Custom { search, .. } => {
