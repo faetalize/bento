@@ -1,0 +1,42 @@
+/* Section titles between the sidebar's categories. */
+.sidebar-heading {
+  margin: 12px 8px 4px;
+}
+
+.navigation-sidebar > row:first-child .sidebar-heading {
+  margin-top: 0;
+}
+
+/* The same margins as AdwPreferencesPage. */
+.page-column {
+  margin: 24px 12px;
+}
+
+.reset {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+image.warning {
+  color: @warning_color;
+}
+
+statuspage.compact > scrolledwindow > viewport > box {
+  margin: 24px 12px;
+}
+
+/* Where search lands. */
+@keyframes search-flash {
+  from { background-color: alpha(@accent_bg_color, 0.3); }
+  to { background-color: transparent; }
+}
+
+.search-highlight {
+  animation: search-flash 1.6s ease-out;
+}
+
+.search-results > row {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}

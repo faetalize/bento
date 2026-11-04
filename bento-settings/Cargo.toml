@@ -1,0 +1,18 @@
+[package]
+name = "bento-settings"
+version.workspace = true
+description = "Settings app for the bento compositor"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+adw = { version = "0.8.1", package = "libadwaita", features = ["v1_5"] }
+gio = { version = "0.21", features = ["v2_80"] }
+gtk = { version = "0.10.3", package = "gtk4", features = ["v4_12"] }
+knuffel = "3.2.0"
+miette = { version = "5.10.0", features = ["fancy-no-backtrace"] }
+niri-config = { version = "26.4.0", path = "../niri-config" }
+niri-ipc = { version = "26.4.0", path = "../niri-ipc" }

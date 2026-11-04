@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Bento Settings
+Comment=Change how bento looks and behaves
+Exec=bento-settings
+Icon=preferences-system
+Terminal=false
+StartupNotify=true
+Categories=GTK;Settings;DesktopSettings;
+Keywords=bento;niri;compositor;tiling;layout;keyboard;touchpad;

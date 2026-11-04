@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "bento-settings",
     "niri-config",
     "niri-ipc",
     "niri-visual-tests",

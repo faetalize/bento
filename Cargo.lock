@@ -468,6 +468,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bento-settings"
+version = "26.4.0"
+dependencies = [
+ "gio",
+ "gtk4",
+ "knuffel",
+ "libadwaita",
+ "miette",
+ "niri-config",
+ "niri-ipc",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -49,6 +49,7 @@ First, install the dependencies for your distribution.
 Next, get latest stable Rust: https://rustup.rs/
 
 Then, build bento with `cargo build --release`.
+For the settings app, also install libadwaita (`libadwaita-1-dev` on Ubuntu, `libadwaita-devel` on Fedora) and build it with `cargo build --release -p bento-settings`.
 
 Check Cargo.toml for a list of build features.
 For example, you can replace systemd integration with dinit integration using `cargo build --release --no-default-features --features dinit,dbus,xdp-gnome-screencast`.
@@ -75,6 +76,8 @@ These may vary depending on your distribution.
 | `resources/bento-shutdown.target` (systemd) | `/etc/systemd/user/` |
 | `resources/dinit/bento` (dinit) | `/etc/dinit.d/user/` |
 | `resources/dinit/bento.target` (dinit) | `/etc/dinit.d/user/` |
+| `target/release/bento-settings` (settings app) | `/usr/local/bin/` |
+| `resources/io.github.faetalize.bento.Settings.desktop` (settings app) | `/usr/local/share/applications/` |
 
 Doing this will make bento appear in GDM and other display managers.
 
@@ -131,6 +134,22 @@ Complete desktop shells such as [DankMaterialShell](https://github.com/AvengeMed
 
 The default bento config runs Waybar, so with a desktop shell you might get two bars on screen.
 To fix this, stop Waybar with `pkill waybar` command, then open `~/.config/bento/config.kdl` and delete the `spawn-at-startup "waybar"` line.
+
+### Settings
+
+Bento Settings is a GTK app for changing bento's settings without editing the config.
+Run `bento-settings`, or `bento-settings engine` to open a page directly, or `bento-settings --search gaps` to search.
+
+It writes only `~/.config/bento/settings.kdl`, which `config.kdl` includes:
+
+```kdl
+include optional=true "settings.kdl"
+```
+
+Keep the include at the end of `config.kdl`, so the app's settings override the ones above it.
+If the include is missing, the app offers to add it.
+Some sections, like `touchpad`, `mouse` or `tiling`, replace earlier ones as a whole instead of merging.
+Changing one of their settings copies the whole section from `config.kdl` into `settings.kdl`, and after that, edits to the section in `config.kdl` no longer apply.
 
 ### Default applications
 
