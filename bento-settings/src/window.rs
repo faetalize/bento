@@ -79,12 +79,13 @@ pub fn build(
     let results_list = gtk::ListBox::builder()
         .css_classes(["navigation-sidebar", "search-results"])
         .build();
+    // A page of its own rather than the list's placeholder, which gets no height in a scrolled
+    // list.
     let no_results = adw::StatusPage::builder()
         .icon_name("edit-find-symbolic")
         .title("No Results")
         .css_classes(["compact"])
         .build();
-    results_list.set_placeholder(Some(&no_results));
 
     let sidebar_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
@@ -94,6 +95,7 @@ pub fn build(
     categories_box.append(&category_list);
     sidebar_stack.add_named(&scrolled(&categories_box), Some("categories"));
     sidebar_stack.add_named(&scrolled(&results_list), Some("results"));
+    sidebar_stack.add_named(&no_results, Some("no-results"));
 
     // Nothing else goes in this header bar: it centers its title, so a button on one side would
     // leave the same gap on the other.
@@ -397,7 +399,12 @@ impl Ui {
             ));
             result_entries.push(hit.entry);
         }
-        self.sidebar_stack.set_visible_child_name("results");
+        self.sidebar_stack
+            .set_visible_child_name(if hits.is_empty() {
+                "no-results"
+            } else {
+                "results"
+            });
     }
 
     fn open_result(self: &Rc<Self>, entry: usize) {

@@ -1,4 +1,17 @@
+use niri_config::{Config, WindowRule};
+
 use crate::model::{BoolStyle, Category, Group, Setting};
+
+/// The value from the last window rule that matches every window. That's what windows get unless
+/// a rule for specific apps says otherwise.
+fn every_window<T>(config: &Config, get: impl Fn(&WindowRule) -> Option<T>) -> Option<T> {
+    config
+        .window_rules
+        .iter()
+        .rev()
+        .filter(|rule| rule.matches.is_empty() && rule.excludes.is_empty())
+        .find_map(get)
+}
 
 pub fn category() -> Category {
     Category::settings("appearance", "Appearance")
@@ -25,6 +38,23 @@ pub fn category() -> Category {
         )
         .group(
             Group::untitled()
+                .setting(
+                    Setting::switch("Rounded Corners", "window-rule.clip-to-geometry", |c| {
+                        every_window(c, |rule| rule.clip_to_geometry).unwrap_or(false)
+                    })
+                    .style(BoolStyle::Arg)
+                    .keywords(&["radius", "corner radius", "clip to geometry", "round"])
+                    .expands(vec![Setting::number(
+                        "Radius",
+                        "window-rule.geometry-corner-radius",
+                        |c| {
+                            every_window(c, |rule| rule.geometry_corner_radius)
+                                .map_or(0., |radius| f64::from(radius.top_left))
+                        },
+                    )
+                    .range(0., 64., 1.)
+                    .keywords(&["corner radius", "geometry corner radius"])]),
+                )
                 .setting(
                     Setting::switch("Focus Ring", "layout.focus-ring", |c| {
                         !c.layout.focus_ring.off
