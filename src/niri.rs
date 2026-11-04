@@ -194,6 +194,7 @@ use crate::utils::{
     make_screenshot_path, output_matches_name, output_size, panel_orientation,
     send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
+use crate::wallpaper::Wallpapers;
 use crate::window::mapped::MappedId;
 use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
 
@@ -444,6 +445,7 @@ pub struct Niri {
 
     pub screenshot_ui: ScreenshotUi,
     pub config_error_notification: ConfigErrorNotification,
+    pub wallpapers: Wallpapers,
     pub hotkey_overlay: HotkeyOverlay,
     pub exit_confirm_dialog: ExitConfirmDialog,
 
@@ -1879,6 +1881,9 @@ impl State {
         if config.layout.background_color != old_config.layout.background_color {
             output_config_changed = true;
         }
+        if config.layout.background_image != old_config.layout.background_image {
+            output_config_changed = true;
+        }
 
         if config.recent_windows != old_config.recent_windows {
             recent_windows_changed = true;
@@ -1896,6 +1901,8 @@ impl State {
 
         // Release the borrow.
         drop(old_config);
+
+        self.niri.wallpapers.update(&self.niri.config.borrow());
 
         // Now with a &mut self we can reload the xkb config.
         if reload_xkb {
@@ -2704,6 +2711,8 @@ impl Niri {
         let window_mru_ui = WindowMruUi::new(config.clone());
         let config_error_notification =
             ConfigErrorNotification::new(animation_clock.clone(), config.clone());
+        let mut wallpapers = Wallpapers::new(&event_loop);
+        wallpapers.update(&config_);
 
         let mut hotkey_overlay = HotkeyOverlay::new(config.clone(), mod_key);
         if !config_.hotkey_overlay.skip_at_startup {
@@ -2905,6 +2914,7 @@ impl Niri {
 
             screenshot_ui,
             config_error_notification,
+            wallpapers,
             hotkey_overlay,
             exit_confirm_dialog,
 
@@ -4696,7 +4706,13 @@ impl Niri {
 
             // We don't expect more than one workspace when render_above_top_layer().
             if let Some((ws, _geo)) = mon.workspaces_with_render_geo().next() {
-                push(ws.render_background().into());
+                let wallpaper = ws
+                    .background_image()
+                    .and_then(|path| self.wallpapers.render(ctx.renderer, path, ws.view_size()));
+                match wallpaper {
+                    Some(elem) => push(elem.into()),
+                    None => push(ws.render_background().into()),
+                }
             }
         } else {
             push_popups_from_layer!(Layer::Top);
@@ -4741,7 +4757,13 @@ impl Niri {
                 push_normal_from_layer!(Layer::Bottom, ns, xray_pos, process!(geo));
                 push_normal_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
 
-                process!(geo)(ws.render_background());
+                let wallpaper = ws
+                    .background_image()
+                    .and_then(|path| self.wallpapers.render(ctx.renderer, path, ws.view_size()));
+                match wallpaper {
+                    Some(elem) => process!(geo)(elem),
+                    None => process!(geo)(ws.render_background()),
+                }
             }
         }
 
@@ -7325,6 +7347,9 @@ niri_render_elements! {
         >>>,
         RelocatedColor = CropRenderElement<RelocateRenderElement<RescaleRenderElement<
             SolidColorRenderElement
+        >>>,
+        RelocatedTexture = CropRenderElement<RelocateRenderElement<RescaleRenderElement<
+            PrimaryGpuTextureRenderElement
         >>>,
         Pointer = PointerRenderElements<R>,
         Wayland = WaylandSurfaceRenderElement<R>,

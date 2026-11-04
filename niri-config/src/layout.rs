@@ -25,6 +25,9 @@ pub struct Layout {
     pub struts: Struts,
     pub background_color: Color,
     pub fullscreen_backdrop_color: Color,
+    /// Image drawn behind each workspace in place of the background color, as written in the
+    /// config. Paths starting with `~` are expanded when the image loads.
+    pub background_image: Option<String>,
 }
 
 impl Default for Layout {
@@ -54,6 +57,7 @@ impl Default for Layout {
             ],
             background_color: DEFAULT_BACKGROUND_COLOR,
             fullscreen_backdrop_color: Color::from_array_unpremul([0., 0., 0., 1.]),
+            background_image: None,
         }
     }
 }
@@ -82,6 +86,10 @@ impl MergeWith<LayoutPart> for Layout {
             background_color,
             fullscreen_backdrop_color,
         );
+
+        if let Some(path) = &part.background_image {
+            self.background_image = Some(path.clone());
+        }
 
         if let Some(x) = part.default_column_width {
             self.default_column_width = x.0;
@@ -131,6 +139,8 @@ pub struct LayoutPart {
     pub background_color: Option<Color>,
     #[knuffel(child)]
     pub fullscreen_backdrop_color: Option<Color>,
+    #[knuffel(child, unwrap(argument))]
+    pub background_image: Option<String>,
 }
 
 #[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]

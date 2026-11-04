@@ -143,6 +143,20 @@ Run `bento-settings`, or `bento-settings engine` to open a page directly, or `be
 It edits `~/.config/bento/config.kdl` in place and changes only the values you set, so your comments and layout stay as they are.
 It checks every change with bento's own parser before saving, and bento applies it right away.
 
+### Wallpaper
+
+bento can draw a wallpaper itself, without a separate tool like swaybg:
+
+```kdl
+layout {
+    background-image "~/Pictures/wallpaper.jpg"
+}
+```
+
+It fills each monitor, cropped to fit, and takes the place of `background-color`.
+Set it per monitor with a `layout {}` section inside `output`.
+A shell's own wallpaper draws above it, so turn that off to see bento's; in Noctalia, run `noctalia msg config-set wallpaper.enabled false`.
+
 ### Default applications
 
 If you install bento alongside GNOME or KDE and want to keep their default app associations (e.g. which image viewer or video player to use), symlink their `mimeapps.list` like so:
