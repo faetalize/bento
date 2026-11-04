@@ -1,5 +1,6 @@
 //! Bento Settings: a GTK app for bento's config.
 
+mod account;
 mod ipc;
 mod kdl;
 mod model;

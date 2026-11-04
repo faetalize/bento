@@ -12,6 +12,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
+use crate::account::{self, Account};
 use crate::model::{Category, Content, Section};
 use crate::page::{self, PageContext};
 use crate::search::{self, Entry};
@@ -88,23 +89,17 @@ pub fn build(
     let sidebar_stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .build();
-    sidebar_stack.add_named(&scrolled(&category_list), Some("categories"));
+    let categories_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    categories_box.append(&account_row(&account::current()));
+    categories_box.append(&category_list);
+    sidebar_stack.add_named(&scrolled(&categories_box), Some("categories"));
     sidebar_stack.add_named(&scrolled(&results_list), Some("results"));
 
-    let menu = gio::Menu::new();
-    menu.append(Some("Open config.kdl"), Some("win.open-config"));
-    menu.append(Some("Reload"), Some("win.reload"));
-    let menu_button = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .menu_model(&menu)
-        .tooltip_text("Main Menu")
-        .primary(true)
-        .build();
-
+    // Nothing else goes in this header bar: it centers its title, so a button on one side would
+    // leave the same gap on the other.
     let sidebar_header = adw::HeaderBar::builder()
         .title_widget(&search_entry)
         .build();
-    sidebar_header.pack_end(&menu_button);
     let sidebar_toolbar = adw::ToolbarView::new();
     sidebar_toolbar.add_top_bar(&sidebar_header);
     sidebar_toolbar.set_content(Some(&sidebar_stack));
@@ -311,17 +306,7 @@ fn connect(ui: &Rc<Ui>, window: &adw::ApplicationWindow) {
             }
         })
         .build();
-    let open_config = gio::ActionEntry::builder("open-config")
-        .activate({
-            let ui_weak = Rc::downgrade(ui);
-            move |window: &adw::ApplicationWindow, _, _| {
-                if let Some(ui) = ui_weak.upgrade() {
-                    page::open_file(window, ui.ctx.store.config_path());
-                }
-            }
-        })
-        .build();
-    window.add_action_entries([search, reload, open_config]);
+    window.add_action_entries([search, reload]);
     if let Some(app) = window.application() {
         app.set_accels_for_action("win.search", &["<Control>f"]);
         app.set_accels_for_action("win.reload", &["<Control>r"]);
@@ -525,6 +510,43 @@ fn banner_action(ui: &Ui, banner: &adw::Banner) {
         page::open_file(dialog, &path)
     });
     dialog.present(Some(banner));
+}
+
+fn account_row(account: &Account) -> gtk::Box {
+    let avatar = adw::Avatar::new(40, Some(&account.name), true);
+    if let Some(texture) = account
+        .picture
+        .as_ref()
+        .and_then(|path| gtk::gdk::Texture::from_filename(path).ok())
+    {
+        avatar.set_custom_image(Some(&texture));
+    }
+
+    let name = gtk::Label::builder()
+        .label(&account.name)
+        .xalign(0.)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["heading"])
+        .build();
+    let user = gtk::Label::builder()
+        .label(&account.user)
+        .xalign(0.)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .css_classes(["caption", "dim-label"])
+        .build();
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text.set_valign(gtk::Align::Center);
+    text.append(&name);
+    // Without a full name, the name already is the username.
+    if account.user != account.name {
+        text.append(&user);
+    }
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    row.add_css_class("account");
+    row.append(&avatar);
+    row.append(&text);
+    row
 }
 
 fn sidebar_row(category: &Category) -> gtk::ListBoxRow {

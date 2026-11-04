@@ -8,9 +8,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::glib;
-use niri_config::TilingLayout;
-use niri_ipc::{LayoutEngine, LayoutEngineOption, LayoutEngineOptionValue, LayoutEngineSource};
+use gtk::glib::translate::FromGlib;
+use gtk::{gdk, glib};
+use niri_config::input::ModKey;
+use niri_config::{Action, Key, Modifiers, TilingLayout, Trigger};
+use niri_ipc::{LayoutEngine, LayoutEngineOption, LayoutEngineOptionValue};
 
 use crate::ipc;
 use crate::kdl::{self, Value};
@@ -42,8 +44,8 @@ pub fn category() -> Category {
         )
         .search_item(
             "engine.actions",
-            "Engine Actions",
-            &["layout-action", "binds", "keybinds"],
+            "Engine Shortcuts",
+            &["layout-action", "actions", "binds", "keybinds"],
         )
 }
 
@@ -123,7 +125,7 @@ fn refresh(view: &Rc<View>) {
     match &engine {
         Ok(engine) => {
             view.column.append(&options_group(view, engine));
-            view.column.append(&actions_group(view, engine));
+            view.column.append(&shortcuts_group(view, engine));
             show_values(view, engine);
         }
         Err(err) => view.column.append(&offline_group(view, err)),
@@ -147,89 +149,73 @@ fn set_layout(ctx: &PageContext, layout: String) {
     });
 }
 
+/// Engines that ship with bento, as the config names them and as the app shows them.
+const BUILT_IN: &[(&str, &str)] = &[("bento", "Bento"), ("niri", "Niri")];
+
 fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.choice", &group);
 
     let configured = view.ctx.store.config().tiling.layout.clone();
-    let updating = Rc::new(Cell::new(true));
-
-    let mut first: Option<gtk::CheckButton> = None;
-    let mut radio = |title: &str, subtitle: Option<String>, active: bool| {
-        let check = gtk::CheckButton::builder()
-            .valign(gtk::Align::Center)
-            .active(active)
-            .build();
-        if let Some(first) = &first {
-            check.set_group(Some(first));
-        } else {
-            first = Some(check.clone());
-        }
-        let row = adw::ActionRow::builder()
-            .title(title)
-            .subtitle(subtitle.unwrap_or_default())
-            .activatable_widget(&check)
-            .build();
-        row.add_prefix(&check);
-        group.add(&row);
-        (row, check)
-    };
-
-    for name in ["bento", "niri"] {
-        let active = configured == TilingLayout::BuiltIn(name.to_owned());
-        // Only the running engine can describe itself.
-        let subtitle = running
-            .filter(|e| e.name == name && matches!(e.source, LayoutEngineSource::BuiltIn {}))
-            .and_then(|e| e.description.clone());
-        let (_, check) = radio(name, subtitle, active);
-        let ctx = view.ctx.clone();
-        let updating = updating.clone();
-        check.connect_toggled(move |check| {
-            if check.is_active() && !updating.get() {
-                set_layout(&ctx, name.to_owned());
-            }
-        });
-    }
-
     let file = match &configured {
         TilingLayout::File(path) => Some(path.clone()),
         TilingLayout::BuiltIn(_) => None,
     };
-    let (row, check) = radio("Custom", file.as_deref().map(tilde), file.is_some());
-    let choose = gtk::Button::builder()
-        .icon_name("document-open-symbolic")
-        .tooltip_text("Choose File")
-        .valign(gtk::Align::Center)
-        .css_classes(["flat"])
+
+    let mut labels: Vec<&str> = BUILT_IN.iter().map(|(_, label)| *label).collect();
+    labels.push("Custom File");
+    let custom = BUILT_IN.len() as u32;
+    let selected = match &configured {
+        TilingLayout::BuiltIn(name) => BUILT_IN
+            .iter()
+            .position(|(n, _)| n == name)
+            .map_or(gtk::INVALID_LIST_POSITION, |i| i as u32),
+        TilingLayout::File(_) => custom,
+    };
+    let combo = adw::ComboRow::builder()
+        .title("Engine")
+        .model(&gtk::StringList::new(&labels))
+        .selected(selected)
         .build();
-    row.add_suffix(&choose);
-    {
-        let ctx = view.ctx.clone();
-        choose.connect_clicked(move |button| choose_file(&ctx, button));
+    if let Some(description) = running.and_then(|engine| engine.description.as_deref()) {
+        combo.set_subtitle(description);
     }
     {
-        let ctx = view.ctx.clone();
-        let updating = updating.clone();
-        let file = file.clone();
-        check.connect_toggled(move |check| {
-            if !check.is_active() || updating.get() {
-                return;
-            }
-            // Without a file picked yet, picking one is the only way to switch.
-            match &file {
-                Some(path) => set_layout(&ctx, tilde(path)),
-                None => choose_file(&ctx, check),
+        let view = Rc::downgrade(view);
+        let has_file = file.is_some();
+        combo.connect_selected_notify(move |combo| {
+            let Some(view) = view.upgrade() else { return };
+            let idx = combo.selected();
+            if let Some((name, _)) = BUILT_IN.get(idx as usize) {
+                set_layout(&view.ctx, (*name).to_owned());
+            } else if idx == custom && !has_file {
+                choose_file(&view, combo);
             }
         });
     }
+    group.add(&combo);
 
-    updating.set(false);
+    if let Some(path) = file {
+        let row = adw::ActionRow::builder()
+            .title("File")
+            .subtitle(tilde(&path))
+            .activatable(true)
+            .build();
+        row.add_suffix(&gtk::Image::from_icon_name("document-open-symbolic"));
+        let view = Rc::downgrade(view);
+        row.connect_activated(move |row| {
+            if let Some(view) = view.upgrade() {
+                choose_file(&view, row);
+            }
+        });
+        group.add(&row);
+    }
     group
 }
 
-fn choose_file(ctx: &PageContext, widget: &impl IsA<gtk::Widget>) {
+fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some("Layout engines"));
+    filter.set_name(Some("Layout Engines"));
     filter.add_pattern("*.js");
     let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
@@ -238,18 +224,21 @@ fn choose_file(ctx: &PageContext, widget: &impl IsA<gtk::Widget>) {
         .filters(&filters)
         .build();
 
-    let ctx = ctx.clone();
+    let view = Rc::downgrade(view);
     let window = widget.root().and_downcast::<gtk::Window>();
     dialog.open(
         window.as_ref(),
         None::<&gtk::gio::Cancellable>,
-        move |result| match result {
-            Ok(file) => match file.path() {
-                Some(path) => set_layout(&ctx, tilde(&path)),
-                None => ctx.toast("Pick a file on this computer"),
-            },
-            // Cancelled: put the radio buttons back the way the config has them.
-            Err(_) => ctx.store.reload(),
+        move |result| {
+            let Some(view) = view.upgrade() else { return };
+            match result.ok().and_then(|file| file.path()) {
+                Some(path) => set_layout(&view.ctx, tilde(&path)),
+                // Cancelled: rebuild, so the dropdown shows the configured engine again.
+                None => {
+                    view.shown.replace(None);
+                    refresh(&view);
+                }
+            }
         },
     );
 }
@@ -368,11 +357,8 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
     row
 }
 
-fn actions_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder()
-        .title("Actions")
-        .description("Bind with layout-action.")
-        .build();
+fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Shortcuts").build();
     view.ctx.anchor("engine.actions", &group);
 
     if engine.actions.is_empty() {
@@ -382,30 +368,97 @@ fn actions_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
             .build();
         group.add(&row);
     }
+
+    let config = view.ctx.store.config();
+    let mod_key = config.input.mod_key.unwrap_or(ModKey::Super).to_modifiers();
     for action in &engine.actions {
-        let mut bind = format!("layout-action \"{}\"", action.name);
-        for arg in &action.args {
-            bind.push_str(&format!(" <{arg}>"));
-        }
+        let title = action
+            .description
+            .as_deref()
+            .map_or(action.name.as_str(), |d| d.trim_end_matches('.'));
         let row = adw::ActionRow::builder()
-            .title(&action.name)
-            .subtitle(action.description.as_deref().unwrap_or_default())
+            .title(title)
+            .tooltip_text(format!("layout-action \"{}\"", action.name))
             .build();
-        let copy = gtk::Button::builder()
-            .icon_name("edit-copy-symbolic")
-            .tooltip_text(format!("Copy {bind}"))
-            .valign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
-        let ctx = view.ctx.clone();
-        copy.connect_clicked(move |button| {
-            button.clipboard().set_text(&bind);
-            ctx.toast("Copied");
-        });
-        row.add_suffix(&copy);
+
+        let keys: Vec<&Key> = config
+            .binds
+            .0
+            .iter()
+            .filter(|bind| {
+                [bind.press_action(), bind.release_action()]
+                    .into_iter()
+                    .flatten()
+                    .any(|a| matches!(a, Action::LayoutAction(name, _) if *name == action.name))
+            })
+            .map(|bind| &bind.key)
+            .collect();
+        if keys.is_empty() {
+            let unset = gtk::Label::builder()
+                .label("Not Set")
+                .valign(gtk::Align::Center)
+                .css_classes(["dim-label"])
+                .build();
+            row.add_suffix(&unset);
+        }
+        for key in keys {
+            row.add_suffix(&shortcut_label(key, mod_key));
+        }
         group.add(&row);
     }
     group
+}
+
+/// Draws a bind's keys as keycaps, with the compositor's Mod key spelled out.
+fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
+    let mut modifiers = key.modifiers;
+    if modifiers.contains(Modifiers::COMPOSITOR) {
+        modifiers.remove(Modifiers::COMPOSITOR);
+        modifiers |= mod_key;
+    }
+    let mut mask = gdk::ModifierType::empty();
+    for (modifier, gdk_modifier) in [
+        (Modifiers::CTRL, gdk::ModifierType::CONTROL_MASK),
+        (Modifiers::SHIFT, gdk::ModifierType::SHIFT_MASK),
+        (Modifiers::ALT, gdk::ModifierType::ALT_MASK),
+        (Modifiers::SUPER, gdk::ModifierType::SUPER_MASK),
+    ] {
+        if modifiers.contains(modifier) {
+            mask |= gdk_modifier;
+        }
+    }
+
+    match key.trigger {
+        Trigger::Keysym(keysym) => {
+            // SAFETY: GDK key values are X keysyms, which is what xkb gives bento.
+            let key = unsafe { gdk::Key::from_glib(keysym.raw()) };
+            let label = gtk::ShortcutLabel::new(&gtk::accelerator_name(key, mask));
+            label.set_valign(gtk::Align::Center);
+            label.upcast()
+        }
+        // Mouse buttons and scrolling have no keycap; spell them the way the config does.
+        trigger => {
+            let mut text = String::new();
+            for (modifier, name) in [
+                (Modifiers::SUPER, "Super"),
+                (Modifiers::CTRL, "Ctrl"),
+                (Modifiers::ALT, "Alt"),
+                (Modifiers::SHIFT, "Shift"),
+            ] {
+                if modifiers.contains(modifier) {
+                    text.push_str(name);
+                    text.push('+');
+                }
+            }
+            text.push_str(&format!("{trigger:?}"));
+            gtk::Label::builder()
+                .label(text)
+                .valign(gtk::Align::Center)
+                .css_classes(["dim-label"])
+                .build()
+                .upcast()
+        }
+    }
 }
 
 fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
