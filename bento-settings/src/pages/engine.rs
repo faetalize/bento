@@ -142,7 +142,7 @@ fn show_values(view: &View, engine: &LayoutEngine) {
 }
 
 fn set_layout(ctx: &PageContext, layout: String) {
-    ctx.store.edit(|doc| {
+    ctx.store.edit("tiling.layout", move |doc| {
         doc.set(&["tiling", "layout"], vec![Value::Str(layout)]);
         // Options belong to the engine that declared them; bento rejects unknown ones.
         doc.remove(&["tiling", "options"]);
@@ -273,7 +273,8 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             if updating.get() {
                 return;
             }
-            ctx.store.edit(|doc| {
+            let (key, path, default) = (path.clone(), path.clone(), default.clone());
+            ctx.store.edit(&key, move |doc| {
                 let parts = kdl::split(&path);
                 // An option at its default stays out of the config.
                 if value == default {

@@ -43,3 +43,26 @@ statuspage.compact > scrolledwindow > viewport > box {
 .dialog-content {
   margin: 12px;
 }
+
+/* Accent color choices, in GNOME's accent colors. */
+.accent-swatch {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  outline-offset: 2px;
+}
+
+.accent-swatch:checked {
+  outline: 2px solid currentColor;
+}
+
+.accent-blue { background: #3584e4; }
+.accent-teal { background: #2190a4; }
+.accent-green { background: #3a944a; }
+.accent-yellow { background: #c88800; }
+.accent-orange { background: #ed5b00; }
+.accent-red { background: #e62d42; }
+.accent-pink { background: #d56199; }
+.accent-purple { background: #9141ac; }
+.accent-slate { background: #6f8396; }

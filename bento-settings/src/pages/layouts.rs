@@ -86,7 +86,8 @@ fn configured(config: &Config) -> Vec<(String, String)> {
 }
 
 fn write(ctx: &PageContext, layouts: &[(String, String)]) {
-    ctx.store.edit(|doc| {
+    let layouts = layouts.to_vec();
+    ctx.store.edit("input.keyboard.xkb.layout", move |doc| {
         if layouts.is_empty() {
             doc.remove(LAYOUT);
             doc.remove(VARIANT);

@@ -6,10 +6,12 @@ mod account;
 mod appearance;
 mod engine;
 mod input;
+mod layout;
 mod layouts;
 mod planned;
 mod preview;
 mod system;
+mod theme;
 
 use crate::model::{Content, Section};
 
@@ -20,6 +22,7 @@ pub fn sections() -> Vec<Section> {
             "Desktop",
             vec![
                 appearance::category(),
+                layout::category(),
                 engine::category(),
                 planned::workspaces(),
                 planned::window_rules(),

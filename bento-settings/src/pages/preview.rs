@@ -7,7 +7,7 @@ use adw::prelude::*;
 use gtk::cairo::Context;
 use niri_config::{Color, Config};
 
-use super::appearance::every_window;
+use super::layout::every_window;
 use crate::page::PageContext;
 
 /// The screen the preview stands for, in logical pixels. A laptop-sized screen keeps gaps and

@@ -2,6 +2,15 @@ use niri_config::input::{AccelProfile, ClickMethod, ScrollMethod, TrackLayout};
 
 use crate::model::{BoolStyle, Category, Group, Setting};
 
+/// Pointer speed relative to the default, which is 0.
+fn speed(x: f64) -> String {
+    if x.abs() < 0.005 {
+        String::from("Default")
+    } else {
+        format!("{:+.0}%", x * 100.).replace('-', "−")
+    }
+}
+
 fn accel_profile(profile: Option<AccelProfile>) -> Option<&'static str> {
     profile.map(|profile| match profile {
         AccelProfile::Adaptive => "adaptive",
@@ -48,6 +57,7 @@ pub fn keyboard() -> Category {
                     })
                     .range(150., 1000., 10.)
                     .slider()
+                    .format(|x| format!("{x:.0} ms"))
                     .keywords(&["key repeat", "hold"]),
                 )
                 .setting(
@@ -56,6 +66,7 @@ pub fn keyboard() -> Category {
                     })
                     .range(5., 80., 1.)
                     .slider()
+                    .format(|x| format!("{x:.0}/s"))
                     .keywords(&["key repeat", "speed"]),
                 )
                 .setting(
@@ -80,6 +91,7 @@ pub fn mouse() -> Category {
                     .range(-1., 1., 0.05)
                     .digits(2)
                     .slider()
+                    .format(speed)
                     .keywords(&["sensitivity", "dpi"]),
                 )
                 .setting(
@@ -208,6 +220,7 @@ pub fn touchpad() -> Category {
                     .range(-1., 1., 0.05)
                     .digits(2)
                     .slider()
+                    .format(speed)
                     .keywords(&["sensitivity"]),
                 )
                 .setting(

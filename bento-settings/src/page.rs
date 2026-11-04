@@ -99,7 +99,7 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
         let updating = updating.clone();
         move |input: Input| {
             if !updating.get() {
-                store.edit(|doc| setting.write(doc, input));
+                store.edit(setting.path, move |doc| setting.write(doc, input));
             }
         }
     };
@@ -134,19 +134,38 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
             min,
             max,
             step,
-            digits: _,
             slider: true,
+            format,
+            ..
         } => {
             let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, *min, *max, *step);
             scale.set_draw_value(false);
             scale.set_hexpand(true);
             scale.set_valign(gtk::Align::Center);
             scale.set_width_request(200);
+            let value = gtk::Label::builder()
+                .xalign(1.)
+                .width_chars(8)
+                .css_classes(["dim-label", "numeric"])
+                .build();
             let row = adw::ActionRow::builder().title(setting.title).build();
+            row.add_suffix(&value);
             row.add_suffix(&scale);
-            scale.connect_value_changed(move |scale| edit(Input::Number(scale.value())));
+            let format = format.unwrap_or(|x| format!("{x}"));
+            {
+                let value = value.clone();
+                scale.connect_value_changed(move |scale| {
+                    value.set_label(&format(scale.value()));
+                    edit(Input::Number(scale.value()));
+                });
+            }
             let (get, store) = (*get, store.clone());
-            let show = move || scale.set_value(get(&store.config()));
+            let show = move || {
+                // Set the label too: the scale doesn't signal when the value stays the same.
+                let current = get(&store.config());
+                scale.set_value(current);
+                value.set_label(&format(current));
+            };
             (row.upcast(), Box::new(show))
         }
         Control::Number {
@@ -156,6 +175,7 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
             step,
             digits,
             slider: false,
+            ..
         } => {
             let row = adw::SpinRow::with_range(*min, *max, *step);
             row.set_title(setting.title);
@@ -229,6 +249,10 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
     ctx.anchor(setting.path, &row);
 
     let refresh = move || {
+        // A change still on its way to the config would be undone by showing the old value.
+        if store.is_pending(setting.path) {
+            return;
+        }
         updating.set(true);
         show();
         updating.set(false);

@@ -3,6 +3,9 @@
 //! The app edits bento's `config.kdl` in place, changing only the values it sets (see `kdl.rs`).
 //! Values shown come from the whole config as bento parses it, includes and all. bento watches the
 //! file and applies changes itself.
+//!
+//! Parsing the config is slow next to drawing a frame, so the window never does it. Edits queue up
+//! and are written together on a background thread a moment after the last one.
 
 use std::cell::{Cell, Ref, RefCell};
 use std::fs;
@@ -16,7 +19,11 @@ use niri_config::Config;
 
 use crate::kdl::{Document, Value};
 
-const SAVE_DELAY: Duration = Duration::from_millis(250);
+/// How long after the last change to save, so dragging a slider writes once.
+const SAVE_DELAY: Duration = Duration::from_millis(150);
+
+/// A change to the config, keyed by what it changes so a newer one replaces an older one.
+type Edit = (String, Box<dyn FnOnce(&mut Document) + Send>);
 
 #[derive(Clone)]
 pub struct Store(Rc<Inner>);
@@ -24,8 +31,10 @@ pub struct Store(Rc<Inner>);
 struct Inner {
     config_path: PathBuf,
     config: RefCell<Config>,
-    /// Edits not written yet, so dragging a slider writes once.
-    pending: RefCell<Option<Document>>,
+    /// Edits waiting for the next save.
+    queued: RefCell<Vec<Edit>>,
+    /// Keys of the edits being saved right now.
+    saving: RefCell<Option<Vec<String>>>,
     status: RefCell<Status>,
     /// What the app last wrote, to tell its own writes from someone else's.
     last_written: RefCell<Option<String>>,
@@ -46,6 +55,12 @@ pub struct Status {
     pub write_error: Option<String>,
 }
 
+/// What a save on the background thread comes back with.
+struct Saved {
+    text: String,
+    config: Config,
+}
+
 impl Store {
     pub fn load() -> Self {
         Self::load_from(config_path())
@@ -55,7 +70,8 @@ impl Store {
         let store = Self(Rc::new(Inner {
             config_path,
             config: RefCell::new(Config::default()),
-            pending: RefCell::new(None),
+            queued: RefCell::new(Vec::new()),
+            saving: RefCell::new(None),
             status: RefCell::new(Status::default()),
             last_written: RefCell::new(None),
             pending_save: RefCell::new(None),
@@ -64,7 +80,8 @@ impl Store {
             monitor: RefCell::new(None),
             notifying: Cell::new(false),
         }));
-        store.read_config();
+        let result = load(&store.0.config_path);
+        store.apply_load(result);
         store.watch();
         store
     }
@@ -98,40 +115,26 @@ impl Store {
         self.0.notifying.set(false);
     }
 
-    /// Changes the config, and saves it shortly after.
-    pub fn edit(&self, f: impl FnOnce(&mut Document)) {
-        let mut pending = self.0.pending.borrow_mut();
-        if pending.is_none() {
-            // Start from the file as it is now, so edits made elsewhere since are kept.
-            let text = match fs::read_to_string(&self.0.config_path) {
-                Ok(text) => text,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
-                Err(err) => {
-                    drop(pending);
-                    self.fail(format!(
-                        "Couldn't read {}: {err}",
-                        self.0.config_path.display()
-                    ));
-                    return;
-                }
-            };
-            match Document::parse(text) {
-                Ok(doc) => *pending = Some(doc),
-                Err(err) => {
-                    drop(pending);
-                    self.fail(describe(&err));
-                    return;
-                }
-            }
-        }
-        f(pending.as_mut().unwrap());
-        drop(pending);
-        self.schedule_save();
+    /// Whether a change to `key` hasn't reached the config yet. Rows showing it keep what the
+    /// person set instead of the old value.
+    pub fn is_pending(&self, key: &str) -> bool {
+        self.0.queued.borrow().iter().any(|(k, _)| k == key)
+            || self
+                .0
+                .saving
+                .borrow()
+                .as_ref()
+                .is_some_and(|keys| keys.iter().any(|k| k == key))
     }
 
-    fn fail(&self, err: String) {
-        self.0.status.borrow_mut().write_error = Some(err);
-        self.notify();
+    /// Queues a change to the config, saved shortly after the last one. `key` names what it
+    /// changes, so a newer change to the same thing replaces the older one.
+    pub fn edit(&self, key: &str, f: impl FnOnce(&mut Document) + Send + 'static) {
+        let mut queued = self.0.queued.borrow_mut();
+        queued.retain(|(k, _)| k != key);
+        queued.push((key.to_owned(), Box::new(f)));
+        drop(queued);
+        self.schedule_save();
     }
 
     fn schedule_save(&self) {
@@ -146,58 +149,78 @@ impl Store {
         self.0.pending_save.replace(Some(source));
     }
 
-    /// Saves pending changes right away.
-    pub fn flush(&self) {
-        if let Some(source) = self.0.pending_save.take() {
-            source.remove();
-            self.save();
+    fn save(&self) {
+        // One save at a time; edits made meanwhile go in the next one.
+        if self.0.saving.borrow().is_some() || self.0.queued.borrow().is_empty() {
+            return;
         }
+        let edits = self.0.queued.take();
+        self.0
+            .saving
+            .replace(Some(edits.iter().map(|(k, _)| k.clone()).collect()));
+
+        let path = self.0.config_path.clone();
+        let store = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || save(&path, edits))
+                .await
+                .unwrap_or_else(|_| Err(String::from("Saving stopped unexpectedly")));
+            store.0.saving.replace(None);
+            store.apply_save(result);
+            if !store.0.queued.borrow().is_empty() {
+                store.schedule_save();
+            }
+        });
     }
 
-    fn save(&self) {
-        let Some(doc) = self.0.pending.take() else {
-            return;
-        };
-        let result = self.write(doc.text());
-        self.0.status.borrow_mut().write_error = result.err();
-        self.read_config();
+    fn apply_save(&self, result: Result<Saved, String>) {
+        match result {
+            Ok(saved) => {
+                self.0.last_written.replace(Some(saved.text));
+                self.0.config.replace(saved.config);
+                let mut status = self.0.status.borrow_mut();
+                status.write_error = None;
+                status.config_error = None;
+            }
+            Err(err) => self.0.status.borrow_mut().write_error = Some(err),
+        }
         self.notify();
     }
 
-    fn write(&self, text: &str) -> Result<(), String> {
-        // Check the whole config first, so a bad value never reaches bento.
-        if let Err(err) = Config::parse(&self.0.config_path, text).config {
-            return Err(describe(&err));
+    /// Saves queued changes right away, on this thread. For closing the window and for tests.
+    pub fn flush(&self) {
+        if let Some(source) = self.0.pending_save.take() {
+            source.remove();
         }
-
-        // Write through a symlink rather than replacing it, for a config kept in a dotfiles
-        // repo. The temporary file sits next to the real one so the rename stays on one disk.
-        let target =
-            fs::canonicalize(&self.0.config_path).unwrap_or_else(|_| self.0.config_path.clone());
-        let tmp = target.with_extension("kdl.tmp");
-        fs::write(&tmp, text)
-            .and_then(|()| fs::rename(&tmp, &target))
-            .map_err(|err| format!("Couldn't write {}: {err}", target.display()))?;
-        self.0.last_written.replace(Some(text.to_owned()));
-        Ok(())
+        let edits = self.0.queued.take();
+        if !edits.is_empty() {
+            let result = save(&self.0.config_path, edits);
+            self.apply_save(result);
+        }
     }
 
-    fn read_config(&self) {
-        let result = Config::load(&self.0.config_path);
+    fn apply_load(&self, result: Result<Config, String>) {
         let mut status = self.0.status.borrow_mut();
-        match result.config {
+        match result {
             Ok(config) => {
                 self.0.config.replace(config);
                 status.config_error = None;
             }
-            Err(err) => status.config_error = Some(describe(err.as_ref())),
+            Err(err) => status.config_error = Some(err),
         }
     }
 
-    /// Re-reads the config.
+    /// Re-reads the config, on a background thread.
     pub fn reload(&self) {
-        self.read_config();
-        self.notify();
+        let path = self.0.config_path.clone();
+        let store = self.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || load(&path))
+                .await
+                .unwrap_or_else(|_| Err(String::from("Loading stopped unexpectedly")));
+            store.apply_load(result);
+            store.notify();
+        });
     }
 
     fn watch(&self) {
@@ -242,6 +265,42 @@ impl Store {
     }
 }
 
+/// Applies edits to the config file and writes it, if bento accepts the result. Runs off the main
+/// thread.
+fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
+    // Start from the file as it is now, so edits made elsewhere since are kept.
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("Couldn't read {}: {err}", path.display())),
+    };
+    let mut doc = Document::parse(text).map_err(|err| describe(&err))?;
+    for (_, edit) in edits {
+        edit(&mut doc);
+    }
+    let text = doc.text().to_owned();
+
+    // Check the whole config first, so a bad value never reaches bento.
+    let config = Config::parse(path, &text)
+        .config
+        .map_err(|err| describe(&err))?;
+
+    // Write through a symlink rather than replacing it, for a config kept in a dotfiles repo. The
+    // temporary file sits next to the real one so the rename stays on one disk.
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let tmp = target.with_extension("kdl.tmp");
+    fs::write(&tmp, &text)
+        .and_then(|()| fs::rename(&tmp, &target))
+        .map_err(|err| format!("Couldn't write {}: {err}", target.display()))?;
+    Ok(Saved { text, config })
+}
+
+fn load(path: &Path) -> Result<Config, String> {
+    Config::load(path)
+        .config
+        .map_err(|err| describe(err.as_ref()))
+}
+
 /// bento's config path: `$NIRI_CONFIG`, or `config.kdl` in bento's config directory.
 fn config_path() -> PathBuf {
     if let Some(path) = std::env::var_os("NIRI_CONFIG").filter(|path| !path.is_empty()) {
@@ -284,6 +343,11 @@ mod tests {
     use super::*;
     use crate::model::{BoolStyle, Input, Setting};
 
+    /// Edits run on another thread, so the settings they use live for the whole program.
+    fn leak(setting: Setting) -> &'static Setting {
+        Box::leak(Box::new(setting))
+    }
+
     #[test]
     fn edits_land_in_the_config() {
         let dir = std::env::temp_dir().join(format!("bento-settings-test-{}", std::process::id()));
@@ -295,16 +359,28 @@ mod tests {
         let store = Store::load_from(config_path.clone());
         assert!(store.config().input.touchpad.natural_scroll);
 
-        let natural_scroll = Setting::switch("", "input.touchpad.natural-scroll", |c| {
-            c.input.touchpad.natural_scroll
-        })
-        .style(BoolStyle::Presence);
-        let focus_ring = Setting::switch("", "layout.focus-ring", |c| !c.layout.focus_ring.off)
-            .style(BoolStyle::OnOff);
-        let numlock = Setting::switch("", "input.keyboard.numlock", |c| c.input.keyboard.numlock);
-        store.edit(|doc| natural_scroll.write(doc, Input::Bool(false)));
-        store.edit(|doc| focus_ring.write(doc, Input::Bool(false)));
-        store.edit(|doc| numlock.write(doc, Input::Bool(false)));
+        let natural_scroll = leak(
+            Setting::switch("", "input.touchpad.natural-scroll", |c| {
+                c.input.touchpad.natural_scroll
+            })
+            .style(BoolStyle::Presence),
+        );
+        let focus_ring = leak(
+            Setting::switch("", "layout.focus-ring", |c| !c.layout.focus_ring.off)
+                .style(BoolStyle::OnOff),
+        );
+        let numlock = leak(Setting::switch("", "input.keyboard.numlock", |c| {
+            c.input.keyboard.numlock
+        }));
+        store.edit(natural_scroll.path, move |doc| {
+            natural_scroll.write(doc, Input::Bool(false))
+        });
+        store.edit(focus_ring.path, move |doc| {
+            focus_ring.write(doc, Input::Bool(false))
+        });
+        store.edit(numlock.path, move |doc| {
+            numlock.write(doc, Input::Bool(false))
+        });
         store.flush();
 
         assert_eq!(
@@ -318,7 +394,9 @@ mod tests {
         drop(config);
 
         // Turning it back on swaps `off` for `on`.
-        store.edit(|doc| focus_ring.write(doc, Input::Bool(true)));
+        store.edit(focus_ring.path, move |doc| {
+            focus_ring.write(doc, Input::Bool(true))
+        });
         store.flush();
         assert!(!store.config().layout.focus_ring.off);
         assert!(fs::read_to_string(&config_path)
@@ -326,9 +404,9 @@ mod tests {
             .contains("    focus-ring {\n        on\n    }\n"));
 
         // A value bento rejects isn't written.
-        let gaps = Setting::number("", "layout.gaps", |c| c.layout.gaps);
+        let gaps = leak(Setting::number("", "layout.gaps", |c| c.layout.gaps));
         let before = fs::read_to_string(&config_path).unwrap();
-        store.edit(|doc| gaps.write(doc, Input::Number(-5.)));
+        store.edit(gaps.path, move |doc| gaps.write(doc, Input::Number(-5.)));
         store.flush();
         assert_eq!(fs::read_to_string(&config_path).unwrap(), before);
         assert!(store.status().write_error.is_some());

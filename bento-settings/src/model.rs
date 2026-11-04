@@ -220,6 +220,8 @@ pub enum Control {
         digits: u32,
         /// Shown as a slider, for values where the feel matters more than the exact number.
         slider: bool,
+        /// How a slider spells its value, like "600 ms".
+        format: Option<fn(f64) -> String>,
     },
     /// One of a fixed set of words. `None` is "leave it unset".
     Choice {
@@ -288,6 +290,7 @@ impl Setting {
                 step: 1.,
                 digits: 0,
                 slider: false,
+                format: None,
             },
         )
     }
@@ -372,6 +375,14 @@ impl Setting {
         match &mut self.control {
             Control::Number { slider, .. } => *slider = true,
             _ => panic!("only numbers can be sliders"),
+        }
+        self
+    }
+
+    pub fn format(mut self, new_format: fn(f64) -> String) -> Self {
+        match &mut self.control {
+            Control::Number { format, .. } => *format = Some(new_format),
+            _ => panic!("only numbers have a format"),
         }
         self
     }
