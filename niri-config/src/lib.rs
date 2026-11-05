@@ -3045,7 +3045,7 @@ mod tests {
         +    ],
 
         -    bind_files: BindFiles(0),
-        +    bind_files: BindFiles(98),
+        +    bind_files: BindFiles(107),
         "#,
         );
     }
