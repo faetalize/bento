@@ -26,6 +26,18 @@
 //
 // Engines run in a sandbox: there is no file, network or module access, and every call has a time
 // and memory limit. Calls are synchronous, and bento applies what a call did when it returns.
+//
+// API version 1 is the old API, which bento keeps running for a while. bento runs engines of the
+// current API once for the whole session (see `bento-layout.d.ts`), and runs an API 1 engine on top
+// of it: one instance per workspace, which only sees that workspace. Parts of API 1 are gone:
+//
+// - `LayoutConfig` only follows bento's `gaps` and `struts`. The rest of it, for columns and tab
+//   indicators, no longer exists in bento's config, so engines get niri's defaults for it.
+// - `WindowRules` has no rules to take values from: window rules are declared by the engines of
+//   the current API, so API 1 engines get the defaults.
+// - bento draws no tab bars or hints. `setHint` and `setTabBar` draw nodes instead, like any
+//   engine of the current API does, and clicking a tab calls `Layout.activate`.
+// - `setActiveInColumn` and `ipcPosition` have no effect.
 
 export interface Point {
     x: number;
@@ -64,6 +76,10 @@ export interface SizeChange {
     unit: "px" | "%";
 }
 
+/**
+ * Window rules for an engine. API 1 engines can't declare window rules, so they always get the
+ * defaults: `null`, `"normal"` and `false`.
+ */
 export interface WindowRules {
     /** `default-column-width` from the window rules or the layout config; `null` if unset. */
     defaultWidth: Preset | null;
@@ -99,10 +115,7 @@ export interface Window {
     readonly rect: Rect | null;
     /** Whether the window is shown. */
     readonly visible: boolean;
-    /**
-     * Whether the engine marked the window as the active one in its column, see
-     * `Workspace.setActiveInColumn`, or `null` if it hasn't.
-     */
+    /** Always `null`: `Workspace.setActiveInColumn` has no effect. */
     readonly activeInColumn: boolean | null;
     /**
      * What this engine stored on the window with `Workspace.setWindowData`, or `null`. It stays
@@ -126,7 +139,11 @@ export interface View {
     readonly scale: number;
 }
 
-/** The `layout {}` section of the config, which engines may follow or ignore. */
+/**
+ * What an engine may follow of bento's config. Only `gaps` and `struts` come from the config: the
+ * other settings hold niri's defaults, `{ proportion: 1 / 3 }`, `{ proportion: 1 / 2 }` and
+ * `{ proportion: 2 / 3 }` for the presets, and don't change.
+ */
 export interface LayoutConfig {
     readonly gaps: number;
     /** Space to leave around tiled windows, already taken out of `View.tilingArea`. */
@@ -137,7 +154,7 @@ export interface LayoutConfig {
     readonly presetColumnWidths: readonly Preset[];
     readonly presetWindowHeights: readonly Preset[];
     readonly defaultColumnDisplay: "normal" | "tabbed";
-    /** The tab indicator that bento draws for tab bars, see `Workspace.setTabBar`. */
+    /** How tab bars are drawn, see `Workspace.setTabBar`. */
     readonly tabIndicator: TabIndicatorConfig;
 }
 
@@ -278,11 +295,7 @@ export interface Workspace {
     place(win: Window, rect: Rect, opts?: { animate?: boolean }): void;
     /** Shows or hides a window, for example the inactive tabs of a tabbed column. */
     setVisible(win: Window, visible: boolean): void;
-    /**
-     * Marks whether a window is the active one in its column, for the `is-active-in-column`
-     * window rule, like the window of a column that was focused last. What a column is is up to
-     * the engine. Windows the engine doesn't mark count as active while they're shown.
-     */
+    /** Has no effect: the `is-active-in-column` window rule is gone. */
     setActiveInColumn(win: Window, active: boolean): void;
     /** Tells a window to be fullscreen, maximized or normal. The engine still places it. */
     setMode(win: Window, mode: SizingMode): void;
@@ -298,14 +311,14 @@ export interface Workspace {
     /** Stores anything JSON-serializable on a window, see `Window.data`. */
     setWindowData(win: Window, data: unknown): void;
     /**
-     * Shows a highlight on the canvas, like around a window picked for a two-step action, or
-     * hides it with `null`. While a window is dragged, bento highlights `dropTarget` instead.
+     * Draws a highlight on the canvas, like around a window picked for a two-step action, or
+     * removes it with `null`. While a window is dragged, `dropTarget` draws another highlight.
      * Setting the same highlight again does nothing.
      */
     setHint(rect: Rect | null): void;
     /**
-     * Draws a tab indicator for windows shown as tabs, or removes it with `null`. `key` tells
-     * tab bars apart, so that each keeps its animations; any string. Clicking a tab activates its
+     * Draws a tab bar for windows shown as tabs: a segment for each tab along the left of the area.
+     * Removes it with `null`. `key` tells tab bars apart; any string. Clicking a tab activates its
      * window through `Layout.activate`. Hiding inactive tabs is up to the engine. Setting the same
      * tab bar again does nothing.
      */
@@ -313,9 +326,10 @@ export interface Workspace {
     /** Keys of the tab bars shown, to remove the ones that went away. */
     readonly tabBars: readonly string[];
     /**
-     * Space the tab indicator takes inside a tabbed area of `count` tabs, from the config: `w` and
-     * `h` to leave free across and down, and `x` and `y` for how far the tabs start from the
-     * area's left and top edges. All 0 when the indicator goes outside the area or is hidden.
+     * Space the tab indicator takes inside a tabbed area of `count` tabs, from `LayoutConfig`: `w`
+     * and `h` to leave free across and down, and `x` and `y` for how far the tabs start from the
+     * area's left and top edges. All 0 when the indicator goes outside the area or is hidden,
+     * which it does with the defaults.
      */
     tabIndicatorSpace(count: number): Rect;
     /** Rounds a coordinate to physical pixels. */
@@ -387,14 +401,17 @@ export interface Layout {
 
     // Queries. These must not change anything; bento discards changes they make.
 
-    /** Where a window dragged with the pointer at `pointer` would land, to highlight it. */
+    /**
+     * Where a window dragged with the pointer at `pointer` would land, to highlight it: the
+     * adapter draws the rect while the window is over the workspace.
+     */
     dropTarget?(win: Window, pointer: Point, rect: Rect): Rect | null;
     /**
      * Tile size to suggest to a new window before it opens, borders included like every size in
      * this API; 0 lets the window choose.
      */
     newWindowSize?(info: { rules: WindowRules; minSize: Size; maxSize: Size; borders: Size }): Size;
-    /** Column and row of a window for IPC clients, 1-based, or `null`. */
+    /** Has no effect: bento doesn't ask for windows' columns and rows any more. */
     ipcPosition?(win: Window): [number, number] | null;
 }
 
