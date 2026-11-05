@@ -15,7 +15,7 @@ use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceRenderElement,
 };
-use super::{compute_overview_zoom, ActivateWindow, HitType, LayoutElement, Options};
+use super::{compute_overview_zoom, ActivateWindow, HitType, LayoutElement, NodeHit, Options};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::RenderLayer;
@@ -1287,6 +1287,22 @@ impl<W: LayoutElement> Monitor<W> {
             let (win, hit) = ws.window_under(pos_within_output - geo.loc)?;
             Some((win, hit.offset_win_pos(geo.loc)))
         }
+    }
+
+    /// The interactive node that a workspace's tiling layout drew under the point.
+    pub fn node_under(&self, pos_within_output: Point<f64, Logical>) -> Option<NodeHit> {
+        // The overview doesn't pass input on to what the layout draws.
+        if self.overview_progress.is_some() {
+            return None;
+        }
+
+        let (ws, geo) = self.workspace_under(pos_within_output)?;
+        let (node, pos) = ws.node_under(pos_within_output - geo.loc)?;
+        Some(NodeHit {
+            workspace: ws.id().get(),
+            node,
+            pos,
+        })
     }
 
     pub fn resize_edges_under(&self, pos_within_output: Point<f64, Logical>) -> Option<ResizeEdge> {

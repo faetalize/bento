@@ -12,26 +12,33 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use niri_config::utils::MergeWith as _;
-use niri_config::Struts;
+use niri_config::{CornerRadius, Struts};
 use niri_ipc::WindowLayout;
 use serde_json::{json, Value};
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
+use smithay::backend::renderer::element::utils::{
+    CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
+};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexProgram};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Serial, Size};
 
 use self::protocol::{
     CameraChange, ConfigInfo, Mode, Rect, Struts as StrutsInfo, ViewInfo, Wh, WindowChange,
     WindowInfo, WorkspaceInfo, Xy,
 };
-use self::tree::Tree;
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
+use super::surfaces::{Drawn, NodeTransform, RenderItem, SurfaceRenderElement, Tree, WindowSlot};
 use super::tile::{PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::InteractiveResize;
-use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
+use super::{
+    ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, LayoutElementRenderElement,
+    Options, RemovedTile,
+};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::{RenderLayer, SizingMode};
 use crate::niri_render_elements;
+use crate::render_helpers::clipped_surface::ClippedSurfaceRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
@@ -42,7 +49,6 @@ use crate::window::ResolvedWindowRules;
 pub mod engine;
 pub mod host;
 mod protocol;
-pub mod tree;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
@@ -64,6 +70,9 @@ pub struct TilingSpace<W: LayoutElement> {
 
     /// What the layout draws: the windows and everything else.
     tree: Tree,
+
+    /// Where the pointer last was over the layout's nodes, on the canvas.
+    pointer: Point<f64, Logical>,
 
     /// Horizontal swipe that the layout follows.
     swipe: Option<Swipe>,
@@ -105,6 +114,14 @@ pub struct TilingSpace<W: LayoutElement> {
 niri_render_elements! {
     TilingSpaceRenderElement<R> => {
         Tile = TileRenderElement<R>,
+        // A tile that the tree scales or moves.
+        Transformed = RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
+        // A tile that the tree cuts off.
+        Clipped = CropRenderElement<
+            RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
+        >,
+        // What the layout draws besides windows.
+        Surface = SurfaceRenderElement,
         ClosingWindow = ClosingWindowRenderElement,
     }
 }
@@ -249,7 +266,8 @@ impl<W: LayoutElement> TilingSpace<W> {
                 y: Axis::Static(0.),
                 gesture: None,
             },
-            tree: Tree::new(id),
+            tree: Tree::new(id, clock.clone(), options.animations.clone()),
+            pointer: Point::from((0., 0.)),
             swipe: None,
             drop: None,
             remove_reason: None,
@@ -278,6 +296,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             tile.update_config(view_size, scale, options.clone());
         }
 
+        self.tree.set_animations(options.animations.clone());
+
         self.view_size = view_size;
         self.working_area = working_area;
         self.parent_area = parent_area;
@@ -299,6 +319,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             tile.advance_animations();
         }
 
+        self.tree.advance_animations();
+
         self.closing_windows.retain_mut(|closing| {
             closing.advance_animations();
             closing.are_animations_ongoing()
@@ -308,12 +330,14 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn are_animations_ongoing(&self) -> bool {
         !self.camera.is_static()
             || self.tiles.iter().any(Tile::are_animations_ongoing)
+            || self.tree.are_animations_ongoing()
             || !self.closing_windows.is_empty()
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         !self.camera.is_static()
             || self.tiles.iter().any(Tile::are_transitions_ongoing)
+            || self.tree.are_animations_ongoing()
             || !self.closing_windows.is_empty()
     }
 
@@ -397,11 +421,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> {
         let scale = self.scale;
         let camera = self.camera.current();
-        zip(&self.tiles, &self.data).map(move |(tile, data)| {
-            let pos = data.rect.unwrap_or_default().loc - camera + tile.render_offset();
-            let pos = pos.to_physical_precise_round(scale).to_logical(scale);
-            (tile, pos, data.visible)
-        })
+        zip(&self.tiles, &self.data)
+            .map(move |(tile, data)| (tile, render_pos(tile, data, camera, scale), data.visible))
     }
 
     pub fn tiles_with_render_positions_mut(
@@ -1192,31 +1213,136 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
         }
 
-        let active = self.active;
-        for ((tile, tile_pos, visible), data) in self.tiles_with_render_positions().zip(&self.data)
-        {
-            // Skip tiles belonging to a different render layer.
-            if layer.is_normal() == tile.is_moving_between_workspaces() {
-                continue;
-            }
+        // The tree has the nodes from the bottom to the top, and elements go from the top.
+        let camera = self.camera.current();
+        let mut items = Vec::new();
+        self.tree.render_elements(
+            ctx.renderer,
+            Point::from((-camera.x, -camera.y)),
+            self.scale,
+            &mut |item| items.push(item),
+        );
 
-            // Keep hidden tiles that are fading out visible until they're done.
-            if !visible && tile.alpha_animation.is_none() {
-                continue;
+        for item in items.into_iter().rev() {
+            match item {
+                RenderItem::Element(elem) => {
+                    if layer.is_normal() {
+                        push(elem.into());
+                    }
+                }
+                RenderItem::Window(slot) => {
+                    self.render_window(ctx.r(), &slot, xray_pos, focus_ring, layer, push);
+                }
             }
-
-            let focus_ring = focus_ring && Some(data.id) == active;
-            let xray_pos = xray_pos.offset(tile_pos);
-            tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
-                push(elem.into())
-            });
         }
+    }
+
+    /// Renders a window where the tree puts it: with its opacity, transform and clip.
+    fn render_window<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        slot: &WindowSlot,
+        xray_pos: XrayPos,
+        focus_ring: bool,
+        layer: RenderLayer,
+        push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
+    ) {
+        let Some(idx) = self.idx_of_layout_id(slot.id) else {
+            return;
+        };
+        let (tile, data) = (&self.tiles[idx], &self.data[idx]);
+
+        // Skip tiles belonging to a different render layer.
+        if layer.is_normal() == tile.is_moving_between_workspaces() {
+            return;
+        }
+
+        // Keep hidden tiles that are fading out visible until they're done.
+        if !data.visible && tile.alpha_animation.is_none() {
+            return;
+        }
+
+        let camera = self.camera.current();
+        let tile_pos = render_pos(tile, data, camera, self.scale);
+        let focus_ring = focus_ring && Some(data.id) == self.active;
+        let xray_pos = xray_pos.offset(tile_pos);
+        let drawn = &slot.drawn;
+        let opacity = drawn.opacity as f32;
+
+        // The tree scales a window around the centre of where the layout placed it.
+        let rect = data.rect.unwrap_or_default();
+        let transform = drawn.transform_around(rect);
+        if transform.scale <= 0. {
+            return;
+        }
+        if transform == NodeTransform::IDENTITY && drawn.clip.is_none() {
+            tile.render_with_opacity(
+                ctx.r(),
+                tile_pos,
+                xray_pos,
+                focus_ring,
+                opacity,
+                &mut |elem| push(elem.into()),
+            );
+            return;
+        }
+
+        let placement = Placement::new(drawn, rect, transform, tile_pos, camera, self.scale);
+        let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+        tile.render_with_opacity(
+            ctx.r(),
+            tile_pos,
+            xray_pos,
+            focus_ring,
+            opacity,
+            &mut |elem| {
+                let elem = placement.round_corners(elem, clip_shader.as_ref());
+                if let Some(elem) = placement.place(elem) {
+                    push(elem);
+                }
+            },
+        );
     }
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
         self.tiles_with_render_positions()
             .filter(|(_, _, visible)| *visible)
             .find_map(|(tile, tile_pos, _)| HitType::hit_tile(tile, tile_pos, pos))
+    }
+
+    /// The interactive node that the layout drew under `pos`, relative to the view, with the
+    /// pointer's position on the canvas. A window that's above a node takes the pointer from it.
+    pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
+        let camera = self.camera.current();
+        let covers = |window: u64| {
+            let Some(idx) = self.idx_of_layout_id(window) else {
+                return false;
+            };
+            let tile_pos = render_pos(&self.tiles[idx], &self.data[idx], camera, self.scale);
+            self.data[idx].visible && HitType::hit_tile(&self.tiles[idx], tile_pos, pos).is_some()
+        };
+
+        let canvas = pos + camera;
+        let node = self.tree.hit_with(canvas, &covers)?;
+        Some((node, canvas))
+    }
+
+    /// Moves the pointer onto the node `hit` of the layout, with the pointer's position on the
+    /// canvas, or off all of them. Returns the enter and leave events for the nodes it moved
+    /// between, with the pointer's position on the canvas for each.
+    pub(super) fn pointer_over(
+        &mut self,
+        hit: Option<(&str, Point<f64, Logical>)>,
+    ) -> Vec<(String, &'static str, Point<f64, Logical>)> {
+        if let Some((_, pos)) = hit {
+            self.pointer = pos;
+        }
+        let pos = self.pointer;
+        self.tree
+            .pointer_over(hit.map(|(node, _)| node))
+            .into_iter()
+            .map(|(node, event)| (node, event, pos))
+            .collect()
     }
 
     /// Where a dragged tile is on the canvas: the pointer at `pos` and the tile at `tile_pos`,
@@ -1629,6 +1755,107 @@ impl<W: LayoutElement> TilingSpace<W> {
                 self.has_window(&resize.window),
                 "interactive resize window must be present in the layout"
             );
+        }
+    }
+}
+
+/// Where a tile is drawn relative to the view, rounded to physical pixels.
+fn render_pos<W: LayoutElement>(
+    tile: &Tile<W>,
+    data: &TileData,
+    camera: Point<f64, Logical>,
+    scale: f64,
+) -> Point<f64, Logical> {
+    let pos = data.rect.unwrap_or_default().loc - camera + tile.render_offset();
+    pos.to_physical_precise_round(scale).to_logical(scale)
+}
+
+/// How the tree puts a tile on the view: the physical pixels that its elements are scaled around,
+/// moved and cut by.
+struct Placement {
+    output_scale: f64,
+    /// The centre of the tile's rect, which the tree scales it around.
+    pivot: Point<i32, Physical>,
+    scale: f64,
+    offset: Point<i32, Physical>,
+    /// What cuts the elements off, if a clip does.
+    crop: Option<Rectangle<i32, Physical>>,
+    /// The rounded corners of the clip, as they are before the transform: the area and radius that
+    /// the elements are clipped to, which the transform then puts where the clip ends up.
+    corners: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+}
+
+impl Placement {
+    fn new(
+        drawn: &Drawn,
+        rect: Rectangle<f64, Logical>,
+        transform: NodeTransform,
+        tile_pos: Point<f64, Logical>,
+        camera: Point<f64, Logical>,
+        output_scale: f64,
+    ) -> Self {
+        let pivot = tile_pos + rect.size.downscale(2.).to_point();
+        let offset = Point::from((transform.x, transform.y));
+
+        let clip = drawn.clip.map(|clip| {
+            (
+                Rectangle::new(clip.rect.loc - camera, clip.rect.size),
+                clip.radius,
+            )
+        });
+        let corners = clip
+            .filter(|(_, radius)| *radius > 0.)
+            .map(|(clip, radius)| {
+                let loc = pivot + (clip.loc - offset - pivot).downscale(transform.scale);
+                let area = Rectangle::new(loc, clip.size.downscale(transform.scale));
+                let radius = CornerRadius::from((radius / transform.scale) as f32)
+                    .fit_to(area.size.w as f32, area.size.h as f32);
+                (area, radius)
+            });
+
+        Self {
+            output_scale,
+            pivot: pivot.to_physical_precise_round(output_scale),
+            scale: transform.scale,
+            offset: offset.to_physical_precise_round(output_scale),
+            crop: clip.map(|(clip, _)| clip.to_physical_precise_round(output_scale)),
+            corners,
+        }
+    }
+
+    /// Gives a window's surface the clip's rounded corners. Borders and shadows are only cut by
+    /// the clip's rectangle.
+    fn round_corners<R: NiriRenderer>(
+        &self,
+        elem: TileRenderElement<R>,
+        shader: Option<&GlesTexProgram>,
+    ) -> TileRenderElement<R> {
+        let (Some((area, radius)), Some(shader)) = (self.corners, shader) else {
+            return elem;
+        };
+        let scale = Scale::from(self.output_scale);
+
+        match elem {
+            TileRenderElement::LayoutElement(LayoutElementRenderElement::Wayland(surface))
+                if ClippedSurfaceRenderElement::will_clip(&surface, scale, area, radius) =>
+            {
+                ClippedSurfaceRenderElement::new(surface, scale, area, shader.clone(), radius)
+                    .into()
+            }
+            elem => elem,
+        }
+    }
+
+    fn place<R: NiriRenderer>(
+        &self,
+        elem: TileRenderElement<R>,
+    ) -> Option<TilingSpaceRenderElement<R>> {
+        let elem = RescaleRenderElement::from_element(elem, self.pivot, self.scale);
+        let elem = RelocateRenderElement::from_element(elem, self.offset, Relocate::Relative);
+        match self.crop {
+            Some(crop) => CropRenderElement::from_element(elem, self.output_scale, crop)
+                .map(TilingSpaceRenderElement::from),
+            None => Some(TilingSpaceRenderElement::from(elem)),
         }
     }
 }

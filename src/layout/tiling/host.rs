@@ -26,7 +26,9 @@ use super::protocol::{
 use super::{engine, TilingSpace};
 use crate::layout::monitor::InsertWorkspace;
 use crate::layout::workspace::WorkspaceId;
-use crate::layout::{ActivateWindow, InteractiveMoveState, Layout, LayoutElement, MonitorSet};
+use crate::layout::{
+    ActivateWindow, InteractiveMoveState, Layout, LayoutElement, MonitorSet, NodeHit,
+};
 use crate::utils::transaction::Transaction;
 use crate::utils::{output_size, ResizeEdge};
 
@@ -145,8 +147,6 @@ pub struct Host {
     groups: Option<Vec<GroupInfo>>,
     focused_monitor: Option<String>,
     options: Option<Value>,
-    /// Workspace of each node that the layout created and put in a tree.
-    node_workspaces: HashMap<String, u64>,
     /// What to tell the layout about again, because it changed it and bento may not agree.
     resend_all: bool,
     resend_workspaces: HashSet<u64>,
@@ -168,7 +168,6 @@ impl Host {
         self.groups = None;
         self.focused_monitor = None;
         self.options = None;
-        self.node_workspaces.clear();
         self.resend_all = false;
         self.resend_workspaces.clear();
         self.resend_windows.clear();
@@ -385,8 +384,6 @@ impl<W: LayoutElement> Layout<W> {
             }
             keep
         });
-        host.node_workspaces
-            .retain(|_, workspace| seen.contains(workspace));
         host.resend_workspaces.clear();
 
         // Windows that the layout doesn't know are added by events, and windows that are gone
@@ -821,13 +818,17 @@ impl<W: LayoutElement> Layout<W> {
             .find_map(|(_, _, ws)| ws.scrolling().engine_id_of(window))
     }
 
-    /// The workspace that a node is in the tree of.
+    /// The workspace that a node is in the tree of. Windows take what's drawn on them along when
+    /// they move, so this looks where the nodes are now.
     fn node_workspace(&self, node: &str) -> Option<u64> {
         let number = || node.get(1..)?.parse::<u64>().ok();
         match node.chars().next()? {
             'r' => number().filter(|id| self.host.workspaces.contains_key(id)),
             'w' => self.workspace_of_window(number()?),
-            _ => self.host.node_workspaces.get(node).copied(),
+            _ => self
+                .workspaces()
+                .find(|(_, _, ws)| ws.scrolling().tree().contains(node))
+                .map(|(_, _, ws)| ws.id().get()),
         }
     }
 
@@ -855,61 +856,69 @@ impl<W: LayoutElement> Layout<W> {
                     let child = child.clone();
 
                     // A node that moves to another workspace's tree takes what's under it along.
+                    // Windows aren't moved that way: they go with their workspace.
                     let moved = match from.filter(|from| *from != to) {
-                        Some(from) if create.is_none() => self
-                            .workspace_mut(from)
-                            .and_then(|ws| ws.scrolling_mut().tree_mut().take(&child)),
+                        Some(from) if create.is_none() => {
+                            let taken = self
+                                .workspace_mut(from)
+                                .and_then(|ws| ws.scrolling_mut().tree_mut().take(&child));
+                            let Some(taken) = taken else {
+                                warn!(
+                                    "the layout moves {child} to another workspace's tree, \
+                                     but there's a window in it"
+                                );
+                                continue;
+                            };
+                            touched.insert(from);
+                            Some(taken)
+                        }
                         _ => None,
                     };
-                    if let Some(from) = from.filter(|from| *from != to) {
-                        touched.insert(from);
-                    }
 
                     let Some(ws) = self.workspace_mut(to) else {
                         continue;
                     };
-                    if let Some(moved) = moved {
-                        let ids: Vec<String> = moved.ids().map(str::to_owned).collect();
-                        let TreeOp::Append { parent, before, .. } = op else {
-                            unreachable!()
-                        };
-                        ws.scrolling_mut()
-                            .tree_mut()
-                            .put(moved, &parent, before.as_deref());
-                        for id in ids.into_iter().filter(|id| id.starts_with('n')) {
-                            self.host.node_workspaces.insert(id, to);
+                    let tree = ws.scrolling_mut().tree_mut();
+                    match moved {
+                        Some(moved) => {
+                            let TreeOp::Append { parent, before, .. } = op else {
+                                unreachable!()
+                            };
+                            tree.put(moved, &parent, before.as_deref());
                         }
-                    } else {
-                        if let Some(create) = create {
-                            ws.scrolling_mut().tree_mut().apply(create);
-                        }
-                        ws.scrolling_mut().tree_mut().apply(op);
-                        if child.starts_with('n') {
-                            self.host.node_workspaces.insert(child, to);
+                        None => {
+                            let ops: Vec<Value> = create
+                                .into_iter()
+                                .chain([op])
+                                .map(|op| to_value(&op))
+                                .collect();
+                            if let Err(err) = tree.apply(&ops) {
+                                warn!("error in the nodes that the layout draws: {err}");
+                            }
                         }
                     }
                     touched.insert(to);
                 }
                 TreeOp::Set { ref id, .. } => {
-                    if let Some(ws) = self
+                    let Some(ws) = self
                         .node_workspace(id)
                         .and_then(|ws| self.workspace_mut(ws))
-                    {
-                        ws.scrolling_mut().tree_mut().apply(op);
+                    else {
+                        continue;
+                    };
+                    if let Err(err) = ws.scrolling_mut().tree_mut().apply(&[to_value(&op)]) {
+                        warn!("error in the nodes that the layout draws: {err}");
                     }
                 }
                 TreeOp::Remove { ref id } => {
                     let Some(workspace) = self.node_workspace(id) else {
                         continue;
                     };
-                    let id = id.clone();
                     let Some(ws) = self.workspace_mut(workspace) else {
                         continue;
                     };
-                    let ids = ws.scrolling_mut().tree_mut().subtree_ids(&id);
-                    ws.scrolling_mut().tree_mut().apply(op);
-                    for id in ids {
-                        self.host.node_workspaces.remove(&id);
+                    if let Err(err) = ws.scrolling_mut().tree_mut().apply(&[to_value(&op)]) {
+                        warn!("error in the nodes that the layout draws: {err}");
                     }
                     touched.insert(workspace);
                 }
@@ -1100,8 +1109,9 @@ impl<W: LayoutElement> Layout<W> {
         );
     }
 
-    /// Delivers a pointer event to a node that the layout draws, on the workspace with id
-    /// `workspace`. `pointer` is on the workspace's canvas.
+    /// Delivers a pointer event to a node that the layout draws, which bubbles to its parents.
+    /// `pointer` is on the workspace's canvas, `button` is 1, 2 or 3 for the left, middle and right
+    /// button, and 0 for events that aren't about one.
     #[allow(clippy::too_many_arguments)]
     pub fn node_pointer_event(
         &mut self,
@@ -1122,6 +1132,38 @@ impl<W: LayoutElement> Layout<W> {
             "modifiers": { "shift": shift, "ctrl": ctrl, "alt": alt, "super": logo },
             "delta": Xy::from_point(delta),
         }));
+    }
+
+    /// Tells the layout that the pointer is on the node `hit`, or on none, so that the nodes it
+    /// left get `pointerleave` and the ones it entered get `pointerenter`.
+    pub fn node_hover(&mut self, hit: Option<&NodeHit>, modifiers: [bool; 4]) {
+        let mut events = Vec::new();
+        for ws in self.workspaces_mut() {
+            let id = ws.id().get();
+            let over = hit
+                .filter(|hit| hit.workspace == id)
+                .map(|hit| (hit.node.as_str(), hit.pos));
+            events.extend(ws.scrolling_mut().pointer_over(over));
+        }
+
+        for (node, event, pointer) in events {
+            self.node_pointer_event(&node, event, pointer, 0, modifiers, Point::from((0., 0.)));
+        }
+    }
+
+    /// Tells the layout that the pointer moved, and is on the node `hit` or on none.
+    pub fn node_pointer_moved(&mut self, hit: Option<&NodeHit>, modifiers: [bool; 4]) {
+        self.node_hover(hit, modifiers);
+        if let Some(hit) = hit {
+            self.node_pointer_event(
+                &hit.node,
+                "pointermove",
+                hit.pos,
+                0,
+                modifiers,
+                Point::from((0., 0.)),
+            );
+        }
     }
 
     /// Tells the layout where an interactively moved window is over a workspace, or that it left.

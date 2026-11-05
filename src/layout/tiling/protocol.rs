@@ -275,7 +275,7 @@ pub enum Op {
 }
 
 /// A change to a workspace's tree of drawn nodes, see `prelude/nodes.js`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum TreeOp {
     Create {

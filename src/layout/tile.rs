@@ -11,7 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
 use super::shadow::Shadow;
-use super::tiling::tree::Subtree;
+use super::surfaces::Subtree;
 use super::{
     HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
     SizeFrac, RESIZE_ANIMATION_THRESHOLD,
@@ -122,6 +122,9 @@ pub struct Tile<W: LayoutElement> {
 
     /// The animation of the tile's opacity.
     pub(super) alpha_animation: Option<AlphaAnimation>,
+
+    /// Buffer to draw the tile into when the tiling layout's tree makes it translucent.
+    opacity_offscreen: OffscreenBuffer,
 
     /// Offset during the initial interactive move rubberband.
     pub(super) interactive_move_offset: Point<f64, Logical>,
@@ -240,6 +243,7 @@ impl<W: LayoutElement> Tile<W> {
             move_x_animation: None,
             move_y_animation: None,
             alpha_animation: None,
+            opacity_offscreen: OffscreenBuffer::default(),
             interactive_move_offset: Point::from((0., 0.)),
             unmap_snapshot: None,
             rounded_corner_damage: Default::default(),
@@ -1378,10 +1382,25 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn render<R: NiriRenderer>(
         &self,
+        ctx: RenderCtx<R>,
+        location: Point<f64, Logical>,
+        xray_pos: XrayPos,
+        focus_ring: bool,
+        push: &mut dyn FnMut(TileRenderElement<R>),
+    ) {
+        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., push);
+    }
+
+    /// Renders the tile as translucent as `opacity` says, on top of its own opacity animation.
+    /// The whole tile is drawn into one buffer first, so what overlaps in it doesn't show
+    /// through.
+    pub fn render_with_opacity<R: NiriRenderer>(
+        &self,
         mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
         xray_pos: XrayPos,
         focus_ring: bool,
+        opacity: f32,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render");
@@ -1391,7 +1410,8 @@ impl<W: LayoutElement> Tile<W> {
         let tile_alpha = self
             .alpha_animation
             .as_ref()
-            .map_or(1., |alpha| alpha.anim.clamped_value()) as f32;
+            .map_or(1., |alpha| alpha.anim.clamped_value()) as f32
+            * opacity;
 
         let mut pushed = false;
         self.window().set_offscreen_data(None);
@@ -1423,7 +1443,11 @@ impl<W: LayoutElement> Tile<W> {
                     warn!("error rendering window opening animation: {err:?}");
                 }
             }
-        } else if let Some(alpha) = &self.alpha_animation {
+        } else if self.alpha_animation.is_some() || opacity < 1. {
+            let offscreen = self
+                .alpha_animation
+                .as_ref()
+                .map_or(&self.opacity_offscreen, |alpha| &alpha.offscreen);
             let mut ctx = ctx.as_gles();
             let mut elements = Vec::new();
             self.render_inner(
@@ -1433,7 +1457,7 @@ impl<W: LayoutElement> Tile<W> {
                 focus_ring,
                 &mut |elem| elements.push(elem),
             );
-            match alpha.offscreen.render(ctx.renderer, scale, &elements) {
+            match offscreen.render(ctx.renderer, scale, &elements) {
                 Ok((elem, _sync, data)) => {
                     let offset = elem.offset();
                     let elem = elem.with_alpha(tile_alpha).with_offset(location + offset);

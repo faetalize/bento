@@ -553,6 +553,17 @@ pub enum HitType {
     Activate,
 }
 
+/// A node that a tiling layout draws, under the pointer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeHit {
+    /// Id of the workspace that the node is drawn on.
+    pub workspace: u64,
+    /// Id of the node.
+    pub node: String,
+    /// The pointer's position on the workspace's canvas.
+    pub pos: Point<f64, Logical>,
+}
+
 #[derive(Debug)]
 enum OverviewProgress {
     Animation(Animation),
@@ -2067,6 +2078,16 @@ impl<W: LayoutElement> Layout<W> {
         } else {
             None
         }
+    }
+
+    /// Returns the interactive node that a tiling layout drew under the cursor.
+    pub fn node_under(
+        &self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> Option<NodeHit> {
+        let mon = self.monitor_for_output(output)?;
+        mon.node_under(pos_within_output)
     }
 
     /// Returns the window under the cursor and the hit type.

@@ -927,3 +927,283 @@ fn removed_nodes_are_not_left() {
     apply(&mut tree, json!([{ "op": "remove", "id": "n1" }]));
     assert!(tree.pointer_moved(point(5., 5.)).is_empty());
 }
+
+// Moving between trees.
+
+#[test]
+fn a_window_moves_to_another_tree_with_what_is_drawn_on_it() {
+    let (mut from, _) = tree();
+    let (mut to, _) = tree();
+    from.add_window(7);
+    from.add_window(8);
+    add(&mut from, "n1", "w7", json!({ "opacity": 0.5 }));
+    add(&mut from, "n2", "n1", json!({}));
+    to.add_window(9);
+
+    let subtree = from.take_window(7).unwrap();
+    for id in ["w7", "n1", "n2"] {
+        assert!(!from.nodes.contains_key(id));
+    }
+    assert_eq!(from.window_order(), [8]);
+
+    to.put_window(subtree);
+    assert_eq!(to.window_order(), [9, 7]);
+    assert_eq!(children(&to, "w7"), ["n1"]);
+    assert_eq!(to.path("n2"), ["n2", "n1", "w7", "r1"]);
+    assert_eq!(to.drawn("n1").unwrap().opacity, 0.5);
+}
+
+#[test]
+fn windows_nested_in_a_window_stay_when_it_moves() {
+    let (mut from, _) = tree();
+    from.add_window(7);
+    from.add_window(8);
+    apply(
+        &mut from,
+        json!([{ "op": "append", "parent": "w7", "child": "w8" }]),
+    );
+
+    let subtree = from.take_window(7).unwrap();
+    assert_eq!(from.window_order(), [8]);
+    assert_eq!(children(&from, "r1"), ["w8"]);
+
+    let (mut to, _) = tree();
+    to.put_window(subtree);
+    assert_eq!(to.window_order(), [7]);
+}
+
+#[test]
+fn taking_a_window_that_is_not_there_takes_nothing() {
+    let (mut from, _) = tree();
+    assert!(from.take_window(7).is_none());
+}
+
+#[test]
+fn a_node_moves_to_another_tree_before_a_sibling() {
+    let (mut from, _) = tree();
+    let (mut to, _) = tree();
+    add(&mut from, "n1", "r1", json!({}));
+    add(&mut from, "n2", "n1", json!({}));
+    add(&mut to, "n3", "r1", json!({}));
+    add(&mut to, "n4", "r1", json!({}));
+
+    let subtree = from.take("n1").unwrap();
+    assert!(from.nodes.get("n1").is_none() && from.nodes.get("n2").is_none());
+    assert!(children(&from, "r1").is_empty());
+
+    assert!(to.put(subtree, "r1", Some("n4")));
+    assert_eq!(children(&to, "r1"), ["n3", "n1", "n4"]);
+    assert_eq!(to.path("n2"), ["n2", "n1", "r1"]);
+}
+
+#[test]
+fn a_node_is_put_last_when_the_sibling_it_goes_before_is_not_there() {
+    let (mut from, _) = tree();
+    let (mut to, _) = tree();
+    add(&mut from, "n1", "r1", json!({}));
+    add(&mut to, "n3", "r1", json!({}));
+
+    let subtree = from.take("n1").unwrap();
+    assert!(to.put(subtree, "r1", Some("n9")));
+    assert_eq!(children(&to, "r1"), ["n3", "n1"]);
+}
+
+#[test]
+fn the_root_and_nodes_with_windows_in_them_are_not_taken() {
+    let (mut tree, _) = tree();
+    add(&mut tree, "n1", "r1", json!({}));
+    tree.add_window(7);
+    apply(
+        &mut tree,
+        json!([{ "op": "append", "parent": "n1", "child": "w7" }]),
+    );
+
+    assert!(tree.take("r1").is_none());
+    assert!(tree.take("n1").is_none());
+    assert!(tree.take("n9").is_none());
+    assert_eq!(tree.path("w7"), ["w7", "n1", "r1"]);
+}
+
+#[test]
+fn nothing_is_put_in_a_parent_that_is_not_there() {
+    let (mut from, _) = tree();
+    let (mut to, _) = tree();
+    add(&mut from, "n1", "r1", json!({}));
+    let subtree = from.take("n1").unwrap();
+    assert!(!to.put(subtree, "n9", None));
+    assert!(!to.nodes.contains_key("n1"));
+}
+
+#[test]
+fn a_node_taken_out_is_no_longer_hovered() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+    tree.pointer_moved(point(5., 5.));
+    tree.take("n1").unwrap();
+    assert!(tree.pointer_left().is_empty());
+}
+
+#[test]
+fn windows_are_in_the_order_of_the_tree() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    tree.add_window(8);
+    add(&mut tree, "n1", "r1", json!({}));
+    tree.add_window(9);
+    apply(
+        &mut tree,
+        json!([{ "op": "append", "parent": "n1", "child": "w9" }]),
+    );
+    assert_eq!(tree.window_order(), [7, 8, 9]);
+
+    apply(
+        &mut tree,
+        json!([{ "op": "append", "parent": "r1", "child": "w7" }]),
+    );
+    assert_eq!(tree.window_order(), [8, 9, 7]);
+}
+
+#[test]
+fn starting_over_keeps_only_the_windows_given() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+    set(&mut tree, "w7", json!({ "opacity": 0.5 }));
+    tree.pointer_moved(point(5., 5.));
+
+    tree.reset([8, 7]);
+    assert!(!tree.nodes.contains_key("n1"));
+    assert_eq!(tree.window_order(), [8, 7]);
+    assert_eq!(tree.drawn("w7").unwrap().opacity, 1.);
+    assert!(tree.pointer_left().is_empty());
+}
+
+// Hit testing with windows.
+
+#[test]
+fn a_window_over_a_node_takes_the_pointer_from_it() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+    tree.add_window(7);
+    add(
+        &mut tree,
+        "n2",
+        "w7",
+        json!({ "rect": props_rect(0., 0., 20., 20.), "interactive": true }),
+    );
+
+    // The window doesn't cover anything unless the caller says so.
+    assert_eq!(tree.hit(point(50., 50.)).as_deref(), Some("n1"));
+    assert_eq!(
+        tree.hit_with(point(50., 50.), &|_| false).as_deref(),
+        Some("n1")
+    );
+
+    let covers = |window: u64| window == 7;
+    assert_eq!(tree.hit_with(point(50., 50.), &covers), None);
+    // What's drawn on the window is above it.
+    assert_eq!(
+        tree.hit_with(point(10., 10.), &covers).as_deref(),
+        Some("n2")
+    );
+}
+
+#[test]
+fn a_window_under_a_node_does_not_take_the_pointer_from_it() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+    assert_eq!(
+        tree.hit_with(point(50., 50.), &|window| window == 7)
+            .as_deref(),
+        Some("n1")
+    );
+}
+
+#[test]
+fn the_pointer_can_be_moved_onto_a_node_the_caller_picked() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+    add(
+        &mut tree,
+        "n2",
+        "n1",
+        json!({ "rect": props_rect(0., 0., 10., 10.), "interactive": true }),
+    );
+
+    assert_eq!(
+        tree.pointer_over(Some("n2")),
+        [
+            ("n1".to_owned(), "pointerenter"),
+            ("n2".to_owned(), "pointerenter")
+        ]
+    );
+    assert!(tree.pointer_over(Some("n2")).is_empty());
+    assert_eq!(
+        tree.pointer_over(None),
+        [
+            ("n2".to_owned(), "pointerleave"),
+            ("n1".to_owned(), "pointerleave")
+        ]
+    );
+}
+
+#[test]
+fn a_transform_is_the_same_move_around_another_rect() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({
+            "rect": props_rect(0., 0., 100., 100.),
+            "transform": { "scale": 2, "x": 10, "y": -10 },
+        }),
+    );
+    let drawn = tree.drawn("n1").unwrap();
+
+    // The same rect gives the same transform.
+    assert_eq!(drawn.transform_around(drawn.rect), drawn.transform);
+
+    // Another rect moves its own points where the node's points go.
+    let other = rect(30., 0., 50., 50.);
+    let around = drawn.transform_around(other);
+    let moved = |rect: Rectangle<f64, Logical>, t: NodeTransform, p: Point<f64, Logical>| {
+        let c = center_f64(rect);
+        point(
+            t.scale * (p.x - c.x) + c.x + t.x,
+            t.scale * (p.y - c.y) + c.y + t.y,
+        )
+    };
+    let p = point(12., 34.);
+    assert_eq!(
+        moved(drawn.rect, drawn.transform, p),
+        moved(other, around, p)
+    );
+    assert_eq!(around.scale, 2.);
+}

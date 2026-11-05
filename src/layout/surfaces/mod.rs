@@ -123,6 +123,10 @@ pub struct WindowSlot {
     pub drawn: Drawn,
 }
 
+/// A node with everything under it, taken out of a tree to put in another workspace's.
+#[derive(Debug)]
+pub struct Subtree(Vec<(String, Node)>);
+
 /// What a node's ancestors do to it, as seen from the node: it ends up at `scale` times its
 /// canvas position plus `offset`.
 #[derive(Debug, Clone, Copy)]
@@ -163,6 +167,19 @@ impl Drawn {
             )),
             size,
         )
+    }
+
+    /// Its transform as a scale around the centre of `rect` instead of its own rect, for a caller
+    /// that places the node somewhere else than the tree thinks. It moves points the same way.
+    pub fn transform_around(&self, rect: Rectangle<f64, Logical>) -> NodeTransform {
+        let own = center_f64(self.rect);
+        let centre = center_f64(rect);
+        let scale = self.transform.scale;
+        NodeTransform {
+            scale,
+            x: self.transform.x + (own.x - centre.x) * (1. - scale),
+            y: self.transform.y + (own.y - centre.y) * (1. - scale),
+        }
     }
 
     /// Whether `point` is on it, and not cut off by a clip.
@@ -390,6 +407,11 @@ impl Tree {
         &self.root
     }
 
+    /// Whether the tree has a node, in it or created by the engine and not put in yet.
+    pub fn contains(&self, id: &str) -> bool {
+        self.nodes.contains_key(id)
+    }
+
     /// Changes what the names of transitions mean.
     pub fn set_animations(&mut self, animations: Animations) {
         self.animations = animations;
@@ -508,7 +530,7 @@ impl Tree {
             return Err(format!("`{id}` can't be removed, only moved"));
         }
 
-        let subtree = self.subtree(id);
+        let subtree = self.subtree_ids(id);
         if let Some(window) = subtree
             .iter()
             .find(|id| matches!(self.nodes[id.as_str()].kind, NodeKind::Window(_)))
@@ -550,8 +572,8 @@ impl Tree {
         }
     }
 
-    /// The node and everything in it.
-    fn subtree(&self, id: &str) -> Vec<String> {
+    /// The node and everything in it, the node first.
+    fn subtree_ids(&self, id: &str) -> Vec<String> {
         let mut subtree = vec![id.to_owned()];
         let mut next = 0;
         while let Some(id) = subtree.get(next) {
@@ -562,6 +584,12 @@ impl Tree {
             next += 1;
         }
         subtree
+    }
+
+    fn is_window(&self, id: &str) -> bool {
+        self.nodes
+            .get(id)
+            .is_some_and(|node| matches!(node.kind, NodeKind::Window(_)))
     }
 
     /// Adds a window's node, last in the root.
@@ -587,24 +615,117 @@ impl Tree {
             return;
         }
 
+        self.move_nested_windows_to_root(&key);
+        drop(self.take_subtree(&key));
+    }
+
+    /// Takes a window's node out, with what the engine put in it, to put in the tree of the
+    /// workspace that the window moves to. Windows that were in it go to the end of the root.
+    pub fn take_window(&mut self, id: u64) -> Option<Subtree> {
+        let key = window_key(id);
+        if !self.nodes.contains_key(&key) {
+            warn!("the surface tree has no window node {key}");
+            return None;
+        }
+
+        self.move_nested_windows_to_root(&key);
+        Some(self.take_subtree(&key))
+    }
+
+    /// Puts a window's node that was taken out, last in the root.
+    pub fn put_window(&mut self, subtree: Subtree) {
+        let root = self.root.clone();
+        self.put_subtree(subtree, &root, None);
+    }
+
+    /// Takes a node and what's under it out, to put in another workspace's tree with
+    /// [`Tree::put`]. Nothing is taken if it's the root or has a window node in it: windows move
+    /// with their workspace, not as part of a node.
+    pub fn take(&mut self, id: &str) -> Option<Subtree> {
+        if self.nodes.get(id)?.kind == NodeKind::Root {
+            return None;
+        }
+        if self.subtree_ids(id).iter().any(|id| self.is_window(id)) {
+            return None;
+        }
+        Some(self.take_subtree(id))
+    }
+
+    /// Puts a node that was taken out of another tree in `parent`, before its child `before` or
+    /// last. Returns whether `parent` exists.
+    pub fn put(&mut self, subtree: Subtree, parent: &str, before: Option<&str>) -> bool {
+        if !self.nodes.contains_key(parent) {
+            return false;
+        }
+        self.put_subtree(subtree, parent, before);
+        true
+    }
+
+    fn move_nested_windows_to_root(&mut self, id: &str) {
         let nested: Vec<_> = self
-            .subtree(&key)
+            .subtree_ids(id)
             .into_iter()
             .skip(1)
-            .filter(|id| matches!(self.nodes[id.as_str()].kind, NodeKind::Window(_)))
+            .filter(|id| self.is_window(id))
             .collect();
         let root = self.root.clone();
         for window in nested {
             self.detach(&window);
             self.attach(&root, &window, None);
         }
+    }
 
-        let subtree = self.subtree(&key);
-        self.detach(&key);
-        for id in &subtree {
-            self.nodes.remove(id);
-        }
+    fn take_subtree(&mut self, id: &str) -> Subtree {
+        let ids = self.subtree_ids(id);
+        self.detach(id);
+        let nodes = ids
+            .into_iter()
+            .filter_map(|id| Some((id.clone(), self.nodes.remove(&id)?)))
+            .collect();
         self.hovered.retain(|id| self.nodes.contains_key(id));
+        Subtree(nodes)
+    }
+
+    fn put_subtree(&mut self, subtree: Subtree, parent: &str, before: Option<&str>) {
+        let Some((id, _)) = subtree.0.first() else {
+            return;
+        };
+        let id = id.clone();
+        self.nodes.extend(subtree.0);
+        let before = before.filter(|before| {
+            *before != id
+                && self.nodes.get(*before).and_then(|n| n.parent.as_deref()) == Some(parent)
+        });
+        self.attach(parent, &id, before);
+    }
+
+    /// Starts over for a new engine: its nodes are gone, and the windows are in the root in the
+    /// order given, from the bottom to the top.
+    pub fn reset(&mut self, windows: impl IntoIterator<Item = u64>) {
+        self.nodes.retain(|_, node| node.kind == NodeKind::Root);
+        if let Some(root) = self.nodes.get_mut(&self.root) {
+            root.children.clear();
+        }
+        self.hovered.clear();
+        for window in windows {
+            self.add_window(window);
+        }
+    }
+
+    /// Ids of the windows in the tree, from the bottom to the top.
+    pub fn window_order(&self) -> Vec<u64> {
+        let mut windows = Vec::new();
+        let mut pending = vec![self.root.as_str()];
+        while let Some(id) = pending.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            if let NodeKind::Window(window) = node.kind {
+                windows.push(window);
+            }
+            pending.extend(node.children.iter().rev().map(String::as_str));
+        }
+        windows
     }
 
     pub fn advance_animations(&mut self) {
@@ -615,6 +736,13 @@ impl Tree {
 
     pub fn are_animations_ongoing(&self) -> bool {
         self.nodes.values().any(Node::are_animations_ongoing)
+    }
+
+    /// The ids of a node's children, from the bottom to the top.
+    pub fn children(&self, id: &str) -> &[String] {
+        self.nodes
+            .get(id)
+            .map_or(&[][..], |node| node.children.as_slice())
     }
 
     /// The ids from a node up to the root, for events to bubble along. Empty if there's no such
@@ -688,11 +816,21 @@ impl Tree {
 
     /// The topmost interactive node at `point` on the canvas. Windows aren't hit.
     pub fn hit(&self, point: Point<f64, Logical>) -> Option<String> {
+        self.hit_with(point, &|_| false)
+    }
+
+    /// The topmost interactive node at `point` on the canvas, where the windows for which
+    /// `covers` is true also take the pointer from the nodes below them.
+    pub fn hit_with(
+        &self,
+        point: Point<f64, Logical>,
+        covers: &dyn Fn(u64) -> bool,
+    ) -> Option<String> {
         let mut hit = None;
-        self.walk(&mut |id, node, drawn| {
-            if node.takes_pointer() && drawn.contains(point) {
-                hit = Some(id.to_owned());
-            }
+        self.walk(&mut |id, node, drawn| match node.kind {
+            NodeKind::Window(window) if covers(window) => hit = None,
+            _ if node.takes_pointer() && drawn.contains(point) => hit = Some(id.to_owned()),
+            _ => (),
         });
         hit
     }
@@ -707,10 +845,14 @@ impl Tree {
     /// Moves the pointer to `point` on the canvas. Returns the `pointerleave`s of the nodes it
     /// left, innermost first, then the `pointerenter`s of the nodes it entered, outermost first.
     pub fn pointer_moved(&mut self, point: Point<f64, Logical>) -> Vec<(String, &'static str)> {
-        let now = self
-            .hit(point)
-            .map(|id| self.pointer_path(&id))
-            .unwrap_or_default();
+        let hit = self.hit(point);
+        self.pointer_over(hit.as_deref())
+    }
+
+    /// Moves the pointer onto the node `hit`, or off all of them, like [`Tree::pointer_moved`]
+    /// for a caller that decided what's under the pointer.
+    pub fn pointer_over(&mut self, hit: Option<&str>) -> Vec<(String, &'static str)> {
+        let now = hit.map(|id| self.pointer_path(id)).unwrap_or_default();
         self.set_hovered(now)
     }
 
