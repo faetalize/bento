@@ -2,8 +2,8 @@
 //
 //     node --test resources/layouts/examples/
 //
-// `../test/host.js` plays bento's role: it opens and closes windows, runs actions and swipes, and
-// shows where the engine puts everything. The output is 1280 × 720 with 16 px gaps.
+// `../test/host.js` plays bento's role: it opens and closes windows, runs actions and shows where
+// the engine puts everything. The output is 1280 × 720 with 16 px gaps.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -23,6 +23,15 @@ async function setUpThree(opts) {
     return host;
 }
 
+/** What the engine draws on the active workspace: the boxes. */
+function boxes(host) {
+    const tree = host.tree();
+    return tree
+        .order()
+        .filter((id) => tree.node(id).kind === "box")
+        .map((id) => tree.node(id).props);
+}
+
 test("the main window takes the left, the others share the right", async () => {
     const host = await load();
     host.open();
@@ -37,48 +46,49 @@ test("the main window takes the left, the others share the right", async () => {
     host.open();
     assert.deepEqual(host.rect(3), rect(710, 16, 554, 336));
     assert.deepEqual(host.rect(2), rect(710, 368, 554, 336));
-});
-
-test("focus goes between the main window and the stack, and up and down within it", async () => {
-    const host = await setUpThree();
-    assert.equal(host.focused, 3);
-
-    assert.equal(host.action("focus-down"), true);
-    assert.equal(host.focused, 2);
-    assert.equal(host.action("focus-main"), true);
-    assert.equal(host.focused, 1);
-
-    // Already there, so nothing happens.
-    assert.equal(host.action("focus-main"), false);
-    assert.equal(host.action("focus-stack"), true);
-    assert.equal(host.focused, 3);
+    assert.equal(host.focused(), 3);
 });
 
 test("promote on the main window swaps it with the top of the stack", async () => {
     const host = await setUpThree();
-    host.action("focus-main");
-    assert.equal(host.action("promote"), true);
+    host.activate(1);
+    host.action("promote");
     assert.deepEqual(host.rect(1), rect(710, 16, 554, 336));
+    assert.deepEqual(host.rect(3), rect(16, 16, 678, 688));
 });
 
 test("promote swaps the focused window with the main one", async () => {
     const host = await setUpThree();
-    host.action("focus-down");
-    assert.equal(host.action("promote"), true);
+    host.activate(2);
+    host.action("promote");
     assert.deepEqual(host.rect(2), rect(16, 16, 678, 688));
     assert.deepEqual(host.rect(3), rect(710, 16, 554, 336));
     assert.deepEqual(host.rect(1), rect(710, 368, 554, 336));
+    assert.equal(host.focused(), 2);
 });
 
-test("set-main-width changes the width of the main window", async () => {
-    const host = await setUpThree();
-    host.action("set-main-width", { op: "adjust", value: 10, unit: "%" });
-    assert.deepEqual(host.rect(1), rect(16, 16, 801, 688));
-    assert.deepEqual(host.rect(3), rect(833, 16, 431, 336));
+test("the option sets the main window's width, and changes apply right away", async () => {
+    const host = await setUpThree({ options: { "main-width": 0.5 } });
+    assert.deepEqual(host.rect(1), rect(16, 16, 616, 688));
 
-    // The option sets where it starts.
-    const other = await setUpThree({ options: { "main-width": 0.5 } });
-    assert.deepEqual(other.rect(1), rect(16, 16, 616, 688));
+    host.setOptions({ "main-width": 0.7 });
+    assert.deepEqual(host.rect(1), rect(16, 16, 862, 688));
+    assert.deepEqual(host.rect(3), rect(894, 16, 370, 336));
+});
+
+test("a line is drawn between the main window and the stack", async () => {
+    const host = await load();
+    host.open();
+    assert.equal(boxes(host).length, 0);
+
+    host.open();
+    assert.deepEqual(
+        boxes(host).map((box) => box.rect),
+        [rect(701, 16, 2, 688)],
+    );
+
+    host.close(2);
+    assert.equal(boxes(host).length, 0);
 });
 
 test("fullscreen windows cover the view", async () => {
@@ -94,7 +104,7 @@ test("fullscreen windows cover the view", async () => {
 test("closing the focused window focuses the one that takes its place", async () => {
     const host = await setUpThree();
     host.close(3);
-    assert.equal(host.focused, 2);
+    assert.equal(host.focused(), 2);
     assert.deepEqual(host.rect(2), rect(710, 16, 554, 688));
 });
 
@@ -104,17 +114,22 @@ test("struts from the config leave space around the windows", async () => {
     assert.deepEqual(host.rect(1), rect(116, 66, 1148, 638));
 });
 
-test("swiping doesn't move the view", async () => {
+test("each workspace has its own order", async () => {
     const host = await setUpThree();
-    host.swipe(300);
-    assert.deepEqual(host.camera, { x: 0, y: 0 });
+    const other = host.open({ workspace: host.workspace(1).id });
+    assert.deepEqual(host.rect(other), rect(16, 16, 1248, 688));
+    assert.deepEqual(host.rect(1), rect(16, 16, 678, 688));
+
+    // A window that bento moves to another workspace goes on top of its stack.
+    host.move(3, host.workspace(1).id);
+    assert.deepEqual(host.rect(3), rect(710, 16, 554, 688));
+    assert.deepEqual(host.rect(2), rect(710, 16, 554, 688));
 });
 
-test("reloading keeps the order and the width", async () => {
+test("reloading keeps the order", async () => {
     const host = await setUpThree();
-    host.action("focus-down");
+    host.activate(2);
     host.action("promote");
-    host.action("set-main-width", { op: "set", value: 40, unit: "%" });
     const before = [1, 2, 3].map((id) => host.rect(id));
 
     host.reload();
@@ -122,4 +137,5 @@ test("reloading keeps the order and the width", async () => {
         [1, 2, 3].map((id) => host.rect(id)),
         before,
     );
+    assert.deepEqual(host.errors, []);
 });
