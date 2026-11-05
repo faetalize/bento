@@ -1,26 +1,26 @@
 //! Questions for the running compositor.
 
-use niri_ipc::socket::Socket;
-use niri_ipc::{LayoutEngine, Request, Response};
+use bento_ipc::socket::Socket;
+use bento_ipc::{Get, Request, Response};
+use niri_ipc::LayoutEngine;
 
 fn request(request: Request) -> Result<Response, String> {
     let mut socket = Socket::connect().map_err(|err| format!("Couldn't reach bento: {err}"))?;
-    match socket.send(request) {
-        Ok(Ok(response)) => Ok(response),
-        Ok(Err(message)) => Err(message),
+    match socket.send(&request) {
+        Ok(reply) => reply,
         Err(err) => Err(format!("Couldn't talk to bento: {err}")),
     }
 }
 
 pub fn layout_engine() -> Result<LayoutEngine, String> {
-    match request(Request::LayoutEngine)? {
-        Response::LayoutEngine(engine) => Ok(engine),
+    match request(Request::Get { what: Get::Engine })? {
+        Response::Engine(engine) => Ok(engine),
         _ => Err(String::from("bento sent an unexpected reply")),
     }
 }
 
 pub fn version() -> Result<String, String> {
-    match request(Request::Version)? {
+    match request(Request::Get { what: Get::Version })? {
         Response::Version(version) => Ok(version),
         _ => Err(String::from("bento sent an unexpected reply")),
     }
