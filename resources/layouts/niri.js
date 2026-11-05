@@ -3218,7 +3218,7 @@ export default function create(bento) {
 
     /** Moves the column of `target` to a workspace, and focus goes along with it. */
     function moveColumn(strip, target, to, focus) {
-        if (to === null || to === undefined) return false;
+        if (to === null || to === undefined || stripOf(to) === strip) return false;
         const taken = strip.takeColumn(target);
         if (taken === null) return false;
         for (const win of taken.windows) win.moveTo(to);
@@ -3229,7 +3229,7 @@ export default function create(bento) {
 
     /** Moves a window to a workspace, as a column of its own. */
     function moveWindow(strip, target, to, focus) {
-        if (to === null || to === undefined) return false;
+        if (to === null || to === undefined || stripOf(to) === strip) return false;
         const removed = strip.takeTile(target);
         if (removed === null) return false;
         removed.tile.win.moveTo(to);

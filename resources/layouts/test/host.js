@@ -414,8 +414,8 @@ export class TestHost {
 
     /**
      * Opens a window on the active workspace of the focused monitor, or on `opts.workspace`. `opts`
-     * can set `minSize`, `maxSize`, `borders`, `appId`, `title`, `rules`, `activate` (default true)
-     * and `nextTo`.
+     * can set `minSize`, `maxSize`, `borders`, `appId`, `title`, `rules`, `mode`, `activate`
+     * (default true), `reason`, `rect`, `pointer` and `nextTo`.
      */
     open(opts = {}) {
         const id = this.nextWindowId++;
@@ -429,7 +429,7 @@ export class TestHost {
             minSize: opts.minSize ?? { w: 0, h: 0 },
             maxSize: opts.maxSize ?? { w: 0, h: 0 },
             borders: opts.borders ?? { w: 0, h: 0 },
-            mode: "normal",
+            mode: opts.mode ?? "normal",
             urgent: false,
             rules: opts.rules ?? {},
             data: null,
@@ -667,9 +667,12 @@ export class TestHost {
         });
     }
 
-    /** Saves the engine's state and creates the engine again, like reloading its file. */
-    reload() {
-        const state = JSON.parse(prelude.saveAll());
+    /**
+     * Saves the engine's state and creates the engine again, like reloading its file. With
+     * `{ state: false }` the engine starts without saved state, like a different engine took over.
+     */
+    reload({ state: keep = true } = {}) {
+        const state = keep ? JSON.parse(prelude.saveAll()) : null;
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldOptions = null;
         for (const [id, tree] of this.trees) {
@@ -717,12 +720,19 @@ export class TestHost {
         return this.trees.get(workspace);
     }
 
-    /** Gives windows the size they were placed at, within their limits. */
+    /**
+     * Gives windows the size they were placed at, within their limits. A window with `stubborn`
+     * set to a size keeps that size, like a terminal that rounds its size.
+     */
     settleSizes() {
         for (const win of this.windows.values()) {
             if (!win.rect) continue;
             if (win.mode === "fullscreen") {
                 win.size = { ...this.monitors.get(this.workspaces.get(win.workspace).monitor).size };
+                continue;
+            }
+            if (win.stubborn) {
+                win.size = { ...win.stubborn };
                 continue;
             }
             const clamp = (v, min, max) => Math.max(min, max > 0 ? Math.min(v, max) : v);
