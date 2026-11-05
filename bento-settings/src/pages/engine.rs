@@ -101,7 +101,9 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         }
     });
 
-    view.column.clone().upcast()
+    let column = view.column.clone();
+    crate::page::keep_alive(&column, view);
+    column.upcast()
 }
 
 fn refresh(view: &Rc<View>) {

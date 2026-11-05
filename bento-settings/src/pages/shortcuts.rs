@@ -214,6 +214,7 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
     column.append(&search);
     column.append(&group);
+    crate::page::keep_alive(&column, view);
     column.upcast()
 }
 

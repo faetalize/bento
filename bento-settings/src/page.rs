@@ -44,6 +44,18 @@ impl PageContext {
     }
 }
 
+/// Keeps a page's state alive as long as `widget`. Pages hand their state to signal handlers as
+/// weak references, so that the handlers don't keep it alive in a cycle; this is what does.
+pub fn keep_alive<T: 'static>(widget: &impl IsA<gtk::Widget>, state: Rc<T>) {
+    // SAFETY: the key is only ever set here, with this type, and never read back.
+    unsafe {
+        widget.set_data(
+            &format!("bento-page-state-{}", std::any::type_name::<T>()),
+            state,
+        )
+    };
+}
+
 /// Lays out a page's groups the way `AdwPreferencesPage` does. Custom pages rebuild their groups
 /// in place, which `AdwPreferencesPage` doesn't make easy.
 pub fn frame(content: &impl IsA<gtk::Widget>) -> gtk::Widget {
