@@ -740,6 +740,13 @@ impl Tree {
         self.nodes.values().any(Node::are_animations_ongoing)
     }
 
+    /// The ids of a node's children, from the bottom to the top.
+    pub fn children(&self, id: &str) -> &[String] {
+        self.nodes
+            .get(id)
+            .map_or(&[][..], |node| node.children.as_slice())
+    }
+
     /// The ids from a node up to the root, for events to bubble along. Empty if there's no such
     /// node.
     pub fn path(&self, id: &str) -> Vec<String> {

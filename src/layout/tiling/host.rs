@@ -809,47 +809,66 @@ impl<W: LayoutElement> Layout<W> {
                     let child = child.clone();
 
                     // A node that moves to another workspace's tree takes what's under it along.
+                    // Windows aren't moved that way: they go with their workspace.
                     let moved = match from.filter(|from| *from != to) {
-                        Some(from) if create.is_none() => self
-                            .workspace_mut(from)
-                            .and_then(|ws| ws.scrolling_mut().tree_mut().take(&child)),
+                        Some(from) if create.is_none() => {
+                            let taken = self
+                                .workspace_mut(from)
+                                .and_then(|ws| ws.scrolling_mut().tree_mut().take(&child));
+                            let Some(taken) = taken else {
+                                warn!(
+                                    "the layout moves {child} to another workspace's tree, \
+                                     but there's a window in it"
+                                );
+                                continue;
+                            };
+                            touched.insert(from);
+                            Some(taken)
+                        }
                         _ => None,
                     };
-                    if let Some(from) = from.filter(|from| *from != to) {
-                        touched.insert(from);
-                    }
 
                     let Some(ws) = self.workspace_mut(to) else {
                         continue;
                     };
-                    if let Some(moved) = moved {
-                        let ids: Vec<String> = moved.ids().map(str::to_owned).collect();
-                        let TreeOp::Append { parent, before, .. } = op else {
-                            unreachable!()
-                        };
-                        ws.scrolling_mut()
-                            .tree_mut()
-                            .put(moved, &parent, before.as_deref());
-                        for id in ids.into_iter().filter(|id| id.starts_with('n')) {
-                            self.host.node_workspaces.insert(id, to);
+                    let tree = ws.scrolling_mut().tree_mut();
+                    match moved {
+                        Some(moved) => {
+                            let ids: Vec<String> = moved.ids().map(str::to_owned).collect();
+                            let TreeOp::Append { parent, before, .. } = op else {
+                                unreachable!()
+                            };
+                            if tree.put(moved, &parent, before.as_deref()) {
+                                for id in ids {
+                                    self.host.node_workspaces.insert(id, to);
+                                }
+                            }
                         }
-                    } else {
-                        if let Some(create) = create {
-                            ws.scrolling_mut().tree_mut().apply(create);
-                        }
-                        ws.scrolling_mut().tree_mut().apply(op);
-                        if child.starts_with('n') {
-                            self.host.node_workspaces.insert(child, to);
+                        None => {
+                            let ops: Vec<Value> = create
+                                .into_iter()
+                                .chain([op])
+                                .map(|op| to_value(&op))
+                                .collect();
+                            if let Err(err) = tree.apply(&ops) {
+                                warn!("error in the nodes that the layout draws: {err}");
+                            }
+                            if child.starts_with('n') {
+                                self.host.node_workspaces.insert(child, to);
+                            }
                         }
                     }
                     touched.insert(to);
                 }
                 TreeOp::Set { ref id, .. } => {
-                    if let Some(ws) = self
+                    let Some(ws) = self
                         .node_workspace(id)
                         .and_then(|ws| self.workspace_mut(ws))
-                    {
-                        ws.scrolling_mut().tree_mut().apply(op);
+                    else {
+                        continue;
+                    };
+                    if let Err(err) = ws.scrolling_mut().tree_mut().apply(&[to_value(&op)]) {
+                        warn!("error in the nodes that the layout draws: {err}");
                     }
                 }
                 TreeOp::Remove { ref id } => {
@@ -860,10 +879,15 @@ impl<W: LayoutElement> Layout<W> {
                     let Some(ws) = self.workspace_mut(workspace) else {
                         continue;
                     };
-                    let ids = ws.scrolling_mut().tree_mut().subtree_ids(&id);
-                    ws.scrolling_mut().tree_mut().apply(op);
-                    for id in ids {
-                        self.host.node_workspaces.remove(&id);
+                    let tree = ws.scrolling_mut().tree_mut();
+                    let ids = tree.subtree_ids(&id);
+                    match tree.apply(&[to_value(&op)]) {
+                        Ok(()) => {
+                            for id in ids {
+                                self.host.node_workspaces.remove(&id);
+                            }
+                        }
+                        Err(err) => warn!("error in the nodes that the layout draws: {err}"),
                     }
                     touched.insert(workspace);
                 }

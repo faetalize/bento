@@ -548,8 +548,6 @@ fn engines_without_floating_get_float_requests() {
 
 #[test]
 fn nodes_that_the_engine_draws_are_in_the_workspace_tree() {
-    use crate::layout::tiling::tree::NodeKind;
-
     let source = r##"
     export const meta = { api: 2, name: "boxes" };
     export default function create(bento) {
@@ -566,10 +564,17 @@ fn nodes_that_the_engine_draws_are_in_the_workspace_tree() {
     let layout = check_ops_with_options(options_for_source("boxes", source), ops);
 
     let ws = layout.active_workspace().unwrap();
+    let engine_id = ws.scrolling().engine_id_of(&1).unwrap();
     let tree = ws.scrolling().tree();
-    let order = tree.draw_order();
+    let root = tree.root_id();
     // The window is at the bottom, and what the engine drew goes above it.
-    assert_eq!(order[1].1.kind, NodeKind::Window);
-    assert_eq!(order[2].1.kind, NodeKind::Box);
-    assert_eq!(order[2].1.props["background"], "#fff");
+    assert_eq!(
+        tree.children(root),
+        [format!("w{engine_id}"), String::from("n1")]
+    );
+    assert_eq!(tree.window_order(), [engine_id]);
+    assert_eq!(
+        tree.drawn("n1").unwrap().rect,
+        Rectangle::new(Point::from((0., 0.)), Size::from((10., 10.)))
+    );
 }

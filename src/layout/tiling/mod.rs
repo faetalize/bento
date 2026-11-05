@@ -22,9 +22,9 @@ use self::protocol::{
     CameraChange, ConfigInfo, Mode, Rect, Struts as StrutsInfo, ViewInfo, Wh, WindowChange,
     WindowInfo, WorkspaceInfo, Xy,
 };
-use self::tree::Tree;
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
+use super::surfaces::Tree;
 use super::tile::{PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::InteractiveResize;
 use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
@@ -42,7 +42,6 @@ use crate::window::ResolvedWindowRules;
 pub mod engine;
 pub mod host;
 mod protocol;
-pub mod tree;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
@@ -249,7 +248,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 y: Axis::Static(0.),
                 gesture: None,
             },
-            tree: Tree::new(id),
+            tree: Tree::new(id, clock.clone(), options.animations.clone()),
             swipe: None,
             drop: None,
             remove_reason: None,
@@ -278,6 +277,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             tile.update_config(view_size, scale, options.clone());
         }
 
+        self.tree.set_animations(options.animations.clone());
+
         self.view_size = view_size;
         self.working_area = working_area;
         self.parent_area = parent_area;
@@ -299,6 +300,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             tile.advance_animations();
         }
 
+        self.tree.advance_animations();
+
         self.closing_windows.retain_mut(|closing| {
             closing.advance_animations();
             closing.are_animations_ongoing()
@@ -308,12 +311,14 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn are_animations_ongoing(&self) -> bool {
         !self.camera.is_static()
             || self.tiles.iter().any(Tile::are_animations_ongoing)
+            || self.tree.are_animations_ongoing()
             || !self.closing_windows.is_empty()
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         !self.camera.is_static()
             || self.tiles.iter().any(Tile::are_transitions_ongoing)
+            || self.tree.are_animations_ongoing()
             || !self.closing_windows.is_empty()
     }
 
