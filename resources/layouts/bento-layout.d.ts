@@ -546,7 +546,8 @@ export interface Group extends EventTarget<GroupEvents> {
 
 /**
  * How a property animates when it changes, like a CSS transition: the name of one of bento's
- * animations from the config, like `"window-movement"`, or an easing.
+ * animations from the config, like `"window-movement"`, or an easing, with its `duration` in
+ * milliseconds, or a spring.
  */
 export type Transition =
     | string
@@ -562,23 +563,28 @@ export interface NodeProps {
      * `Window.place`.
      */
     rect?: Rect;
+    /** From 0 to 1. It applies to each node on its own, so overlapping children show through. */
     opacity?: number;
     /** Scales and moves it, and its children, around the centre of its rect. */
     transform?: { scale?: number; x?: number; y?: number };
     /** Whether its children are clipped to its rect, with its corner radius. */
     clip?: boolean;
     cornerRadius?: number;
-    /** `"box"`: fill. */
+    /** Fill, for every node but a window's. */
     background?: Color | null;
-    /** `"box"`: a border drawn inside its rect. */
+    /** A border drawn inside its rect, for every node but a window's. */
     border?: { width: number; color: Color } | null;
-    /** `"text"`: what it says. */
+    /** `"text"`: what it says, centred in its rect and cut with an ellipsis where it's too wide. */
     text?: string;
-    /** `"text"`: a Pango font description, like `"sans 11"`. */
+    /** `"text"`: a Pango font description, like `"sans 11"`, with its size in logical pixels. */
     font?: string;
     /** `"text"`: its colour. */
     color?: Color;
-    /** `"image"`: an icon name from the icon theme, or an absolute path. */
+    /**
+     * `"image"`: an icon name from the icon theme, or an absolute path, drawn as large as fits
+     * its rect, centred. Raster images only: icons are found as PNGs, and a path can be a PNG,
+     * JPEG or WebP.
+     */
     image?: string;
     /** Whether it gets pointer events. Nodes without listeners can leave it off. */
     interactive?: boolean;

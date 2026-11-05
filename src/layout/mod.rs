@@ -81,6 +81,7 @@ pub mod focus_ring;
 pub mod monitor;
 pub mod opening_window;
 pub mod shadow;
+pub mod surfaces;
 pub mod tile;
 pub mod tiling;
 pub mod workspace;
