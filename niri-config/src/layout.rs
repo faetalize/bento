@@ -1,5 +1,3 @@
-use niri_ipc::SizeChange;
-
 use crate::appearance::{Border, FocusRing, Shadow, DEFAULT_BACKGROUND_COLOR};
 use crate::utils::{Flag, MergeWith};
 use crate::{BorderRule, Color, FloatOrInt, ShadowRule};
@@ -79,22 +77,6 @@ pub struct LayoutPart {
     pub fullscreen_backdrop_color: Option<Color>,
     #[knuffel(child, unwrap(argument))]
     pub background_image: Option<String>,
-}
-
-/// A size to give a window: a proportion of the working area, or logical pixels.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PresetSize {
-    Proportion(f64),
-    Fixed(i32),
-}
-
-impl From<PresetSize> for SizeChange {
-    fn from(value: PresetSize) -> Self {
-        match value {
-            PresetSize::Proportion(prop) => SizeChange::SetProportion(prop * 100.),
-            PresetSize::Fixed(fixed) => SizeChange::SetFixed(fixed),
-        }
-    }
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
