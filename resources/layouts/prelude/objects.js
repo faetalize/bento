@@ -629,6 +629,8 @@ export class Session {
             from.focused = null;
         }
         win.workspace = to.id;
+        // It hasn't been placed on the new workspace's canvas, so placing it anywhere counts.
+        win.rect = null;
         attachWindowNode(to.root, win.node);
     }
 
