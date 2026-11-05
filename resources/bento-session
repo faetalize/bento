@@ -65,7 +65,7 @@ if hash systemctl >/dev/null 2>&1; then
     systemctl --user start --job-mode=replace-irreversibly bento-shutdown.target
 
     # Unset environment that we've set.
-    systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP NIRI_SOCKET
+    systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP BENTO_SOCKET
 elif hash dinitctl >/dev/null 2>&1; then
     # Check that the user dinit daemon is running
     if ! pgrep -u "$(id -u)" dinit >/dev/null 2>&1; then
@@ -104,7 +104,7 @@ elif hash dinitctl >/dev/null 2>&1; then
         fi"' bento >/dev/null 2>&1
 
     # Unset environment that we've set.
-    dinitctl --quiet --user unsetenv WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP NIRI_SOCKET 2>/dev/null
+    dinitctl --quiet --user unsetenv WAYLAND_DISPLAY DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP BENTO_SOCKET 2>/dev/null
 else
     echo "No systemd or dinit detected, please use bento --session instead."
 fi

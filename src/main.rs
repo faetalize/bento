@@ -10,6 +10,7 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::{env, mem};
 
+use bento_ipc::socket::SOCKET_PATH_ENV;
 use calloop::EventLoop;
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
@@ -26,7 +27,6 @@ use niri::utils::spawning::{
 };
 use niri::utils::{cause_panic, link_niri_config, version, watcher, xwayland, IS_SYSTEMD_SERVICE};
 use niri_config::{Config, ConfigPath};
-use niri_ipc::socket::SOCKET_PATH_ENV;
 use sd_notify::NotifyState;
 use smithay::reexports::wayland_server::Display;
 use tracing_subscriber::EnvFilter;
@@ -152,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Needs to be done before starting Tracy, so that it applies to Tracy's threads.
     niri::utils::signals::block_early().unwrap();
 
-    // Avoid starting Tracy for the `niri msg` code path since starting/stopping Tracy is a bit
+    // Avoid starting Tracy for the `bento msg` code path since starting/stopping Tracy is a bit
     // slow.
     tracy_client::Client::start();
 
@@ -215,7 +215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket_name.to_string_lossy()
     );
 
-    // Set NIRI_SOCKET for children.
+    // Set BENTO_SOCKET for children.
     if let Some(ipc) = &state.niri.ipc_server {
         let socket_path = ipc.socket_path.as_deref().unwrap();
         env::set_var(SOCKET_PATH_ENV, socket_path);
