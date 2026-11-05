@@ -125,7 +125,7 @@ fn parse_key(text: &str) -> Option<Key> {
 
 /// Name of a parsed action as configs write it, like `FocusMonitorLeft` as `focus-monitor-left`.
 fn action_name(action: &Action) -> String {
-    if let Action::LayoutAction(name, _) = action {
+    if let Action::LayoutAction(name, ..) = action {
         return name.clone();
     }
     // `Debug` starts with the variant name.

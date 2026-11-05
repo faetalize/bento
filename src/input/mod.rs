@@ -51,6 +51,7 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::floating::FloatingSpace;
+use crate::layout::groups::Direction;
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, Niri, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -899,6 +900,13 @@ impl State {
         self.niri.queue_redraw_all();
     }
 
+    /// Groups the focused window with the window nearest to it in a direction.
+    fn group_window(&mut self, direction: Direction) {
+        self.niri.layout.group_window(direction);
+        // FIXME: granular
+        self.niri.queue_redraw_all();
+    }
+
     pub fn do_action(&mut self, action: Action, allow_when_locked: bool) {
         if self.niri.is_locked() && !(allow_when_locked || allowed_when_locked(&action)) {
             return;
@@ -1588,8 +1596,29 @@ impl State {
                     }
                 }
             }
-            Action::LayoutAction(name, args) => {
-                self.niri.layout.layout_action(&name, &args);
+            Action::LayoutAction(name, args, id) => {
+                let window = match id {
+                    Some(id) => {
+                        let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
+                        match window {
+                            Some((_, m)) => Some(m.window.clone()),
+                            None => return,
+                        }
+                    }
+                    None => None,
+                };
+                self.niri
+                    .layout
+                    .layout_action(&name, &args, window.as_ref());
+                // FIXME: granular
+                self.niri.queue_redraw_all();
+            }
+            Action::GroupWindowLeft => self.group_window(Direction::Left),
+            Action::GroupWindowRight => self.group_window(Direction::Right),
+            Action::GroupWindowUp => self.group_window(Direction::Up),
+            Action::GroupWindowDown => self.group_window(Direction::Down),
+            Action::UngroupWindow => {
+                self.niri.layout.ungroup_window();
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }

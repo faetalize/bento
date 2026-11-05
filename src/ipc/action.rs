@@ -225,6 +225,9 @@ fn target(action: Action, window: Option<u64>, workspace: Option<u64>) -> Result
         (Some(id), Action::ToggleWindowFloating) => Action::ToggleWindowFloatingById(id),
         (Some(id), Action::MoveWindowToFloating) => Action::MoveWindowToFloatingById(id),
         (Some(id), Action::MoveWindowToTiling) => Action::MoveWindowToTilingById(id),
+        (Some(id), Action::LayoutAction(name, args, _)) => {
+            Action::LayoutAction(name, args, Some(id))
+        }
         (Some(id), Action::ToggleWindowRuleOpacity) => Action::ToggleWindowRuleOpacityById(id),
         (Some(id), Action::SetDynamicCastWindow) => Action::SetDynamicCastWindowById(id),
         (Some(id), Action::ScreenshotWindow(write_to_disk, show_pointer, path)) => {
@@ -361,7 +364,8 @@ mod tests {
                 vec![
                     TilingOption::Number(2.),
                     TilingOption::String(String::from("right"))
-                ]
+                ],
+                None
             )
         );
     }
@@ -379,7 +383,8 @@ mod tests {
                 vec![
                     TilingOption::Number(2.),
                     TilingOption::String(String::from("right"))
-                ]
+                ],
+                None
             )
         );
     }
@@ -401,6 +406,23 @@ mod tests {
         let mut request = self::request("focus-monitor-left", json!([]));
         request.window = Some(7);
         assert!(parse(request, engine).is_err());
+    }
+
+    #[test]
+    fn an_engine_action_can_be_for_a_window() {
+        let mut request = request("resize", json!([2, "right"]));
+        request.window = Some(7);
+        assert_eq!(
+            parse(request, engine).unwrap(),
+            Action::LayoutAction(
+                String::from("resize"),
+                vec![
+                    TilingOption::Number(2.),
+                    TilingOption::String(String::from("right"))
+                ],
+                Some(7)
+            )
+        );
     }
 
     #[test]

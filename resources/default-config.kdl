@@ -418,6 +418,18 @@ binds {
 
     Mod+Alt+C { center-floating-window; }
 
+    // Windows can be grouped, and the layout engine decides how a group looks. These group the
+    // focused window with the nearest one in a direction, and take it out of its group.
+    Mod+Shift+Alt+Left  { group-window-left; }
+    Mod+Shift+Alt+Down  { group-window-down; }
+    Mod+Shift+Alt+Up    { group-window-up; }
+    Mod+Shift+Alt+Right { group-window-right; }
+    Mod+Shift+Alt+H     { group-window-left; }
+    Mod+Shift+Alt+J     { group-window-down; }
+    Mod+Shift+Alt+K     { group-window-up; }
+    Mod+Shift+Alt+L     { group-window-right; }
+    Mod+Shift+Alt+G     { ungroup-window; }
+
     Mod+Shift+Left  { focus-monitor-left; }
     Mod+Shift+Down  { focus-monitor-down; }
     Mod+Shift+Up    { focus-monitor-up; }

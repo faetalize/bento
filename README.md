@@ -308,6 +308,11 @@ binds {
 The main config can't bind them, so its binds work whichever engine runs.
 Everything else is bento's own and bound in the main config: spawning, screenshots, workspaces, monitors, the overview, and floating windows, which have their own actions like `focus-floating-left` and `move-floating-left`.
 
+Grouping is bento's too. A group is a set of windows and which one is active; how it looks is up to the engine, which can show tabs, a carousel or anything else.
+`group-window-left`, `group-window-right`, `group-window-up` and `group-window-down` group the focused window with the nearest one in that direction, by where the engine put them, and `ungroup-window` takes it out.
+Engines can group windows too, and read the groups, through `bento.groups` and `bento.createGroup`.
+Floating windows can't be in a group, and a window that closes, floats or is dragged out leaves its group.
+
 Run an engine's action from the command line with `layout-action`, followed by the action's name and any arguments:
 
 ```sh

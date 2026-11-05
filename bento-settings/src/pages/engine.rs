@@ -649,7 +649,7 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
                 [bind.press_action(), bind.release_action()]
                     .into_iter()
                     .flatten()
-                    .any(|a| matches!(a, Action::LayoutAction(name, _) if *name == action.name))
+                    .any(|a| matches!(a, Action::LayoutAction(name, ..) if *name == action.name))
             })
         })
         .count();

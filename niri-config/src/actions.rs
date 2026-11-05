@@ -263,6 +263,32 @@ pub fn native_actions() -> Vec<Declaration> {
                 "A size like \"50%\" or \"800\", or a change like \"+10%\".",
             )],
         ),
+        // Groups.
+        action(
+            "group-window-left",
+            "Group the focused window with the window to the left.",
+            vec![],
+        ),
+        action(
+            "group-window-right",
+            "Group the focused window with the window to the right.",
+            vec![],
+        ),
+        action(
+            "group-window-up",
+            "Group the focused window with the window above.",
+            vec![],
+        ),
+        action(
+            "group-window-down",
+            "Group the focused window with the window below.",
+            vec![],
+        ),
+        action(
+            "ungroup-window",
+            "Take the focused window out of its group.",
+            vec![],
+        ),
         // Workspaces.
         action(
             "focus-workspace-down",

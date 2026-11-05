@@ -1104,7 +1104,7 @@ output "eDP-1" {
             bind.and_then(|bind| bind.press_action()).cloned()
         };
         let engine = |name: &str, args: Vec<TilingOption>| {
-            Some(Action::LayoutAction(String::from(name), args))
+            Some(Action::LayoutAction(String::from(name), args, None))
         };
 
         assert_eq!(action("Mod+Left"), engine("focus-column-left", vec![]));

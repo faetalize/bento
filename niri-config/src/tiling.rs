@@ -617,9 +617,10 @@ mod tests {
                     vec![
                         TilingOption::Number(2.),
                         TilingOption::String(String::from("right"))
-                    ]
+                    ],
+                    None
                 ),
-                &Action::LayoutAction(String::from("focus-column-right"), vec![]),
+                &Action::LayoutAction(String::from("focus-column-right"), vec![], None),
             ]
         );
 

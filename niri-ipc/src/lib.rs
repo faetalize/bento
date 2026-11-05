@@ -486,6 +486,16 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
         change: SizeChange,
     },
+    /// Group the focused window with the window to the left.
+    GroupWindowLeft {},
+    /// Group the focused window with the window to the right.
+    GroupWindowRight {},
+    /// Group the focused window with the window above.
+    GroupWindowUp {},
+    /// Group the focused window with the window below.
+    GroupWindowDown {},
+    /// Take the focused window out of its group.
+    UngroupWindow {},
     /// Toggle the opacity of a window.
     #[cfg_attr(
         feature = "clap",
