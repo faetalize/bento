@@ -82,6 +82,7 @@ pub mod insert_hint_element;
 pub mod monitor;
 pub mod opening_window;
 pub mod shadow;
+pub mod surfaces;
 pub mod tab_indicator;
 pub mod tile;
 pub mod tiling;
