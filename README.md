@@ -525,7 +525,7 @@ Where the grid ends, actions go on to the monitor or workspace beside it:
 
 Focus goes along with what moves.
 bento's own `move-window-to-workspace` actions move one window and leave its tabs.
-The engine's file binds these on `Mod+Alt+Shift` and `Mod+Ctrl+Shift`, which the main config leaves free.
+The engine's file binds the moves on `Mod+Ctrl+Shift`, which the main config leaves free, and has the focus actions as examples to bind on your focus keys.
 
 ## The niri engine
 
@@ -543,7 +543,7 @@ It differs in these ways:
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
 - **Actions that cross an edge take the whole column.**
   `focus-column-or-monitor-left`, `focus-window-or-workspace-down`, `move-column-to-workspace`, `move-column-to-monitor-left` and the rest of niri's go on to the monitor or workspace beside, and a trailing `false`, like `move-column-to-workspace 2 false`, keeps the focus where it is, as niri's `focus=false` does.
-  The engine's file binds the ones niri binds on `Mod+Ctrl+Shift` and `Mod+Alt+Shift`, since bento's own binds for moving one window use the keys niri uses.
+  The engine's file binds the moves to another workspace on `Mod+Ctrl+Shift`, and has the moves to another monitor as examples: bento's own binds for moving one window use the keys niri uses for them.
 - **Tabbed columns are groups.**
   A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` options.
   Stacked columns stay the engine's own.

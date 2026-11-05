@@ -177,16 +177,12 @@ binds {
     Mod+Ctrl+Shift+8 { move-column-to-workspace 8; }
     Mod+Ctrl+Shift+9 { move-column-to-workspace 9; }
 
-    // Move the focused column to the monitor beside. The binds on Ctrl and Shift and the arrow
-    // keys in config.kdl move one window instead.
-    Mod+Alt+Shift+Left  { move-column-to-monitor-left; }
-    Mod+Alt+Shift+Down  { move-column-to-monitor-down; }
-    Mod+Alt+Shift+Up    { move-column-to-monitor-up; }
-    Mod+Alt+Shift+Right { move-column-to-monitor-right; }
-    Mod+Alt+Shift+H     { move-column-to-monitor-left; }
-    Mod+Alt+Shift+J     { move-column-to-monitor-down; }
-    Mod+Alt+Shift+K     { move-column-to-monitor-up; }
-    Mod+Alt+Shift+L     { move-column-to-monitor-right; }
+    // These move the focused column to the monitor beside. The binds on Ctrl and Shift and the
+    // arrow keys in config.kdl move one window instead; to move columns, bind these there.
+    // Mod+Ctrl+Shift+Left  { move-column-to-monitor-left; }
+    // Mod+Ctrl+Shift+Down  { move-column-to-monitor-down; }
+    // Mod+Ctrl+Shift+Up    { move-column-to-monitor-up; }
+    // Mod+Ctrl+Shift+Right { move-column-to-monitor-right; }
 
     // These go on to the monitor or workspace beside once the strip has nothing further. To use
     // them, bind them to your focus keys instead of the actions above.

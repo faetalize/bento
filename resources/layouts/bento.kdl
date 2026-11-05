@@ -150,16 +150,13 @@ binds {
     // go, focusing in a direction picks another place, and pressing again puts it there.
     Mod+G { stuff; }
 
-    // Where the grid ends, focus goes on to the monitor to the left or right, or the workspace
-    // above or below.
-    Mod+Alt+Shift+Left  { focus-left-or-monitor; }
-    Mod+Alt+Shift+Down  { focus-down-or-workspace; }
-    Mod+Alt+Shift+Up    { focus-up-or-workspace; }
-    Mod+Alt+Shift+Right { focus-right-or-monitor; }
-    Mod+Alt+Shift+H     { focus-left-or-monitor; }
-    Mod+Alt+Shift+J     { focus-down-or-workspace; }
-    Mod+Alt+Shift+K     { focus-up-or-workspace; }
-    Mod+Alt+Shift+L     { focus-right-or-monitor; }
+    // These go on like the focus actions above, and where the grid ends, on to the monitor to
+    // the left or right, or the workspace above or below. To use them, bind them to your focus
+    // keys instead of the actions above.
+    // Mod+Left  { focus-left-or-monitor; }
+    // Mod+Down  { focus-down-or-workspace; }
+    // Mod+Up    { focus-up-or-workspace; }
+    // Mod+Right { focus-right-or-monitor; }
 
     // Move the focused window, with its tabs, down or up in the grid, and to the workspace below
     // or above once it can't. The binds on Ctrl and Page_Down or Page_Up in config.kdl move one
