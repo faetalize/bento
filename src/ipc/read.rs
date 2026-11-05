@@ -130,12 +130,16 @@ pub fn windows(state: &State, groups: &BTreeMap<u64, Group>) -> BTreeMap<u64, Wi
                 (role.title.clone(), role.app_id.clone())
             });
 
-            let rect = layout.tile_pos_in_workspace_view.map(|(x, y)| Rect {
-                x,
-                y,
-                w: layout.tile_size.0,
-                h: layout.tile_size.1,
-            });
+            let rect = state
+                .niri
+                .layout
+                .window_canvas_rect(&mapped.window)
+                .map(|rect| Rect {
+                    x: rect.loc.x,
+                    y: rect.loc.y,
+                    w: rect.size.w,
+                    h: rect.size.h,
+                });
             let mode = match mapped.sizing_mode() {
                 LayoutSizingMode::Normal => SizingMode::Normal,
                 LayoutSizingMode::Fullscreen => SizingMode::Fullscreen,
@@ -170,9 +174,23 @@ pub fn windows(state: &State, groups: &BTreeMap<u64, Group>) -> BTreeMap<u64, Wi
 }
 
 /// The groups of windows.
-pub fn groups(_state: &State) -> BTreeMap<u64, Group> {
-    // bento has no groups yet.
-    BTreeMap::new()
+pub fn groups(state: &State) -> BTreeMap<u64, Group> {
+    state
+        .niri
+        .layout
+        .window_groups()
+        .into_iter()
+        .map(|group| {
+            let windows = group.windows.iter().map(|win| win.id().get()).collect();
+            let active = group.active.id().get();
+            let group = Group {
+                id: group.id,
+                windows,
+                active,
+            };
+            (group.id, group)
+        })
+        .collect()
 }
 
 /// The layer-shell surfaces, on every monitor.

@@ -354,8 +354,9 @@ pub struct Window {
     pub pid: Option<i32>,
     /// The id of the workspace it's on, if any.
     pub workspace: Option<u64>,
-    /// Where it's placed, with its borders, in logical pixels in its workspace's view. `null` when
-    /// it isn't placed.
+    /// Where the layout engine placed it, with its borders, in logical pixels on its workspace's
+    /// canvas, the same coordinates the engine uses. `null` when the engine doesn't place it, like
+    /// a floating window.
     pub rect: Option<Rect>,
     /// The size its surface took, without borders.
     pub size: Size,
