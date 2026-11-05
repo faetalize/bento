@@ -654,7 +654,7 @@ mod tests {
         assert!(error(config).contains("argument"));
 
         let config = Config::parse_mem_with_engine("", "layout { gaps 8; }");
-        assert!(error(config).contains("an engine's file has `options`, `window-rule` and `binds`"));
+        assert!(error(config).contains("unexpected node `layout`"));
 
         // An option's values are arguments, not properties or children.
         let config = Config::parse_mem_with_engine("", "options { rows x=1; }");
