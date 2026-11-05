@@ -97,8 +97,8 @@ fn niri_layout_runs_in_the_engine() {
         add_window(3),
     ];
     ops.extend([
-        Op::LayoutAction("focus-column-left", vec![]),
-        Op::LayoutAction("consume-or-expel-window-left", vec![]),
+        Op::LayoutAction("focus-column-left", vec![], None),
+        Op::LayoutAction("consume-or-expel-window-left", vec![], None),
     ]);
     ops.extend(settle());
     let layout = check_ops_with_options(options_for("niri"), ops);
@@ -120,9 +120,9 @@ fn bento_layout_runs_in_the_engine() {
     let half = || vec![niri_config::TilingOption::String(String::from("50%"))];
     ops.extend([
         Op::FocusWindow(2),
-        Op::LayoutAction("set-height", half()),
+        Op::LayoutAction("set-height", half(), None),
         Op::FocusWindow(3),
-        Op::LayoutAction("set-height", half()),
+        Op::LayoutAction("set-height", half(), None),
     ]);
     ops.extend(settle());
     let layout = check_ops_with_options(options_for("bento"), ops);
@@ -572,4 +572,190 @@ fn nodes_that_the_engine_draws_are_in_the_workspace_tree() {
     assert_eq!(order[1].1.kind, NodeKind::Window);
     assert_eq!(order[2].1.kind, NodeKind::Box);
     assert_eq!(order[2].1.props["background"], "#fff");
+}
+
+/// An engine that places windows side by side, 100 wide, groups on request, and tells what it
+/// saw through `bento.exposeState`. Windows go by the order the engine saw them.
+const GROUPER: &str = r#"
+export const meta = {
+    api: 2,
+    name: "grouper",
+    actions: {
+        "group-all": { description: "Groups every window." },
+        "group-first": { description: "Groups the first two windows, with the second one active." },
+        "dissolve": { description: "Dissolves the first group." },
+        "mark": { description: "Logs the window it's for." },
+    },
+};
+export default function create(bento) {
+    const log = [];
+    const seen = new Map();
+    const n = (win) => seen.get(win.id);
+    const ids = (group) => [group.windows.map(n), n(group.active)];
+    bento.exposeState(() => ({ groups: bento.groups.map(ids), log }));
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        seen.set(win.id, seen.size + 1);
+        const x = (win.workspace.windows.length - 1) * 110;
+        win.place({ x, y: 0, w: 100, h: 100 });
+        win.focus();
+    });
+    bento.addEventListener("groupadd", (e) => {
+        log.push(["groupadd", ...ids(e.group)]);
+        e.group.addEventListener("change", (c) => log.push(["change", ...ids(c.target)]));
+        e.group.addEventListener("remove", () => log.push(["remove"]));
+    });
+    bento.addEventListener("action", (e) => {
+        if (e.name === "group-all") {
+            bento.createGroup(bento.windows);
+        } else if (e.name === "group-first") {
+            bento.createGroup(bento.windows.slice(0, 2), bento.windows[1]);
+        } else if (e.name === "dissolve") {
+            bento.groups[0].dissolve();
+        } else if (e.name === "mark") {
+            log.push(["mark", e.window ? n(e.window) : null]);
+        }
+    });
+}
+"#;
+
+/// The groups of a layout as its windows' ids, in the order they joined, and the active window.
+fn groups_of(layout: &Layout<TestWindow>) -> Vec<(Vec<usize>, usize)> {
+    layout
+        .window_groups()
+        .iter()
+        .map(|group| {
+            let windows = group.windows.iter().map(|win| *win.id()).collect();
+            (windows, *group.active.id())
+        })
+        .collect()
+}
+
+fn three_windows() -> [Op; 4] {
+    [
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ]
+}
+
+#[test]
+fn groups_made_by_the_engine_are_bento_state() {
+    let mut ops = three_windows().to_vec();
+    ops.push(Op::LayoutAction("group-all", vec![], None));
+    let layout = check_ops_with_options(options_for_source("groups-engine", GROUPER), ops);
+
+    assert_eq!(groups_of(&layout), [(vec![1, 2, 3], 1)]);
+    // The engine sees the group it made as bento's, announced once.
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(state["groups"], serde_json::json!([[[1, 2, 3], 1]]));
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["groupadd", [1, 2, 3], 1]])
+    );
+}
+
+#[test]
+fn native_group_actions_work_under_any_engine() {
+    use crate::layout::groups::Direction;
+
+    let mut ops = three_windows().to_vec();
+    // 3 has focus: it groups with the window to its left, and is active.
+    ops.push(Op::GroupWindow(Direction::Left));
+    let mut layout = check_ops_with_options(options_for_source("groups-native", GROUPER), ops);
+    assert_eq!(groups_of(&layout), [(vec![2, 3], 3)]);
+
+    // 1 groups with the nearest window to its right, and joins its group.
+    check_ops_on_layout(
+        &mut layout,
+        [Op::FocusWindow(1), Op::GroupWindow(Direction::Right)],
+    );
+    assert_eq!(groups_of(&layout), [(vec![2, 3, 1], 1)]);
+
+    // Nothing is above it.
+    check_ops_on_layout(&mut layout, [Op::GroupWindow(Direction::Up)]);
+    assert_eq!(groups_of(&layout), [(vec![2, 3, 1], 1)]);
+
+    // Ungrouped, the next window in the order is active.
+    check_ops_on_layout(&mut layout, [Op::UngroupWindow]);
+    assert_eq!(groups_of(&layout), [(vec![2, 3], 3)]);
+
+    check_ops_on_layout(&mut layout, [Op::UngroupWindow]);
+    assert_eq!(groups_of(&layout), [(vec![2, 3], 3)]);
+    check_ops_on_layout(&mut layout, [Op::FocusWindow(3), Op::UngroupWindow]);
+    assert_eq!(groups_of(&layout), []);
+
+    // The engine heard about all of it.
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(state["groups"], serde_json::json!([]));
+    assert_eq!(
+        state["log"],
+        serde_json::json!([
+            ["groupadd", [2, 3], 3],
+            ["change", [2, 3, 1], 1],
+            ["change", [2, 3], 3],
+            ["remove"],
+        ])
+    );
+}
+
+#[test]
+fn a_closing_window_leaves_its_group() {
+    let mut ops = three_windows().to_vec();
+    ops.push(Op::LayoutAction("group-all", vec![], None));
+    ops.push(Op::CloseWindow(2));
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("groups-close", GROUPER), ops);
+    assert_eq!(groups_of(&layout), [(vec![1, 3], 1)]);
+
+    let mut ops = vec![Op::CloseWindow(1)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    // Two windows made a group, and one is left.
+    assert_eq!(groups_of(&layout), []);
+
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(state["groups"], serde_json::json!([]));
+}
+
+#[test]
+fn a_window_that_floats_leaves_its_group() {
+    let mut ops = three_windows().to_vec();
+    ops.push(Op::LayoutAction("group-all", vec![], None));
+    ops.push(Op::ToggleWindowFloating { id: Some(2) });
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("groups-float", GROUPER), ops);
+
+    assert!(layout.active_workspace().unwrap().is_floating(&2));
+    assert_eq!(groups_of(&layout), [(vec![1, 3], 1)]);
+}
+
+#[test]
+fn the_engine_can_dissolve_a_group() {
+    let mut ops = three_windows().to_vec();
+    ops.push(Op::LayoutAction("group-first", vec![], None));
+    let mut layout = check_ops_with_options(options_for_source("groups-dissolve", GROUPER), ops);
+    assert_eq!(groups_of(&layout), [(vec![1, 2], 2)]);
+
+    check_ops_on_layout(&mut layout, [Op::LayoutAction("dissolve", vec![], None)]);
+    assert_eq!(groups_of(&layout), []);
+
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["groupadd", [1, 2], 2], ["remove"]])
+    );
+}
+
+#[test]
+fn an_engine_action_can_be_for_another_window_than_the_focused_one() {
+    let mut ops = three_windows().to_vec();
+    ops.push(Op::LayoutAction("mark", vec![], None));
+    ops.push(Op::LayoutAction("mark", vec![], Some(1)));
+    let layout = check_ops_with_options(options_for_source("groups-target", GROUPER), ops);
+    drop(layout);
+
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(state["log"], serde_json::json!([["mark", 3], ["mark", 1]]));
 }

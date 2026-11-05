@@ -401,9 +401,11 @@ fn moving_to_floating_doesnt_cancel_resize() {
     let _ = f.client(id).window(&surface).recent_configures();
 
     // Request a size change to a different size.
-    f.niri()
-        .layout
-        .layout_action("set-width", &[TilingOption::String(String::from("500"))]);
+    f.niri().layout.layout_action(
+        "set-width",
+        &[TilingOption::String(String::from("500"))],
+        None,
+    );
     f.double_roundtrip(id);
 
     // This should request the new size (500 ×).

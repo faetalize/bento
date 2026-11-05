@@ -520,6 +520,20 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.active
     }
 
+    /// Where the layout put a window on the canvas, with its borders.
+    pub fn canvas_rect(&self, id: &W::Id) -> Option<Rectangle<f64, Logical>> {
+        self.data[self.idx_of(id)?].rect
+    }
+
+    /// The visible windows that the layout placed, by engine id, with where it put them.
+    pub(super) fn placed_windows(&self) -> Vec<(u64, Rectangle<f64, Logical>)> {
+        self.data
+            .iter()
+            .filter(|data| data.visible)
+            .filter_map(|data| Some((data.id, data.rect?)))
+            .collect()
+    }
+
     /// Where the camera is going, if it's moving, or where it is.
     pub fn camera_target(&self) -> Point<f64, Logical> {
         self.camera.target()

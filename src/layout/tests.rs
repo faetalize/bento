@@ -359,6 +359,17 @@ fn arbitrary_resize_edge() -> impl Strategy<Value = ResizeEdge> {
     ]
 }
 
+fn arbitrary_group_direction() -> impl Strategy<Value = groups::Direction> {
+    use groups::Direction;
+
+    prop_oneof![
+        Just(Direction::Left),
+        Just(Direction::Right),
+        Just(Direction::Up),
+        Just(Direction::Down),
+    ]
+}
+
 fn arbitrary_scale() -> impl Strategy<Value = f64> {
     prop_oneof![Just(1.), Just(1.5), Just(2.),]
 }
@@ -490,7 +501,9 @@ enum Op {
     },
     /// Runs one of the engine's actions by name, like a bind in its file does.
     #[proptest(skip)]
-    LayoutAction(&'static str, Vec<niri_config::TilingOption>),
+    LayoutAction(&'static str, Vec<niri_config::TilingOption>, Option<usize>),
+    GroupWindow(#[proptest(strategy = "arbitrary_group_direction()")] groups::Direction),
+    UngroupWindow,
     ToggleWindowFloating {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
@@ -1065,7 +1078,12 @@ impl Op {
 
                 layout.move_workspace_to_output_by_id(old_idx, Some(old_output), &output);
             }
-            Op::LayoutAction(name, args) => layout.layout_action(name, &args),
+            Op::LayoutAction(name, args, id) => {
+                let id = id.filter(|id| layout.has_window(id));
+                layout.layout_action(name, &args, id.as_ref());
+            }
+            Op::GroupWindow(direction) => layout.group_window(direction),
+            Op::UngroupWindow => layout.ungroup_window(),
             Op::MaximizeWindowToEdges { id } => {
                 let id = id.or_else(|| layout.focus().map(|win| *win.id()));
                 let Some(id) = id else {

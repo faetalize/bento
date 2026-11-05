@@ -44,9 +44,13 @@ export class TestHost {
         this.monitors = new Map();
         this.workspaces = new Map();
         this.windows = new Map();
+        /** Groups of windows, which bento owns: `{ id, windows, active }`. */
+        this.groups = [];
+        this.nextGroupId = 1;
         this.focusedMonitor = null;
         /** What the engine was told, by object, as JSON. */
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
+        this.toldGroups = null;
         this.toldOptions = null;
         this.trees = new Map();
         this.logs = [];
@@ -68,6 +72,7 @@ export class TestHost {
         }
         this.focusedMonitor = [...this.monitors.keys()][0] ?? null;
 
+        prelude.setGroupIdSource(() => this.nextGroupId++);
         this.create(opts.state ?? null);
     }
 
@@ -235,6 +240,11 @@ export class TestHost {
                 this.told.windows.set(win.id, info);
             }
         }
+        const groups = this.groups.map((group) => ({ ...group, windows: [...group.windows] }));
+        if (JSON.stringify(this.toldGroups) !== JSON.stringify(groups)) {
+            sync.groups = groups;
+            this.toldGroups = groups;
+        }
         sync.focusedMonitor = this.focusedMonitor;
         const options = this.engineOptions();
         if (JSON.stringify(this.toldOptions) !== JSON.stringify(options)) {
@@ -251,6 +261,7 @@ export class TestHost {
             sync.workspaces.length === 0 &&
             sync.removedWorkspaces.length === 0 &&
             sync.windows.length === 0 &&
+            sync.groups === undefined &&
             sync.options === undefined &&
             sync.focusedMonitor === this.toldFocusedMonitor
         );
@@ -307,6 +318,10 @@ export class TestHost {
     // What the engine asks of bento.
 
     apply(out) {
+        if ((out.ops ?? []).length > 0) {
+            // Like bento, tell the engine about groups again after it changed some.
+            this.toldGroups = null;
+        }
         for (const op of out.ops ?? []) {
             switch (op.op) {
                 case "show":
@@ -320,6 +335,21 @@ export class TestHost {
                     break;
                 case "moveWindow":
                     this.moveWindow(op.window, op.workspace);
+                    break;
+                case "createGroup":
+                    this.createGroup(op.id, op.windows, op.active);
+                    break;
+                case "groupAdd":
+                    this.groupAdd(op.group, op.window);
+                    break;
+                case "groupRemove":
+                    this.leaveGroup(op.window);
+                    break;
+                case "groupActivate":
+                    this.groups.find((group) => group.id === op.group).active = op.window;
+                    break;
+                case "dissolveGroup":
+                    this.groups = this.groups.filter((group) => group.id !== op.group);
                     break;
                 default:
                     throw new Error(`unknown op: ${op.op}`);
@@ -404,6 +434,94 @@ export class TestHost {
         }
     }
 
+    // Groups.
+
+    /** Makes group `id` of `windows`, which leave the groups they're in. */
+    createGroup(id, windows, active) {
+        const members = [...new Set(windows)];
+        if (members.length < 2) return;
+        members.forEach((window) => this.leaveGroup(window));
+        this.groups.push({ id, windows: members, active: members.includes(active) ? active : members[0] });
+    }
+
+    groupAdd(id, window) {
+        const group = this.groups.find((group) => group.id === id);
+        if (group === undefined || group.windows.includes(window)) return;
+        this.leaveGroup(window);
+        group.windows.push(window);
+    }
+
+    /**
+     * Takes a window out of its group, which is gone when one window is left. When the window was
+     * the active one, the window that takes its place in the order is.
+     */
+    leaveGroup(window) {
+        const group = this.groups.find((group) => group.windows.includes(window));
+        if (group === undefined) return;
+        const pos = group.windows.indexOf(window);
+        group.windows.splice(pos, 1);
+        if (group.windows.length < 2) {
+            this.groups = this.groups.filter((other) => other !== group);
+        } else if (group.active === window) {
+            group.active = group.windows[Math.min(pos, group.windows.length - 1)];
+        }
+    }
+
+    groupOf(window) {
+        return this.groups.find((group) => group.windows.includes(window)) ?? null;
+    }
+
+    /**
+     * bento's `group-window-left` and its siblings: the focused window joins the group of the
+     * window nearest to it in `direction` on its workspace, by where the engine put them, or the
+     * two make a group. It's the group's active window.
+     */
+    groupWindow(direction) {
+        const focused = this.focused();
+        if (focused === null) return;
+        const win = this.windows.get(focused);
+        if (!win.rect) return;
+        const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
+        const from = center(win.rect);
+        const side = {
+            left: (c) => c.x < from.x,
+            right: (c) => c.x > from.x,
+            up: (c) => c.y < from.y,
+            down: (c) => c.y > from.y,
+        }[direction];
+        const gap = (a, b) => Math.max(0, b - a);
+        const candidates = [...this.windows.values()]
+            .filter((other) => other.id !== focused && other.workspace === win.workspace)
+            .filter((other) => other.visible && other.rect && side(center(other.rect)))
+            .map((other) => {
+                const r = other.rect;
+                const w = win.rect;
+                const gx = Math.max(gap(w.x + w.w, r.x), gap(r.x + r.w, w.x));
+                const gy = Math.max(gap(w.y + w.h, r.y), gap(r.y + r.h, w.y));
+                const c = center(r);
+                return { id: other.id, gaps: gx * gx + gy * gy, centres: (c.x - from.x) ** 2 + (c.y - from.y) ** 2 };
+            })
+            .sort((a, b) => a.gaps - b.gaps || a.centres - b.centres || a.id - b.id);
+        if (candidates.length === 0) return;
+
+        const target = candidates[0].id;
+        const group = this.groupOf(target);
+        if (group === null) {
+            this.createGroup(this.nextGroupId++, [target, focused], focused);
+        } else {
+            this.groupAdd(group.id, focused);
+            group.active = focused;
+        }
+        this.flush();
+    }
+
+    /** bento's `ungroup-window`: the focused window leaves its group. */
+    ungroupWindow() {
+        const focused = this.focused();
+        if (focused !== null) this.leaveGroup(focused);
+        this.flush();
+    }
+
     // Windows.
 
     /** The window that has keyboard focus. */
@@ -466,6 +584,7 @@ export class TestHost {
 
     close(id, reason = "close") {
         const win = this.windows.get(id);
+        this.leaveGroup(id);
         this.windows.delete(id);
         this.told.windows.delete(id);
         this.trees.get(win.workspace).remove(`w${id}`);
@@ -671,6 +790,7 @@ export class TestHost {
     reload() {
         const state = JSON.parse(prelude.saveAll());
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
+        this.toldGroups = null;
         this.toldOptions = null;
         for (const [id, tree] of this.trees) {
             tree.reset([...this.windows.values()].filter((win) => win.workspace === id).map((win) => win.id));

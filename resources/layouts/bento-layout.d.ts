@@ -299,6 +299,11 @@ export interface BentoEvents {
     windowadd: WindowAddEvent;
     monitoradd: BentoEvent & { readonly monitor: Monitor };
     workspaceadd: BentoEvent & { readonly workspace: Workspace };
+    /**
+     * A group came to exist, whoever made it: the engine, a native group action, or a previous
+     * instance of the engine. The groups there are when the engine starts are announced after its
+     * windows.
+     */
     groupadd: BentoEvent & { readonly group: Group };
     action: ActionEvent;
     /** The keyboard focus moved, to a window or to an empty workspace. */
@@ -345,7 +350,10 @@ export interface WindowEvents {
 }
 
 export interface GroupEvents {
-    /** Windows joined or left it, or its active window changed. */
+    /**
+     * Windows joined or left it, or its active window changed, whoever did it. When the active
+     * window leaves, the window that takes its place in `windows` becomes active, or the last one.
+     */
     change: BentoEvent;
     /** The group is gone: it was dissolved, or fewer than two windows are left. */
     remove: BentoEvent;

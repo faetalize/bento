@@ -48,6 +48,7 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::output::{self, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
+use groups::Groups;
 use tile::{PendingMove, Tile, TileRenderElement};
 use tiling::host::Host;
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId};
@@ -78,6 +79,7 @@ use crate::window::ResolvedWindowRules;
 pub mod closing_window;
 pub mod floating;
 pub mod focus_ring;
+pub mod groups;
 pub mod monitor;
 pub mod opening_window;
 pub mod shadow;
@@ -381,6 +383,8 @@ pub struct Layout<W: LayoutElement> {
     overview_progress: Option<OverviewProgress>,
     /// Configurable properties of the layout.
     options: Rc<Options>,
+    /// Windows grouped together.
+    groups: Groups,
     /// The tiling layout engine's view of the session.
     host: Host,
 }
@@ -754,6 +758,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_open: false,
             overview_progress: None,
             options: Rc::new(options),
+            groups: Groups::default(),
             host: Host::default(),
         };
         // The layout engine sees the session from the start, so that it can answer queries.
@@ -784,6 +789,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_open: false,
             overview_progress: None,
             options: opts,
+            groups: Groups::default(),
             host: Host::default(),
         };
         tiling::engine::ensure_loaded(&layout.options.tiling);
@@ -1779,6 +1785,12 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// Where the layout engine put a window on its workspace's canvas, if it places it.
+    pub fn window_canvas_rect(&self, id: &W::Id) -> Option<Rectangle<f64, Logical>> {
+        self.workspaces()
+            .find_map(|(_, _, ws)| ws.scrolling().canvas_rect(id))
+    }
+
     pub fn with_windows_mut(&mut self, mut f: impl FnMut(&mut W, Option<&Output>)) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             f(move_.tile.window_mut(), Some(&move_.output));
@@ -2299,6 +2311,18 @@ impl<W: LayoutElement> Layout<W> {
                     );
                 }
                 saw_view_offset_gesture = has_view_offset_gesture;
+            }
+        }
+
+        let mut grouped = HashSet::new();
+        for group in self.groups.iter() {
+            assert!(group.windows.len() >= 2, "a group has at least two windows");
+            assert!(
+                group.windows.contains(&group.active),
+                "a group's active window is one of its windows"
+            );
+            for window in &group.windows {
+                assert!(grouped.insert(*window), "a window is in one group at most");
             }
         }
     }

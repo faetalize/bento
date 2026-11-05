@@ -10,9 +10,12 @@
 // See `bento-layout.d.ts` for the API that engines see, and `v1.js` for API 1 engines.
 
 import { BentoEvent, QueryEvent, UnloadEvent, dispatch, listenerCount, response, setErrorSink } from "./events.js";
+import { setGroupIdSource } from "./groups.js";
 import { dispatchPointer } from "./nodes.js";
 import { Session } from "./objects.js";
 import { V1Adapter } from "./v1.js";
+
+export { setGroupIdSource };
 
 const API_VERSIONS = [1, 2];
 
@@ -203,6 +206,7 @@ export function handle(callJson) {
             result = deliver(call.event);
             if (!isQuery) {
                 session.fireFocusChanges(focus);
+                session.fireGroupChanges();
             }
         }
     } catch (e) {
@@ -229,8 +233,9 @@ function create(call) {
     const event = call.event;
     session = new Session(meta, event.options, event.savedState);
     adapter = null;
-    // The engine learns about what's there when it looks, not from events.
-    session.applySync(call.sync);
+    // The engine learns about what's there when it looks, not from events. Groups need the windows.
+    const { groups, ...sync } = call.sync;
+    session.applySync(sync);
 
     const windows = event.windows.map((info) => {
         const d = session.addWindow(info);
@@ -239,6 +244,8 @@ function create(call) {
         }
         return { d, info };
     });
+
+    session.groups.apply(groups ?? []);
 
     if (meta.api === 1) {
         adapter = new V1Adapter(session, layoutModule);
@@ -266,6 +273,8 @@ function create(call) {
         );
     }
     session.fireFocusChanges(focus);
+    // Groups that are there are announced after the windows in them.
+    session.fireGroupChanges();
 }
 
 /**

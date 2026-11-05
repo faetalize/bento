@@ -6,6 +6,7 @@
 // what really happened in the next `sync`.
 
 import { BentoEvent, EventTarget, dispatch } from "./events.js";
+import { GroupSet } from "./groups.js";
 import {
     TreeLog,
     attachWindowNode,
@@ -357,6 +358,10 @@ export class Window extends EventTarget {
         return this.#d.rules;
     }
 
+    get group() {
+        return this.#s.groups.of(this.#d.id);
+    }
+
     get node() {
         return this.#d.node;
     }
@@ -484,6 +489,10 @@ export class Bento extends EventTarget {
         return Object.freeze([...this.#s.windows.values()].map((d) => d.facade));
     }
 
+    get groups() {
+        return Object.freeze(this.#s.groups.facades);
+    }
+
     get options() {
         return this.#s.options;
     }
@@ -502,6 +511,10 @@ export class Bento extends EventTarget {
 
     monitor(name) {
         return this.#s.monitors.get(name)?.facade ?? null;
+    }
+
+    createGroup(windows, active) {
+        return this.#s.groups.create(windows, active);
     }
 
     exposeState(provider) {
@@ -537,6 +550,7 @@ export class Session {
         this.monitors = new Map();
         this.workspaces = new Map();
         this.windows = new Map();
+        this.groups = new GroupSet(this);
         this.focusedMonitor = null;
         this.stateProvider = null;
         this.savedState = savedState ?? null;
@@ -599,6 +613,20 @@ export class Session {
         for (let i = 0; i < 8 && this.focusKey() !== seen; i++) {
             seen = this.focusKey();
             dispatch(this.bento, new BentoEvent("focuschange", this.bento));
+        }
+    }
+
+    /** Fires `group` events for what changed in groups since listeners were told, until they settle. */
+    fireGroupChanges() {
+        // Bounded, so listeners that keep changing groups can't hang the call.
+        for (let i = 0; i < 8; i++) {
+            const fire = this.groups.announce();
+            if (fire.length === 0) {
+                return;
+            }
+            for (const call of fire) {
+                call();
+            }
         }
     }
 
@@ -747,6 +775,10 @@ export class Session {
             }
         }
 
+        if (sync.groups !== undefined) {
+            this.groups.apply(sync.groups);
+        }
+
         if ("focusedMonitor" in sync) {
             this.focusedMonitor = sync.focusedMonitor;
         }
@@ -782,6 +814,9 @@ export class Session {
             if (d !== undefined && before.has(d) && before.get(d) !== windowKey(d)) {
                 fire.push(event(d.facade, "change"));
             }
+        }
+        if (sync.groups !== undefined) {
+            fire.push(...this.groups.announce());
         }
         if (focusBefore !== this.focusKey()) {
             fire.push(event(this.bento, "focuschange"));

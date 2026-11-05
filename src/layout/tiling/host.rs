@@ -20,8 +20,8 @@ use serde_json::{json, Value};
 use smithay::utils::{Logical, Point, Rectangle};
 
 use super::protocol::{
-    CameraChange, MonitorInfo, Op, Output as EngineOutput, Rect, SyncInfo, TreeOp, Verdict, Wh,
-    WindowChange, Xy,
+    CameraChange, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SyncInfo, TreeOp,
+    Verdict, Wh, WindowChange, Xy,
 };
 use super::{engine, TilingSpace};
 use crate::layout::monitor::InsertWorkspace;
@@ -140,6 +140,9 @@ pub struct Host {
     monitors: HashMap<String, Value>,
     workspaces: HashMap<u64, Value>,
     windows: HashMap<u64, Value>,
+    /// Every group, as the layout was last told. It hears about all of them at once, since there
+    /// are few.
+    groups: Option<Vec<GroupInfo>>,
     focused_monitor: Option<String>,
     options: Option<Value>,
     /// Workspace of each node that the layout created and put in a tree.
@@ -162,6 +165,7 @@ impl Host {
         self.monitors.clear();
         self.workspaces.clear();
         self.windows.clear();
+        self.groups = None;
         self.focused_monitor = None;
         self.options = None;
         self.node_workspaces.clear();
@@ -325,9 +329,22 @@ impl<W: LayoutElement> Layout<W> {
         snapshot
     }
 
+    /// Every group, as the layout is told.
+    fn group_infos(&self) -> Vec<GroupInfo> {
+        self.groups
+            .iter()
+            .map(|group| GroupInfo {
+                id: group.id,
+                windows: group.windows.clone(),
+                active: group.active,
+            })
+            .collect()
+    }
+
     /// What changed since the layout was last told, for the events that are about to go to it.
     fn build_sync(&mut self, queued: &[Queued]) -> SyncInfo {
         let snapshot = self.snapshot(false);
+        let groups = self.group_infos();
         let host = &mut self.host;
         let mut sync = SyncInfo::default();
         let resend_all = std::mem::take(&mut host.resend_all);
@@ -405,6 +422,13 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
+        // What the layout does to groups is carried out by bento, which may not agree, so after
+        // that it hears about them again.
+        if resend_all || host.groups.as_ref() != Some(&groups) {
+            host.groups = Some(groups.clone());
+            sync.groups = Some(groups);
+        }
+
         sync.focus_changed = host.focused_monitor != snapshot.focused_monitor;
         host.focused_monitor = snapshot.focused_monitor.clone();
         sync.focused_monitor = snapshot.focused_monitor;
@@ -466,8 +490,12 @@ impl<W: LayoutElement> Layout<W> {
         let options = engine::options_json(&self.options.tiling);
         self.host.options = Some(options.clone());
 
+        let groups = self.group_infos();
+        self.host.groups = Some(groups.clone());
+
         sync.monitors = snapshot.monitors;
         sync.workspaces = snapshot.workspaces;
+        sync.groups = Some(groups);
         sync.focused_monitor = snapshot.focused_monitor;
 
         for ws in self.workspaces_mut() {
@@ -501,6 +529,7 @@ impl<W: LayoutElement> Layout<W> {
 
     fn flush_rounds(&mut self) {
         for _ in 0..MAX_ROUNDS {
+            self.prune_groups();
             if !self.ensure_engine() {
                 take_queue();
                 break;
@@ -687,6 +716,23 @@ impl<W: LayoutElement> Layout<W> {
                 self.host.resend_windows.insert(window);
                 self.engine_move_window(window, workspace);
             }
+            Op::CreateGroup {
+                id,
+                windows,
+                active,
+            } => {
+                self.groups.create(id, &windows, Some(active));
+            }
+            Op::GroupAdd { group, window } => {
+                self.groups.add(group, window);
+            }
+            Op::GroupRemove { group, window } => {
+                self.groups.remove(group, window);
+            }
+            Op::GroupActivate { group, window } => {
+                self.groups.activate(group, window);
+            }
+            Op::DissolveGroup { group } => self.groups.dissolve(group),
         }
     }
 
@@ -878,7 +924,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     /// Engine id of the focused window, if the layout has it: not a floating one.
-    fn focused_engine_window(&self) -> Option<u64> {
+    pub(in crate::layout) fn focused_engine_window(&self) -> Option<u64> {
         let ws = self.active_workspace()?;
         if ws.floating_is_active() {
             return None;
@@ -886,15 +932,22 @@ impl<W: LayoutElement> Layout<W> {
         ws.scrolling().active_engine_id()
     }
 
-    /// Runs one of the layout's actions, from a bind in its file or `layout-action`. Only actions
-    /// the layout declares reach it. Arguments are converted to the types it declared, and
-    /// arguments left out get their defaults.
-    pub fn layout_action(&mut self, name: &str, args: &[TilingOption]) {
+    /// Runs one of the layout's actions, from a bind in its file or `layout-action`, for `window`
+    /// or the focused window. Only actions the layout declares reach it, and only for a window it
+    /// places. Arguments are converted to the types it declared, and arguments left out get their
+    /// defaults.
+    pub fn layout_action(&mut self, name: &str, args: &[TilingOption], window: Option<&W::Id>) {
         let Some(declared) = engine::action_args(name) else {
             return;
         };
         let values = self.action_args(&declared, args);
-        let window = self.focused_engine_window();
+        let window = match window {
+            Some(window) => match self.engine_id_of(window) {
+                Some(id) => Some(id),
+                None => return,
+            },
+            None => self.focused_engine_window(),
+        };
         let event = json!({ "type": "action", "name": name, "args": values, "window": window });
         self.engine_event(event);
     }

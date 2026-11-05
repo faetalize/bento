@@ -155,6 +155,14 @@ pub struct WorkspaceInfo {
     pub focused: Option<u64>,
 }
 
+/// What bento tells the layout about a group.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GroupInfo {
+    pub id: u64,
+    pub windows: Vec<u64>,
+    pub active: u64,
+}
+
 /// What changed about the session since the layout was last told, which the prelude applies
 /// before it handles an event.
 #[derive(Debug, Default, Serialize)]
@@ -165,6 +173,9 @@ pub struct SyncInfo {
     pub workspaces: Vec<serde_json::Value>,
     pub removed_workspaces: Vec<u64>,
     pub windows: Vec<serde_json::Value>,
+    /// Every group, when they changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<GroupInfo>>,
     /// Name of the monitor with keyboard focus.
     pub focused_monitor: Option<String>,
     /// The layout's options, when they changed.
@@ -183,6 +194,7 @@ impl SyncInfo {
             && self.workspaces.is_empty()
             && self.removed_workspaces.is_empty()
             && self.windows.is_empty()
+            && self.groups.is_none()
             && self.options.is_none()
             && !self.focus_changed
     }
@@ -219,7 +231,7 @@ pub struct Output {
     pub state_changed: bool,
 }
 
-/// A change to the workspace structure that the layout asked for.
+/// A change to the workspace structure or the groups that the layout asked for.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Op {
@@ -239,6 +251,26 @@ pub enum Op {
     MoveWindow {
         window: u64,
         workspace: u64,
+    },
+    CreateGroup {
+        id: u64,
+        windows: Vec<u64>,
+        active: u64,
+    },
+    GroupAdd {
+        group: u64,
+        window: u64,
+    },
+    GroupRemove {
+        group: u64,
+        window: u64,
+    },
+    GroupActivate {
+        group: u64,
+        window: u64,
+    },
+    DissolveGroup {
+        group: u64,
     },
 }
 

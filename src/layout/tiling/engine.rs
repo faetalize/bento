@@ -23,6 +23,8 @@ use rquickjs::{CatchResultExt as _, Context, Ctx, Function, Module, Object, Pers
 use serde::{Deserialize, Deserializer};
 use serde_json::json;
 
+use crate::layout::groups;
+
 /// The prelude's entry point, which imports the rest.
 const PRELUDE: &str = include_str!("../../../resources/layouts/prelude/index.js");
 
@@ -31,6 +33,10 @@ const PRELUDE_MODULES: &[(&str, &str)] = &[
     (
         "bento:prelude/events.js",
         include_str!("../../../resources/layouts/prelude/events.js"),
+    ),
+    (
+        "bento:prelude/groups.js",
+        include_str!("../../../resources/layouts/prelude/groups.js"),
     ),
     (
         "bento:prelude/nodes.js",
@@ -432,6 +438,13 @@ impl Engine {
                 eval("bento:prelude/index.js", PRELUDE).context("error loading the prelude")?;
             let layout = eval(name, &source)?;
 
+            // Groups made by the layout get their ids from bento, since bento makes groups too.
+            let set_group_ids: Function = prelude.get("setGroupIdSource")?;
+            set_group_ids
+                .call::<_, ()>((Function::new(ctx.clone(), groups::next_id)?,))
+                .catch(&ctx)
+                .map_err(|err| anyhow!("{err}"))?;
+
             let load: Function = prelude.get("load")?;
             let meta: String = load
                 .call((layout,))
@@ -816,7 +829,7 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
 
     for bind in &config.binds.0 {
         for action in [bind.press_action(), bind.release_action()] {
-            if let Some(niri_config::Action::LayoutAction(name, args)) = action {
+            if let Some(niri_config::Action::LayoutAction(name, args, _)) = action {
                 match meta.action(name) {
                     None => problems.push(format!(
                         "the {} layout engine has no action called {name:?}",
