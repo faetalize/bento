@@ -210,9 +210,10 @@ Its subcommands are named for the requests: `bento msg windows`, `bento msg engi
 
 ## Layout engines
 
-In bento, tiling is done by a layout engine: a script that decides how the whole workspace behaves.
-bento itself only knows about windows and a camera over an unbounded canvas, and gives engines small primitives to work with.
-The engine decides everything else: where tiled windows go, which window has focus, where the camera points, and what actions do.
+In bento, tiling is done by a layout engine: a script that runs the presentation of the whole session.
+bento keeps the objects, monitors, workspaces, windows and groups, and each workspace has a camera over an unbounded canvas.
+The engine decides everything else: where tiled windows go, which window has focus, where each camera points, what actions do, and what's drawn between the windows, like tab bars and hints.
+bento runs one instance of it for the whole session, which sees every monitor, workspace and window, so crossing from one to another is just the engine's own logic.
 Concepts like columns, cells or gravity belong to the engine, not to bento.
 
 Pick an engine, or an engine file, in the `tiling` section:
@@ -317,16 +318,19 @@ bento msg action layout-action focus-left
 `bento validate` checks that the engine has the actions your binds name, and that their arguments fit.
 `bento msg engine` lists every action the running engine has, with what it does and the arguments it takes.
 
-Engines only see their own workspace for now, so no engine action reaches another monitor or workspace; bento's own actions, like `focus-monitor-left` or `focus-workspace-down`, do that.
+Engines see every monitor and workspace, so their actions can go from one to another.
+The `niri` engine has `focus-column-or-monitor-left` and `move-column-to-workspace-down`, and the `bento` engine has `focus-left-or-monitor` and `move-down-or-to-workspace`.
+bento's own actions, like `focus-monitor-left` or `move-window-to-workspace-down`, do the same for one window, whatever the engine.
 
 ### Writing a layout engine
 
 A layout engine is a single JavaScript module.
-It exports `meta`, which describes the engine, and a default function that creates the engine for one workspace:
+It exports `meta`, which describes the engine, and a default function that creates it, once for the whole session.
+The engine learns what happens from events on bento's objects, the way the DOM works, and changes the objects with method calls:
 
 ```js
 export const meta = {
-    api: 1,
+    api: 2,
     name: "row",
     actions: {
         "swap-with-first": { description: "Swap the focused window with the first one." },
@@ -336,38 +340,46 @@ export const meta = {
     },
 };
 
-export default function create(ws) {
-    const windows = [];
+export default function create(bento) {
+    // The windows of each workspace in order, by workspace id.
+    const rows = new Map();
+    const rowOf = (ws) => {
+        if (!rows.has(ws.id)) rows.set(ws.id, []);
+        return rows.get(ws.id);
+    };
 
-    // Puts the windows side by side.
-    function layout() {
+    // Puts the windows of a workspace side by side.
+    function layout(ws) {
         const gaps = ws.config.gaps;
-        const area = ws.view.tilingArea;
-        const w = ws.round(area.w * ws.options.width - gaps);
-        windows.forEach((win, i) => {
-            ws.place(win, { x: area.x + gaps + i * (w + gaps), y: area.y + gaps, w, h: area.h - gaps * 2 });
+        const area = ws.tilingArea;
+        const w = ws.monitor.round(area.w * bento.options.width - gaps);
+        rowOf(ws).forEach((win, i) => {
+            win.place({ x: area.x + gaps + i * (w + gaps), y: area.y + gaps, w, h: area.h - gaps * 2 });
         });
     }
 
-    return {
-        windowAdded(win, how) {
-            windows.push(win);
-            layout();
-            if (how.activate) ws.focus(win);
-        },
-        windowRemoved(win) {
-            windows.splice(windows.indexOf(win), 1);
-            layout();
-            if (ws.focused === null && windows.length > 0) ws.focus(windows[0]);
-        },
-        action(name) {
-            if (name !== "swap-with-first" || windows.length < 2) return false;
-            const i = windows.indexOf(ws.focused);
-            [windows[0], windows[i]] = [windows[i], windows[0]];
-            layout();
-            return true;
-        },
-    };
+    function onRemove(e) {
+        const ws = e.target.workspace;
+        const windows = rowOf(ws);
+        windows.splice(windows.indexOf(e.target), 1);
+        layout(ws);
+        if (ws.focused === null || ws.focused === e.target) windows[0]?.focus();
+    }
+
+    bento.addEventListener("windowadd", (e) => {
+        rowOf(e.window.workspace).push(e.window);
+        e.window.addEventListener("remove", onRemove);
+        if (e.activate) e.window.focus();
+        layout(e.window.workspace);
+    });
+
+    bento.addEventListener("action", (e) => {
+        if (e.name !== "swap-with-first" || e.window === null) return;
+        const windows = rowOf(e.window.workspace);
+        const i = windows.indexOf(e.window);
+        [windows[0], windows[i]] = [windows[i], windows[0]];
+        layout(e.window.workspace);
+    });
 }
 ```
 
@@ -385,19 +397,27 @@ An action that takes arguments says which, in order, so that bento can check bin
 },
 ```
 
-Argument types are `boolean`, `number`, `string`, `choice` (one of `choices`) and `size`, which is written like `"50%"`, `"+10%"` or `"800"` and reaches the engine as `{ op, value, unit }`.
+Argument types are `boolean`, `number`, `string`, `choice` (one of `choices`), `size`, `workspace` and `monitor`.
+A size is written like `"50%"`, `"+10%"` or `"800"` and reaches the engine as `{ op, value, unit }`.
+A workspace is written as an index on the focused monitor, counting from 1, or a name, and a monitor as a connector name like `"DP-2"`; the engine gets the object, or `null` when there isn't one.
 Arguments with a `default` can be left out, and an action without `args` takes none.
 
-For a complete engine to start from, copy [`examples/template.js`](resources/layouts/examples/template.js): under 300 lines, comments included, that put one main window on the left and stack the others on the right, with comments on every event, what bento does when an engine leaves one out, and tests next to it.
+An engine can declare window rules too, in `meta.windowRules`, which are written in its file and reach the engine as each window's `rules`, and options and rules of type `size` reach it as `{ proportion }` or `{ fixed }`.
+
+For a complete engine to start from, copy [`examples/template.js`](resources/layouts/examples/template.js): under 250 lines, comments included, that put one main window on the left and stack the others on the right, with a line drawn between them, comments on every event, what bento does when an engine leaves one out, and tests next to it.
 
 The full API, with every event an engine can handle, is in [`bento-layout.d.ts`](resources/layouts/bento-layout.d.ts).
 In short:
 
-- **Events** tell the engine what happened: windows added and removed, actions, focus requests, fullscreen requests, window size changes, view and config changes, pointer resizes, swipe gestures and dropped windows.
-- **The workspace** (`ws`) is everything an engine can do: place windows on the canvas, show and hide them, set fullscreen or maximized, focus, move the camera, highlight drop targets, and draw tab bars.
-- **Queries** ask the engine without changing anything: where a dragged window would land, what size a new window should start at, and positions for IPC.
+- **Objects** are what the engine reads and changes: monitors, their workspaces, windows, each workspace's camera, and groups. Properties are read-only, and every change is a method call that says whether it worked, like `win.place(rect)`, `win.focus()`, `win.moveTo(workspace)` or `workspace.camera.move({ x })`.
+- **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes and drags over a workspace, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
+- **Groups** are bento's own: a set of windows and which one is active. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
+- **Nodes** are what the engine draws: boxes, text and images in a tree for each workspace, which also holds the windows. Tab bars, hints and drop targets are nodes. bento renders the tree and runs the transitions the engine describes, so no engine code runs per frame.
+- **State** can be exposed with `bento.exposeState`, so that the shell, bento Settings and scripts can read it through bento's socket, and `unload` can keep state for the next instance of the engine when it reloads.
+- **Queries** ask the engine without changing anything, like `newwindowsize`, what size a new window should start at.
 
 bento animates everything an engine changes, so engines only say where things go.
+Engines written for API 1, with `api: 1` and one instance for each workspace, still run for now, see [`bento-layout-v1.d.ts`](resources/layouts/bento-layout-v1.d.ts).
 
 ### Testing layout engines
 
@@ -415,7 +435,7 @@ test("windows go side by side", async () => {
     const a = host.open();
     const b = host.open();
     assert.deepEqual(host.rect(b), { x: 656, y: 16, w: 624, h: 688 });
-    assert.equal(host.focused, b);
+    assert.equal(host.focused(), b);
 });
 ```
 
@@ -431,13 +451,13 @@ They have no access to files, the network or other modules, and each call has a 
 When an engine fails, bento keeps going:
 
 - If a call throws, bento keeps what the engine did before the error and logs it.
-- If a call runs out of time, bento starts the engine over for that workspace, from where the windows are.
+- If a call runs out of time, bento starts the engine over, from where the windows are.
 - If the engine doesn't load, bento keeps the previous one, or falls back to a simple engine that puts windows side by side.
 
 ## The bento engine
 
 The `bento` engine, the default, puts tiled windows on a grid of cells.
-Like niri's strip of columns, the grid scrolls horizontally without end, and every workspace has its own grid.
+Like niri's strip of columns, the grid scrolls horizontally without end, and every workspace has its own grid, with cells that fit its monitor.
 Unlike niri, a window doesn't have to fill a column from top to bottom.
 Every window covers a rectangle of whole cells: a starting column and row, plus a span.
 So windows can sit in different rows, stack on top of each other, and span several cells in either direction.
@@ -465,6 +485,17 @@ options {
 Without gravity, windows stay where you put them, and only columns of cells that are completely empty between windows collapse.
 The grid also has no left edge then, so windows can be pushed or moved further left than the first one.
 
+The engine's other options are in its file too, written at their defaults.
+`center-focused-window` and `always-center-single-window` say when the view centers the focused window, `default-width` is the width new windows open with, and `preset-widths` and `preset-heights` are what `cycle-width` and `cycle-height` go through.
+`default-tabs` opens new windows as tabs, and `tab-bar` with its `-width`, `-gap` and `-active-color`, `-inactive-color` and `-urgent-color` styles the tab bar.
+`hint-color` is the color of the hints.
+Its window rules set `default-width`, `default-height`, `default-tabs` and `open-full-width`.
+
+Tabs are groups.
+`toggle-tabs` makes the windows of an area one bento group, drawn as a tab bar of clickable segments along the area, and a group made by bento's own group actions shows as tabs in the area of its active window.
+Dragging a window shows where it would land, and double-clicking the left or right edge of a window toggles its full width, and the top or bottom edge its full height.
+Swiping sideways scrolls the view, and snaps it to window edges when the fingers lift.
+
 It also has actions for two windows at a time:
 
 - `split-h` splits a window's cells in two side by side, and gives one half to another window.
@@ -472,7 +503,7 @@ It also has actions for two windows at a time:
 - `swap` swaps two windows' places and sizes.
 
 Each takes two presses.
-The first press picks the focused window and highlights it.
+The first press picks the focused window and highlights it with a node the engine draws.
 Then focus another window as usual, and press again.
 Pressing again on the window you picked first cancels.
 
@@ -480,6 +511,16 @@ Pressing again on the window you picked first cancels.
 The first press highlights where the window would go, at the seam nearest to it.
 While the highlight is up, `focus-left`, `focus-right`, `focus-up` and `focus-down` move it to the next seam in that direction, and any other action cancels.
 The second press puts the window there.
+
+Where the grid ends, actions go on to the monitor or workspace beside it:
+
+- `focus-left-or-monitor` and `focus-right-or-monitor` focus the monitor to the left or right, and `focus-up-or-workspace` and `focus-down-or-workspace` the workspace above or below, when there is no window that way.
+- `move-left-or-to-monitor` moves a window to the monitor to the left once it can't move left, and `move-up-or-to-workspace` and `move-down-or-to-workspace` to the workspace above or below once it can't move up or down. The grid has no end to the right, so there is no such action for that side.
+- `move-to-workspace N` and `move-to-monitor "DP-2"` move the focused window, with its tabs, to a workspace of the focused monitor or the active workspace of a monitor.
+
+Focus goes along with what moves.
+bento's own `move-window-to-workspace` actions move one window and leave its tabs.
+The engine's file binds these on `Mod+Alt+Shift` and `Mod+Ctrl+Shift`, which the main config leaves free.
 
 ## The niri engine
 
@@ -495,11 +536,18 @@ It differs in these ways:
   Colors are strings, so the tab indicator and the insert hint have no gradients.
 - **Animations are bento's.**
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
-- **Actions stay on their workspace.**
-  niri's actions that go on to another monitor or workspace at the edge, like `focus-column-or-monitor-left`, don't exist yet, because engines only see their own workspace for now.
-  bento's own `focus-monitor-left` or `focus-workspace-down` do that part.
+- **Actions that cross an edge take the whole column.**
+  `focus-column-or-monitor-left`, `focus-window-or-workspace-down`, `move-column-to-workspace`, `move-column-to-monitor-left` and the rest of niri's go on to the monitor or workspace beside, and a trailing `false`, like `move-column-to-workspace 2 false`, keeps the focus where it is, as niri's `focus=false` does.
+  The engine's file binds the ones niri binds on `Mod+Ctrl+Shift` and `Mod+Alt+Shift`, since bento's own binds for moving one window use the keys niri uses.
+- **Tabbed columns are groups.**
+  A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` options.
+  Stacked columns stay the engine's own.
+- **Gestures and edges.**
+  Swiping sideways scrolls the view and snaps to a column with the swipe's speed, and double-clicking the left or right edge of a window toggles its column's full width, and the top or bottom edge the window's full height.
 - **Switching engines starts from where the windows are.**
   The engine keeps its columns when bento reloads it, but when you switch to it from another engine, it builds columns from the windows' positions.
+- **Its state is readable.**
+  The engine exposes its columns for each workspace, with their windows, widths, display and active window, for the shell and scripts to read through bento's socket.
 
 Everything outside the tiled windows, like workspaces, monitors, floating windows and the overview, is bento's, the same as with every engine.
 

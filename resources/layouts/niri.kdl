@@ -60,7 +60,7 @@ options {
 
 // Window rules have the same match and exclude as the ones in config.kdl, and set what the
 // engine declares: default-column-width, default-window-height, default-column-display and
-// open-maximized. See "bento msg layout-engine" for their types.
+// open-maximized. See "bento msg engine" for their types.
 
 // Work around WezTerm's initial configure bug
 // by leaving its default-column-width empty.
