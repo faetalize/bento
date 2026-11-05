@@ -9,11 +9,9 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::glib;
-use niri_config::input::ModKey;
-use niri_config::{Action, Key, TilingLayout};
+use niri_config::{Action, TilingLayout};
 use niri_ipc::{LayoutEngine, LayoutEngineOption, LayoutEngineOptionValue};
 
-use super::shortcuts::{self, shortcut_label};
 use crate::ipc;
 use crate::kdl::{self, Value};
 use crate::model::Category;
@@ -343,62 +341,39 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
     row
 }
 
+/// How many actions the engine has and how many have a shortcut, with a link to the Shortcuts page,
+/// which lists them with bento's own.
 fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder().title("Shortcuts").build();
+    let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.actions", &group);
 
-    if engine.actions.is_empty() {
-        let row = adw::ActionRow::builder()
-            .title("No Actions")
-            .css_classes(["dim-label"])
-            .build();
-        group.add(&row);
-    }
-
     let config = view.ctx.store.config();
-    let mod_key = config.input.mod_key.unwrap_or(ModKey::Super).to_modifiers();
-    for action in &engine.actions {
-        let title = action
-            .description
-            .as_deref()
-            .map_or(action.name.as_str(), |d| d.trim_end_matches('.'));
-        let row = adw::ActionRow::builder()
-            .title(title)
-            .tooltip_text(&action.name)
-            .build();
-
-        let keys: Vec<&Key> = config
-            .binds
-            .0
-            .iter()
-            .filter(|bind| {
+    let bound = engine
+        .actions
+        .iter()
+        .filter(|action| {
+            config.binds.0.iter().any(|bind| {
                 [bind.press_action(), bind.release_action()]
                     .into_iter()
                     .flatten()
                     .any(|a| matches!(a, Action::LayoutAction(name, _) if *name == action.name))
             })
-            .map(|bind| &bind.key)
-            .collect();
-        if keys.is_empty() {
-            let unset = gtk::Label::builder()
-                .label("Not Set")
-                .valign(gtk::Align::Center)
-                .css_classes(["dim-label"])
-                .build();
-            row.add_suffix(&unset);
-            // Binding it opens the Shortcuts page's own dialog, with this action picked.
-            row.set_activatable(true);
-            row.add_suffix(&gtk::Image::from_icon_name("list-add-symbolic"));
-            let (ctx, name) = (view.ctx.clone(), action.name.clone());
-            row.connect_activated(move |row| {
-                shortcuts::open(&ctx, row, shortcuts::Edit::New(Some(name.clone())));
-            });
-        }
-        for key in keys {
-            row.add_suffix(&shortcut_label(key, mod_key));
-        }
-        group.add(&row);
-    }
+        })
+        .count();
+    let total = engine.actions.len();
+    let row = adw::ActionRow::builder()
+        .title("Shortcuts")
+        .subtitle(format!(
+            "This engine has {total} {}, {bound} with a shortcut",
+            if total == 1 { "action" } else { "actions" }
+        ))
+        .activatable(true)
+        .build();
+    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    row.connect_activated(|row| {
+        let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
+    });
+    group.add(&row);
     group
 }
 

@@ -304,7 +304,20 @@ fn connect(ui: &Rc<Ui>, window: &adw::ApplicationWindow) {
             }
         })
         .build();
-    window.add_action_entries([search, reload]);
+    // Opens a page by its id, for links between pages.
+    let open_page = gio::ActionEntry::builder("open-page")
+        .parameter_type(Some(glib::VariantTy::STRING))
+        .activate({
+            let ui_weak = Rc::downgrade(ui);
+            move |_: &adw::ApplicationWindow, _, id| {
+                let id = id.and_then(|id| id.str().map(str::to_owned));
+                if let (Some(ui), Some(id)) = (ui_weak.upgrade(), id) {
+                    ui.open_page(&id);
+                }
+            }
+        })
+        .build();
+    window.add_action_entries([search, reload, open_page]);
     if let Some(app) = window.application() {
         app.set_accels_for_action("win.search", &["<Control>f"]);
         app.set_accels_for_action("win.reload", &["<Control>r"]);

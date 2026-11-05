@@ -412,9 +412,10 @@ them: an edit in place would be lost when it rewrites the file, and an override 
 config only wins when the `include` comes before its `binds {}`. The parsed config remembers
 which file each bind comes from.
 
-The Engine page lists every action the running engine declares, with the keys bound to it or
-none. Binding an action from there opens the Shortcuts page's own flow for adding a shortcut,
-with the action already picked, so the only thing left to pick is the key.
+The page has a search bar that matches a bind's action, arguments and keys. The Engine page
+doesn't list shortcuts again: it says how many actions the running engine has and how many have
+a shortcut, and links to the Shortcuts page. Every action, bound or not, is in the add dialog's
+action picker.
 
 The page lists bento's actions and the running engine's. It can't see the actions of engines that
 aren't running: Settings never runs engine code itself, and learns an engine's declarations only
