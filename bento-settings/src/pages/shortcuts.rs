@@ -717,7 +717,7 @@ impl Field {
             Some(action) => action.args.get(index).cloned().into_iter().collect(),
             None => Vec::new(),
         };
-        let default = arg.default.as_ref().map(crate::store::option_value);
+        let default = arg.default.as_ref().and_then(crate::store::option_value);
         let first = current.first().cloned().or(default.clone());
         let required = arg.default.is_none() && !arg.optional;
 
@@ -889,7 +889,7 @@ fn action_node(action: &LayoutEngineAction, fields: &[Field]) -> Result<ActionNo
             Some(values) => node.args.extend(values),
             // A default left out before a given argument has to be written after all.
             None => match &arg.default {
-                Some(default) => node.args.push(crate::store::option_value(default)),
+                Some(default) => node.args.extend(crate::store::option_value(default)),
                 None => return Err(format!("Fill in “{}”", sentence_case(&arg.name))),
             },
         }

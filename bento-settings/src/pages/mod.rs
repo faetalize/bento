@@ -8,6 +8,7 @@ mod engine;
 mod input;
 mod layout;
 mod layouts;
+mod migrate;
 mod planned;
 mod preview;
 pub mod shortcuts;
