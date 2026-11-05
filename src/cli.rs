@@ -56,6 +56,21 @@ pub enum Sub {
         #[arg(short, long)]
         config: Option<PathBuf>,
     },
+    /// Convert a niri config into bento's config and the niri engine's file.
+    ///
+    /// Settings and window rules that belong to the layout engine, and binds to its actions, go to
+    /// `engines/niri.kdl` next to bento's config; everything else stays in the config. Existing
+    /// files are kept, with `.before-migration` added to their names.
+    MigrateFromNiri {
+        /// Path to niri's config file (default: `$XDG_CONFIG_HOME/niri/config.kdl`).
+        path: Option<PathBuf>,
+        /// Path to bento's config file to write (default: `$XDG_CONFIG_HOME/bento/config.kdl`).
+        ///
+        /// This can also be set with the `NIRI_CONFIG` environment variable. If both are set, the
+        /// command line argument takes precedence.
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
     /// Cause a panic to check if the backtraces are good.
     Panic,
     /// Generate shell completions.

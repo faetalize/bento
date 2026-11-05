@@ -3,10 +3,9 @@ use std::cmp::{max, min};
 use niri_config::utils::MergeWith as _;
 use niri_config::window_rule::{Match, OnXdgActivate, VrrRule, WindowRule};
 use niri_config::{
-    BackgroundEffect, BlockOutFrom, BorderRule, CornerRadius, FloatingPosition, PresetSize,
-    ResolvedPopupsRules, ShadowRule, TabIndicatorRule,
+    BackgroundEffect, BlockOutFrom, BorderRule, CornerRadius, EngineRules, EngineWindowRule,
+    FloatingPosition, ResolvedPopupsRules, ShadowRule,
 };
-use niri_ipc::ColumnDisplay;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Size};
 use smithay::wayland::compositor::with_states;
@@ -32,23 +31,6 @@ pub enum WindowRef<'a> {
 /// Rules fully resolved for a window.
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct ResolvedWindowRules {
-    /// Default width for this window.
-    ///
-    /// - `None`: unset (global default should be used).
-    /// - `Some(None)`: set to empty (window picks its own width).
-    /// - `Some(Some(width))`: set to a particular width.
-    pub default_width: Option<Option<PresetSize>>,
-
-    /// Default height for this window.
-    ///
-    /// - `None`: unset (global default should be used).
-    /// - `Some(None)`: set to empty (window picks its own height).
-    /// - `Some(Some(height))`: set to a particular height.
-    pub default_height: Option<Option<PresetSize>>,
-
-    /// Default column display for this window.
-    pub default_column_display: Option<ColumnDisplay>,
-
     /// Default floating position for this window.
     pub default_floating_position: Option<FloatingPosition>,
 
@@ -57,9 +39,6 @@ pub struct ResolvedWindowRules {
 
     /// Workspace to open this window on.
     pub open_on_workspace: Option<String>,
-
-    /// Whether the window should open full-width.
-    pub open_maximized: Option<bool>,
 
     /// Whether the window should open maximized to edges (true maximized).
     pub open_maximized_to_edges: Option<bool>,
@@ -91,8 +70,6 @@ pub struct ResolvedWindowRules {
     pub border: BorderRule,
     /// Shadow overrides.
     pub shadow: ShadowRule,
-    /// Tab indicator overrides.
-    pub tab_indicator: TabIndicatorRule,
 
     /// Whether or not to draw the border with a solid background.
     ///
@@ -131,6 +108,10 @@ pub struct ResolvedWindowRules {
 
     /// Rules for this window's popups.
     pub popups: ResolvedPopupsRules,
+
+    /// Properties that the layout engine's own window rules set, converted by the engine's
+    /// declarations with `rules_json`.
+    pub engine: EngineRules,
 }
 
 impl<'a> WindowRef<'a> {
@@ -179,7 +160,12 @@ impl<'a> WindowRef<'a> {
 }
 
 impl ResolvedWindowRules {
-    pub fn compute(rules: &[WindowRule], window: WindowRef, is_at_startup: bool) -> Self {
+    pub fn compute(
+        rules: &[WindowRule],
+        engine_rules: &[EngineWindowRule],
+        window: WindowRef,
+        is_at_startup: bool,
+    ) -> Self {
         let _span = tracy_client::span!("ResolvedWindowRules::compute");
 
         let mut resolved = ResolvedWindowRules::default();
@@ -193,35 +179,23 @@ impl ResolvedWindowRules {
             let mut open_on_output = None;
             let mut open_on_workspace = None;
 
-            for rule in rules {
-                let matches = |m: &Match| {
-                    if let Some(at_startup) = m.at_startup {
-                        if at_startup != is_at_startup {
-                            return false;
-                        }
+            let matches = |m: &Match| {
+                if let Some(at_startup) = m.at_startup {
+                    if at_startup != is_at_startup {
+                        return false;
                     }
+                }
 
-                    window_matches(window, role, m)
-                };
+                window_matches(window, role, m)
+            };
 
+            for rule in rules {
                 if !(rule.matches.is_empty() || rule.matches.iter().any(matches)) {
                     continue;
                 }
 
                 if rule.excludes.iter().any(matches) {
                     continue;
-                }
-
-                if let Some(x) = rule.default_column_width {
-                    resolved.default_width = Some(x.0);
-                }
-
-                if let Some(x) = rule.default_window_height {
-                    resolved.default_height = Some(x.0);
-                }
-
-                if let Some(x) = rule.default_column_display {
-                    resolved.default_column_display = Some(x);
                 }
 
                 if let Some(x) = rule.default_floating_position {
@@ -234,10 +208,6 @@ impl ResolvedWindowRules {
 
                 if let Some(x) = rule.open_on_workspace.as_deref() {
                     open_on_workspace = Some(x);
-                }
-
-                if let Some(x) = rule.open_maximized {
-                    resolved.open_maximized = Some(x);
                 }
 
                 if let Some(x) = rule.open_maximized_to_edges {
@@ -276,7 +246,6 @@ impl ResolvedWindowRules {
                 resolved.focus_ring.merge_with(&rule.focus_ring);
                 resolved.border.merge_with(&rule.border);
                 resolved.shadow.merge_with(&rule.shadow);
-                resolved.tab_indicator.merge_with(&rule.tab_indicator);
 
                 if let Some(x) = rule.draw_border_with_background {
                     resolved.draw_border_with_background = Some(x);
@@ -314,6 +283,18 @@ impl ResolvedWindowRules {
                     .merge_with(&rule.background_effect);
 
                 resolved.popups.merge_with(&rule.popups);
+            }
+
+            for rule in engine_rules {
+                if !(rule.matches.is_empty() || rule.matches.iter().any(matches)) {
+                    continue;
+                }
+
+                if rule.excludes.iter().any(matches) {
+                    continue;
+                }
+
+                resolved.engine.merge_with(&rule.properties);
             }
 
             resolved.open_on_output = open_on_output.map(|x| x.to_owned());

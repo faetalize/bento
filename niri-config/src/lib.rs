@@ -32,6 +32,7 @@ pub mod actions;
 pub mod animations;
 pub mod appearance;
 pub mod binds;
+pub mod convert;
 pub mod debug;
 pub mod error;
 pub mod gestures;
@@ -60,7 +61,8 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
-    default_engine_config, engine_config_path, Tiling, TilingLayout, TilingOption,
+    default_engine_config, engine_config_path, EngineRules, EngineWindowRule, Tiling, TilingLayout,
+    TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
@@ -1405,27 +1407,6 @@ mod tests {
                     offset x=10 y=-20
                 }
 
-                tab-indicator {
-                    width 10
-                    position "top"
-                }
-
-                preset-column-widths {
-                    proportion 0.25
-                    proportion 0.5
-                    fixed 960
-                    fixed 1280
-                }
-
-                preset-window-heights {
-                    proportion 0.25
-                    proportion 0.5
-                    fixed 960
-                    fixed 1280
-                }
-
-                default-column-width { proportion 0.25; }
-
                 gaps 8
 
                 struts {
@@ -1434,14 +1415,6 @@ mod tests {
                     top 3
                 }
 
-                center-focused-column "on-overflow"
-
-                default-column-display "tabbed"
-
-                insert-hint {
-                    color "rgb(255, 200, 127)"
-                    gradient from="rgba(10, 20, 30, 1.0)" to="#0080ffff" relative-to="workspace-view"
-                }
             }
 
             spawn-at-startup "alacritty" "-e" "fish"
@@ -1507,12 +1480,9 @@ mod tests {
                 exclude is-active=true is-focused=false
 
                 open-on-output "eDP-1"
-                open-maximized true
                 open-fullscreen false
                 open-floating false
                 open-focused true
-                default-window-height { fixed 500; }
-                default-column-display "tabbed"
                 default-floating-position x=100 y=-200 relative-to="bottom-left"
                 on-xdg-activate "ignore"
                 variable-refresh-rate "fullscreen-only"
@@ -1525,10 +1495,6 @@ mod tests {
                 border {
                     on
                     width 8.5
-                }
-
-                tab-indicator {
-                    active-color "#f00"
                 }
 
                 pinch-sensitivity 1.2
@@ -2009,95 +1975,7 @@ mod tests {
                     },
                     inactive_color: None,
                 },
-                tab_indicator: TabIndicator {
-                    off: false,
-                    hide_when_single_tab: false,
-                    place_within_column: false,
-                    gap: 5.0,
-                    width: 10.0,
-                    length: TabIndicatorLength {
-                        total_proportion: Some(
-                            0.5,
-                        ),
-                    },
-                    position: Top,
-                    gaps_between_tabs: 0.0,
-                    corner_radius: 0.0,
-                    active_color: None,
-                    inactive_color: None,
-                    urgent_color: None,
-                    active_gradient: None,
-                    inactive_gradient: None,
-                    urgent_gradient: None,
-                },
-                insert_hint: InsertHint {
-                    off: false,
-                    color: Color {
-                        r: 1.0,
-                        g: 0.78431374,
-                        b: 0.49803922,
-                        a: 1.0,
-                    },
-                    gradient: Some(
-                        Gradient {
-                            from: Color {
-                                r: 0.039215688,
-                                g: 0.078431375,
-                                b: 0.11764706,
-                                a: 1.0,
-                            },
-                            to: Color {
-                                r: 0.0,
-                                g: 0.5019608,
-                                b: 1.0,
-                                a: 1.0,
-                            },
-                            angle: 180,
-                            relative_to: WorkspaceView,
-                            in_: GradientInterpolation {
-                                color_space: Srgb,
-                                hue_interpolation: Shorter,
-                            },
-                        },
-                    ),
-                },
-                preset_column_widths: [
-                    Proportion(
-                        0.25,
-                    ),
-                    Proportion(
-                        0.5,
-                    ),
-                    Fixed(
-                        960,
-                    ),
-                    Fixed(
-                        1280,
-                    ),
-                ],
-                default_column_width: Some(
-                    Proportion(
-                        0.25,
-                    ),
-                ),
-                preset_window_heights: [
-                    Proportion(
-                        0.25,
-                    ),
-                    Proportion(
-                        0.5,
-                    ),
-                    Fixed(
-                        960,
-                    ),
-                    Fixed(
-                        1280,
-                    ),
-                ],
-                center_focused_column: OnOverflow,
-                always_center_single_column: false,
                 empty_workspace_above_first: false,
-                default_column_display: Tabbed,
                 gaps: 8.0,
                 struts: Struts {
                     left: FloatOrInt(
@@ -2132,6 +2010,7 @@ mod tests {
                     "bento",
                 ),
                 options: [],
+                window_rules: [],
             },
             prefer_no_csd: true,
             cursor: Cursor {
@@ -2383,7 +2262,6 @@ mod tests {
                             title: None,
                             is_active: None,
                             is_focused: None,
-                            is_active_in_column: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
@@ -2402,7 +2280,6 @@ mod tests {
                             ),
                             is_active: None,
                             is_focused: None,
-                            is_active_in_column: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
@@ -2417,30 +2294,16 @@ mod tests {
                             is_focused: Some(
                                 false,
                             ),
-                            is_active_in_column: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
                             at_startup: None,
                         },
                     ],
-                    default_column_width: None,
-                    default_window_height: Some(
-                        DefaultPresetSize(
-                            Some(
-                                Fixed(
-                                    500,
-                                ),
-                            ),
-                        ),
-                    ),
                     open_on_output: Some(
                         "eDP-1",
                     ),
                     open_on_workspace: None,
-                    open_maximized: Some(
-                        true,
-                    ),
                     open_maximized_to_edges: None,
                     open_fullscreen: Some(
                         false,
@@ -2498,21 +2361,6 @@ mod tests {
                         color: None,
                         inactive_color: None,
                     },
-                    tab_indicator: TabIndicatorRule {
-                        active_color: Some(
-                            Color {
-                                r: 1.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 1.0,
-                            },
-                        ),
-                        inactive_color: None,
-                        urgent_color: None,
-                        active_gradient: None,
-                        inactive_gradient: None,
-                        urgent_gradient: None,
-                    },
                     draw_border_with_background: None,
                     opacity: None,
                     geometry_corner_radius: None,
@@ -2521,9 +2369,6 @@ mod tests {
                     block_out_from: None,
                     variable_refresh_rate: Some(
                         FullscreenOnly,
-                    ),
-                    default_column_display: Some(
-                        Tabbed,
                     ),
                     default_floating_position: Some(
                         FloatingPosition {
@@ -3198,12 +3043,6 @@ mod tests {
         +            ],
         +        },
         +    ],
-
-        -                0.3333333333333333,
-        +                0.33333,
-
-        -                0.6666666666666666,
-        +                0.66667,
 
         -    bind_files: BindFiles(0),
         +    bind_files: BindFiles(98),

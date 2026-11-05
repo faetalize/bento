@@ -664,7 +664,7 @@ impl Default for Options {
         let tiling = if cfg!(test) {
             niri_config::Tiling {
                 layout: niri_config::TilingLayout::BuiltIn(String::from("niri")),
-                options: Vec::new(),
+                ..niri_config::Tiling::default()
             }
         } else {
             niri_config::Tiling::default()

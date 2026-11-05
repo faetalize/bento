@@ -73,10 +73,18 @@ export type ValueType = "boolean" | "number" | "string" | "choice" | "size";
  * .kdl file: `center-focused-column "never"`, `preset-column-widths "33%" "50%" "67%"`.
  */
 export interface OptionSpec {
-    /** `"size"` values reach the engine as a `Preset`. */
+    /**
+     * `"size"` values reach the engine as a `Preset`. A size written with no value, like
+     * `default-column-width` alone on its line, reaches it as `null`: the window decides.
+     */
     type: ValueType;
     /** Whether the value is a list, written as several arguments. */
     list?: boolean;
+    /**
+     * Written the way the .kdl file writes it: `"50%"`, or `["33%", "50%"]` for a list; `null` for
+     * a size left to the window. A window rule property that no rule sets is left out of
+     * `Window.rules`, so its default is only for settings screens to show.
+     */
     default: unknown;
     /** The values a `"choice"` accepts. */
     choices?: string[];

@@ -113,15 +113,22 @@ Its advice applies to bento, with `~/.config/bento/config.kdl` in place of niri'
 
 ### Coming from niri
 
-bento reads niri's config format, though your config isn't guaranteed to work as is.
-To bring it over, rename `~/.config/niri` to `~/.config/bento`.
-Without a `tiling {}` section you get the `bento` engine, so add this to keep niri's columns:
+bento reads niri's config format, but what belongs to niri's way of tiling isn't bento's: column widths, centering, tabbed columns, the tab indicator, the insert hint, window rules that size new windows, and binds to column actions like `focus-column-left`.
+Those are the `niri` engine's now, and live in its own file, `~/.config/bento/engines/niri.kdl`.
+A converter moves them there:
 
-```kdl
-tiling {
-    layout "niri"
-}
+```sh
+bento migrate-from-niri
 ```
+
+It reads `~/.config/niri/config.kdl`, or the path you give it, and writes `~/.config/bento/config.kdl` and `engines/niri.kdl`, with `tiling { layout "niri" }` set.
+Files that already exist are kept next to the new ones, with `.before-migration` added to their names.
+Everything else in your config stays as you wrote it, comments included.
+What can't be converted is dropped and listed when it finishes: gradients on the tab indicator and the insert hint, per-output and per-workspace values of the options that moved, window rules with `is-active-in-column` (no engine has it), and binds to actions bento doesn't have.
+It doesn't follow `include`s, so move those by hand.
+Run `bento validate` after it.
+
+bento Settings does the same from the Engine page, under "Migrate from niri…", and shows what couldn't be converted before it writes anything.
 
 When a session starts, bento links `~/.config/niri` to `~/.config/bento` if nothing is at that path, so tools that edit niri's config change bento's.
 A real `~/.config/niri` stays untouched, and bento won't see what tools write there.
@@ -213,13 +220,41 @@ options {
 }
 ```
 
-Values are booleans, numbers or strings.
-`bento validate` checks the options against what the engine declares, and so does bento when it loads the config.
-`bento msg layout-engine` lists the running engine's options with their current values, and its actions, and `bento msg -j layout-engine` gives the same as JSON for tools like settings screens.
+An option is its name followed by its values, and the engine declares the type of each:
 
-The `layout {}` section of the config still applies too.
-Engines get its values, such as `gaps`, `struts`, `preset-column-widths` or `center-focused-column`, and decide what they mean.
-Borders, focus rings, shadows and the tab indicator look the way the `layout {}` section says, whatever the engine.
+- a boolean, `true` or `false`;
+- a number;
+- a string;
+- a choice, one of the strings the engine lists;
+- a size, written like `"50%"` for a proportion of the working area or `"800"` for logical pixels;
+- or a list of any of those, written as several values: `preset-column-widths "33%" "50%" "67%"`.
+
+A size written with no value, like `default-column-width` alone on its line, leaves it to the window.
+`bento validate` checks the options against what the engine declares, and so does bento when it loads the config.
+`bento msg layout-engine` lists the running engine's options with their types and current values, and its actions and window rules, and `bento msg -j layout-engine` gives the same as JSON for tools like settings screens.
+bento Settings shows the running engine's options on its Engine page, with a field for each type.
+
+What works under every engine is bento's and stays in the main config.
+Engines get its values, such as `gaps` and `struts`, and decide what they mean.
+Borders, focus rings and shadows look the way the `layout {}` section says, whatever the engine.
+Anything that belongs to one way of tiling, like column widths, is an option of the engine that has it.
+
+### Window rules
+
+Window rules split the same way.
+Rules that make sense under every engine, like `open-floating`, `opacity` or `block-out-from`, are bento's, in the main config.
+Rules that belong to an engine's way of working are declared by the engine, and written in its file with the same `match` and `exclude`, and properties written like options:
+
+```kdl
+// ~/.config/bento/engines/niri.kdl
+window-rule {
+    match app-id="firefox"
+    default-column-width "67%"
+}
+```
+
+Where several rules match a window, later ones win, as in the main config.
+`bento validate` reports properties the engine doesn't declare and values of the wrong type.
 
 ### Actions
 
@@ -416,9 +451,13 @@ The second press puts the window there.
 The `niri` engine is niri's scrollable tiling as a bento layout engine, ported from niri's `src/layout/scrolling.rs` to JavaScript in [`resources/layouts/niri.js`](resources/layouts/niri.js).
 Its functions keep niri's names where they do the same thing, so the two are easy to compare.
 
-niri's layout actions, bound in `engines/niri.kdl`, the `layout {}` options that describe columns, window rules that size and place new windows, tabbed columns, and the IPC all work like in niri.
+niri's layout actions, bound in `engines/niri.kdl`, the column options in its `options {}`, window rules that size and place new windows, tabbed columns, and the IPC all work like in niri.
 It differs in these ways:
 
+- **Its settings are in its file.**
+  `engines/niri.kdl` has `options {}` for `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights`, `default-column-display`, `tab-indicator` and its `tab-indicator-position`, `-width`, `-gap`, `-length`, `-corner-radius`, `-place-within-column`, `-hide-when-single-tab` and `-active-color`, `-inactive-color`, `-urgent-color`, and `insert-hint` with `insert-hint-color`.
+  Its window rules set `default-column-width`, `default-window-height`, `default-column-display` and `open-maximized`.
+  Colors are strings, so the tab indicator and the insert hint have no gradients.
 - **Animations are bento's.**
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
 - **Actions stay on their workspace.**

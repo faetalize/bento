@@ -1,7 +1,8 @@
 //! The layout engine: which one runs, its options and its actions.
 //!
 //! Which engine to run comes from the config. What it offers comes from the running engine over
-//! IPC, since an engine declares its options and actions itself.
+//! IPC, since an engine declares its options and actions itself. Each option gets the field of its
+//! declared type: a switch, a number, text, a choice, a size, or a list of those.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -10,13 +11,17 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::glib;
 use niri_config::{Action, TilingLayout};
-use niri_ipc::{LayoutEngine, LayoutEngineOption, LayoutEngineOptionValue};
+use niri_ipc::{
+    LayoutEngine, LayoutEngineOption, LayoutEngineOptionType as Type,
+    LayoutEngineOptionValue as OptionValue, SizeChange,
+};
 
+use super::migrate;
 use crate::ipc;
 use crate::kdl::{self, Value};
 use crate::model::Category;
 use crate::page::PageContext;
-use crate::store::{option_value, tilde, File};
+use crate::store::{option_values, tilde, File};
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
@@ -38,12 +43,17 @@ pub fn category() -> Category {
         .search_item(
             "engine.options",
             "Engine Options",
-            &["gravity", "configure"],
+            &["gravity", "configure", "column width", "tab indicator"],
         )
         .search_item(
             "engine.actions",
             "Engine Shortcuts",
             &["layout-action", "actions", "binds", "keybinds"],
+        )
+        .search_item(
+            "engine.migrate",
+            "Migrate from niri",
+            &["import", "convert", "niri config", "config.kdl"],
         )
 }
 
@@ -61,8 +71,11 @@ struct View {
 
 type Shape = (TilingLayout, Result<LayoutEngine, String>);
 
-/// Shows a new value in an option's row.
-type ShowValue = Box<dyn Fn(&LayoutEngineOptionValue)>;
+/// Shows a new value in an option's row. An option with no value is a size left to the window.
+type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
+
+/// Saves a value someone set in a row.
+type Change = Rc<dyn Fn(Option<OptionValue>)>;
 
 struct OptionRow {
     show: ShowValue,
@@ -130,6 +143,7 @@ fn refresh(view: &Rc<View>) {
         }
         Err(err) => view.column.append(&offline_group(view, err)),
     }
+    view.column.append(&migrate::group(&view.ctx));
     view.shown.replace(Some(shape));
 }
 
@@ -261,86 +275,363 @@ fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
 fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
     let path = format!("options.{}", option.name);
     let title = sentence_case(&option.name.replace(['-', '_'], " "));
+    let description = option.description.clone().unwrap_or_default();
 
-    let write = {
+    let change: Change = {
         let ctx = view.ctx.clone();
-        let updating = view.updating.clone();
         let path = path.clone();
         let default = option.default.clone();
-        move |value: LayoutEngineOptionValue| {
-            if updating.get() {
-                return;
-            }
+        Rc::new(move |value: Option<OptionValue>| {
             let (key, path, default) = (path.clone(), path.clone(), default.clone());
             ctx.store.edit_in(File::Engine, &key, move |doc| {
                 let parts = kdl::split(&path);
-                // An option at its default stays out of the config.
+                // An option at its default stays out of the file.
                 if value == default {
                     doc.remove(&parts);
                 } else {
-                    doc.set(&parts, vec![option_value(&value)]);
+                    doc.set(&parts, option_values(&value));
                 }
             });
-        }
+        })
     };
 
-    let description = option.description.clone().unwrap_or_default();
-    let (row, show): (gtk::Widget, ShowValue) = match &option.default {
-        LayoutEngineOptionValue::Boolean(_) => {
-            let row = adw::SwitchRow::builder()
-                .title(&title)
-                .subtitle(&description)
-                .build();
-            row.connect_active_notify(move |row| {
-                write(LayoutEngineOptionValue::Boolean(row.is_active()))
-            });
-            let switch = row.clone();
-            let show = move |value: &LayoutEngineOptionValue| {
-                if let LayoutEngineOptionValue::Boolean(x) = value {
-                    switch.set_active(*x);
-                }
-            };
-            (row.upcast(), Box::new(show))
-        }
-        LayoutEngineOptionValue::Number(default) => {
-            let row = adw::SpinRow::with_range(-1e9, 1e9, 1.);
-            row.set_title(&title);
-            row.set_subtitle(&description);
-            row.set_digits(if default.fract() == 0. { 0 } else { 2 });
-            row.connect_value_notify(move |row| {
-                write(LayoutEngineOptionValue::Number(row.value()))
-            });
-            let spin = row.clone();
-            let show = move |value: &LayoutEngineOptionValue| {
-                if let LayoutEngineOptionValue::Number(x) = value {
-                    spin.set_value(*x);
-                }
-            };
-            (row.upcast(), Box::new(show))
-        }
-        LayoutEngineOptionValue::String(_) => {
-            let row = adw::EntryRow::builder()
-                .title(&title)
-                .show_apply_button(true)
-                .build();
-            row.connect_apply(move |row| {
-                write(LayoutEngineOptionValue::String(row.text().to_string()))
-            });
-            let entry = row.clone();
-            let show = move |value: &LayoutEngineOptionValue| {
-                if let LayoutEngineOptionValue::String(x) = value {
-                    // Don't replace what someone is typing.
-                    if !entry.has_focus() {
-                        entry.set_text(x);
-                    }
-                }
-            };
-            (row.upcast(), Box::new(show))
-        }
+    let digits = digits(&option.default);
+    let (row, show): (gtk::Widget, ShowValue) = if option.list {
+        let list = ListRow::new(option, &title, &description, digits, change);
+        let show = {
+            let list = list.clone();
+            move |value: &Option<OptionValue>| list.show(value)
+        };
+        (list.row.clone().upcast(), Box::new(show))
+    } else {
+        let field = Field {
+            r#type: option.r#type,
+            title: &title,
+            subtitle: &description,
+            digits,
+            choices: &option.choices,
+            // Set while rows show new values, so their change signals don't write them back.
+            quiet: view.updating.clone(),
+        };
+        field.build(change)
     };
     view.ctx.anchor(&path, &row);
     view.options.borrow_mut().push(OptionRow { show });
     row
+}
+
+/// How many decimals a number option shows: as many as its default needs, up to two.
+fn digits(default: &Option<OptionValue>) -> u32 {
+    let fractional =
+        |value: &OptionValue| matches!(value, OptionValue::Number(x) if x.fract() != 0.);
+    match default {
+        Some(OptionValue::List(items)) if items.iter().any(fractional) => 2,
+        Some(value) if fractional(value) => 2,
+        _ => 0,
+    }
+}
+
+/// A row for one value of an option's type.
+struct Field<'a> {
+    r#type: Type,
+    title: &'a str,
+    subtitle: &'a str,
+    digits: u32,
+    choices: &'a [String],
+    /// While set, the row shows a value without calling `change`.
+    quiet: Rc<Cell<bool>>,
+}
+
+impl Field<'_> {
+    /// The row, and how to show another value in it. `change` gets what someone sets.
+    fn build(self, change: Change) -> (gtk::Widget, ShowValue) {
+        let Self {
+            r#type,
+            title,
+            subtitle,
+            digits,
+            choices,
+            quiet,
+        } = self;
+        let notify = move |value: Option<OptionValue>| {
+            if !quiet.get() {
+                change(value);
+            }
+        };
+
+        match r#type {
+            Type::Boolean => {
+                let row = adw::SwitchRow::builder()
+                    .title(title)
+                    .subtitle(subtitle)
+                    .build();
+                row.connect_active_notify(move |row| {
+                    notify(Some(OptionValue::Boolean(row.is_active())))
+                });
+                let switch = row.clone();
+                let show = move |value: &Option<OptionValue>| {
+                    if let Some(OptionValue::Boolean(x)) = value {
+                        switch.set_active(*x);
+                    }
+                };
+                (row.upcast(), Box::new(show))
+            }
+            Type::Number => {
+                let step = if digits > 0 { 0.1 } else { 1. };
+                let row = adw::SpinRow::with_range(-1e9, 1e9, step);
+                row.set_title(title);
+                row.set_subtitle(subtitle);
+                row.set_digits(digits);
+                row.connect_value_notify(move |row| notify(Some(OptionValue::Number(row.value()))));
+                let spin = row.clone();
+                let show = move |value: &Option<OptionValue>| {
+                    if let Some(OptionValue::Number(x)) = value {
+                        spin.set_value(*x);
+                    }
+                };
+                (row.upcast(), Box::new(show))
+            }
+            Type::String => {
+                let row = entry_row(title, subtitle);
+                row.connect_apply(move |row| {
+                    notify(Some(OptionValue::String(row.text().to_string())))
+                });
+                (row.clone().upcast(), show_text(row))
+            }
+            Type::Choice => {
+                let labels: Vec<&str> = choices.iter().map(String::as_str).collect();
+                let row = adw::ComboRow::builder()
+                    .title(title)
+                    .subtitle(subtitle)
+                    .model(&gtk::StringList::new(&labels))
+                    .build();
+                let names = choices.to_vec();
+                row.connect_selected_notify(move |row| {
+                    if let Some(choice) = names.get(row.selected() as usize) {
+                        notify(Some(OptionValue::String(choice.clone())));
+                    }
+                });
+                let combo = row.clone();
+                let names = choices.to_vec();
+                let show = move |value: &Option<OptionValue>| {
+                    if let Some(OptionValue::String(x)) = value {
+                        let idx = names.iter().position(|name| name == x);
+                        combo.set_selected(idx.map_or(gtk::INVALID_LIST_POSITION, |i| i as u32));
+                    }
+                };
+                (row.upcast(), Box::new(show))
+            }
+            Type::Size => {
+                let row = entry_row(title, subtitle);
+                row.connect_apply(move |row| {
+                    let text = row.text().trim().to_owned();
+                    // Empty leaves the size to the window.
+                    if text.is_empty() {
+                        row.remove_css_class("error");
+                        notify(None);
+                    } else if is_size(&text) {
+                        row.remove_css_class("error");
+                        notify(Some(OptionValue::String(text)));
+                    } else {
+                        row.add_css_class("error");
+                    }
+                });
+                (row.clone().upcast(), show_text(row))
+            }
+        }
+    }
+}
+
+fn entry_row(title: &str, hint: &str) -> adw::EntryRow {
+    let row = adw::EntryRow::builder()
+        .title(title)
+        .show_apply_button(true)
+        .build();
+    if !hint.is_empty() {
+        row.set_tooltip_text(Some(hint));
+    }
+    row
+}
+
+fn show_text(row: adw::EntryRow) -> ShowValue {
+    Box::new(move |value: &Option<OptionValue>| {
+        // Don't replace what someone is typing.
+        if row.has_focus() {
+            return;
+        }
+        match value {
+            Some(OptionValue::String(x)) => row.set_text(x),
+            None => row.set_text(""),
+            Some(_) => (),
+        }
+    })
+}
+
+/// Whether text is a size to set, like `"50%"` or `"800"`, and not a change to one.
+fn is_size(text: &str) -> bool {
+    matches!(
+        text.parse::<SizeChange>(),
+        Ok(SizeChange::SetProportion(_) | SizeChange::SetFixed(_))
+    )
+}
+
+/// An option that is a list: an expander with a row for each item, and one to add another.
+struct ListRow {
+    row: adw::ExpanderRow,
+    r#type: Type,
+    digits: u32,
+    choices: Vec<String>,
+    change: Change,
+    items: RefCell<Vec<OptionValue>>,
+    /// The rows of the items and the one that adds an item, to replace when the items change.
+    children: RefCell<Vec<gtk::Widget>>,
+    /// Set while the rows are being made, so that showing the items doesn't write them back.
+    building: Rc<Cell<bool>>,
+}
+
+impl ListRow {
+    fn new(
+        option: &LayoutEngineOption,
+        title: &str,
+        description: &str,
+        digits: u32,
+        change: Change,
+    ) -> Rc<Self> {
+        let row = adw::ExpanderRow::builder().title(title).build();
+        if !description.is_empty() {
+            row.set_tooltip_text(Some(description));
+        }
+        let list = Rc::new(Self {
+            row,
+            r#type: option.r#type,
+            digits,
+            choices: option.choices.clone(),
+            change,
+            items: RefCell::new(Vec::new()),
+            children: RefCell::new(Vec::new()),
+            building: Rc::new(Cell::new(false)),
+        });
+        list.rebuild();
+        list
+    }
+
+    fn show(self: &Rc<Self>, value: &Option<OptionValue>) {
+        let items = match value {
+            Some(OptionValue::List(items)) => items.clone(),
+            _ => Vec::new(),
+        };
+        if *self.items.borrow() != items {
+            self.items.replace(items);
+            self.rebuild();
+        }
+    }
+
+    /// Writes the items as they are.
+    fn commit(&self) {
+        let items = self.items.borrow().clone();
+        (self.change)(Some(OptionValue::List(items)));
+    }
+
+    fn rebuild(self: &Rc<Self>) {
+        self.building.set(true);
+        for child in self.children.take() {
+            self.row.remove(&child);
+        }
+
+        let items = self.items.borrow().clone();
+        for (i, item) in items.iter().enumerate() {
+            let weak = Rc::downgrade(self);
+            let change: Change = {
+                let weak = weak.clone();
+                Rc::new(move |value: Option<OptionValue>| {
+                    let Some(list) = weak.upgrade() else { return };
+                    if let Some(value) = value {
+                        if let Some(item) = list.items.borrow_mut().get_mut(i) {
+                            *item = value;
+                        }
+                        list.commit();
+                    }
+                })
+            };
+            let title = format!("Item {}", i + 1);
+            let field = Field {
+                r#type: self.r#type,
+                title: &title,
+                subtitle: "",
+                digits: self.digits,
+                choices: &self.choices,
+                quiet: self.building.clone(),
+            };
+            let (row, show) = field.build(change);
+            show(&Some(item.clone()));
+
+            let remove = gtk::Button::builder()
+                .icon_name("list-remove-symbolic")
+                .tooltip_text("Remove")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            remove.connect_clicked(move |_| {
+                let Some(list) = weak.upgrade() else { return };
+                if i < list.items.borrow().len() {
+                    list.items.borrow_mut().remove(i);
+                    list.rebuild();
+                    list.commit();
+                }
+            });
+            if let Some(row) = row.downcast_ref::<adw::EntryRow>() {
+                row.add_suffix(&remove);
+            } else if let Some(row) = row.downcast_ref::<adw::ActionRow>() {
+                row.add_suffix(&remove);
+            }
+            self.row.add_row(&row);
+            self.children.borrow_mut().push(row);
+        }
+
+        let add = adw::ActionRow::builder()
+            .title("Add Item")
+            .activatable(true)
+            .build();
+        add.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
+        let weak = Rc::downgrade(self);
+        add.connect_activated(move |_| {
+            let Some(list) = weak.upgrade() else { return };
+            let item = list.new_item();
+            list.items.borrow_mut().push(item);
+            list.rebuild();
+            list.commit();
+        });
+        self.row.add_row(&add);
+        self.children.borrow_mut().push(add.upcast());
+
+        let summary: Vec<String> = items.iter().map(summarize).collect();
+        self.row.set_subtitle(&if summary.is_empty() {
+            String::from("No items")
+        } else {
+            summary.join(", ")
+        });
+        self.building.set(false);
+    }
+
+    /// What a new item starts as: a value its field accepts.
+    fn new_item(&self) -> OptionValue {
+        match self.r#type {
+            Type::Boolean => OptionValue::Boolean(false),
+            Type::Number => OptionValue::Number(0.),
+            Type::String => OptionValue::String(String::new()),
+            Type::Choice => OptionValue::String(self.choices.first().cloned().unwrap_or_default()),
+            Type::Size => OptionValue::String(String::from("50%")),
+        }
+    }
+}
+
+fn summarize(value: &OptionValue) -> String {
+    match value {
+        OptionValue::Boolean(x) => String::from(if *x { "on" } else { "off" }),
+        OptionValue::Number(x) => x.to_string(),
+        OptionValue::String(x) => x.clone(),
+        OptionValue::List(items) => items.iter().map(summarize).collect::<Vec<_>>().join(", "),
+    }
 }
 
 /// How many actions the engine has and how many have a shortcut, with a link to the Shortcuts page,

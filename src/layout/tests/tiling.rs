@@ -14,7 +14,7 @@ fn options_for(layout: &str) -> Options {
     Options {
         tiling: niri_config::Tiling {
             layout: niri_config::TilingLayout::BuiltIn(String::from(layout)),
-            options: Vec::new(),
+            ..niri_config::Tiling::default()
         },
         ..Options::default()
     }
@@ -204,6 +204,172 @@ fn engine_actions_cannot_take_native_names() {
     );
 }
 
+/// An engine file that declares an option and a window rule property of every type, in a
+/// directory of its own that the caller removes.
+fn typed_engine(name: &str) -> (std::path::PathBuf, niri_config::TilingLayout) {
+    let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("typed.js");
+    std::fs::write(
+        &path,
+        r##"
+        export const meta = {
+            api: 2,
+            name: "typed",
+            options: {
+                "center": { type: "choice", choices: ["never", "always"], default: "never" },
+                "width": { type: "size", default: "50%" },
+                "presets": { type: "size", list: true, default: ["33%", "50%"] },
+                "flag": { type: "boolean", default: false },
+                "gap": { type: "number", default: 5 },
+                "color": { type: "string", default: "#fff" },
+            },
+            windowRules: {
+                "width": { type: "size" },
+                "open-maximized": { type: "boolean", default: false },
+            },
+        };
+        export default function create(bento) {}
+        "##,
+    )
+    .unwrap();
+    (dir, niri_config::TilingLayout::File(path))
+}
+
+fn strings(values: &[&str]) -> Vec<niri_config::TilingOption> {
+    let string = |v: &&str| niri_config::TilingOption::String(String::from(*v));
+    values.iter().map(string).collect()
+}
+
+#[test]
+fn engine_options_and_rules_are_converted_by_their_declared_types() {
+    use niri_config::{EngineRules, TilingOption};
+    use serde_json::json;
+
+    use crate::layout::tiling::engine;
+
+    let (dir, layout) = typed_engine("convert");
+    let tiling = niri_config::Tiling {
+        layout,
+        options: vec![
+            (String::from("center"), strings(&["always"])),
+            // A size with no value is left to the window.
+            (String::from("width"), vec![]),
+            (String::from("presets"), strings(&["25%", "800"])),
+            (String::from("nope"), vec![TilingOption::Bool(true)]),
+        ],
+        ..niri_config::Tiling::default()
+    };
+    engine::ensure_loaded(&tiling);
+
+    // Options the config leaves out, or gets wrong, have their defaults.
+    let options = engine::options_json(&tiling);
+    assert_eq!(
+        options,
+        json!({
+            "center": "always",
+            "width": null,
+            "presets": [{ "proportion": 0.25 }, { "fixed": 800 }],
+            "flag": false,
+            "gap": 5.0,
+            "color": "#fff",
+        })
+    );
+
+    let rules = EngineRules(vec![
+        (String::from("width"), strings(&["67%"])),
+        (
+            String::from("open-maximized"),
+            vec![TilingOption::Bool(true)],
+        ),
+        (String::from("nope"), vec![TilingOption::Bool(true)]),
+    ]);
+    // Only what the rules set, and what the engine declares.
+    assert_eq!(
+        engine::rules_json(&rules),
+        json!({ "width": { "proportion": 0.67 }, "open-maximized": true })
+    );
+    assert_eq!(engine::rules_json(&EngineRules::default()), json!({}));
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn engine_options_and_rules_are_checked_against_the_running_engine() {
+    use niri_config::{EngineRules, EngineWindowRule, TilingOption};
+
+    use crate::layout::tiling::engine;
+
+    let (dir, layout) = typed_engine("check");
+    let mut config = niri_config::Config::default();
+    config.tiling = niri_config::Tiling {
+        layout,
+        options: vec![
+            (String::from("nope"), vec![TilingOption::Bool(true)]),
+            (String::from("center"), strings(&["sideways"])),
+            (String::from("width"), strings(&["+10%"])),
+            (String::from("presets"), vec![TilingOption::Bool(true)]),
+            (String::from("gap"), vec![]),
+            (String::from("flag"), vec![TilingOption::Bool(true)]),
+        ],
+        window_rules: vec![EngineWindowRule {
+            matches: Vec::new(),
+            excludes: Vec::new(),
+            properties: EngineRules(vec![
+                (String::from("width"), strings(&["50%"])),
+                (String::from("open-maximized"), strings(&["yes"])),
+                (String::from("zzz"), vec![TilingOption::Bool(true)]),
+            ]),
+        }],
+    };
+
+    let problems = engine::check(&config).unwrap_err();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        problems,
+        [
+            r#"the typed layout engine has no option called "nope""#,
+            r#"layout engine option "center" must be one of ["never", "always"]"#,
+            r#"layout engine option "width" must be a size, like "50%" or "800""#,
+            r#"layout engine option "presets" must be a size, like "50%" or "800""#,
+            r#"layout engine option "gap" needs a value"#,
+            r#"layout engine window rule "open-maximized" must be true or false"#,
+            r#"the typed layout engine has no window rule called "zzz""#,
+        ]
+    );
+}
+
+#[test]
+fn engine_defaults_must_fit_their_types() {
+    use crate::layout::tiling::engine;
+
+    let dir = std::env::temp_dir().join(format!("bento-engine-defaults-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("wrong.js");
+    std::fs::write(
+        &path,
+        r#"
+        export const meta = {
+            api: 2,
+            name: "wrong",
+            options: { "center": { type: "choice", choices: ["a"], default: "b" } },
+        };
+        export default function create(bento) {}
+        "#,
+    )
+    .unwrap();
+
+    let mut config = niri_config::Config::default();
+    config.tiling.layout = niri_config::TilingLayout::File(path);
+    let problems = engine::check(&config).unwrap_err();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].contains(r#"default for its option "center" is wrong"#),
+        "{problems:?}"
+    );
+}
+
 #[test]
 fn layout_engine_ipc_info_has_options_and_actions() {
     use niri_ipc::{
@@ -217,8 +383,9 @@ fn layout_engine_ipc_info_has_options_and_actions() {
         layout: niri_config::TilingLayout::BuiltIn(String::from("bento")),
         options: vec![(
             String::from("gravity"),
-            niri_config::TilingOption::Bool(false),
+            vec![niri_config::TilingOption::Bool(false)],
         )],
+        ..niri_config::Tiling::default()
     };
     engine::ensure_loaded(&tiling);
     let info = engine::ipc_info(&tiling).unwrap();
@@ -229,8 +396,12 @@ fn layout_engine_ipc_info_has_options_and_actions() {
     let gravity = &info.options[0];
     assert_eq!(gravity.name, "gravity");
     assert_eq!(gravity.r#type, LayoutEngineOptionType::Boolean);
-    assert_eq!(gravity.default, LayoutEngineOptionValue::Boolean(true));
-    assert_eq!(gravity.value, LayoutEngineOptionValue::Boolean(false));
+    assert!(!gravity.list);
+    assert_eq!(
+        gravity.default,
+        Some(LayoutEngineOptionValue::Boolean(true))
+    );
+    assert_eq!(gravity.value, Some(LayoutEngineOptionValue::Boolean(false)));
     assert!(gravity.description.is_some());
 
     let actions: Vec<_> = info.actions.iter().map(|a| a.name.as_str()).collect();

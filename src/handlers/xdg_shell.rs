@@ -1079,6 +1079,7 @@ impl State {
         let config = self.niri.config.borrow();
         let rules = ResolvedWindowRules::compute(
             &config.window_rules,
+            &config.tiling.window_rules,
             WindowRef::Unmapped(unmapped),
             self.niri.is_at_startup,
         );
@@ -1425,10 +1426,12 @@ impl State {
     pub fn update_window_rules(&mut self, toplevel: &ToplevelSurface) {
         let config = self.niri.config.borrow();
         let window_rules = &config.window_rules;
+        let engine_rules = &config.tiling.window_rules;
 
         if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             let new_rules = ResolvedWindowRules::compute(
                 window_rules,
+                engine_rules,
                 WindowRef::Unmapped(unmapped),
                 self.niri.is_at_startup,
             );
@@ -1440,7 +1443,7 @@ impl State {
             .layout
             .find_window_and_output_mut(toplevel.wl_surface())
         {
-            if mapped.recompute_window_rules(window_rules, self.niri.is_at_startup) {
+            if mapped.recompute_window_rules(window_rules, engine_rules, self.niri.is_at_startup) {
                 drop(config);
                 let output = output.cloned();
                 let window = mapped.window.clone();

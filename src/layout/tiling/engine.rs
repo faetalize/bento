@@ -15,11 +15,13 @@ use anyhow::{anyhow, Context as _};
 use niri_config::{Tiling, TilingLayout, TilingOption};
 use niri_ipc::{
     LayoutEngineAction, LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOption,
-    LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, SizeChange,
+    LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, LayoutEngineWindowRule,
+    SizeChange,
 };
 use rquickjs::loader::{BuiltinLoader, BuiltinResolver, ImportAttributes, Resolver};
 use rquickjs::{CatchResultExt as _, Context, Ctx, Function, Module, Object, Persistent, Runtime};
 use serde::{Deserialize, Deserializer};
+use serde_json::json;
 
 /// The prelude's entry point, which imports the rest.
 const PRELUDE: &str = include_str!("../../../resources/layouts/prelude/index.js");
@@ -117,7 +119,9 @@ pub struct LayoutMeta {
     #[serde(deserialize_with = "deserialize_actions")]
     pub actions: Vec<LayoutEngineAction>,
     pub options: Vec<OptionMeta>,
-    /// Whether bento's floating layer exists under the layout.
+    #[serde(rename = "windowRules")]
+    pub window_rules: Vec<OptionMeta>,
+    /// Whether bento's floating layer exists under this layout.
     pub floating: bool,
 }
 
@@ -203,13 +207,144 @@ pub fn size_arg(value: &TilingOption) -> Option<SizeChange> {
     }
 }
 
-/// An option the layout declares.
+/// An option the layout declares, or a property its window rules can set.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OptionMeta {
     pub name: String,
-    /// Also gives the option's type: the prelude checks that it matches.
-    pub default: LayoutEngineOptionValue,
+    pub r#type: OptionType,
+    /// Whether the value is a list, written as several arguments.
+    #[serde(default)]
+    pub list: bool,
+    /// As written in the layout's file, like `"50%"`, or a list of them. `None` for no value,
+    /// which a size takes to leave it to the window.
+    pub default: Option<LayoutEngineOptionValue>,
+    #[serde(default)]
+    pub choices: Vec<String>,
     pub description: Option<String>,
+}
+
+/// The type of an option's values, spelled like in the layout's `meta`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OptionType {
+    Boolean,
+    Number,
+    String,
+    Choice,
+    Size,
+}
+
+impl OptionType {
+    fn ipc(self) -> LayoutEngineOptionType {
+        match self {
+            Self::Boolean => LayoutEngineOptionType::Boolean,
+            Self::Number => LayoutEngineOptionType::Number,
+            Self::String => LayoutEngineOptionType::String,
+            Self::Choice => LayoutEngineOptionType::Choice,
+            Self::Size => LayoutEngineOptionType::Size,
+        }
+    }
+}
+
+impl OptionMeta {
+    /// The default, as the values it's written with in the layout's file.
+    fn default_values(&self) -> Vec<TilingOption> {
+        match &self.default {
+            None => Vec::new(),
+            Some(LayoutEngineOptionValue::List(values)) => {
+                values.iter().filter_map(scalar_option).collect()
+            }
+            Some(value) => scalar_option(value).into_iter().collect(),
+        }
+    }
+
+    /// Converts values written in the layout's file to what the layout receives: booleans,
+    /// numbers, strings and choices as they are, and sizes as `{ proportion }` or `{ fixed }`. A
+    /// list option gets a list, and a size with no value is `null`: the window decides.
+    pub fn convert(&self, values: &[TilingOption]) -> Result<serde_json::Value, String> {
+        if self.list {
+            let values: Result<Vec<_>, _> = values.iter().map(|v| self.convert_one(v)).collect();
+            return values.map(serde_json::Value::Array);
+        }
+        match values {
+            [] if self.r#type == OptionType::Size => Ok(serde_json::Value::Null),
+            [] => Err(String::from("needs a value")),
+            [value] => self.convert_one(value),
+            values => Err(format!("takes one value, not {}", values.len())),
+        }
+    }
+
+    fn convert_one(&self, value: &TilingOption) -> Result<serde_json::Value, String> {
+        match (self.r#type, value) {
+            (OptionType::Boolean, TilingOption::Bool(value)) => Ok(json!(value)),
+            (OptionType::Number, TilingOption::Number(value)) => Ok(json!(value)),
+            (OptionType::String, TilingOption::String(value)) => Ok(json!(value)),
+            (OptionType::Choice, TilingOption::String(value)) if self.choices.contains(value) => {
+                Ok(json!(value))
+            }
+            (OptionType::Size, value) => match size_arg(value) {
+                Some(SizeChange::SetProportion(percent)) => {
+                    Ok(json!({ "proportion": percent / 100. }))
+                }
+                Some(SizeChange::SetFixed(pixels)) => Ok(json!({ "fixed": pixels })),
+                _ => Err(String::from(r#"must be a size, like "50%" or "800""#)),
+            },
+            (OptionType::Boolean, _) => Err(String::from("must be true or false")),
+            (OptionType::Number, _) => Err(String::from("must be a number")),
+            (OptionType::String, _) => Err(String::from("must be a string")),
+            (OptionType::Choice, _) => Err(format!("must be one of {:?}", self.choices)),
+        }
+    }
+
+    /// The values written for it in `values`, as bento shows them to clients.
+    fn ipc_value(&self, values: &[TilingOption]) -> Option<LayoutEngineOptionValue> {
+        let values = values.iter().filter_map(ipc_scalar);
+        if self.list {
+            Some(LayoutEngineOptionValue::List(values.collect()))
+        } else {
+            values.last()
+        }
+    }
+}
+
+fn scalar_option(value: &LayoutEngineOptionValue) -> Option<TilingOption> {
+    match value {
+        LayoutEngineOptionValue::Boolean(value) => Some(TilingOption::Bool(*value)),
+        LayoutEngineOptionValue::Number(value) => Some(TilingOption::Number(*value)),
+        LayoutEngineOptionValue::String(value) => Some(TilingOption::String(value.clone())),
+        LayoutEngineOptionValue::List(_) => None,
+    }
+}
+
+fn ipc_scalar(value: &TilingOption) -> Option<LayoutEngineOptionValue> {
+    Some(match value {
+        TilingOption::Bool(value) => LayoutEngineOptionValue::Boolean(*value),
+        TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
+        TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
+    })
+}
+
+/// Checks that the defaults a layout declares are values of the declared types, so that a layout
+/// that loads can always be given them.
+fn check_defaults(meta: &LayoutMeta) -> anyhow::Result<()> {
+    let options = meta.options.iter().map(|option| (option, "option", true));
+    let rules = meta
+        .window_rules
+        .iter()
+        .map(|rule| (rule, "window rule", false));
+    for (option, kind, required) in options.chain(rules) {
+        // A window rule property that has no default is unset for windows no rule sets it for.
+        if option.default.is_none() && !required {
+            continue;
+        }
+        if let Err(problem) = option.convert(&option.default_values()) {
+            return Err(anyhow!(
+                "the layout engine's default for its {kind} {:?} is wrong: it {problem}",
+                option.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct Engine {
@@ -303,6 +438,7 @@ impl Engine {
                 .map_err(|err| anyhow!("{err}"))?;
             let meta: LayoutMeta = serde_json::from_str(&meta)
                 .context("error reading the layout engine's metadata")?;
+            check_defaults(&meta)?;
             // Binds name engine actions and bento's own the same way, so they can't share a name.
             if let Some(action) = meta.actions.iter().find(|a| is_native_action(&a.name)) {
                 return Err(anyhow!(
@@ -457,7 +593,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                 if engine.is_none() {
                     let fallback = Tiling {
                         layout: TilingLayout::BuiltIn(String::from("fallback")),
-                        options: Vec::new(),
+                        ..Tiling::default()
                     };
                     let new = Engine::load(&fallback, String::from(FALLBACK), "fallback")
                         .expect("the fallback layout engine must load");
@@ -521,62 +657,87 @@ pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
         };
 
         let options = meta.options.iter().map(|option| {
-            // Like the engine sees it: the last value wins, and one of the wrong type gives the
-            // default.
-            let value = config
-                .options
-                .iter()
-                .rev()
-                .find(|(name, _)| *name == option.name)
-                .map(|(_, value)| option_value(value))
-                .filter(|value| value.r#type() == option.default.r#type())
-                .unwrap_or_else(|| option.default.clone());
+            // Like the engine sees it: the last value wins, and one that doesn't fit the type
+            // gives the default.
+            let default = option.ipc_value(&option.default_values());
+            let value = configured(config, option)
+                .map(|values| option.ipc_value(values))
+                .unwrap_or_else(|| default.clone());
             LayoutEngineOption {
                 name: option.name.clone(),
-                r#type: option.default.r#type(),
-                default: option.default.clone(),
+                r#type: option.r#type.ipc(),
+                list: option.list,
+                choices: option.choices.clone(),
+                default,
                 description: option.description.clone(),
                 value,
             }
+        });
+        let window_rules = meta.window_rules.iter().map(|rule| LayoutEngineWindowRule {
+            name: rule.name.clone(),
+            r#type: rule.r#type.ipc(),
+            list: rule.list,
+            choices: rule.choices.clone(),
+            default: rule.ipc_value(&rule.default_values()),
+            description: rule.description.clone(),
         });
 
         Some(niri_ipc::LayoutEngine {
             name: meta.name.clone(),
             description: meta.description.clone(),
             source,
+            floating: meta.floating,
             options: options.collect(),
+            window_rules: window_rules.collect(),
             actions: meta.actions.clone(),
         })
     })
 }
 
-fn option_value(value: &TilingOption) -> LayoutEngineOptionValue {
-    match value {
-        TilingOption::Bool(value) => LayoutEngineOptionValue::Boolean(*value),
-        TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
-        TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
-    }
+/// The values the config writes for `option`, if there are any and they fit its type. The last
+/// one written wins.
+fn configured<'a>(config: &'a Tiling, option: &OptionMeta) -> Option<&'a [TilingOption]> {
+    let (_, values) = config
+        .options
+        .iter()
+        .rev()
+        .find(|(name, _)| *name == option.name)?;
+    option.convert(values).ok().map(|_| values.as_slice())
 }
 
-fn type_name(r#type: LayoutEngineOptionType) -> &'static str {
-    match r#type {
-        LayoutEngineOptionType::Boolean => "boolean",
-        LayoutEngineOptionType::Number => "number",
-        LayoutEngineOptionType::String => "string",
-    }
-}
-
-/// Options for the layout from the config, as JSON.
+/// Options for the layout as JSON: every option it declares, converted by its type, with the
+/// default for the ones the config doesn't set or sets to something that doesn't fit.
 pub fn options_json(config: &Tiling) -> serde_json::Value {
-    let options = config.options.iter().map(|(name, value)| {
-        let value = match value {
-            TilingOption::Bool(value) => serde_json::Value::from(*value),
-            TilingOption::Number(value) => serde_json::Value::from(*value),
-            TilingOption::String(value) => serde_json::Value::from(value.clone()),
+    ENGINE.with_borrow(|engine| {
+        let Some(engine) = engine else {
+            return json!({});
         };
-        (name.clone(), value)
-    });
-    serde_json::Value::Object(options.collect())
+        let options = engine.meta.options.iter().map(|option| {
+            let values = configured(config, option)
+                .map(<[TilingOption]>::to_vec)
+                .unwrap_or_else(|| option.default_values());
+            let value = option.convert(&values).unwrap_or(serde_json::Value::Null);
+            (option.name.clone(), value)
+        });
+        serde_json::Value::Object(options.collect())
+    })
+}
+
+/// The properties that the layout's window rules set for one window, as JSON, converted by the
+/// types the layout declares for them. Properties that no rule sets, and ones the layout doesn't
+/// declare, are left out.
+pub fn rules_json(rules: &niri_config::EngineRules) -> serde_json::Value {
+    ENGINE.with_borrow(|engine| {
+        let Some(engine) = engine else {
+            return json!({});
+        };
+        let properties = engine.meta.window_rules.iter().filter_map(|rule| {
+            let values = rules.get(&rule.name)?;
+            let value = rule.convert(values).ok()?;
+            Some((rule.name.clone(), value))
+        });
+        serde_json::Value::Object(properties.collect())
+    })
 }
 
 /// Sends an event to the layout and returns its answer.
@@ -610,8 +771,8 @@ pub fn exposed_state() -> anyhow::Result<serde_json::Value> {
 }
 
 /// Checks the layout engine in `config` and what the config asks of it: that the engine loads,
-/// that the options exist and have the right types, and that binds to the engine's actions name
-/// actions that the engine has, with arguments that fit.
+/// that the options and window rule properties exist and have values of their types, and that
+/// binds to the engine's actions name actions that the engine has, with arguments that fit.
 pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     ensure_loaded(&config.tiling);
     if let Some(err) = LOAD_ERROR.with_borrow(Clone::clone) {
@@ -622,21 +783,33 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     };
 
     let mut problems = Vec::new();
-    for (name, value) in &config.tiling.options {
-        let given = option_value(value).r#type();
+    for (name, values) in &config.tiling.options {
         match meta.options.iter().find(|option| option.name == *name) {
             None => problems.push(format!(
                 "the {} layout engine has no option called {name:?}",
                 meta.name
             )),
-            Some(option) if option.default.r#type() != given => {
-                let expected = type_name(option.default.r#type());
-                let given = type_name(given);
-                problems.push(format!(
-                    "layout engine option {name:?} must be a {expected}, not a {given}"
-                ))
+            Some(option) => {
+                if let Err(problem) = option.convert(values) {
+                    problems.push(format!("layout engine option {name:?} {problem}"));
+                }
             }
-            Some(_) => (),
+        }
+    }
+
+    for rule in &config.tiling.window_rules {
+        for (name, values) in &rule.properties.0 {
+            match meta.window_rules.iter().find(|rule| rule.name == *name) {
+                None => problems.push(format!(
+                    "the {} layout engine has no window rule called {name:?}",
+                    meta.name
+                )),
+                Some(property) => {
+                    if let Err(problem) = property.convert(values) {
+                        problems.push(format!("layout engine window rule {name:?} {problem}"));
+                    }
+                }
+            }
         }
     }
 
@@ -693,18 +866,24 @@ fn check_args(action: &LayoutEngineAction, args: &[TilingOption], problems: &mut
                 continue
             }
             (LayoutEngineActionArgType::Size, value) if size_arg(value).is_some() => continue,
+            (
+                LayoutEngineActionArgType::Workspace,
+                TilingOption::Number(_) | TilingOption::String(_),
+            )
+            | (LayoutEngineActionArgType::Monitor, TilingOption::String(_)) => continue,
             (LayoutEngineActionArgType::Boolean, _) => String::from("true or false"),
             (LayoutEngineActionArgType::Number, _) => String::from("a number"),
             (LayoutEngineActionArgType::String, _) => String::from("a string"),
             (LayoutEngineActionArgType::Choice, _) => format!("one of {:?}", arg.choices),
             (LayoutEngineActionArgType::Size, _) => String::from(r#"a size, like "50%" or "+10%""#),
+            (LayoutEngineActionArgType::Workspace, _) => {
+                String::from("a workspace, by its index or its name")
+            }
+            (LayoutEngineActionArgType::Monitor, _) => {
+                String::from(r#"a monitor's name, like "DP-2""#)
+            }
             // Only bento's own actions have these, and the config parser checks them.
-            (
-                LayoutEngineActionArgType::Workspace
-                | LayoutEngineActionArgType::Monitor
-                | LayoutEngineActionArgType::Command,
-                _,
-            ) => continue,
+            (LayoutEngineActionArgType::Command, _) => continue,
         };
         problems.push(format!(
             "the {:?} argument of action {name:?} must be {expected}",

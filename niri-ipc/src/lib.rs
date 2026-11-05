@@ -1413,8 +1413,12 @@ pub struct LayoutEngine {
     pub description: Option<String>,
     /// Where the layout engine comes from.
     pub source: LayoutEngineSource,
+    /// Whether bento's floating layer exists under this layout engine.
+    pub floating: bool,
     /// Options of the layout engine, in the order it declares them.
     pub options: Vec<LayoutEngineOption>,
+    /// Properties that the layout engine's window rules can set, in the order it declares them.
+    pub window_rules: Vec<LayoutEngineWindowRule>,
     /// Actions that the layout engine has, in the order it declares them. They're bound by name
     /// in the layout engine's own config file, and run with `layout-action`.
     pub actions: Vec<LayoutEngineAction>,
@@ -1433,7 +1437,7 @@ pub enum LayoutEngineSource {
     },
 }
 
-/// An option of a layout engine, set in the `tiling { options {} }` section of the config.
+/// An option of a layout engine, set in the `options {}` section of its config file.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct LayoutEngineOption {
@@ -1441,12 +1445,38 @@ pub struct LayoutEngineOption {
     pub name: String,
     /// Type of the option's values.
     pub r#type: LayoutEngineOptionType,
-    /// Value of the option when the config doesn't set it.
-    pub default: LayoutEngineOptionValue,
+    /// Whether the option is a list of values of its type.
+    pub list: bool,
+    /// The values a `Choice` option accepts.
+    pub choices: Vec<String>,
+    /// Value of the option when the config doesn't set it. `None` for a size that is left to the
+    /// window.
+    pub default: Option<LayoutEngineOptionValue>,
     /// Description of the option.
     pub description: Option<String>,
-    /// Current value of the option: the one from the config, or the default.
-    pub value: LayoutEngineOptionValue,
+    /// Current value of the option: the one from the config, or the default. A list option has a
+    /// list.
+    pub value: Option<LayoutEngineOptionValue>,
+}
+
+/// A property that a layout engine's window rules can set, written in the `window-rule` blocks of
+/// its config file.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct LayoutEngineWindowRule {
+    /// Name of the property.
+    pub name: String,
+    /// Type of the property's values.
+    pub r#type: LayoutEngineOptionType,
+    /// Whether the property is a list of values of its type.
+    pub list: bool,
+    /// The values a `Choice` property accepts.
+    pub choices: Vec<String>,
+    /// Value of the property for windows that no rule sets it for. `None` for a size that is left
+    /// to the window.
+    pub default: Option<LayoutEngineOptionValue>,
+    /// Description of the property.
+    pub description: Option<String>,
 }
 
 /// Type of a layout engine option.
@@ -1459,6 +1489,11 @@ pub enum LayoutEngineOptionType {
     Number,
     /// A string.
     String,
+    /// One of the strings in `choices`.
+    Choice,
+    /// A size, written like `"50%"` for a proportion of the working area or `"800"` for logical
+    /// pixels.
+    Size,
 }
 
 /// Value of a layout engine option.
@@ -1471,19 +1506,10 @@ pub enum LayoutEngineOptionValue {
     Boolean(bool),
     /// A number value.
     Number(f64),
-    /// A string value.
+    /// A string value. Choices and sizes are strings too.
     String(String),
-}
-
-impl LayoutEngineOptionValue {
-    /// Type of the value.
-    pub fn r#type(&self) -> LayoutEngineOptionType {
-        match self {
-            Self::Boolean(_) => LayoutEngineOptionType::Boolean,
-            Self::Number(_) => LayoutEngineOptionType::Number,
-            Self::String(_) => LayoutEngineOptionType::String,
-        }
-    }
+    /// The values of a list option.
+    List(Vec<LayoutEngineOptionValue>),
 }
 
 /// An action that a layout engine handles.

@@ -7,6 +7,7 @@ use knuffel::Decode as _;
 
 use crate::binds::{Binds, Key};
 use crate::utils::{expand_home_path, MergeWith};
+use crate::window_rule::Match;
 use crate::{Config, CurrentFile, Includes};
 
 /// Which tiling layout bento runs, and its options.
@@ -17,11 +18,18 @@ use crate::{Config, CurrentFile, Includes};
 /// }
 /// ```
 ///
-/// The options come from the engine's own file, next to its binds (see [`engine_config_path`]):
+/// The options and window rules come from the engine's own file, next to its binds (see
+/// [`engine_config_path`]):
 ///
 /// ```kdl
 /// options {
 ///     gravity true
+///     preset-column-widths "33%" "50%" "67%"
+/// }
+///
+/// window-rule {
+///     match app-id="firefox"
+///     default-column-width "67%"
 /// }
 ///
 /// binds {
@@ -31,8 +39,47 @@ use crate::{Config, CurrentFile, Includes};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tiling {
     pub layout: TilingLayout,
-    /// Options for the layout, checked against what the layout declares when it loads.
-    pub options: Vec<(String, TilingOption)>,
+    /// Options for the layout, by name, with the values as written: an option is `name value...`,
+    /// and several values make a list. The layout declares their types, so they're checked and
+    /// converted when it loads.
+    pub options: Vec<(String, Vec<TilingOption>)>,
+    /// The layout's own window rules, in the order they're written.
+    pub window_rules: Vec<EngineWindowRule>,
+}
+
+/// A `window-rule` of the engine's file: bento's matchers, with properties that the engine
+/// declares.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineWindowRule {
+    pub matches: Vec<Match>,
+    pub excludes: Vec<Match>,
+    pub properties: EngineRules,
+}
+
+/// Properties set by the layout's window rules for one window, by name and with the values as
+/// written: `default-column-width "50%"` is `("default-column-width", ["50%"])`. A property
+/// written with no value is how a size is left to the window. The layout declares the types, so
+/// the values are converted once it's loaded.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct EngineRules(pub Vec<(String, Vec<TilingOption>)>);
+
+impl EngineRules {
+    pub fn get(&self, name: &str) -> Option<&[TilingOption]> {
+        let property = self.0.iter().find(|(n, _)| n == name);
+        property.map(|(_, values)| values.as_slice())
+    }
+}
+
+impl MergeWith<EngineRules> for EngineRules {
+    /// Properties the part sets replace the ones already set, the way bento's own rules resolve.
+    fn merge_with(&mut self, part: &EngineRules) {
+        for (name, values) in &part.0 {
+            match self.0.iter_mut().find(|(n, _)| n == name) {
+                Some((_, existing)) => existing.clone_from(values),
+                None => self.0.push((name.clone(), values.clone())),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +120,7 @@ impl Default for Tiling {
         Self {
             layout: TilingLayout::BuiltIn(String::from("bento")),
             options: Vec::new(),
+            window_rules: Vec::new(),
         }
     }
 }
@@ -215,7 +263,7 @@ where
 
         for node in nodes {
             let name = &**node.node_name;
-            if seen.contains(&name) {
+            if name != "window-rule" && seen.contains(&name) {
                 ctx.emit_error(DecodeError::unexpected(
                     &node.node_name,
                     "node",
@@ -230,14 +278,13 @@ where
                     let mut options = Vec::new();
                     for option in node.children() {
                         let name = String::from(&**option.node_name);
-                        let Some(value) = option.arguments.first() else {
-                            ctx.emit_error(DecodeError::missing(option, "the option value"));
-                            continue;
-                        };
-                        let value = knuffel::traits::DecodeScalar::decode(value, ctx)?;
-                        options.push((name, value));
+                        options.push((name, decode_values(option, ctx)?));
                     }
                     config.borrow_mut().tiling.options = options;
+                }
+                "window-rule" => {
+                    let rule = decode_window_rule(node, ctx)?;
+                    config.borrow_mut().tiling.window_rules.push(rule);
                 }
                 "binds" => {
                     // A key bound in both files would leave it unclear which one wins, so the
@@ -267,7 +314,8 @@ where
                     node,
                     "node",
                     format!(
-                        "unexpected node `{}`, an engine's file has `options` and `binds`",
+                        "unexpected node `{}`, an engine's file has `options`, `window-rule` and \
+                         `binds`",
                         name.escape_default()
                     ),
                 )),
@@ -276,6 +324,74 @@ where
 
         Ok(Self)
     }
+}
+
+/// The values of an option or window rule property: the node's arguments.
+fn decode_values<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<Vec<TilingOption>, DecodeError<S>> {
+    for name in node.properties.keys() {
+        ctx.emit_error(DecodeError::unexpected(
+            name,
+            "property",
+            format!("unexpected property `{}`", name.escape_default()),
+        ));
+    }
+    for child in node.children() {
+        ctx.emit_error(DecodeError::unexpected(
+            child,
+            "node",
+            format!(
+                "`{}` takes its values as arguments, not children",
+                node.node_name.escape_default()
+            ),
+        ));
+    }
+
+    node.arguments
+        .iter()
+        .map(|value| knuffel::traits::DecodeScalar::decode(value, ctx))
+        .collect()
+}
+
+/// A `window-rule` of the engine's file: `match` and `exclude` like bento's own rules, and every
+/// other child is a property that the engine declares.
+fn decode_window_rule<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<EngineWindowRule, DecodeError<S>> {
+    for value in &node.arguments {
+        ctx.emit_error(DecodeError::unexpected(
+            &value.literal,
+            "argument",
+            "unexpected argument",
+        ));
+    }
+    for name in node.properties.keys() {
+        ctx.emit_error(DecodeError::unexpected(
+            name,
+            "property",
+            format!("unexpected property `{}`", name.escape_default()),
+        ));
+    }
+
+    let mut rule = EngineWindowRule {
+        matches: Vec::new(),
+        excludes: Vec::new(),
+        properties: EngineRules::default(),
+    };
+    for child in node.children() {
+        match &**child.node_name {
+            "match" => rule.matches.push(Match::decode_node(child, ctx)?),
+            "exclude" => rule.excludes.push(Match::decode_node(child, ctx)?),
+            name => {
+                let values = decode_values(child, ctx)?;
+                rule.properties.0.push((String::from(name), values));
+            }
+        }
+    }
+    Ok(rule)
 }
 
 impl<S: knuffel::traits::ErrorSpan> knuffel::DecodeScalar<S> for TilingOption {
@@ -358,28 +474,102 @@ mod tests {
                 rows 12
                 ratio 0.5
                 name "x"
+                preset-column-widths "33%" "50%" "800"
+                default-column-width
             }
             "#,
         )
         .unwrap();
+        let string = |value: &str| TilingOption::String(String::from(value));
         assert_eq!(
             config.tiling,
             Tiling {
                 layout: TilingLayout::BuiltIn(String::from("niri")),
                 options: vec![
-                    (String::from("gravity"), TilingOption::Bool(false)),
-                    (String::from("rows"), TilingOption::Number(12.)),
-                    (String::from("ratio"), TilingOption::Number(0.5)),
+                    (String::from("gravity"), vec![TilingOption::Bool(false)]),
+                    (String::from("rows"), vec![TilingOption::Number(12.)]),
+                    (String::from("ratio"), vec![TilingOption::Number(0.5)]),
+                    (String::from("name"), vec![string("x")]),
                     (
-                        String::from("name"),
-                        TilingOption::String(String::from("x"))
+                        String::from("preset-column-widths"),
+                        vec![string("33%"), string("50%"), string("800")]
                     ),
+                    (String::from("default-column-width"), vec![]),
                 ],
+                window_rules: Vec::new(),
             }
         );
 
         let config = Config::parse_mem("").unwrap();
         assert_eq!(config.tiling, Tiling::default());
+    }
+
+    #[test]
+    fn parse_engine_window_rules() {
+        let config = Config::parse_mem_with_engine(
+            "",
+            r#"
+            window-rule {
+                match app-id="^firefox$" is-floating=false
+                exclude title="Picture"
+                default-column-width "67%"
+                default-column-display "tabbed"
+            }
+
+            window-rule {
+                default-window-height
+                open-maximized true
+            }
+            "#,
+        )
+        .unwrap();
+        let rules = &config.tiling.window_rules;
+        assert_eq!(rules.len(), 2);
+
+        assert_eq!(rules[0].matches.len(), 1);
+        assert_eq!(rules[0].matches[0].is_floating, Some(false));
+        assert_eq!(rules[0].excludes.len(), 1);
+        let width = [TilingOption::String(String::from("67%"))];
+        assert_eq!(
+            rules[0].properties.get("default-column-width"),
+            Some(&width[..])
+        );
+        assert_eq!(rules[0].properties.0.len(), 2);
+
+        assert!(rules[1].matches.is_empty());
+        assert_eq!(
+            rules[1].properties.get("default-window-height"),
+            Some(&[][..])
+        );
+        let open = [TilingOption::Bool(true)];
+        assert_eq!(rules[1].properties.get("open-maximized"), Some(&open[..]));
+        assert_eq!(rules[1].properties.get("nope"), None);
+    }
+
+    #[test]
+    fn engine_window_rules_resolve_later_rules_over_earlier() {
+        let property = |name: &str, value: &str| {
+            let value = TilingOption::String(String::from(value));
+            EngineRules(vec![(String::from(name), vec![value])])
+        };
+
+        let mut resolved = EngineRules::default();
+        resolved.merge_with(&property("default-column-width", "50%"));
+        resolved.merge_with(&property("default-column-display", "tabbed"));
+        resolved.merge_with(&property("default-column-width", "800"));
+
+        let width = [TilingOption::String(String::from("800"))];
+        assert_eq!(resolved.get("default-column-width"), Some(&width[..]));
+        assert_eq!(resolved.0.len(), 2);
+    }
+
+    #[test]
+    fn engine_window_rules_are_not_the_main_configs() {
+        // The main config's rules only know bento's own properties and matchers.
+        let rule = "window-rule { default-column-width; }";
+        assert!(Config::parse_mem(rule).is_err());
+        let rule = r#"window-rule { match is-active-in-column=true; }"#;
+        assert!(Config::parse_mem(rule).is_err());
     }
 
     #[test]
@@ -464,7 +654,13 @@ mod tests {
         assert!(error(config).contains("argument"));
 
         let config = Config::parse_mem_with_engine("", "layout { gaps 8; }");
-        assert!(error(config).contains("an engine's file has `options` and `binds`"));
+        assert!(error(config).contains("unexpected node `layout`"));
+
+        // An option's values are arguments, not properties or children.
+        let config = Config::parse_mem_with_engine("", "options { rows x=1; }");
+        assert!(error(config).contains("unexpected property"));
+        let config = Config::parse_mem_with_engine("", "options { rows { x; }; }");
+        assert!(error(config).contains("takes its values as arguments"));
     }
 
     #[test]
