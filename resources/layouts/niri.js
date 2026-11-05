@@ -2384,18 +2384,11 @@ function createStrip(bento, ws) {
     function syncGroups() {
         for (const col of columns) {
             const wins = col.tiles.map((tile) => tile.win);
-            const activeWin = col.tiles[col.activeTileIdx].win;
             if (col.display !== "tabbed" || wins.length < 2) {
-                // Stacked windows aren't grouped, so a group of just these windows ends.
-                for (const win of wins) {
-                    const group = win.group;
-                    if (group !== null && group.windows.every((other) => wins.includes(other))) {
-                        group.dissolve();
-                    }
-                }
                 col.group = null;
                 continue;
             }
+            const activeWin = col.tiles[col.activeTileIdx].win;
             let group = activeWin.group;
             const matches =
                 group !== null &&
@@ -2407,6 +2400,20 @@ function createStrip(bento, ws) {
                 group.activate(activeWin);
             }
             col.group = group;
+        }
+        // Groups that aren't one column's tabs end, if all of their windows are in this strip.
+        const wanted = new Set(columns.map((col) => col.group).filter((group) => group !== null));
+        for (const col of columns) {
+            for (const { win } of col.tiles) {
+                const group = win.group;
+                if (
+                    group !== null &&
+                    !wanted.has(group) &&
+                    group.windows.every((other) => find(other) !== null)
+                ) {
+                    group.dissolve();
+                }
+            }
         }
     }
 
