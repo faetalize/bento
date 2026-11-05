@@ -8,8 +8,8 @@ use niri_config::OutputName;
 use niri_ipc::socket::Socket;
 use niri_ipc::{
     Action, Cast, CastKind, CastTarget, Event, KeyboardLayouts, LayoutEngine,
-    LayoutEngineOptionValue, LayoutEngineSource, LogicalOutput, Mode, Output, OutputConfigChanged,
-    Overview, Request, Response, Transform, Window, WindowLayout,
+    LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, LogicalOutput, Mode,
+    Output, OutputConfigChanged, Overview, Request, Response, Transform, Window, WindowLayout,
 };
 use serde_json::json;
 
@@ -837,6 +837,9 @@ fn print_layout_engine(engine: &LayoutEngine) {
     if let Some(description) = &engine.description {
         println!("  {description}");
     }
+    if !engine.floating {
+        println!("  bento's floating layer is off under this engine.");
+    }
 
     println!();
     if engine.options.is_empty() {
@@ -852,7 +855,26 @@ fn print_layout_engine(engine: &LayoutEngine) {
             let default = fmt_option_value(&option.default);
             println!("  {}: {value} (default: {default})", option.name);
         }
+        let list = if option.list { " list" } else { "" };
+        let choices = fmt_choices(&option.choices);
+        println!("    {}{list}{choices}", fmt_option_type(option.r#type));
         if let Some(description) = &option.description {
+            println!("    {description}");
+        }
+    }
+
+    println!();
+    if engine.window_rules.is_empty() {
+        println!("No window rules.");
+    } else {
+        println!("Window rules:");
+    }
+    for rule in &engine.window_rules {
+        let list = if rule.list { " list" } else { "" };
+        let choices = fmt_choices(&rule.choices);
+        let kind = fmt_option_type(rule.r#type);
+        println!("  {}: {kind}{list}{choices}", rule.name);
+        if let Some(description) = &rule.description {
             println!("    {description}");
         }
     }
@@ -885,11 +907,38 @@ fn print_layout_engine(engine: &LayoutEngine) {
     }
 }
 
-fn fmt_option_value(value: &LayoutEngineOptionValue) -> String {
+fn fmt_option_value(value: &Option<LayoutEngineOptionValue>) -> String {
     match value {
-        LayoutEngineOptionValue::Boolean(value) => value.to_string(),
-        LayoutEngineOptionValue::Number(value) => value.to_string(),
-        LayoutEngineOptionValue::String(value) => format!("{value:?}"),
+        // A size that the window decides.
+        None => String::from("none"),
+        Some(LayoutEngineOptionValue::Boolean(value)) => value.to_string(),
+        Some(LayoutEngineOptionValue::Number(value)) => value.to_string(),
+        Some(LayoutEngineOptionValue::String(value)) => format!("{value:?}"),
+        Some(LayoutEngineOptionValue::List(values)) => {
+            let values: Vec<_> = values
+                .iter()
+                .map(|value| fmt_option_value(&Some(value.clone())))
+                .collect();
+            values.join(" ")
+        }
+    }
+}
+
+fn fmt_option_type(r#type: LayoutEngineOptionType) -> &'static str {
+    match r#type {
+        LayoutEngineOptionType::Boolean => "boolean",
+        LayoutEngineOptionType::Number => "number",
+        LayoutEngineOptionType::String => "string",
+        LayoutEngineOptionType::Choice => "choice",
+        LayoutEngineOptionType::Size => "size",
+    }
+}
+
+fn fmt_choices(choices: &[String]) -> String {
+    if choices.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", choices.join("|"))
     }
 }
 

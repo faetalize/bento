@@ -1,9 +1,76 @@
-// Binds for the niri engine, loaded only while it runs. bento copies this file to
-// ~/.config/bento/engines/niri.kdl the first time the engine runs without one; from then on
-// it's yours to edit.
+// Options, window rules and binds for the niri engine, loaded only while it runs. bento copies this
+// file to ~/.config/bento/engines/niri.kdl the first time the engine runs without one; from then
+// on it's yours to edit.
 //
 // A key bound here can't also be bound in config.kdl.
 // https://github.com/faetalize/bento#layout-engines
+
+// Everything below is at its default.
+options {
+    // When to center a column when changing focus, options are:
+    // - "never", focusing an off-screen column will keep it at the left or right edge of the
+    //   screen.
+    // - "always", the focused column will always be centered.
+    // - "on-overflow", focusing a column will center it if it doesn't fit together with the
+    //   previously focused column.
+    center-focused-column "never"
+
+    // Center a column that is alone on its workspace, whatever center-focused-column says.
+    always-center-single-column false
+
+    // The width that new windows open with. Written as a proportion of the working area, like
+    // "50%", or as logical pixels, like "960".
+    // Leave it empty to let the windows decide their initial width:
+    // default-column-width
+    default-column-width "50%"
+
+    // The widths that "switch-preset-column-width" cycles through. Proportions take gaps into
+    // account: you can perfectly fit four windows sized "25%".
+    preset-column-widths "33.333%" "50%" "66.667%"
+
+    // The heights that "switch-preset-window-height" cycles through.
+    preset-window-heights "33.333%" "50%" "66.667%"
+
+    // How a new column shows its windows: "normal", stacked, or "tabbed", one at a time with a
+    // tab indicator.
+    default-column-display "normal"
+
+    // The tab indicator of tabbed columns. Colors are written "#rgb", "#rrggbb" or "#rrggbbaa".
+    tab-indicator true
+    // Which side of the column it sits on: "left", "right", "top" or "bottom".
+    tab-indicator-position "left"
+    // How thick it is, and how far from the column, in logical pixels.
+    tab-indicator-width 4
+    tab-indicator-gap 5
+    // How much of the column's side it takes up, as a proportion.
+    tab-indicator-length 0.5
+    tab-indicator-corner-radius 0
+    // Draw it inside the column, over the windows, instead of next to it.
+    tab-indicator-place-within-column false
+    // Leave it out while the column has only one tab.
+    tab-indicator-hide-when-single-tab false
+    tab-indicator-active-color "#7fc8ff"
+    tab-indicator-inactive-color "#505050"
+    tab-indicator-urgent-color "#9b0000"
+
+    // The hint that shows where a window will go while you drag it.
+    insert-hint true
+    insert-hint-color "#7fc8ff80"
+}
+
+// Window rules have the same match and exclude as the ones in config.kdl, and set what the
+// engine declares: default-column-width, default-window-height, default-column-display and
+// open-maximized. See "bento msg layout-engine" for their types.
+
+// Work around WezTerm's initial configure bug
+// by leaving its default-column-width empty.
+window-rule {
+    // This regular expression is intentionally made as specific as possible,
+    // since this is the default config, and we want no false positives.
+    // You can get away with just app-id="wezterm" if you want.
+    match app-id=r#"^org\.wezfurlong\.wezterm$"#
+    default-column-width
+}
 
 binds {
     Mod+Left  { focus-column-left; }
