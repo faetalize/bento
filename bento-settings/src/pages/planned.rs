@@ -15,12 +15,6 @@ pub fn window_rules() -> Category {
         .keywords(&["apps", "floating", "opacity", "rounded corners", "match"])
 }
 
-pub fn shortcuts() -> Category {
-    Category::planned("shortcuts", "Shortcuts")
-        .icon("ph-command-symbolic")
-        .keywords(&["binds", "keybinds", "hotkeys", "keyboard"])
-}
-
 pub fn gestures() -> Category {
     Category::planned("gestures", "Gestures")
         .icon("ph-hand-swipe-right-symbolic")

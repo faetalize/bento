@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 
 use knuffel::ast;
 use knuffel::span::Span;
+use niri_config::Key;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -165,6 +166,219 @@ impl Document {
             self.text.insert_str(close, &text);
         }
     }
+}
+
+/// A bind as a file writes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BindNode {
+    /// The key as written, like `Mod+T`.
+    pub key: String,
+    /// Properties of the bind itself, like `repeat=false`.
+    pub properties: Vec<(String, Value)>,
+    /// Its action, or `None` for a bind with `press` and `release` sections.
+    pub action: Option<ActionNode>,
+}
+
+/// An action as a bind writes it, like `spawn "foot"` or `move-window-to-workspace 2 focus=false`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionNode {
+    pub name: String,
+    pub args: Vec<Value>,
+    pub properties: Vec<(String, Value)>,
+}
+
+impl ActionNode {
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        write_ident(&mut out, &self.name);
+        let args = self.arguments();
+        if !args.is_empty() {
+            out.push(' ');
+            out.push_str(&args);
+        }
+        out
+    }
+
+    /// The arguments and properties, like `2 focus=false`.
+    pub fn arguments(&self) -> String {
+        let mut out = String::new();
+        for value in &self.args {
+            out.push(' ');
+            write_value(&mut out, value);
+        }
+        for (name, value) in &self.properties {
+            out.push(' ');
+            write_ident(&mut out, name);
+            out.push('=');
+            write_value(&mut out, value);
+        }
+        out.trim_start().to_owned()
+    }
+}
+
+impl BindNode {
+    /// The bind as one line, like `Mod+T repeat=false { spawn "foot"; }`.
+    pub fn text(&self) -> String {
+        let mut out = String::new();
+        write_ident(&mut out, &self.key);
+        for (name, value) in &self.properties {
+            out.push(' ');
+            write_ident(&mut out, name);
+            out.push('=');
+            write_value(&mut out, value);
+        }
+        let action = self
+            .action
+            .as_ref()
+            .map_or_else(String::new, ActionNode::text);
+        write!(out, " {{ {action}; }}").unwrap();
+        out
+    }
+}
+
+impl Document {
+    /// The binds in the document's `binds` sections, in order.
+    pub fn binds(&self) -> Vec<BindNode> {
+        let doc = knuffel::parse_ast::<Span>("config.kdl", &self.text)
+            .expect("edits keep the document valid");
+        let sections = doc.nodes.iter().filter(|node| &**node.node_name == "binds");
+        let binds = sections.flat_map(|section| section.children.iter().flat_map(|c| c.iter()));
+        binds.map(bind_node).collect()
+    }
+
+    /// Replaces the bind for `key`, however the file spells it, or adds it to the last `binds`
+    /// section.
+    pub fn set_bind(&mut self, key: &Key, bind: &BindNode) {
+        let text = bind.text();
+        if let Some(node) = self.find_bind(key) {
+            // From the key to its closing brace, keeping the terminator after it.
+            let end = node.braces.map_or(node.head_end, |(_, close)| close + 1);
+            self.text.replace_range(node.start..end, &text);
+            return;
+        }
+
+        let nodes = self.nodes();
+        match nodes.iter().rfind(|node| node.name == "binds") {
+            Some(section) => self.insert_line(section, &text),
+            None => {
+                if !self.text.is_empty() && !self.text.ends_with('\n') {
+                    self.text.push('\n');
+                }
+                if !self.text.is_empty() {
+                    self.text.push('\n');
+                }
+                write!(self.text, "binds {{\n    {text}\n}}\n").unwrap();
+            }
+        }
+    }
+
+    /// Removes the bind for `key`, however the file spells it. Returns whether there was one.
+    pub fn remove_bind(&mut self, key: &Key) -> bool {
+        let Some(node) = self.find_bind(key) else {
+            return false;
+        };
+        let (start, end) = removal_range(&self.text, &node);
+        self.text.replace_range(start..end, "");
+        true
+    }
+
+    /// Replaces every `binds` section with `section`, a whole `binds {}` section of its own.
+    pub fn replace_binds(&mut self, section: &str) {
+        let nodes = self.nodes();
+        let mut ranges: Vec<(usize, usize)> = nodes
+            .iter()
+            .filter(|node| node.name == "binds")
+            .map(|node| removal_range(&self.text, node))
+            .collect();
+        ranges.sort_unstable();
+        for (start, end) in ranges.iter().rev() {
+            self.text.replace_range(start..end, "");
+        }
+        if !self.text.is_empty() && !self.text.ends_with('\n') {
+            self.text.push('\n');
+        }
+        self.text.push_str(section.trim_end());
+        self.text.push('\n');
+    }
+
+    /// The text of the first `binds` section in the document.
+    pub fn binds_section(&self) -> Option<String> {
+        let nodes = self.nodes();
+        let section = nodes.iter().find(|node| node.name == "binds")?;
+        let end = section
+            .braces
+            .map_or(section.head_end, |(_, close)| close + 1);
+        Some(self.text[section.start..end].to_owned())
+    }
+
+    fn find_bind(&self, key: &Key) -> Option<Node> {
+        let nodes = self.nodes();
+        let sections = nodes.iter().filter(|node| node.name == "binds");
+        let mut binds = sections.flat_map(|section| section.children.iter());
+        binds
+            .rfind(|node| node.name.parse::<Key>().is_ok_and(|k| k == *key))
+            .cloned()
+    }
+
+    /// Adds `text` as the last line of `section`.
+    fn insert_line(&mut self, section: &Node, text: &str) {
+        let indent = match section.children.last() {
+            Some(child) => indent_at(&self.text, child.start).to_owned(),
+            None => format!("{}    ", indent_at(&self.text, section.start)),
+        };
+        match section.braces {
+            Some((_, close)) => {
+                let close_line = line_start(&self.text, close);
+                if self.text[close_line..close].trim().is_empty() {
+                    self.text
+                        .insert_str(close_line, &format!("{indent}{text}\n"));
+                } else {
+                    self.text.insert_str(close, &format!(" {text} "));
+                }
+            }
+            None => self
+                .text
+                .insert_str(section.head_end, &format!(" {{\n{indent}{text}\n}}")),
+        }
+    }
+}
+
+fn bind_node(node: &ast::SpannedNode<Span>) -> BindNode {
+    let children: Vec<_> = node.children.iter().flat_map(|c| c.iter()).collect();
+    let action = match children.as_slice() {
+        [action] if !matches!(&**action.node_name, "press" | "release") => Some(ActionNode {
+            name: action.node_name.to_string(),
+            args: action
+                .arguments
+                .iter()
+                .filter_map(|v| value(&v.literal))
+                .collect(),
+            properties: properties(action),
+        }),
+        _ => None,
+    };
+    BindNode {
+        key: node.node_name.to_string(),
+        properties: properties(node),
+        action,
+    }
+}
+
+fn properties(node: &ast::SpannedNode<Span>) -> Vec<(String, Value)> {
+    let props = node.properties.iter();
+    props
+        .filter_map(|(name, v)| Some((name.to_string(), value(&v.literal)?)))
+        .collect()
+}
+
+fn value(literal: &ast::Literal) -> Option<Value> {
+    Some(match literal {
+        ast::Literal::Bool(x) => Value::Bool(*x),
+        ast::Literal::Int(x) => Value::Int(i64::try_from(x).ok()?),
+        ast::Literal::Decimal(x) => Value::Float(f64::try_from(x).ok()?),
+        ast::Literal::String(x) => Value::Str(x.to_string()),
+        ast::Literal::Null => return None,
+    })
 }
 
 fn locate(node: &ast::SpannedNode<Span>, text: &str) -> Node {
@@ -369,6 +583,88 @@ mod tests {
         f(&mut doc);
         Document::parse(doc.text().to_owned()).expect("edit must stay valid KDL");
         doc.text().to_owned()
+    }
+
+    fn key(text: &str) -> Key {
+        text.parse().unwrap()
+    }
+
+    fn spawn(key: &str, command: &str) -> BindNode {
+        BindNode {
+            key: key.to_owned(),
+            properties: Vec::new(),
+            action: Some(ActionNode {
+                name: String::from("spawn"),
+                args: vec![Value::Str(command.to_owned())],
+                properties: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn reads_binds_with_their_properties() {
+        let text = "binds {\n    Mod+T repeat=false { spawn \"foot\"; }\n    Mod+2 { focus-workspace 2; }\n    Mod+Q { press { close-window; }; }\n}\n";
+        let binds = Document::parse(text.to_owned()).unwrap().binds();
+        assert_eq!(binds[0].key, "Mod+T");
+        assert_eq!(
+            binds[0].properties,
+            [(String::from("repeat"), Value::Bool(false))]
+        );
+        assert_eq!(binds[0].action.as_ref().unwrap().text(), "spawn \"foot\"");
+        assert_eq!(binds[1].action.as_ref().unwrap().args, [Value::Int(2)]);
+        assert_eq!(binds[2].action, None);
+    }
+
+    #[test]
+    fn sets_a_bind_in_place_however_the_key_is_spelled() {
+        let text = "binds {\n    // Terminal.\n    Super+t { spawn \"foot\"; }\n    Mod+Q { close-window; }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set_bind(&key("Super+T"), &spawn("Super+T", "kitty"))
+        });
+        assert_eq!(
+            out,
+            "binds {\n    // Terminal.\n    Super+T { spawn \"kitty\"; }\n    Mod+Q { close-window; }\n}\n"
+        );
+    }
+
+    #[test]
+    fn adds_a_bind_to_the_last_section_or_a_new_one() {
+        let out = edit("binds {\n    Mod+Q { close-window; }\n}\n", |doc| {
+            doc.set_bind(&key("Mod+T"), &spawn("Mod+T", "foot"))
+        });
+        assert_eq!(
+            out,
+            "binds {\n    Mod+Q { close-window; }\n    Mod+T { spawn \"foot\"; }\n}\n"
+        );
+
+        let out = edit("layout {\n    gaps 8\n}\n", |doc| {
+            doc.set_bind(&key("Mod+T"), &spawn("Mod+T", "foot"))
+        });
+        assert_eq!(
+            out,
+            "layout {\n    gaps 8\n}\n\nbinds {\n    Mod+T { spawn \"foot\"; }\n}\n"
+        );
+    }
+
+    #[test]
+    fn removes_a_bind_and_its_line() {
+        let text = "binds {\n    Mod+T { spawn \"foot\"; }\n    Mod+Q { close-window; }\n}\n";
+        let out = edit(text, |doc| {
+            assert!(doc.remove_bind(&key("Mod+T")));
+        });
+        assert_eq!(out, "binds {\n    Mod+Q { close-window; }\n}\n");
+    }
+
+    #[test]
+    fn replaces_every_binds_section() {
+        let text = "binds {\n    Mod+T { spawn \"foot\"; }\n}\nlayout { gaps 8; }\nbinds {\n    Mod+Q { close-window; }\n}\n";
+        let out = edit(text, |doc| {
+            doc.replace_binds("binds {\n    Mod+W { close-window; }\n}")
+        });
+        assert_eq!(
+            out,
+            "layout { gaps 8; }\nbinds {\n    Mod+W { close-window; }\n}\n"
+        );
     }
 
     #[test]

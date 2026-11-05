@@ -402,7 +402,9 @@ offers to replace it, which removes the old bind from whichever file holds it. A
 included file can't be replaced, so the dialog says it's taken and where it comes from.
 
 Restoring defaults works like GNOME's Keyboard Shortcuts: a changed shortcut can be reset on its
-own, and "Reset All" puts back the shipped binds in the main config and the engine's file.
+own, which puts its action back on its default key, and "Reset All" puts back the shipped binds
+in the main config and the engine's file. An engine loaded from a file has no shipped defaults
+apart from its own `.kdl`, so only bento's own shortcuts reset under it.
 
 Binds from included files show on the page but can't be changed there, and their rows say which
 file they come from. Those files often belong to something else, like a shell that generates
@@ -449,7 +451,8 @@ as planned there. The order agreed on:
    - the fallback engine, used when the configured one fails to load, has no actions;
    - the `default-window-height` window rule reaches the engine as niri's `set-window-height`, so
      only `niri.js` honours it, until engines declare their own window rules.
-3. **The Shortcuts page**, as described above, with bento's own action table.
+3. **The Shortcuts page**, as described above, with bento's own action table. Done, on the same
+   branch.
 4. **The engine rework**, everything else in this document: one engine for the session, the
    object model, events, drawn surfaces, grouping, the socket. This document is the reference
    for refactoring the repo.

@@ -59,7 +59,9 @@ pub use crate::misc::*;
 pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
-pub use crate::tiling::{engine_config_path, Tiling, TilingLayout, TilingOption};
+pub use crate::tiling::{
+    default_engine_config, engine_config_path, Tiling, TilingLayout, TilingOption,
+};
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
 use crate::utils::{expand_home_path, Flag, MergeWith as _};
@@ -69,6 +71,9 @@ pub use crate::window_rule::{
 pub use crate::workspace::{Workspace, WorkspaceLayoutPart};
 
 const RECURSION_LIMIT: u8 = 10;
+
+/// The config bento writes on first start.
+pub const DEFAULT_CONFIG: &str = include_str!("../../resources/default-config.kdl");
 
 /// Reads the engine's file at a path, like `fs::read_to_string`.
 type ReadEngine<'a> = dyn FnOnce(&Path) -> std::io::Result<String> + 'a;
@@ -96,10 +101,30 @@ pub struct Config {
     pub window_rules: Vec<WindowRule>,
     pub layer_rules: Vec<LayerRule>,
     pub binds: Binds,
+    pub bind_files: BindFiles,
     pub switch_events: SwitchBinds,
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
     pub recent_windows: RecentWindows,
+}
+
+/// The file each bind comes from, by its key: the main config, an included file or the engine's
+/// file.
+#[derive(Default, Clone, PartialEq)]
+pub struct BindFiles(pub Vec<(Key, PathBuf)>);
+
+impl BindFiles {
+    pub fn get(&self, key: &Key) -> Option<&Path> {
+        let file = self.0.iter().find(|(k, _)| k == key);
+        file.map(|(_, path)| path.as_path())
+    }
+}
+
+// Only the count, so config snapshots don't list every bind twice.
+impl std::fmt::Debug for BindFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BindFiles({})", self.0.len())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +148,8 @@ pub enum ConfigPath {
 
 // Newtypes for putting information into the knuffel context.
 struct BasePath(PathBuf);
+/// The file being parsed, to remember where binds come from.
+pub(crate) struct CurrentFile(pub(crate) PathBuf);
 struct RootBase(PathBuf);
 struct Recursion(u8);
 
@@ -239,8 +266,12 @@ where
                     // Remove existing binds matching any new bind.
                     binds
                         .retain(|bind| !part.0.iter().any(|new| new.key.conflicts_with(&bind.key)));
+                    let file = &ctx.get::<CurrentFile>().unwrap().0;
+                    let files = &mut config.bind_files.0;
+                    files.retain(|(key, _)| !part.0.iter().any(|new| new.key.conflicts_with(key)));
+                    files.extend(part.0.iter().map(|bind| (bind.key, file.clone())));
                     // Add all new binds.
-                    binds.extend(part.0);
+                    config.binds.0.extend(part.0);
                 }
                 "environment" => {
                     let part = Environment::decode_node(node, ctx)?;
@@ -418,6 +449,7 @@ where
                                 knuffel::span::Span,
                                 _,
                             >(filename, &text, |ctx| {
+                                ctx.set(CurrentFile(path.to_path_buf()));
                                 ctx.set(BasePath(base));
                                 ctx.set(RootBase(root_base.clone()));
                                 ctx.set(Recursion(recursion));
@@ -471,11 +503,7 @@ where
 
 impl Config {
     pub fn load_default() -> Self {
-        let res = Config::parse_inner(
-            Path::new("default-config.kdl"),
-            include_str!("../../resources/default-config.kdl"),
-            None,
-        );
+        let res = Config::parse_inner(Path::new("default-config.kdl"), DEFAULT_CONFIG, None);
 
         // Includes in the default config can break its parsing at runtime.
         assert!(
@@ -538,6 +566,7 @@ impl Config {
             filename,
             text,
             |ctx| {
+                ctx.set(CurrentFile(path.to_path_buf()));
                 ctx.set(BasePath(base.clone()));
                 ctx.set(RootBase(base));
                 ctx.set(Recursion(0));
@@ -572,6 +601,7 @@ impl Config {
                         |ctx| {
                             let base = engine_path.parent().map(Path::to_path_buf);
                             ctx.set(BasePath(base.unwrap_or_default()));
+                            ctx.set(CurrentFile(engine_path.clone()));
                             ctx.set(EngineFile);
                             ctx.set(config.clone());
                         },
@@ -2912,6 +2942,7 @@ mod tests {
                     },
                 ],
             ),
+            bind_files: BindFiles(16),
             switch_events: SwitchBinds {
                 lid_open: None,
                 lid_close: None,
@@ -3173,6 +3204,9 @@ mod tests {
 
         -                0.6666666666666666,
         +                0.66667,
+
+        -    bind_files: BindFiles(0),
+        +    bind_files: BindFiles(98),
         "#,
         );
     }

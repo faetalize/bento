@@ -140,7 +140,8 @@ To fix this, stop Waybar with `pkill waybar` command, then open `~/.config/bento
 Bento Settings is a GTK app for changing bento's settings without editing the config.
 Run `bento-settings`, or `bento-settings engine` to open a page directly, or `bento-settings --search gaps` to search.
 
-It edits `~/.config/bento/config.kdl` in place and changes only the values you set, so your comments and layout stay as they are.
+It edits `~/.config/bento/config.kdl` and the layout engine's own file in place, and changes only the values you set, so your comments and layout stay as they are.
+Its Shortcuts page lists every bind, bento's and the engine's, and records new ones by pressing them; binds from included files are shown but left alone.
 It checks every change with bento's own parser before saving, and bento applies it right away.
 
 ### Wallpaper

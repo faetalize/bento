@@ -7,7 +7,7 @@ use knuffel::Decode as _;
 
 use crate::binds::{Binds, Key};
 use crate::utils::{expand_home_path, MergeWith};
-use crate::{Config, Includes};
+use crate::{Config, CurrentFile, Includes};
 
 /// Which tiling layout bento runs, and its options.
 ///
@@ -146,6 +146,12 @@ pub fn engine_config_path(config_path: &Path, layout: &TilingLayout) -> PathBuf 
     }
 }
 
+/// The default file of a built-in engine, with its binds and options.
+pub fn default_engine_config(name: &str) -> Option<&'static str> {
+    let config = DEFAULT_ENGINE_CONFIGS.iter().find(|(n, _)| *n == name);
+    config.map(|(_, text)| *text)
+}
+
 /// Default files of the engines that ship with bento, with their binds and options.
 const DEFAULT_ENGINE_CONFIGS: &[(&str, &str)] = &[
     ("bento", include_str!("../../resources/layouts/bento.kdl")),
@@ -251,7 +257,11 @@ where
                     }
 
                     let part = Binds::decode_node(node, ctx)?;
-                    config.borrow_mut().binds.0.extend(part.0);
+                    let file = ctx.get::<CurrentFile>().unwrap().0.clone();
+                    let mut config = config.borrow_mut();
+                    let files = part.0.iter().map(|bind| (bind.key, file.clone()));
+                    config.bind_files.0.extend(files);
+                    config.binds.0.extend(part.0);
                 }
                 name => ctx.emit_error(DecodeError::unexpected(
                     node,
@@ -424,26 +434,37 @@ mod tests {
         );
 
         // The main config only has bento's own actions, and niri's layout actions aren't bento's.
-        let config = Config::parse_mem("binds { Mod+R { resize 2; } }");
-        assert!(config.is_err());
-        let config = Config::parse_mem("binds { Mod+L { focus-column-right; } }");
-        assert!(config.is_err());
-        let config = Config::parse_mem(r#"binds { Mod+R { layout-action "resize" 2; } }"#);
-        assert!(config.is_err());
+        let unknown = "or one of";
+        assert!(error(Config::parse_mem(&binds("Mod+R { resize 2; }"))).contains(unknown));
+        let config = Config::parse_mem(&binds("Mod+L { focus-column-right; }"));
+        assert!(error(config).contains(unknown));
+        let config = Config::parse_mem(&binds(r#"Mod+R { layout-action "resize" 2; }"#));
+        assert!(error(config).contains("engine actions are bound by name in the engine's own file"));
         // `layout-action` is for the command line; configs name engine actions directly.
-        let config =
-            Config::parse_mem_with_engine("", r#"binds { Mod+R { layout-action "resize"; } }"#);
-        assert!(config.is_err());
+        let engine = binds(r#"Mod+R { layout-action "resize"; }"#);
+        let config = Config::parse_mem_with_engine("", &engine);
+        assert!(error(config).contains("write the engine's action by its name"));
+    }
+
+    fn binds(body: &str) -> String {
+        format!("binds {{\n    {body}\n}}\n")
+    }
+
+    /// The parse error as bento shows it, which must not be a syntax error.
+    fn error(config: Result<Config, crate::ConfigIncludeError>) -> String {
+        let text = format!("{:?}", miette::Report::new(config.unwrap_err()));
+        assert!(!text.contains("found `"), "{text}");
+        text
     }
 
     #[test]
     fn engine_file_errors_keep_their_meaning() {
         // A typo in one of bento's actions' arguments is still an error, not an engine action.
-        let config = Config::parse_mem_with_engine("", "binds { Mod+W { focus-workspace; } }");
-        assert!(config.is_err());
+        let config = Config::parse_mem_with_engine("", &binds("Mod+W { focus-workspace; }"));
+        assert!(error(config).contains("argument"));
 
         let config = Config::parse_mem_with_engine("", "layout { gaps 8; }");
-        assert!(config.is_err());
+        assert!(error(config).contains("an engine's file has `options` and `binds`"));
     }
 
     #[test]
@@ -463,11 +484,22 @@ mod tests {
     }
 
     #[test]
+    fn binds_remember_their_file() {
+        let main = binds(r#"Mod+T { spawn "x"; }"#);
+        let config = Config::parse_mem_with_engine(&main, &binds("Mod+R { resize; }")).unwrap();
+        let files: Vec<_> = config
+            .bind_files
+            .0
+            .iter()
+            .map(|(_, path)| path.to_str().unwrap())
+            .collect();
+        assert_eq!(files, ["config.kdl", "engines/bento.kdl"]);
+    }
+
+    #[test]
     fn a_key_is_bound_in_one_file_only() {
-        let config = Config::parse_mem_with_engine(
-            "binds { Mod+R { spawn \"x\"; } }",
-            "binds { Mod+R { resize; } }",
-        );
-        assert!(config.is_err());
+        let main = binds(r#"Mod+R { spawn "x"; }"#);
+        let config = Config::parse_mem_with_engine(&main, &binds("Mod+R { resize; }"));
+        assert!(error(config).contains("this key is already bound in the main config"));
     }
 }

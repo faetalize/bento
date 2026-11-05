@@ -8,12 +8,12 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::glib::translate::FromGlib;
-use gtk::{gdk, glib};
+use gtk::glib;
 use niri_config::input::ModKey;
-use niri_config::{Action, Key, Modifiers, TilingLayout, Trigger};
+use niri_config::{Action, Key, TilingLayout};
 use niri_ipc::{LayoutEngine, LayoutEngineOption, LayoutEngineOptionValue};
 
+use super::shortcuts::{self, shortcut_label};
 use crate::ipc;
 use crate::kdl::{self, Value};
 use crate::model::Category;
@@ -386,6 +386,13 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
                 .css_classes(["dim-label"])
                 .build();
             row.add_suffix(&unset);
+            // Binding it opens the Shortcuts page's own dialog, with this action picked.
+            row.set_activatable(true);
+            row.add_suffix(&gtk::Image::from_icon_name("list-add-symbolic"));
+            let (ctx, name) = (view.ctx.clone(), action.name.clone());
+            row.connect_activated(move |row| {
+                shortcuts::open(&ctx, row, shortcuts::Edit::New(Some(name.clone())));
+            });
         }
         for key in keys {
             row.add_suffix(&shortcut_label(key, mod_key));
@@ -393,58 +400,6 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
         group.add(&row);
     }
     group
-}
-
-/// Draws a bind's keys as keycaps, with the compositor's Mod key spelled out.
-fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
-    let mut modifiers = key.modifiers;
-    if modifiers.contains(Modifiers::COMPOSITOR) {
-        modifiers.remove(Modifiers::COMPOSITOR);
-        modifiers |= mod_key;
-    }
-    let mut mask = gdk::ModifierType::empty();
-    for (modifier, gdk_modifier) in [
-        (Modifiers::CTRL, gdk::ModifierType::CONTROL_MASK),
-        (Modifiers::SHIFT, gdk::ModifierType::SHIFT_MASK),
-        (Modifiers::ALT, gdk::ModifierType::ALT_MASK),
-        (Modifiers::SUPER, gdk::ModifierType::SUPER_MASK),
-    ] {
-        if modifiers.contains(modifier) {
-            mask |= gdk_modifier;
-        }
-    }
-
-    match key.trigger {
-        Trigger::Keysym(keysym) => {
-            // SAFETY: GDK key values are X keysyms, which is what xkb gives bento.
-            let key = unsafe { gdk::Key::from_glib(keysym.raw()) };
-            let label = gtk::ShortcutLabel::new(&gtk::accelerator_name(key, mask));
-            label.set_valign(gtk::Align::Center);
-            label.upcast()
-        }
-        // Mouse buttons and scrolling have no keycap; spell them the way the config does.
-        trigger => {
-            let mut text = String::new();
-            for (modifier, name) in [
-                (Modifiers::SUPER, "Super"),
-                (Modifiers::CTRL, "Ctrl"),
-                (Modifiers::ALT, "Alt"),
-                (Modifiers::SHIFT, "Shift"),
-            ] {
-                if modifiers.contains(modifier) {
-                    text.push_str(name);
-                    text.push('+');
-                }
-            }
-            text.push_str(&format!("{trigger:?}"));
-            gtk::Label::builder()
-                .label(text)
-                .valign(gtk::Align::Center)
-                .css_classes(["dim-label"])
-                .build()
-                .upcast()
-        }
-    }
 }
 
 fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
