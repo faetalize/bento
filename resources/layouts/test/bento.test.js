@@ -2,7 +2,7 @@
 //
 // The first part tests the engine through the layout API. The output is 1280 × 720 with 16 px
 // gaps, which makes the grid 24 columns by 12 rows of roughly 37 × 43 px cells. Windows open
-// 100 px wide, from `default-column-width`, so 2 cells wide. Expectations are in cells, so they
+// 100 px wide, from `default-width`, so 2 cells wide. Expectations are in cells, so they
 // don't depend on the output size: `cells()` gives windows' sizes and places on screen in cells,
 // and `cellRect()` the rect of some cells on the canvas, rounded like the engine does. `tiles()`
 // keeps pixels for windows that cover the view instead of cells, like fullscreen ones.
@@ -852,7 +852,7 @@ describe("grid layout", () => {
 });
 
 describe("window rules", () => {
-    test("open-maximized opens a window as wide as the view", async () => {
+    test("open-full-width opens a window as wide as the view", async () => {
         const host = await setup();
         host.open();
         host.open({ rules: { "open-full-width": true } });

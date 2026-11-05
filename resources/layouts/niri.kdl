@@ -157,4 +157,45 @@ binds {
     // Windows in this column will appear as vertical tabs,
     // rather than stacked on top of each other.
     Mod+W { toggle-column-tabbed-display; }
+
+    // Move the focused column to the workspace below or above. The binds on Ctrl and Page_Down or
+    // Page_Up in config.kdl move one window instead.
+    Mod+Ctrl+Shift+Page_Down { move-column-to-workspace-down; }
+    Mod+Ctrl+Shift+Page_Up   { move-column-to-workspace-up; }
+    Mod+Ctrl+Shift+U         { move-column-to-workspace-down; }
+    Mod+Ctrl+Shift+I         { move-column-to-workspace-up; }
+
+    // Move it to a workspace of the focused monitor by its number. Add "false" after the number
+    // to keep the focus where it is.
+    Mod+Ctrl+Shift+1 { move-column-to-workspace 1; }
+    Mod+Ctrl+Shift+2 { move-column-to-workspace 2; }
+    Mod+Ctrl+Shift+3 { move-column-to-workspace 3; }
+    Mod+Ctrl+Shift+4 { move-column-to-workspace 4; }
+    Mod+Ctrl+Shift+5 { move-column-to-workspace 5; }
+    Mod+Ctrl+Shift+6 { move-column-to-workspace 6; }
+    Mod+Ctrl+Shift+7 { move-column-to-workspace 7; }
+    Mod+Ctrl+Shift+8 { move-column-to-workspace 8; }
+    Mod+Ctrl+Shift+9 { move-column-to-workspace 9; }
+
+    // Move the focused column to the monitor beside. The binds on Ctrl and Shift and the arrow
+    // keys in config.kdl move one window instead.
+    Mod+Alt+Shift+Left  { move-column-to-monitor-left; }
+    Mod+Alt+Shift+Down  { move-column-to-monitor-down; }
+    Mod+Alt+Shift+Up    { move-column-to-monitor-up; }
+    Mod+Alt+Shift+Right { move-column-to-monitor-right; }
+    Mod+Alt+Shift+H     { move-column-to-monitor-left; }
+    Mod+Alt+Shift+J     { move-column-to-monitor-down; }
+    Mod+Alt+Shift+K     { move-column-to-monitor-up; }
+    Mod+Alt+Shift+L     { move-column-to-monitor-right; }
+
+    // These go on to the monitor or workspace beside once the strip has nothing further. To use
+    // them, bind them to your focus keys instead of the actions above.
+    // Mod+Left  { focus-column-or-monitor-left; }
+    // Mod+Right { focus-column-or-monitor-right; }
+    // Mod+Down  { focus-window-or-workspace-down; }
+    // Mod+Up    { focus-window-or-workspace-up; }
+    // Mod+Ctrl+Left  { move-column-left-or-to-monitor-left; }
+    // Mod+Ctrl+Right { move-column-right-or-to-monitor-right; }
+    // Mod+Ctrl+Down  { move-window-down-or-to-workspace-down; }
+    // Mod+Ctrl+Up    { move-window-up-or-to-workspace-up; }
 }
