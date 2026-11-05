@@ -637,6 +637,18 @@ export class Session {
         return JSON.stringify([this.focusedMonitor, ws?.id ?? null, ws?.focused ?? null]);
     }
 
+    /**
+     * Fires `focuschange` for focus the engine moved itself since the focus was `seen`, until
+     * listeners stop moving it.
+     */
+    fireFocusChanges(seen) {
+        // Bounded, so listeners that keep moving focus can't hang the call.
+        for (let i = 0; i < 8 && this.focusKey() !== seen; i++) {
+            seen = this.focusKey();
+            dispatch(this.bento, new BentoEvent("focuschange", this.bento));
+        }
+    }
+
     markPlaced(win, animate) {
         if (animate !== undefined) {
             this.rec.placed.set(win.id, animate);

@@ -222,7 +222,11 @@ export function handle(callJson) {
                 }
             }
             isQuery = call.event.type === "newwindowsize";
+            const focus = session.focusKey();
             result = deliver(call.event);
+            if (!isQuery) {
+                session.fireFocusChanges(focus);
+            }
         }
     } catch (e) {
         errors.push(describe(e));
@@ -270,6 +274,7 @@ function create(call) {
     }
 
     layoutModule.default(session.bento);
+    const focus = session.focusKey();
     for (const { d, info } of windows) {
         dispatch(
             session.bento,
@@ -283,6 +288,7 @@ function create(call) {
             }),
         );
     }
+    session.fireFocusChanges(focus);
 }
 
 /**
