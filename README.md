@@ -1,7 +1,7 @@
 > [!NOTE]
 > **bento** is a fork of [niri](https://github.com/niri-wm/niri).
 > Please don't report bento issues to the niri project.
-> bento keeps niri's IPC protocol and `NIRI_SOCKET`, so tools that talk to niri should keep working.
+> bento has no niri IPC socket: its own programs talk to it through `BENTO_SOCKET`, see [The socket](#the-socket).
 > Config lives in `$XDG_CONFIG_HOME/bento/config.kdl`.
 
 <h1 align="center">bento</h1>
@@ -129,8 +129,9 @@ After linking, niri itself can't run from that config if it uses anything specif
 
 ### Desktop shells
 
-bento keeps niri's IPC and sets `XDG_CURRENT_DESKTOP=bento:niri`, so tools made for niri can work with bento, but their instructions are written for niri.
-Complete desktop shells such as [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) and [Noctalia](https://github.com/noctalia-dev/noctalia-shell) work with bento through its IPC.
+bento sets `XDG_CURRENT_DESKTOP=bento:niri`, so portals and tools that look for niri find it, but it has no niri IPC socket.
+Desktop shells made for niri, such as [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) and [Noctalia](https://github.com/noctalia-dev/noctalia-shell), lose what they read from that socket.
+Shells get the basics from Wayland protocols: `ext-workspace`, foreign-toplevel and output management.
 
 The default bento config runs Waybar, so with a desktop shell you might get two bars on screen.
 To fix this, stop Waybar with `pkill waybar` command, then open `~/.config/bento/config.kdl` and delete the `spawn-at-startup "waybar"` line.
@@ -165,6 +166,40 @@ If you install bento alongside GNOME or KDE and want to keep their default app a
 ```
 ln -s /usr/share/applications/gnome-mimeapps.list ~/.local/share/applications/bento-mimeapps.list
 ```
+
+## The socket
+
+bento's own programs, which are `bento msg`, bento Settings and scripts, talk to it through one socket that carries JSON.
+Its path is in `$BENTO_SOCKET`, which bento sets for everything it starts, and it works without a Wayland connection.
+The format belongs to bento and can change at any time: it isn't niri's IPC.
+
+Each request is one line of JSON with its kind in `"type"`, and bento answers it with one line.
+Keys are camelCase.
+A `subscribe` request turns the connection into a stream of events, so a program that wants both opens two connections.
+
+```sh
+echo '{"type":"get","what":"windows"}' | bento msg raw-request
+echo '{"type":"action","name":"focus-workspace","args":[3],"properties":{}}' | bento msg raw-request
+```
+
+Requests:
+
+- `get` reads one of `version`, `monitors`, `workspaces`, `windows`, `groups`, `layers`, `focused`, `keyboardLayouts`, `overview`, `casts`, `engine`, `engineState` and `actions`.
+  Monitors, workspaces, windows and groups are bento's objects, with the same names layout engines see them by.
+  `engine` is the running engine's name, actions with their arguments, options and window rules.
+  `engineState` is whatever the running engine exposes about itself, in a shape of its own.
+  `actions` is bento's own actions with their arguments.
+- `action` runs an action by name with its arguments and properties, as written in a bind, and parses it the way the config does, so the same things are invalid.
+  Besides bento's actions it runs the running engine's, by their names.
+  `window` and `workspace` aim it at another window or workspace than the focused one.
+- `output` changes a monitor's configuration temporarily, `pickWindow` and `pickColor` let the user pick, `loadConfigFile` reloads the config, `focusWindow`, `setWindowUrgent` and `stopCast` do what they say.
+- `subscribe` takes the kinds of events to get, or all of them.
+  A new subscriber first gets the current state as events like `monitorAdded` and `windowAdded`.
+  The events are `monitorAdded`, `monitorChanged`, `monitorRemoved`, the same for `workspace`, `window` and `group`, `focusChanged`, `engineChanged`, `engineStateChanged`, `keyboardLayoutsChanged`, `keyboardLayoutSwitched`, `overviewChanged`, `castsChanged`, `configLoaded`, `screenshotCaptured` and `touchpadToggled`.
+
+`bento msg` is the command line for all of it, with readable output and raw JSON with `-j`.
+Its subcommands are named for the requests: `bento msg windows`, `bento msg engine-state`, `bento msg action focus-workspace 3`, `bento msg action -p focus=false move-window-to-workspace 2`, `bento msg subscribe windowAdded windowRemoved`.
+`bento msg --help` lists them all.
 
 ## Layout engines
 
@@ -215,7 +250,7 @@ options {
 
 Values are booleans, numbers or strings.
 `bento validate` checks the options against what the engine declares, and so does bento when it loads the config.
-`bento msg layout-engine` lists the running engine's options with their current values, and its actions, and `bento msg -j layout-engine` gives the same as JSON for tools like settings screens.
+`bento msg engine` lists the running engine's options with their current values, and its actions, and `bento msg -j engine` gives the same as JSON for tools like settings screens.
 
 The `layout {}` section of the config still applies too.
 Engines get its values, such as `gaps`, `struts`, `preset-column-widths` or `center-focused-column`, and decide what they mean.
@@ -245,7 +280,7 @@ bento msg action layout-action focus-left
 ```
 
 `bento validate` checks that the engine has the actions your binds name, and that their arguments fit.
-`bento msg layout-engine` lists every action the running engine has, with what it does and the arguments it takes.
+`bento msg engine` lists every action the running engine has, with what it does and the arguments it takes.
 
 Engines only see their own workspace for now, so no engine action reaches another monitor or workspace; bento's own actions, like `focus-monitor-left` or `focus-workspace-down`, do that.
 
@@ -377,7 +412,7 @@ The view is a multiple of 12 columns wide, like the rows: bento picks the multip
 So halves, thirds, quarters and sixths of the view are whole numbers of cells, in both directions.
 Window sizes snap to whole cells.
 
-Its actions are named for what they do on the grid, and `bento msg layout-engine` lists them all with what each does.
+Its actions are named for what they do on the grid, and `bento msg engine` lists them all with what each does.
 `focus-left`, `focus-right`, `focus-up` and `focus-down` go to the nearest window that way, even diagonally, and `move-left` and the rest move the focused window one cell, swapping with a window in the way.
 A window's stack is the windows covering the same column of cells: `stack-left` and `stack-right` stack a window under its neighbour or take it out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-tabs` shows it as tabs.
 `set-width`, `set-height`, `cycle-width` and `cycle-height` size the focused window in whole cells.
@@ -416,7 +451,7 @@ The second press puts the window there.
 The `niri` engine is niri's scrollable tiling as a bento layout engine, ported from niri's `src/layout/scrolling.rs` to JavaScript in [`resources/layouts/niri.js`](resources/layouts/niri.js).
 Its functions keep niri's names where they do the same thing, so the two are easy to compare.
 
-niri's layout actions, bound in `engines/niri.kdl`, the `layout {}` options that describe columns, window rules that size and place new windows, tabbed columns, and the IPC all work like in niri.
+niri's layout actions, bound in `engines/niri.kdl`, the `layout {}` options that describe columns, window rules that size and place new windows, and tabbed columns all work like in niri.
 It differs in these ways:
 
 - **Animations are bento's.**

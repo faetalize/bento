@@ -71,7 +71,7 @@ input {
 }
 
 // You can configure outputs by their name, which you can find
-// by running `bento msg outputs` while inside a bento instance.
+// by running `bento msg monitors` while inside a bento instance.
 // The built-in laptop monitor is usually called "eDP-1".
 // Find more information on the wiki:
 // https://niri-wm.github.io/niri/Configuration:-Outputs
@@ -85,7 +85,7 @@ input {
     // If the refresh rate is omitted, bento will pick the highest refresh rate
     // for the resolution.
     // If the mode is omitted altogether or is invalid, bento will pick one automatically.
-    // Run `bento msg outputs` while inside a bento instance to list all outputs and their modes.
+    // Run `bento msg monitors` while inside a bento instance to list all outputs and their modes.
     mode "1920x1080@120.030"
 
     // You can use integer or fractional scale, for example use 1.5 for 150% scale.
