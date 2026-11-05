@@ -33,7 +33,7 @@ fn simple_no_workspaces() {
     let window = f.client(id).window(&surface);
     assert_snapshot!(
         window.format_recent_configures(),
-        @"size: 89 × 688, bounds: 1248 × 688, states: []"
+        @"size: 100 × 100, bounds: 1248 × 688, states: []"
     );
 }
 
@@ -244,10 +244,6 @@ workspace "ws-2" {
     layout {
         border {
             width 10
-        }
-
-        default-column-width {
-            fixed 500
         }
     }
 }

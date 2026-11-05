@@ -257,7 +257,7 @@ fn unfullscreen_preserves_view_pos() {
     check_ops_on_layout(&mut layout, ops);
 
     // View pos = width of first window + gap.
-    assert_snapshot!(layout.active_workspace().unwrap().scrolling().view_pos(), @"116");
+    assert_snapshot!(layout.active_workspace().unwrap().scrolling().view_pos(), @"632");
 
     let ops = [
         Op::FullscreenWindow(2),

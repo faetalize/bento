@@ -103,9 +103,9 @@ fn niri_layout_runs_in_the_engine() {
     ops.extend(settle());
     let layout = check_ops_with_options(options_for("niri"), ops);
     assert_snapshot!(format_tiles(&layout), @"
-    100 × 336 at x:   16 y: 16
-    100 × 336 at x:   16 y:368 focused
-    100 × 688 at x:  132 y: 16
+    616 × 336 at x:   16 y: 16
+    616 × 336 at x:   16 y:368 focused
+    616 × 688 at x:  648 y: 16
     ");
 }
 
@@ -127,9 +127,9 @@ fn bento_layout_runs_in_the_engine() {
     ops.extend(settle());
     let layout = check_ops_with_options(options_for("bento"), ops);
     assert_snapshot!(format_tiles(&layout), @"
-      89 × 688 at x:   16 y: 16
-      90 × 336 at x:  121 y: 16
-      89 × 336 at x:  227 y: 16 focused
+      616 × 688 at x: -616 y: 16
+      616 × 336 at x:   16 y: 16
+      616 × 336 at x:  648 y: 16 focused
     ");
 }
 

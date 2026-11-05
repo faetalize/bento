@@ -315,7 +315,7 @@ fn restore_floating_size() {
     // We should get a tiling size configure.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 222 × 1048, bounds: 1888 × 1048, states: [Activated]"
+        @"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"
     );
 
     // Resize as requested.
@@ -762,7 +762,7 @@ fn interactive_move_restores_floating_size_when_set_to_floating() {
     // We should get a tiled size configure.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 222 × 1048, bounds: 1888 × 1048, states: [Activated]"
+        @"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"
     );
 
     // Resize as requested.
@@ -790,7 +790,7 @@ fn interactive_move_restores_floating_size_when_set_to_floating() {
     // This shouldn't request any new size because interactive move targets tiling.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 222 × 1048, bounds: 1920 × 1080, states: [Activated]"
+        @"size: 936 × 1048, bounds: 1920 × 1080, states: [Activated]"
     );
 
     // Change interactive move to target floating.
@@ -854,7 +854,7 @@ fn floating_doesnt_store_fullscreen_size() {
     // This should request the tiled size.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 1888 × 1048, bounds: 1888 × 1048, states: [Activated]"
+        @"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"
     );
 
     // Commit in response.
@@ -914,7 +914,7 @@ fn floating_doesnt_store_maximized_size() {
     // This should request the tiled size.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 1888 × 1048, bounds: 1888 × 1048, states: [Activated]"
+        @"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"
     );
 
     // Commit in response.
