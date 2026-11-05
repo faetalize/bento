@@ -177,11 +177,9 @@ export const meta = {
         "focus-down-or-workspace": {
             description: "Focus the nearest window below, or the workspace below when there is none.",
         },
+        // The grid has no end to the right, so only moving left, up and down can run out of room.
         "move-left-or-to-monitor": {
             description: "Move the focused window one cell left, or to the monitor to the left when it can't.",
-        },
-        "move-right-or-to-monitor": {
-            description: "Move the focused window one cell right, or to the monitor to the right when it can't.",
         },
         "move-up-or-to-workspace": {
             description: "Move the focused window one cell up, or to the workspace above when it can't.",
@@ -4510,9 +4508,6 @@ export default function create(bento) {
         "move-left-or-to-monitor": (ws, space, target) =>
             space.action("move-left", [], target) ||
             moveTo(space, target, ws.monitor.left?.activeWorkspace),
-        "move-right-or-to-monitor": (ws, space, target) =>
-            space.action("move-right", [], target) ||
-            moveTo(space, target, ws.monitor.right?.activeWorkspace),
         "move-up-or-to-workspace": (ws, space, target) =>
             space.action("move-up", [], target) || moveTo(space, target, above(ws)),
         "move-down-or-to-workspace": (ws, space, target) =>

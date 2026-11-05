@@ -35,7 +35,7 @@ const ROW_STEP = METRICS.cellH + METRICS.gap;
 async function setup(opts = {}) {
     return TestHost.load("../bento.js", {
         ...opts,
-        config: { defaultColumnWidth: { fixed: 100 }, ...(opts.config ?? {}) },
+        options: { "default-width": "100", ...(opts.options ?? {}) },
     });
 }
 
@@ -103,38 +103,117 @@ function edges(given) {
     return { left: false, right: false, top: false, bottom: false, ...given };
 }
 
+/** Starts a pointer resize; returns whether the engine took it. */
 function resizeBegin(host, id, given) {
-    return host.send({
-        type: "resize-begin",
-        id,
-        resize: { edges: edges(given), delta: { x: 0, y: 0 } },
-    }).result;
+    const result = host.send({ type: "resizebegin", id, edges: edges(given), delta: { x: 0, y: 0 } });
+    return result.handled && !result.prevented;
 }
 
 function resizeUpdate(host, id, given, dx, dy) {
-    host.send({
-        type: "resize-update",
-        id,
-        resize: { edges: edges(given), delta: { x: dx, y: dy } },
-    });
+    host.send({ type: "resizeupdate", id, edges: edges(given), delta: { x: dx, y: dy } });
 }
 
 function resizeEnd(host, id) {
-    host.send({ type: "resize-end", id });
+    host.send({ type: "resizeend", id });
+}
+
+/** What the engine draws on a workspace: the boxes, in drawing order. */
+function drawn(host, workspace = host.activeWorkspace().id) {
+    const tree = host.tree(workspace);
+    return tree
+        .order()
+        .filter((id) => tree.node(id).kind === "box")
+        .map((id) => ({ id, ...tree.node(id).props }));
+}
+
+/** The tab bars' tabs, which are the interactive boxes. */
+const tabNodes = (host, workspace) => drawn(host, workspace).filter((node) => node.interactive);
+
+/** The highlight of a picked window or a drop target, if one is shown. */
+const hint = (host, workspace) =>
+    drawn(host, workspace).find((node) => node.background === "#7fc8ff80" && !node.interactive)
+        ?.rect ?? null;
+
+/** The state the engine exposes for the active workspace. */
+function exposed(host) {
+    const id = host.activeWorkspace().id;
+    return host.exposedState().workspaces.find((ws) => ws.id === id);
+}
+
+/** The windows of each tabbed area. */
+const tabbedAreas = (host) =>
+    exposed(host)
+        .items.filter((item) => item.tabbed)
+        .map((item) => item.windows);
+
+/**
+ * Each window's column and place in its stack, counting from 1: the grid's columns are where
+ * windows start, and a window's stack is the windows and tabs covering the column of cells it
+ * starts in. Sorted by window.
+ */
+function ipc(host) {
+    const { items } = exposed(host);
+    const starts = [...new Set(items.map((item) => item.area.col))].sort((a, b) => a - b);
+    const stack = (col) =>
+        items
+            .filter((item) => item.area.col <= col && col < item.area.right)
+            .sort((a, b) => a.area.row - b.area.row)
+            .flatMap((item) => item.windows.map((id) => [item, id]));
+    return items
+        .flatMap((item) =>
+            item.windows.map((id) => [
+                id,
+                [
+                    starts.indexOf(item.area.col) + 1,
+                    stack(item.area.col).findIndex(([it, other]) => it === item && other === id) + 1,
+                ],
+            ]),
+        )
+        .sort((a, b) => a[0] - b[0]);
+}
+
+/** Lifts a window out of the layout for a drag, or because it floats. Returns what bento tells. */
+function lift(host, id, reason = "drag") {
+    const win = host.windows.get(id);
+    const info = host.windowInfo(win);
+    host.close(id, reason);
+    host.windows.set(id, win);
+    return info;
+}
+
+/** Gives a lifted window back to the engine, on the active workspace. */
+function readd(host, id, how) {
+    const win = host.windows.get(id);
+    const workspace = host.activeWorkspace().id;
+    win.workspace = workspace;
+    host.trees.get(workspace).add(`w${id}`);
+    host.told.windows.set(id, host.windowInfo(win));
+    host.send({ type: "windowadd", window: host.windowInfo(win), how });
+}
+
+/** The highlight for a window dragged to `rect` with the pointer at `pointer`. */
+function dropTarget(host, id, pointer, rect, info = host.windowInfo(host.windows.get(id))) {
+    const workspace = host.activeWorkspace().id;
+    host.send({ type: "dragenter", workspace, window: info, pointer, rect });
+    const target = hint(host);
+    host.send({ type: "dragleave", workspace });
+    return target;
+}
+
+/** Drops a lifted window at `rect`, with the pointer at `pointer`. */
+function drop(host, id, pointer, rect) {
+    readd(host, id, { reason: "drop", activate: true, rect, pointer, nextTo: null });
 }
 
 /** Drags a window grabbed at `start` on screen and drops it with the pointer at `end`. */
 function drag(host, id, start, end) {
-    const camera = host.camera;
+    const camera = host.camera();
     const r = host.rect(id);
     const pointer = { x: end.x + camera.x, y: end.y + camera.y };
     const rect = { x: r.x + end.x - start.x, y: r.y + end.y - start.y, w: r.w, h: r.h };
-    host.drag(id, pointer, rect);
-}
-
-/** Lifts a window out of the layout for a drag, without dropping it. */
-function lift(host, id) {
-    host.send({ type: "remove", id, reason: "drag" });
+    const info = lift(host, id);
+    dropTarget(host, id, pointer, rect, info);
+    drop(host, id, pointer, rect);
 }
 
 /** Windows 1 full height, window 2 half height on top to its right, with a hole below 2. */
@@ -202,7 +281,7 @@ describe("grid layout", () => {
         host.open();
         host.open();
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(host.errors, []);
     });
 
@@ -219,21 +298,21 @@ describe("grid layout", () => {
         // Moving past the bottom does nothing.
         repeat(10, () => host.action("move-down"));
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 6"]);
-        assert.equal(host.action("move-down"), false);
+        host.action("move-down");
     });
 
     test("moving into a window swaps", async () => {
         const host = await setup();
         host.open();
         host.open();
-        assert.equal(host.action("move-left"), true);
+        host.action("move-left");
 
         // Window 2 is now on the left.
         assert.deepEqual(cells(host), ["2 × 12 at 2, 0", "2 × 12 at 0, 0"]);
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
 
         // Column 0 is the left edge of the grid with gravity.
-        assert.equal(host.action("move-left"), false);
+        host.action("move-left");
     });
 
     test("growing down takes rows from the window stacked below", async () => {
@@ -248,11 +327,11 @@ describe("grid layout", () => {
 
         // Focus moves geometrically.
         host.action("focus-up");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         host.action("focus-down");
-        assert.equal(host.focused, 3);
+        assert.equal(host.focused(), 3);
         host.action("focus-left");
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
 
         // Growing 2 down moves the edge it shares with 3, which gets shorter instead of being
         // pushed away.
@@ -351,13 +430,13 @@ describe("grid layout", () => {
 
         // The highlight shows where it lands.
         const r = host.rect(3);
-        const pointer = { x: end.x + host.camera.x, y: end.y };
+        const pointer = { x: end.x + host.camera().x, y: end.y };
         const rect = { x: r.x + end.x - start.x, y: r.y + end.y - start.y, w: r.w, h: r.h };
-        assert.deepEqual(host.dropTarget(3, pointer, rect), cellRect(2, 6, 2, 6));
+        assert.deepEqual(dropTarget(host, 3, pointer, rect), cellRect(2, 6, 2, 6));
 
         drag(host, 3, start, end);
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 2, 6"]);
-        assert.equal(host.focused, 3);
+        assert.equal(host.focused(), 3);
     });
 
     test("dropping on the edge of a window splits it", async () => {
@@ -371,8 +450,8 @@ describe("grid layout", () => {
         assert.deepEqual(cells(host), ["2 × 6 at 0, 6", "2 × 12 at 2, 0", "2 × 6 at 0, 0"]);
 
         // The highlight for dropping window 2 at the left edge of window 1 is the left column.
-        const pointer = { x: 16 + 5 + host.camera.x, y: 16 + 9 * ROW_STEP };
-        assert.deepEqual(host.dropTarget(2, pointer, host.rect(2)), cellRect(0, 6, 1, 6));
+        const pointer = { x: 16 + 5 + host.camera().x, y: 16 + 9 * ROW_STEP };
+        assert.deepEqual(dropTarget(host, 2, pointer, host.rect(2)), cellRect(0, 6, 1, 6));
 
         // Drop window 2 at the left edge of window 1: 2 takes the left column, 1 the right one.
         drag(host, 2, { x: 16 + 2 * COL_STEP + 50, y: 300 }, { x: 16 + 5, y: 16 + 9 * ROW_STEP });
@@ -388,20 +467,20 @@ describe("grid layout", () => {
         halfHeight(host, 2);
         repeat(6, () => host.action("move-down"));
         host.action("move-left");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
         // Lift window 2 out of the layout. Window 1 hasn't jumped.
         lift(host, 2);
         assert.deepEqual(cells(host, [1]), ["2 × 6 at 0, 0"]);
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
     });
 
     test("dragging a window that fell left keeps the view still", async () => {
         // Windows 1 and 2 on the top half, then window 3 opens right of window 2, and falls under
         // window 1 when moved to the bottom half.
         const host = await setUpTwoOverOne();
-        assert.equal(host.focused, 3);
+        assert.equal(host.focused(), 3);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 0, 6"]);
 
         // Windows 1 and 2 stay where they were.
@@ -416,7 +495,7 @@ describe("grid layout", () => {
 
         // Closing window 1 lets window 2 slide left, which reorders the windows.
         host.close(1);
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
     });
 
@@ -427,7 +506,7 @@ describe("grid layout", () => {
         host.activate(1);
         host.activate(3);
         host.close(3);
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
     });
 
     test("closing a new window goes back to the previous one", async () => {
@@ -444,10 +523,10 @@ describe("grid layout", () => {
 
         // Window 3 opens right of window 1, after window 2 in the order.
         host.open();
-        assert.equal(host.focused, 3);
+        assert.equal(host.focused(), 3);
 
         host.close(3);
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
     });
 
     test("swiping snaps to window edges with stacked windows", async () => {
@@ -471,11 +550,11 @@ describe("grid layout", () => {
         ]);
 
         // Swipe right by a bit over one window.
-        host.swipe(700);
+        host.swipe(host.activeWorkspace().id, [700]);
 
         // The view snaps to window 3 on the left and window 4 on the right, focusing window 4 as
         // the furthest in the direction of the swipe.
-        assert.equal(host.focused, 4);
+        assert.equal(host.focused(), 4);
         assert.deepEqual(cells(host), [
             "12 × 6 at -12, 0",
             "12 × 6 at -12, 6",
@@ -493,13 +572,13 @@ describe("grid layout", () => {
         host.activate(1);
 
         // A small swipe that would coast far snaps to the far end.
-        host.swipe(100, { x: 3000, y: 0 }, { x: host.camera.x + 2000, y: 0 });
-        assert.equal(host.focused, 4);
+        host.swipe(host.activeWorkspace().id, [100], 3000);
+        assert.equal(host.focused(), 4);
         assert.deepEqual(cells(host, [3, 4]), ["12 × 12 at 0, 0", "12 × 12 at 12, 0"]);
     });
 
     test("stacked windows count as a single column for centering", async () => {
-        const host = await setup({ config: { alwaysCenterSingleColumn: true } });
+        const host = await setup({ options: { "always-center-single-window": true } });
         host.open();
         halfHeight(host, 1);
         host.open();
@@ -516,9 +595,9 @@ describe("grid layout", () => {
     });
 
     test("center on overflow compares with the window beside", async () => {
-        const host = await setUpStackAndOne(60, { config: { centerFocusedColumn: "on-overflow" } });
+        const host = await setUpStackAndOne(60, { options: { "center-focused-window": "on-overflow" } });
         host.action("focus-left");
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
         // Window 1 and window 3 beside it don't fit together, so window 1 is centered. Window 2
         // under it is in the same column of cells and doesn't count.
         assert.deepEqual(cells(host), ["14 × 6 at 5, 0", "14 × 6 at 5, 6", "14 × 12 at 19, 0"]);
@@ -557,12 +636,8 @@ describe("grid layout", () => {
 
         // The window floats where it was tiled, then is tiled again from there.
         const rect = host.rect(2);
-        host.send({ type: "remove", id: 2, reason: "float" });
-        host.send({
-            type: "add",
-            window: host.info(host.windows.get(2)),
-            how: { reason: "tile", activate: true, rect, pointer: null, nextTo: null },
-        });
+        lift(host, 2, "float");
+        readd(host, 2, { reason: "tile", activate: true, rect, pointer: null, nextTo: null });
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "7 × 6 at 2, 0"]);
     });
 
@@ -574,7 +649,7 @@ describe("grid layout", () => {
         repeat(6, () => host.action("move-down"));
 
         // Window 2 opens half height, lined up with window 1.
-        host.open({ defaultHeight: { proportion: 0.5 } });
+        host.open({ rules: { "default-height": { proportion: 0.5 } } });
         assert.deepEqual(cells(host), ["2 × 6 at 0, 6", "2 × 6 at 2, 6"]);
     });
 
@@ -585,14 +660,14 @@ describe("grid layout", () => {
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 2, 6"]);
 
         // Window 3 comes last in the order, but window 2 is the last one in the top row.
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
     });
 
     test("focusing the top window goes up the stack", async () => {
         const host = await setUpOneAndStack();
         host.activate(3);
         host.action("focus-stack-top");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
     });
 
     test("focusing down reaches windows diagonally", async () => {
@@ -600,8 +675,8 @@ describe("grid layout", () => {
         const host = await setUpTwoOverOne();
         host.activate(2);
 
-        assert.equal(host.action("focus-down"), true);
-        assert.equal(host.focused, 3);
+        host.action("focus-down");
+        assert.equal(host.focused(), 3);
     });
 
     test("ipc positions follow grid columns", async () => {
@@ -609,7 +684,7 @@ describe("grid layout", () => {
 
         // Windows 1 and 3 are stacked in the first column, window 2 is in the second.
         assert.deepEqual(
-            [...host.ipc].sort((a, b) => a[0] - b[0]),
+            ipc(host),
             [
                 [1, [1, 1]],
                 [2, [2, 1]],
@@ -649,19 +724,19 @@ describe("grid layout", () => {
 
         // Window 2 grows up to the right edge of the view, and window 1 stays as is.
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "22 × 12 at 2, 0"]);
-        assert.equal(host.action("fill-width"), false);
+        host.action("fill-width");
     });
 
     test("consuming splits rows and expelling gives them back", async () => {
         const host = await setUpStackOfTwo();
 
         // Window 2 goes under window 1, which keeps the top half, and window 3 slides left.
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6", "2 × 12 at 2, 0"]);
 
         // Window 2 is stacked now, so this expels it back out to the right.
         host.action("stack-right");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0", "2 × 12 at 4, 0"]);
     });
 
@@ -671,12 +746,12 @@ describe("grid layout", () => {
         host.open();
         host.activate(1);
         host.action("stack-from-right");
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
         // Expelling the focused window gives window 2 its rows back.
         host.action("unstack");
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
         assert.deepEqual(cells(host), ["2 × 12 at 2, 0", "2 × 12 at 0, 0"]);
     });
 
@@ -686,22 +761,22 @@ describe("grid layout", () => {
         host.action("toggle-tabs");
 
         // Windows 1 and 2 are tabs in the area they shared, with window 1 in front.
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
         assert.equal(host.isVisible(1), true);
         assert.equal(host.isVisible(2), false);
 
         // Focusing down goes to the next tab.
         host.action("focus-down");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.equal(host.isVisible(1), false);
         assert.equal(host.isVisible(2), true);
 
         host.action("toggle-tabs");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6", "2 × 12 at 2, 0"]);
         assert.equal(host.isVisible(1), true);
-        assert.equal(host.tabs.size, 0);
+        assert.equal(tabNodes(host).length, 0);
     });
 
     test("consuming into tabs adds a tab and expelling takes it out", async () => {
@@ -714,10 +789,10 @@ describe("grid layout", () => {
         host.action("stack-left");
 
         // Window 2 is a second tab in window 1's area.
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 0, 0"]);
         assert.deepEqual(
-            [...host.ipc].sort((a, b) => a[0] - b[0]),
+            ipc(host),
             [
                 [1, [1, 1]],
                 [2, [1, 2]],
@@ -725,7 +800,7 @@ describe("grid layout", () => {
         );
 
         host.action("stack-right");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
     });
 
@@ -780,7 +855,7 @@ describe("window rules", () => {
     test("open-maximized opens a window as wide as the view", async () => {
         const host = await setup();
         host.open();
-        host.open({ openFullWidth: true });
+        host.open({ rules: { "open-full-width": true } });
         assert.deepEqual(cells(host, [2]), [`${METRICS.colsPerView} × 12 at 0, 0`]);
 
         // Like after toggle-full-width, it toggles back to its own width.
@@ -788,21 +863,24 @@ describe("window rules", () => {
         assert.deepEqual(cells(host, [2]), ["2 × 12 at 0, 0"]);
     });
 
-    test("default-column-display can make a new window tabbed", async () => {
+    test("default-tabs can make a new window tabbed", async () => {
         const host = await setup();
         host.open();
-        host.open({ defaultColumnDisplay: "tabbed" });
-        assert.deepEqual(
-            [...host.tabs.values()].map((bar) => bar.windows),
-            [[2]],
-        );
+        host.open({ rules: { "default-tabs": true } });
+        assert.deepEqual(tabbedAreas(host), [[2]]);
+    });
+
+    test("default-tabs is also an option", async () => {
+        const host = await setup({ options: { "default-tabs": true } });
+        host.open();
+        assert.deepEqual(tabbedAreas(host), [[1]]);
     });
 });
 
 describe("split and swap", () => {
     /** A and B stacked on the left half, C on the right half at full height. */
     async function setUpStackAndOne() {
-        const host = await setup({ config: { defaultColumnWidth: { proportion: 0.5 } } });
+        const host = await setup({ options: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         host.action("stack-left");
@@ -816,15 +894,15 @@ describe("split and swap", () => {
 
         // The first press picks A and highlights it.
         host.activate(a);
-        assert.equal(host.action("split-h"), true);
-        assert.deepEqual(host.hint, cellRect(0, 0, 12, 6));
+        host.action("split-h");
+        assert.deepEqual(hint(host), cellRect(0, 0, 12, 6));
 
         // The second press moves C into A's right half.
         host.activate(c);
-        assert.equal(host.action("split-h"), true);
-        assert.equal(host.hint, null);
+        host.action("split-h");
+        assert.equal(hint(host), null);
         assert.deepEqual(cells(host), ["6 × 6 at 0, 0", "12 × 6 at 0, 6", "6 × 6 at 6, 0"]);
-        assert.equal(host.focused, c);
+        assert.equal(host.focused(), c);
     });
 
     test("splitting the bottom window of a stack", async () => {
@@ -837,7 +915,7 @@ describe("split and swap", () => {
     });
 
     test("splitting stacked gives the window the half facing it", async () => {
-        const host = await setup({ config: { defaultColumnWidth: { proportion: 0.5 } } });
+        const host = await setup({ options: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         host.action("split-v");
@@ -846,9 +924,9 @@ describe("split and swap", () => {
 
         // A and B are level, so A goes below B, and the column it left collapses.
         assert.deepEqual(cells(host), ["12 × 6 at 0, 6", "12 × 6 at 0, 0"]);
-        assert.equal(host.focused, a);
-        assert.equal(host.action("focus-up"), true);
-        assert.equal(host.focused, b);
+        assert.equal(host.focused(), a);
+        host.action("focus-up");
+        assert.equal(host.focused(), b);
     });
 
     test("swapping trades places and sizes", async () => {
@@ -866,7 +944,7 @@ describe("split and swap", () => {
         const before = tiles(host);
         host.action("swap");
         host.action("swap");
-        assert.equal(host.hint, null);
+        assert.equal(hint(host), null);
         assert.deepEqual(tiles(host), before);
     });
 
@@ -875,23 +953,23 @@ describe("split and swap", () => {
         host.activate(a);
         host.action("split-h");
         host.close(a);
-        assert.equal(host.hint, null);
+        assert.equal(hint(host), null);
 
         // The next press starts over.
         host.activate(c);
         host.action("split-h");
-        assert.deepEqual(host.hint, host.rect(c));
+        assert.deepEqual(hint(host), host.rect(c));
     });
 
     test("windows one cell across can't be split that way", async () => {
         const host = await setup();
-        const a = host.open({ defaultWidth: { fixed: 30 } });
+        const a = host.open({ rules: { "default-width": { fixed: 30 } } });
         const b = host.open();
         host.activate(a);
         host.action("split-h");
         host.activate(b);
         const before = tiles(host);
-        assert.equal(host.action("split-h"), false);
+        host.action("split-h");
         assert.deepEqual(tiles(host), before);
     });
 });
@@ -953,7 +1031,7 @@ describe("sticky vertical resizing", () => {
 
     test("a narrower window sticks to the edge it lies along", async () => {
         const host = await setup();
-        host.open({ defaultWidth: { fixed: 200 } });
+        host.open({ rules: { "default-width": { fixed: 200 } } });
         host.open();
         host.action("stack-left");
         host.actionOn(2, "set-width", { op: "set", value: 100, unit: "px" });
@@ -1009,27 +1087,27 @@ describe("sticky vertical resizing", () => {
 });
 
 describe("stuff", () => {
-    const half = { config: { defaultColumnWidth: { proportion: 0.5 } } };
+    const half = { options: { "default-width": "50%" } };
     const rect = (x, y, w, h) => ({ x, y, w, h });
 
     test("stuffing between windows side by side splits their span in three", async () => {
         const host = await setup(half);
         const a = host.open();
         const b = host.open();
-        const w = host.open({ defaultWidth: { fixed: 100 } });
+        const w = host.open({ rules: { "default-width": { fixed: 100 } } });
 
         // The first press shows where the window would go.
-        assert.equal(host.action("stuff"), true);
-        assert.deepEqual(host.hint, cellRect(8, 0, 8, 12));
+        host.action("stuff");
+        assert.deepEqual(hint(host), cellRect(8, 0, 8, 12));
 
         // The second press puts it there: 12 + 12 cells become 8, 8 and 8, and A and B keep
         // their outer edges.
-        assert.equal(host.action("stuff"), true);
-        assert.equal(host.hint, null);
+        host.action("stuff");
+        assert.equal(hint(host), null);
         assert.deepEqual(host.rect(a), cellRect(0, 0, 8, 12));
         assert.deepEqual(host.rect(w), cellRect(8, 0, 8, 12));
         assert.deepEqual(host.rect(b), cellRect(16, 0, 8, 12));
-        assert.equal(host.focused, w);
+        assert.equal(host.focused(), w);
     });
 
     test("stuffing between stacked windows", async () => {
@@ -1048,8 +1126,8 @@ describe("stuff", () => {
     test("the window takes the rows the two windows share", async () => {
         const host = await setup(half);
         const a = host.open();
-        const b = host.open({ defaultHeight: { proportion: 0.5 } });
-        const w = host.open({ defaultWidth: { fixed: 100 } });
+        const b = host.open({ rules: { "default-height": { proportion: 0.5 } } });
+        const w = host.open({ rules: { "default-width": { fixed: 100 } } });
         host.action("stuff");
         host.action("stuff");
 
@@ -1061,7 +1139,7 @@ describe("stuff", () => {
 
     test("direction keys move between seams, and other actions cancel", async () => {
         const host = await setup();
-        const third = { defaultWidth: { proportion: 1 / 3 } };
+        const third = { rules: { "default-width": { proportion: 1 / 3 } } };
         host.open(third);
         host.open(third);
         host.open(third);
@@ -1070,29 +1148,29 @@ describe("stuff", () => {
         // The seam nearest to W is the one between B and C. Their 8 + 8 cells would become 5, 6
         // and 5.
         host.action("stuff");
-        const bc = host.hint;
+        const bc = hint(host);
         assert.deepEqual(bc, cellRect(13, 0, 6, 12));
 
         host.action("focus-left");
-        assert.deepEqual(host.hint, cellRect(5, 0, 6, 12));
+        assert.deepEqual(hint(host), cellRect(5, 0, 6, 12));
         host.action("focus-right");
-        assert.deepEqual(host.hint, bc);
-        assert.equal(host.focused, w);
+        assert.deepEqual(hint(host), bc);
+        assert.equal(host.focused(), w);
 
         host.action("toggle-full-width");
-        assert.equal(host.hint, null);
+        assert.equal(hint(host), null);
     });
 
     test("there's nothing to stuff into without two windows touching", async () => {
         const host = await setup(half);
         host.open();
-        assert.equal(host.action("stuff"), false);
-        assert.equal(host.hint, null);
+        host.action("stuff");
+        assert.equal(hint(host), null);
     });
 });
 
 describe("layout API", () => {
-    test("declares the gravity option", async () => {
+    test("declares its actions, options and window rules", async () => {
         const host = await setup();
         assert.equal(host.meta.name, "bento");
         const names = host.meta.actions.map((action) => action.name);
@@ -1105,46 +1183,81 @@ describe("layout API", () => {
             width.args.map(({ name, type }) => [name, type]),
             [["change", "size"]],
         );
+        const toWorkspace = host.meta.actions.find((action) => action.name === "move-to-workspace");
+        assert.deepEqual(
+            toWorkspace.args.map(({ name, type }) => [name, type]),
+            [["workspace", "workspace"]],
+        );
         assert.deepEqual(
             host.meta.options.map(({ name, default: value }) => [name, value]),
-            [["gravity", true]],
+            [
+                ["gravity", true],
+                ["center-focused-window", "never"],
+                ["always-center-single-window", false],
+                ["default-width", "50%"],
+                ["preset-widths", ["33.333%", "50%", "66.667%"]],
+                ["preset-heights", ["33.333%", "50%", "66.667%"]],
+                ["default-tabs", false],
+                ["tab-bar", true],
+                ["tab-bar-width", 4],
+                ["tab-bar-gap", 5],
+                ["tab-bar-active-color", "#7fc8ff"],
+                ["tab-bar-inactive-color", "#505050"],
+                ["tab-bar-urgent-color", "#9b0000"],
+                ["hint-color", "#7fc8ff80"],
+            ],
+        );
+        assert.deepEqual(
+            host.meta.windowRules.map(({ name, type }) => [name, type]),
+            [
+                ["default-width", "size"],
+                ["default-height", "size"],
+                ["default-tabs", "boolean"],
+                ["open-full-width", "boolean"],
+            ],
         );
     });
 
     test("unknown actions do nothing", async () => {
         const host = await setup();
         host.open();
-        assert.equal(host.action("no-such-action"), false);
-        assert.equal(host.action("toString"), false);
+        const before = cells(host);
+        host.action("no-such-action");
+        host.action("toString");
+        assert.deepEqual(cells(host), before);
+        assert.deepEqual(host.errors, []);
     });
 
-    test("focus actions return false at the edges", async () => {
+    test("focus actions stop at the edges", async () => {
         const host = await setup();
         host.open();
         host.open();
-        assert.equal(host.action("focus-right"), false);
-        assert.equal(host.action("focus-left"), true);
-        assert.equal(host.action("focus-left"), false);
-        assert.equal(host.action("focus-right-or-first"), true);
-        assert.equal(host.focused, 2);
-        assert.equal(host.action("focus-right-or-first"), true);
-        assert.equal(host.focused, 1);
+        host.action("focus-right");
+        assert.equal(host.focused(), 2);
+        host.action("focus-left");
+        assert.equal(host.focused(), 1);
+        host.action("focus-left");
+        assert.equal(host.focused(), 1);
+        host.action("focus-right-or-first");
+        assert.equal(host.focused(), 2);
+        host.action("focus-right-or-first");
+        assert.equal(host.focused(), 1);
     });
 
     test("focus-index and move-to-index number the grid's columns", async () => {
         const host = await setUpTwoOverOne();
         host.activate(1);
         host.action("focus-index", 2);
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
 
         // Indices past the end give the last column.
         host.activate(1);
         host.action("focus-index", 9);
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
 
         // Window 2 moves to the first column, pushing window 1 along in its rows.
         host.activate(2);
-        assert.equal(host.action("move-to-index", 1), true);
+        host.action("move-to-index", 1);
         assert.deepEqual(cells(host), ["2 × 6 at 2, 0", "2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
     });
 
@@ -1152,11 +1265,11 @@ describe("layout API", () => {
         const host = await setUpOneAndStack();
         host.activate(2);
         host.action("focus-in-stack", 2);
-        assert.equal(host.focused, 3);
+        assert.equal(host.focused(), 3);
         host.action("focus-down-or-top");
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
         host.action("focus-up-or-bottom");
-        assert.equal(host.focused, 3);
+        assert.equal(host.focused(), 3);
     });
 
     test("a new window opens next to the window it belongs to", async () => {
@@ -1175,7 +1288,7 @@ describe("layout API", () => {
         const host = await setup();
         host.open();
         host.open({ activate: false });
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
     });
 
     test("the camera only scrolls to keep the focused window in view", async () => {
@@ -1184,11 +1297,11 @@ describe("layout API", () => {
 
         // The last window is in view at the right edge.
         assert.deepEqual(cells(host, [12]), ["2 × 12 at 22, 0"]);
-        const camera = host.camera.x;
+        const camera = host.camera().x;
 
         // Closing a window to the left doesn't move the view; the windows slide instead.
         host.close(11);
-        assert.equal(host.camera.x, camera);
+        assert.equal(host.camera().x, camera);
         assert.deepEqual(cells(host, [12]), ["2 × 12 at 20, 0"]);
 
         // Focusing a window out of view scrolls to it.
@@ -1225,70 +1338,92 @@ describe("layout API", () => {
         host.activate(1);
         host.action("toggle-tabs");
 
-        const [bar] = host.tabs.values();
-        assert.deepEqual(bar.windows, [1, 2]);
-        assert.equal(bar.active, 1);
-        assert.deepEqual(bar.area, cellRect(0, 0, 2, 12));
+        // A segment for each tab along the left of the area, the shown tab's in the active color.
+        const area = cellRect(0, 0, 2, 12);
+        const step = area.h / 2;
+        const tabs = tabNodes(host);
+        assert.deepEqual(
+            tabs.map((tab) => [tab.rect, tab.background]),
+            [
+                [{ x: -9, y: area.y, w: 4, h: step - 2 }, "#7fc8ff"],
+                [{ x: -9, y: area.y + step, w: 4, h: step - 2 }, "#505050"],
+            ],
+        );
+        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
 
-        host.clickTab(bar.key, 1);
-        assert.equal(host.focused, 2);
-        assert.equal(host.tabs.get(bar.key).active, 2);
+        host.pointer(tabs[1].id, "click");
+        assert.equal(host.focused(), 2);
+        assert.deepEqual(
+            tabNodes(host).map((tab) => tab.background),
+            ["#505050", "#7fc8ff"],
+        );
         assert.equal(host.isVisible(2), true);
         assert.equal(host.isVisible(1), false);
 
         // No tab bar while the area covers the view.
         host.requestMode(2, "fullscreen");
-        assert.equal(host.tabs.size, 0);
+        assert.equal(tabNodes(host).length, 0);
         host.requestMode(2, "normal");
-        assert.equal(host.tabs.size, 1);
+        assert.equal(tabNodes(host).length, 2);
 
         // Moving tabs reorders them.
         host.action("move-up");
-        assert.deepEqual(host.tabs.get(bar.key).windows, [2, 1]);
+        assert.deepEqual(tabbedAreas(host), [[2, 1]]);
 
         // Closing a tab keeps the area's cells.
         host.close(2);
         assert.deepEqual(cells(host, [1, 3]), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
-        assert.equal(host.focused, 1);
+        assert.equal(host.focused(), 1);
     });
 
-    test("tabs leave room for a tab indicator placed within the area", async () => {
+    test("the tab bar follows its options", async () => {
         const host = await setup({
-            config: {
-                tabIndicator: {
-                    off: false,
-                    position: "left",
-                    width: 4,
-                    gap: 5,
-                    placeWithinColumn: true,
-                    hideWhenSingleTab: false,
-                },
+            options: {
+                "tab-bar-width": 6,
+                "tab-bar-gap": 2,
+                "tab-bar-active-color": "#112233",
+                "tab-bar-inactive-color": "#445566",
+                "tab-bar-urgent-color": "#778899",
             },
         });
         host.open();
         host.open();
         host.activate(1);
         host.action("toggle-tabs");
-        // Window 1 leaves the indicator's 4 + 5 px free on the left of its cells.
-        const area = cellRect(0, 0, 2, 12);
-        assert.deepEqual(host.rect(1), { ...area, x: area.x + 9, w: area.w - 9 });
-        assert.deepEqual(cells(host, [2]), ["2 × 12 at 2, 0"]);
+        host.action("stack-from-right");
+        host.windows.get(2).urgent = true;
+        host.flush();
+        assert.deepEqual(
+            tabNodes(host).map((tab) => [tab.rect.x, tab.rect.w, tab.background]),
+            [
+                [-8, 6, "#112233"],
+                [-8, 6, "#778899"],
+            ],
+        );
+
+        const off = await setup({ options: { "tab-bar": false } });
+        off.open();
+        off.action("toggle-tabs");
+        assert.equal(tabNodes(off).length, 0);
     });
 
     test("new windows are asked to open at the size of their cells", async () => {
         const host = await setup();
         const { w, h } = cellRect(0, 0, 2, 12);
-        assert.deepEqual(host.newWindowSize({ rules: { defaultWidth: { fixed: 100 } } }), { w, h });
+        assert.deepEqual(host.newWindowSize(undefined, { rules: { "default-width": { fixed: 100 } } }), { w, h });
         assert.deepEqual(
-            host.newWindowSize({
-                rules: { defaultWidth: { proportion: 0.5 }, defaultHeight: { proportion: 0.5 } },
+            host.newWindowSize(undefined, {
+                rules: {
+                    "default-width": { proportion: 0.5 },
+                    "default-height": { proportion: 0.5 },
+                },
             }),
             { w: cellRect(0, 0, 12, 6).w, h: cellRect(0, 0, 12, 6).h },
         );
-        assert.deepEqual(host.newWindowSize({ rules: { defaultWidth: null } }), { w: 0, h });
+        assert.deepEqual(host.newWindowSize(undefined, { rules: { "default-width": null } }), { w: 0, h });
         assert.deepEqual(
-            host.newWindowSize({
-                rules: { defaultWidth: { fixed: 100 } },
+            host.newWindowSize(undefined, {
+                rules: { "default-width": { fixed: 100 } },
                 minSize: { w: 300, h: 0 },
             }),
             { w: 300, h },
@@ -1302,31 +1437,30 @@ describe("layout API", () => {
         host.open();
         host.action("stack-left");
         host.action("toggle-tabs");
-        const before = { tiles: tiles(host), focused: host.focused, ipc: [...host.ipc].sort() };
+        const before = {
+            tiles: tiles(host),
+            focused: host.focused(),
+            ipc: ipc(host),
+            tabbed: tabbedAreas(host),
+        };
+        assert.equal(before.tabbed.length, 1);
 
         host.reload();
         assert.deepEqual(host.errors, []);
         assert.deepEqual(tiles(host), before.tiles);
-        assert.equal(host.focused, before.focused);
-        assert.deepEqual([...host.ipc].sort(), before.ipc);
-        assert.equal(host.tabs.size, 1);
+        assert.equal(host.focused(), before.focused);
+        assert.deepEqual(ipc(host), before.ipc);
+        assert.deepEqual(tabbedAreas(host), before.tabbed);
+        assert.equal(tabNodes(host).length, before.tabbed.flat().length);
 
         // Closing the window opened last still goes back to where it was opened from.
         host.close(4);
-        assert.equal(host.focused, 2);
+        assert.equal(host.focused(), 2);
     });
 
     test("windows from another layout snap to the cells under them", async () => {
         const host = await setup();
-        const adopt = (rect, activate) => {
-            const win = host.makeWindow({});
-            win.size = { w: rect.w, h: rect.h };
-            host.send({
-                type: "add",
-                window: host.info(win),
-                how: { reason: "adopt", activate, rect, pointer: null, nextTo: null },
-            });
-        };
+        const adopt = (rect, activate) => host.open({ reason: "adopt", activate, rect });
         // 12 cells by 12, and 6 cells by 5.
         adopt({ x: 10, y: 10, w: 600, h: 700 }, true);
         adopt({ x: 640, y: 20, w: 300, h: 300 }, false);
@@ -1343,14 +1477,14 @@ describe("layout API", () => {
         host.setOptions({ gravity: false });
         repeat(5, () => host.action("move-down"));
         assert.deepEqual(cells(host, [3]), ["2 × 6 at 4, 6"]);
-        assert.equal(host.action("move-left"), true);
-        assert.equal(host.action("move-left"), true);
+        host.action("move-left");
+        host.action("move-left");
         assert.deepEqual(cells(host, [3]), ["2 × 6 at 2, 6"]);
 
         // The leftmost window can go left of column 0 without gravity, but moving it alone left
         // just shifts everything, which isn't a change.
         host.activate(1);
-        assert.equal(host.action("move-left"), false);
+        host.action("move-left");
 
         // Turning gravity back on slides windows left.
         host.activate(3);
@@ -1369,13 +1503,13 @@ describe("layout API", () => {
         assert.deepEqual(cells(host), ["12 × 12 at 0, 0", "12 × 12 at 12, 0"]);
 
         // 36 columns across instead of 24: each window still covers half of them.
-        host.resizeView({ size: { w: 3440, h: 1080 } });
+        host.resizeMonitor("DP-1", { size: { w: 3440, h: 1080 } });
         assert.equal(new CellMetrics({ w: 3440, h: 1080 }, R, 16).colsPerView, 36);
         assert.deepEqual(tiles(host), ["1696 × 1048 at x:16 y:16", "1696 × 1048 at x:1728 y:16"]);
 
         // Struts shrink the working area.
         host.config = { ...host.config, struts: { left: 0, right: 0, top: 100, bottom: 0 } };
-        host.send({ type: "config", config: host.config, options: host.options });
+        host.setOptions(host.options);
         assert.equal(host.screenRect(1).y, 116);
     });
 
@@ -1390,19 +1524,278 @@ describe("layout API", () => {
 
     test("the highlight on an empty workspace is where the window will land", async () => {
         const host = await setup();
-        host.camera = { x: 5000, y: 0 };
-        host.send({ type: "camera", camera: host.camera });
-        const win = host.makeWindow({});
-        const target = host.dropTarget(
-            win.id,
+        const workspace = host.activeWorkspace();
+        workspace.camera = { x: 5000, y: 0 };
+        host.flush();
+        const info = {
+            id: 99,
+            appId: null,
+            title: null,
+            workspace: workspace.id,
+            size: { w: 0, h: 0 },
+            minSize: { w: 0, h: 0 },
+            maxSize: { w: 0, h: 0 },
+            borders: { w: 0, h: 0 },
+            mode: "normal",
+            urgent: false,
+            rules: {},
+            data: null,
+        };
+        const target = dropTarget(
+            host,
+            99,
             { x: 5600, y: 300 },
             { x: 5500, y: 20, w: 99, h: 336 },
+            info,
         );
         const cell = cellRect(0, 0, 2, 6);
         assert.deepEqual(
-            { x: target.x - host.camera.x, y: target.y, w: target.w, h: target.h },
+            { x: target.x - host.camera().x, y: target.y, w: target.w, h: target.h },
             { ...cell, x: cell.x + METRICS.gap },
         );
+    });
+});
+
+describe("workspaces and monitors", () => {
+    test("each workspace has a grid of its own", async () => {
+        const host = await setup();
+        const [w0, w1] = [host.workspace(0).id, host.workspace(1).id];
+        host.open();
+        host.showWorkspace(w1);
+        host.open();
+        assert.deepEqual(cells(host, [1, 2]), ["2 × 12 at 0, 0", "2 × 12 at 0, 0"]);
+        assert.equal(host.windows.get(1).workspace, w0);
+        assert.equal(host.windows.get(2).workspace, w1);
+    });
+
+    test("moving down from the bottom goes to the workspace below", async () => {
+        const host = await setup();
+        const [w0, w1] = [host.workspace(0).id, host.workspace(1).id];
+        host.open();
+        host.open();
+        // The window is as tall as the grid, so it can't move down in it.
+        host.action("move-down-or-to-workspace");
+        assert.equal(host.windows.get(2).workspace, w1);
+        assert.equal(host.activeWorkspace().id, w1);
+        assert.equal(host.focused(), 2);
+        assert.deepEqual(cells(host, [1, 2]), ["2 × 12 at 0, 0", "2 × 12 at 0, 0"]);
+
+        host.action("move-up-or-to-workspace");
+        assert.equal(host.windows.get(2).workspace, w0);
+        assert.equal(host.activeWorkspace().id, w0);
+        assert.deepEqual(cells(host, [1, 2]), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
+
+        // With room below, it moves in the grid.
+        halfHeight(host, 2);
+        host.action("move-down-or-to-workspace");
+        assert.equal(host.windows.get(2).workspace, w0);
+        assert.deepEqual(cells(host, [2]), ["2 × 6 at 2, 1"]);
+    });
+
+    test("moving left from the start goes to the monitor to the left", async () => {
+        const host = await setup({ monitors: [{ name: "DP-1" }, { name: "DP-2" }] });
+        host.open({ workspace: host.activeWorkspace("DP-2").id });
+        host.action("focus-right-or-monitor");
+        assert.equal(host.focusedMonitor, "DP-2");
+        host.action("move-left-or-to-monitor");
+        assert.equal(host.windows.get(1).workspace, host.activeWorkspace("DP-1").id);
+        assert.equal(host.focusedMonitor, "DP-1");
+        assert.equal(host.focused(), 1);
+    });
+
+    test("move-to-workspace and move-to-monitor take the tabs along", async () => {
+        const host = await setup({ monitors: [{ name: "DP-1" }, { name: "DP-2" }] });
+        const w1 = host.workspace(1).id;
+        host.open();
+        host.open();
+        host.open();
+        host.activate(1);
+        host.action("toggle-tabs");
+        host.action("stack-from-right");
+        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
+
+        host.action("move-to-workspace", w1);
+        assert.equal(host.windows.get(1).workspace, w1);
+        assert.equal(host.windows.get(2).workspace, w1);
+        assert.equal(host.windows.get(3).workspace, host.workspace(0).id);
+        assert.equal(host.activeWorkspace().id, w1);
+        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
+        assert.equal(host.focused(), 1);
+
+        host.action("move-to-monitor", "DP-2");
+        assert.equal(host.windows.get(1).workspace, host.activeWorkspace("DP-2").id);
+        assert.equal(host.windows.get(2).workspace, host.activeWorkspace("DP-2").id);
+        assert.equal(host.focusedMonitor, "DP-2");
+        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
+        assert.equal(tabNodes(host).length, 2);
+    });
+
+    test("focus goes on to the monitor or workspace beside", async () => {
+        const host = await setup({ monitors: [{ name: "DP-1" }, { name: "DP-2" }] });
+        host.open();
+        host.open({ workspace: host.activeWorkspace("DP-2").id });
+        host.action("focus-right-or-monitor");
+        assert.equal(host.focusedMonitor, "DP-2");
+        assert.equal(host.focused(), 2);
+        host.action("focus-left-or-monitor");
+        assert.equal(host.focusedMonitor, "DP-1");
+        assert.equal(host.focused(), 1);
+
+        // Within a grid they focus windows.
+        host.open();
+        host.action("focus-left-or-monitor");
+        assert.equal(host.focused(), 1);
+        assert.equal(host.focusedMonitor, "DP-1");
+
+        host.action("focus-down-or-workspace");
+        assert.equal(host.activeWorkspace().id, host.workspace(1).id);
+        host.action("focus-up-or-workspace");
+        assert.equal(host.activeWorkspace().id, host.workspace(0).id);
+        assert.equal(host.focused(), 1);
+    });
+
+    test("a window that bento moved gets an area of its own", async () => {
+        const host = await setup();
+        const w1 = host.workspace(1).id;
+        host.open();
+        host.open();
+        host.move(2, w1);
+        assert.equal(host.windows.get(2).workspace, w1);
+        assert.deepEqual(cells(host, [1, 2]), ["2 × 12 at 0, 0", "2 × 12 at 0, 0"]);
+        assert.equal(host.focused(), 1);
+    });
+
+    test("a monitor's cells come from its own size", async () => {
+        const host = await setup({
+            monitors: [{ name: "DP-1" }, { name: "DP-2", size: { w: 3440, h: 1080 } }],
+        });
+        host.open();
+        host.open({ workspace: host.activeWorkspace("DP-2").id });
+        host.action("focus-right-or-monitor");
+        host.actionOn(2, "set-width", set(50));
+        assert.equal(host.rect(2).w, 1696);
+        host.actionOn(1, "set-width", set(50));
+        assert.equal(host.rect(1).w, cellRect(0, 0, 12, 12).w);
+    });
+});
+
+describe("edge double clicks", () => {
+    test("left and right edges toggle the full width", async () => {
+        const host = await setup();
+        host.open();
+        host.doubleClickEdge(1, { right: true });
+        assert.deepEqual(cells(host), [`${METRICS.colsPerView} × 12 at 0, 0`]);
+        host.doubleClickEdge(1, { left: true });
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0"]);
+    });
+
+    test("top and bottom edges toggle the full height", async () => {
+        const host = await setup();
+        host.open();
+        halfHeight(host, 1);
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0"]);
+        host.doubleClickEdge(1, { bottom: true });
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0"]);
+        host.doubleClickEdge(1, { top: true });
+        assert.deepEqual(cells(host), ["2 × 6 at 0, 0"]);
+    });
+});
+
+describe("what the engine exposes and draws", () => {
+    test("the state has each area's windows and cells", async () => {
+        const host = await setUpStackOfTwo();
+        const state = exposed(host);
+        assert.equal(state.active, 2);
+        assert.equal(state.rows, 12);
+        assert.equal(state.colsPerView, METRICS.colsPerView);
+        assert.deepEqual(
+            state.items.map(({ windows, active, area, tabbed, mode }) => ({
+                windows,
+                active,
+                area,
+                tabbed,
+                mode,
+            })),
+            [
+                { windows: [1], active: 1, area: at(0, 0, 2, 6), tabbed: false, mode: "normal" },
+                { windows: [2], active: 2, area: at(0, 6, 2, 6), tabbed: false, mode: "normal" },
+                { windows: [3], active: 3, area: at(2, 0, 2, 12), tabbed: false, mode: "normal" },
+            ],
+        );
+
+        // Those watching hear about changes, and only about changes.
+        const changes = host.stateChanges;
+        host.action("focus-right");
+        assert.ok(host.stateChanges > changes);
+        const again = host.stateChanges;
+        host.action("focus-right");
+        assert.equal(host.stateChanges, again);
+    });
+
+    test("the hint for a dragged window goes away when it leaves", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        const info = lift(host, 2);
+        const workspace = host.activeWorkspace().id;
+        host.send({
+            type: "dragenter",
+            workspace,
+            window: info,
+            pointer: { x: 100, y: 100 },
+            rect: { x: 90, y: 90, w: 100, h: 100 },
+        });
+        assert.notEqual(hint(host), null);
+        host.send({ type: "dragleave", workspace });
+        assert.equal(hint(host), null);
+    });
+
+    test("the hints follow their color option", async () => {
+        const host = await setup({ options: { "hint-color": "#ff000080" } });
+        host.open();
+        host.action("swap");
+        assert.equal(drawn(host)[0].background, "#ff000080");
+    });
+});
+
+// Groups are bento's, and the host keeps them like bento does: `groupWindows` is bento's own
+// action that groups windows, and `groupOf` the group a window is in.
+describe("groups", () => {
+    test("tabs are a group, and stacking them again dissolves it", async () => {
+        const host = await setUpStackOfTwo();
+        host.activate(1);
+        assert.equal(host.groupOf(1), null);
+        host.action("toggle-tabs");
+        assert.deepEqual(host.groupOf(1).windows, [1, 2]);
+        assert.equal(host.groupOf(1).active, 1);
+        host.action("focus-down");
+        assert.equal(host.groupOf(1).active, 2);
+        host.action("toggle-tabs");
+        assert.equal(host.groupOf(1), null);
+        assert.equal(host.groupOf(2), null);
+    });
+
+    test("a group made elsewhere shows as tabs in the area of its active window", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        host.open();
+        host.groupWindows([1, 3], 3);
+        assert.deepEqual(tabbedAreas(host), [[3, 1]]);
+        assert.equal(host.isVisible(3), true);
+        assert.equal(host.isVisible(1), false);
+        assert.deepEqual(host.rect(3), host.rect(1));
+        assert.equal(tabNodes(host).length, 2);
+        assert.deepEqual(cells(host, [2, 3]), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
+    });
+
+    test("a tab that leaves its area leaves the group", async () => {
+        const host = await setUpStackOfTwo();
+        host.activate(1);
+        host.action("toggle-tabs");
+        host.action("unstack");
+        assert.equal(host.groupOf(1), null);
+        assert.equal(host.groupOf(2), null);
     });
 });
 
