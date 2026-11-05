@@ -10,6 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 adw = { version = "0.8.1", package = "libadwaita", features = ["v1_5"] }
+bento-ipc = { version = "26.4.0", path = "../bento-ipc" }
 gio = { version = "0.21", features = ["v2_80"] }
 gtk = { version = "0.10.3", package = "gtk4", features = ["v4_12"] }
 knuffel = "3.2.0"

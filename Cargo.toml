@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "bento-ipc",
     "bento-settings",
     "niri-config",
     "niri-ipc",
@@ -68,6 +69,7 @@ arrayvec = "0.7.8"
 async-channel = "2.5.0"
 async-io = { version = "2.6.0", optional = true }
 atomic = "0.6.1"
+bento-ipc = { version = "26.4.0", path = "bento-ipc" }
 bitflags.workspace = true
 bytemuck = { version = "1.25.2", features = ["derive"] }
 calloop = { version = "0.14.5", features = ["executor", "futures-io", "signals"] }
@@ -86,6 +88,7 @@ keyframe = { version = "1.1.1", default-features = false }
 libc = "0.2.189"
 libdisplay-info = "0.3.0"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_debug"] }
+miette = { version = "5.10.0", features = ["fancy-no-backtrace"] }
 niri-config = { version = "26.4.0", path = "niri-config" }
 niri-ipc = { version = "26.4.0", path = "niri-ipc", features = ["clap"] }
 ordered-float = "5"

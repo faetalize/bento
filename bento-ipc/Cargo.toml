@@ -1,0 +1,16 @@
+[package]
+name = "bento-ipc"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+description = "Messages and a blocking client for bento's private socket."
+keywords = ["wayland"]
+categories = ["api-bindings", "os"]
+
+[dependencies]
+niri-ipc = { version = "26.4.0", path = "../niri-ipc" }
+serde.workspace = true
+serde_json.workspace = true

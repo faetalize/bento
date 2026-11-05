@@ -667,24 +667,12 @@ impl CastTarget {
         matches!(self, CastTarget::Output { output, .. } if output == weak)
     }
 
-    pub fn matches(&self, ipc: &niri_ipc::CastTarget) -> bool {
-        use CastTarget::*;
-        match (self, ipc) {
-            (Nothing, niri_ipc::CastTarget::Nothing {}) => true,
-            (Output { name, .. }, niri_ipc::CastTarget::Output { name: ipc_name }) => {
-                name == ipc_name
-            }
-            (Window { id }, niri_ipc::CastTarget::Window { id: ipc_id }) => id == ipc_id,
-            _ => false,
-        }
-    }
-
-    pub fn make_ipc(&self) -> niri_ipc::CastTarget {
+    pub fn make_ipc(&self) -> bento_ipc::CastTarget {
         use CastTarget::*;
         match self {
-            Nothing => niri_ipc::CastTarget::Nothing {},
-            Output { name, .. } => niri_ipc::CastTarget::Output { name: name.clone() },
-            Window { id } => niri_ipc::CastTarget::Window { id: *id },
+            Nothing => bento_ipc::CastTarget::Nothing,
+            Output { name, .. } => bento_ipc::CastTarget::Output { name: name.clone() },
+            Window { id } => bento_ipc::CastTarget::Window { id: *id },
         }
     }
 }
@@ -810,8 +798,6 @@ impl State {
 
         // Load the xkb_file config option if set by the user.
         state.load_xkb_file();
-        // Initialize some IPC server state.
-        state.ipc_keyboard_layouts_changed();
         // Focus the default monitor if set by the user.
         state.focus_default_monitor();
 
@@ -892,13 +878,10 @@ impl State {
         // screencasts.
         #[cfg(feature = "xdp-gnome-screencast")]
         self.niri.refresh_mapped_cast_window_rules();
-        self.ipc_refresh_casts();
 
         self.niri.refresh_window_rules();
         self.refresh_ipc_outputs();
-        self.ipc_refresh_layout();
-        self.ipc_refresh_keyboard_layout_index();
-        self.ipc_refresh_touchpad();
+        self.ipc_refresh();
 
         // Needs to be called after updating the keyboard focus.
         #[cfg(feature = "dbus")]
@@ -1679,8 +1662,6 @@ impl State {
 
             self.set_xkb_config(xkb.to_xkb_config());
         }
-
-        self.ipc_keyboard_layouts_changed();
     }
 
     pub fn reload_config(&mut self, config: Result<Config, ()>) {
@@ -2501,7 +2482,6 @@ impl State {
 
         let xkb = xkb.clone();
         self.set_xkb_config(xkb.to_xkb_config());
-        self.ipc_keyboard_layouts_changed();
     }
 }
 

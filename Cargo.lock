@@ -417,6 +417,7 @@ dependencies = [
  "async-channel",
  "async-io",
  "atomic",
+ "bento-ipc",
  "bitflags",
  "bytemuck",
  "calloop",
@@ -437,6 +438,7 @@ dependencies = [
  "libc",
  "libdisplay-info",
  "log",
+ "miette",
  "niri-config",
  "niri-ipc",
  "ordered-float",
@@ -469,9 +471,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bento-ipc"
+version = "26.4.0"
+dependencies = [
+ "niri-ipc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bento-settings"
 version = "26.4.0"
 dependencies = [
+ "bento-ipc",
  "gio",
  "glib-build-tools",
  "gtk4",
@@ -2367,7 +2379,6 @@ dependencies = [
  "clap",
  "schemars",
  "serde",
- "serde_json",
 ]
 
 [[package]]
