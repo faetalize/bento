@@ -790,6 +790,31 @@ test("pointer events bubble to the parents until a listener stops them", () => {
     assert.deepEqual(log, [["inner"]]);
 });
 
+test("pointerenter and pointerleave go to the node they're for and don't bubble", () => {
+    const log = [];
+    const { h, nodes } = drawing((bento, shared) => {
+        bento.addEventListener("action", (e) => {
+            if (e.name !== "draw") return;
+            const inner = bento.createNode("box", { interactive: true });
+            shared.inner = inner;
+            shared.box.append(inner);
+            for (const [name, node] of [["outer", shared.box], ["inner", inner]]) {
+                for (const type of ["pointerenter", "pointerleave", "pointermove"]) {
+                    node.addEventListener(type, () => log.push([type, name]));
+                }
+            }
+        });
+    });
+    h.action("draw");
+    h.pointer(nodes.inner.id, "pointerenter");
+    h.pointer(nodes.inner.id, "pointerleave");
+    assert.deepEqual(log, [["pointerenter", "inner"], ["pointerleave", "inner"]]);
+
+    log.length = 0;
+    h.pointer(nodes.inner.id, "pointermove");
+    assert.deepEqual(log, [["pointermove", "inner"], ["pointermove", "outer"]]);
+});
+
 // The API 1 adapter.
 
 /** A V1 engine that places every window in the same spot, and records what it's told. */

@@ -2180,6 +2180,7 @@ impl State {
         self.niri.handle_focus_follows_mouse(&under);
 
         self.niri.pointer_contents.clone_from(&under);
+        self.niri.update_node_hover(&under, true);
 
         pointer.motion(
             self,
@@ -2281,6 +2282,7 @@ impl State {
         self.niri.handle_focus_follows_mouse(&under);
 
         self.niri.pointer_contents.clone_from(&under);
+        self.niri.update_node_hover(&under, true);
 
         pointer.motion(
             self,
@@ -2380,6 +2382,21 @@ impl State {
             }
         }
 
+        if ButtonState::Released == button_state
+            && self
+                .niri
+                .node_press
+                .as_ref()
+                .is_some_and(|press| press.button_code == button_code)
+        {
+            if let (Some(press), Some(number)) = (self.niri.node_press.take(), node_button(button))
+            {
+                self.niri.node_button_released(press, number);
+                self.niri.queue_redraw_all();
+            }
+            return;
+        }
+
         if self.niri.suppressed_buttons.remove(&button_code) {
             return;
         }
@@ -2445,6 +2462,17 @@ impl State {
             self.niri.tablet_cursor_location = None;
 
             let is_overview_open = self.niri.layout.is_overview_open();
+
+            // Nodes that the tiling layout draws are on top of windows, so a click on one is
+            // theirs and doesn't focus or move the windows below.
+            if !is_overview_open && !pointer.is_grabbed() {
+                if let Some(number) = node_button(button) {
+                    if self.niri.node_button_pressed(number, button_code) {
+                        self.niri.queue_redraw_all();
+                        return;
+                    }
+                }
+            }
 
             if is_overview_open && !pointer.is_grabbed() && button == Some(MouseButton::Right) {
                 if let Some((output, ws)) = self.niri.workspace_under_cursor(true) {
@@ -2996,6 +3024,15 @@ impl State {
         }
 
         self.update_pointer_contents();
+
+        // Nodes that the tiling layout draws are on top of windows, so they get the scrolling.
+        if self
+            .niri
+            .node_scrolled(Point::from((horizontal_amount, vertical_amount)))
+        {
+            self.niri.queue_redraw_all();
+            return;
+        }
 
         let device_scroll_factor = {
             let config = self.niri.config.borrow();
@@ -4334,6 +4371,17 @@ fn find_configured_switch_action(
     switch_action
         .as_ref()
         .map(|switch_action| Action::Spawn(switch_action.spawn.clone()))
+}
+
+/// The number that the nodes of the tiling layout know a mouse button by: 1 for the left button, 2
+/// for the middle one and 3 for the right one. They don't get the other buttons.
+fn node_button(button: Option<MouseButton>) -> Option<u8> {
+    match button? {
+        MouseButton::Left => Some(1),
+        MouseButton::Middle => Some(2),
+        MouseButton::Right => Some(3),
+        _ => None,
+    }
 }
 
 fn modifiers_from_state(mods: ModifiersState) -> Modifiers {

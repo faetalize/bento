@@ -1338,6 +1338,22 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.window_under(pos)
     }
 
+    /// The interactive node that the tiling layout drew under `pos`, with the pointer's position
+    /// on the canvas.
+    pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
+        // Floating windows are above what the layout draws.
+        if self.is_floating_visible()
+            && self
+                .floating
+                .tiles_with_render_positions()
+                .any(|(tile, tile_pos)| HitType::hit_tile(tile, tile_pos, pos).is_some())
+        {
+            return None;
+        }
+
+        self.scrolling.node_under(pos)
+    }
+
     pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
         self.tiles_with_render_positions()
             .find_map(|(tile, tile_pos, visible)| {

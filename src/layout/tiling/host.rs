@@ -26,7 +26,9 @@ use super::protocol::{
 use super::{engine, TilingSpace};
 use crate::layout::monitor::InsertWorkspace;
 use crate::layout::workspace::WorkspaceId;
-use crate::layout::{ActivateWindow, InteractiveMoveState, Layout, LayoutElement, MonitorSet};
+use crate::layout::{
+    ActivateWindow, InteractiveMoveState, Layout, LayoutElement, MonitorSet, NodeHit,
+};
 use crate::utils::transaction::Transaction;
 use crate::utils::{output_size, ResizeEdge};
 
@@ -1071,8 +1073,9 @@ impl<W: LayoutElement> Layout<W> {
         );
     }
 
-    /// Delivers a pointer event to a node that the layout draws, on the workspace with id
-    /// `workspace`. `pointer` is on the workspace's canvas.
+    /// Delivers a pointer event to a node that the layout draws, which bubbles to its parents.
+    /// `pointer` is on the workspace's canvas, `button` is 1, 2 or 3 for the left, middle and right
+    /// button, and 0 for events that aren't about one.
     #[allow(clippy::too_many_arguments)]
     pub fn node_pointer_event(
         &mut self,
@@ -1093,6 +1096,38 @@ impl<W: LayoutElement> Layout<W> {
             "modifiers": { "shift": shift, "ctrl": ctrl, "alt": alt, "super": logo },
             "delta": Xy::from_point(delta),
         }));
+    }
+
+    /// Tells the layout that the pointer is on the node `hit`, or on none, so that the nodes it
+    /// left get `pointerleave` and the ones it entered get `pointerenter`.
+    pub fn node_hover(&mut self, hit: Option<&NodeHit>, modifiers: [bool; 4]) {
+        let mut events = Vec::new();
+        for ws in self.workspaces_mut() {
+            let id = ws.id().get();
+            let over = hit
+                .filter(|hit| hit.workspace == id)
+                .map(|hit| (hit.node.as_str(), hit.pos));
+            events.extend(ws.scrolling_mut().pointer_over(over));
+        }
+
+        for (node, event, pointer) in events {
+            self.node_pointer_event(&node, event, pointer, 0, modifiers, Point::from((0., 0.)));
+        }
+    }
+
+    /// Tells the layout that the pointer moved, and is on the node `hit` or on none.
+    pub fn node_pointer_moved(&mut self, hit: Option<&NodeHit>, modifiers: [bool; 4]) {
+        self.node_hover(hit, modifiers);
+        if let Some(hit) = hit {
+            self.node_pointer_event(
+                &hit.node,
+                "pointermove",
+                hit.pos,
+                0,
+                modifiers,
+                Point::from((0., 0.)),
+            );
+        }
     }
 
     /// Tells the layout where an interactively moved window is over a workspace, or that it left.

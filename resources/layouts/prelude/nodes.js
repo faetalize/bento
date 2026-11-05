@@ -335,12 +335,14 @@ export function windowsOf(root) {
 
 /**
  * Delivers a pointer event from bento to the node it hit. It bubbles to the node's parents until a
- * listener stops it.
+ * listener stops it, except `pointerenter` and `pointerleave`: bento sends those to every node
+ * the pointer enters or leaves.
  */
 export function dispatchPointer(target, event) {
     const { type: _call, node: _node, event: type, ...init } = event;
     const pointerEvent = new BentoEvent(type, target, init);
-    for (let node = target; node !== null; node = node.parent) {
+    const bubbles = type !== "pointerenter" && type !== "pointerleave";
+    for (let node = target; node !== null; node = bubbles ? node.parent : null) {
         dispatch(node, pointerEvent);
         if (isPropagationStopped(pointerEvent)) {
             break;

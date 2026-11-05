@@ -1294,6 +1294,41 @@ impl<W: LayoutElement> TilingSpace<W> {
             .find_map(|(tile, tile_pos, _)| HitType::hit_tile(tile, tile_pos, pos))
     }
 
+    /// The interactive node that the layout drew under `pos`, relative to the view, with the
+    /// pointer's position on the canvas. A window that's above a node takes the pointer from it.
+    pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
+        let camera = self.camera.current();
+        let covers = |window: u64| {
+            let Some(idx) = self.idx_of_layout_id(window) else {
+                return false;
+            };
+            let tile_pos = render_pos(&self.tiles[idx], &self.data[idx], camera, self.scale);
+            self.data[idx].visible && HitType::hit_tile(&self.tiles[idx], tile_pos, pos).is_some()
+        };
+
+        let canvas = pos + camera;
+        let node = self.tree.hit_with(canvas, &covers)?;
+        Some((node, canvas))
+    }
+
+    /// Moves the pointer onto the node `hit` of the layout, with the pointer's position on the
+    /// canvas, or off all of them. Returns the enter and leave events for the nodes it moved
+    /// between, with the pointer's position on the canvas for each.
+    pub(super) fn pointer_over(
+        &mut self,
+        hit: Option<(&str, Point<f64, Logical>)>,
+    ) -> Vec<(String, &'static str, Point<f64, Logical>)> {
+        if let Some((_, pos)) = hit {
+            self.pointer = pos;
+        }
+        let pos = self.pointer;
+        self.tree
+            .pointer_over(hit.map(|(node, _)| node))
+            .into_iter()
+            .map(|(node, event)| (node, event, pos))
+            .collect()
+    }
+
     /// Where a dragged tile is on the canvas: the pointer at `pos` and the tile at `tile_pos`,
     /// both relative to the view.
     pub(super) fn drag_on_canvas(

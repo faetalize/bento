@@ -361,7 +361,10 @@ export interface NodeEvents {
     wheel: PointerEvent & { readonly delta: Point };
 }
 
-/** A pointer event on a drawn node. It bubbles to the node's parents. */
+/**
+ * A pointer event on a drawn node. It bubbles to the node's parents, except `pointerenter` and
+ * `pointerleave`, which each node the pointer enters or leaves gets on its own.
+ */
 export interface PointerEvent extends BentoEvent {
     /** Pointer position on the workspace's canvas. */
     readonly pointer: Point;

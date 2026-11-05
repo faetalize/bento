@@ -155,7 +155,7 @@ use crate::layer::MappedLayer;
 use crate::layout::tile::TileRenderElement;
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::layout::{
-    HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement,
+    HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement, NodeHit,
 };
 use crate::niri_render_elements;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
@@ -411,6 +411,8 @@ pub struct Niri {
     /// taking grabs into account is expected, because we pass the information to pointer.motion()
     /// which passes it down through grabs, which decide what to do with it as they see fit.
     pub pointer_contents: PointContents,
+    /// The button press that a node drawn by the tiling layout took, until the button is released.
+    pub node_press: Option<NodePress>,
     pub pointer_visibility: PointerVisibility,
     pub pointer_inactivity_timer: Option<RegistrationToken>,
     /// Whether the pointer inactivity timer got reset this event loop iteration.
@@ -604,6 +606,21 @@ pub struct PointContents {
     pub hot_corner: bool,
     // Point is over the overview.
     pub overview: bool,
+    // If the point is over a node that the tiling layout draws, which takes the pointer from the
+    // windows below it, this is that node.
+    pub node: Option<NodeHit>,
+}
+
+/// A button press on a node that the tiling layout draws.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodePress {
+    pub button_code: u32,
+    /// Id of the workspace that the node is drawn on.
+    pub workspace: u64,
+    /// Id of the node that got the press.
+    pub node: String,
+    /// Where the pointer was on the workspace's canvas.
+    pub pos: Point<f64, Logical>,
 }
 
 #[derive(Debug, Default)]
@@ -1002,6 +1019,7 @@ impl State {
         }
 
         self.niri.pointer_contents.clone_from(&under);
+        self.niri.update_node_hover(&under, true);
 
         let pointer = &self.niri.seat.get_pointer().unwrap();
         pointer.motion(
@@ -1234,6 +1252,7 @@ impl State {
         }
 
         self.niri.pointer_contents.clone_from(&under);
+        self.niri.update_node_hover(&under, false);
 
         pointer.motion(
             self,
@@ -2868,6 +2887,7 @@ impl Niri {
             cursor_shape_manager_state,
             dnd_icon: None,
             pointer_contents: PointContents::default(),
+            node_press: None,
             pointer_visibility: PointerVisibility::Visible,
             pointer_inactivity_timer: None,
             pointer_inactivity_timer_got_reset: false,
@@ -3566,6 +3586,11 @@ impl Niri {
             return None;
         }
 
+        // What the tiling layout draws on top of windows takes the pointer from them.
+        if self.layout.node_under(output, pos_within_output).is_some() {
+            return None;
+        }
+
         let (window, _loc) = self.layout.window_under(output, pos_within_output)?;
         Some(window)
     }
@@ -3667,7 +3692,7 @@ impl Niri {
                             )
                         })
                 })
-                .map(|(s, l)| (Some(s), (None, Some(l.clone()))))
+                .map(|(s, l)| (Some(s), (None, Some(l.clone()), None)))
         };
 
         let layer_toplevel_under = |layer| layer_surface_under(layer, false);
@@ -3688,7 +3713,7 @@ impl Niri {
             } else {
                 None
             };
-            (surface_and_pos, (Some((window.clone(), hit)), None))
+            (surface_and_pos, (Some((window.clone(), hit)), None, None))
         };
 
         let interactive_moved_window_under = || {
@@ -3700,6 +3725,12 @@ impl Niri {
             self.layout
                 .window_under(output, pos_within_output)
                 .map(mapped_hit_data)
+        };
+        // A node that the tiling layout draws, which only hits if no window is above it.
+        let node_under = || {
+            self.layout
+                .node_under(output, pos_within_output)
+                .map(|hit| (None, (None, None, Some(hit))))
         };
 
         let mon = self.layout.monitor_for_output(output).unwrap();
@@ -3714,6 +3745,7 @@ impl Niri {
         if mon.render_above_top_layer() {
             under = under
                 .or_else(interactive_moved_window_under)
+                .or_else(node_under)
                 .or_else(window_under)
                 .or_else(|| layer_popup_under(Layer::Top))
                 .or_else(|| layer_toplevel_under(Layer::Top))
@@ -3744,7 +3776,7 @@ impl Niri {
                     .or_else(|| layer_popup_under(Layer::Background));
             }
 
-            under = under.or_else(window_under);
+            under = under.or_else(node_under).or_else(window_under);
 
             if !is_overview_open {
                 under = under
@@ -3753,7 +3785,7 @@ impl Niri {
             }
         }
 
-        let Some((mut surface_and_pos, (window, layer))) = under else {
+        let Some((mut surface_and_pos, (window, layer, node))) = under else {
             return rv;
         };
 
@@ -3764,7 +3796,99 @@ impl Niri {
         rv.surface = surface_and_pos;
         rv.window = window;
         rv.layer = layer;
+        rv.node = node;
         rv
+    }
+
+    /// The modifiers held down, as the tiling layout's nodes get them: shift, ctrl, alt and super.
+    fn node_modifiers(&self) -> [bool; 4] {
+        let mods = self.seat.get_keyboard().unwrap().modifier_state();
+        [mods.shift, mods.ctrl, mods.alt, mods.logo]
+    }
+
+    /// Tells the nodes that the tiling layout draws where the pointer is: the ones it left and
+    /// entered, and with `moved`, the one it's on.
+    pub fn update_node_hover(&mut self, under: &PointContents, moved: bool) {
+        let modifiers = self.node_modifiers();
+        if moved {
+            self.layout
+                .node_pointer_moved(under.node.as_ref(), modifiers);
+        } else {
+            self.layout.node_hover(under.node.as_ref(), modifiers);
+        }
+    }
+
+    /// Sends a button press to the node that the tiling layout draws under the pointer, if there's
+    /// one. `button` is 1, 2 or 3 for the left, middle and right button. Returns whether a node
+    /// took the press.
+    pub fn node_button_pressed(&mut self, button: u8, button_code: u32) -> bool {
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        let Some(hit) = self.contents_under(pos).node else {
+            return false;
+        };
+
+        self.node_press = Some(NodePress {
+            button_code,
+            workspace: hit.workspace,
+            node: hit.node.clone(),
+            pos: hit.pos,
+        });
+        let modifiers = self.node_modifiers();
+        self.layout.node_pointer_event(
+            &hit.node,
+            "pointerdown",
+            hit.pos,
+            button,
+            modifiers,
+            Point::from((0., 0.)),
+        );
+        true
+    }
+
+    /// Sends the release of a button that a node took the press of to that node, and a click if
+    /// the pointer is still on it.
+    pub fn node_button_released(&mut self, press: NodePress, button: u8) {
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        let under = self.contents_under(pos).node;
+        let modifiers = self.node_modifiers();
+
+        let on_canvas = under
+            .as_ref()
+            .filter(|hit| hit.workspace == press.workspace)
+            .map_or(press.pos, |hit| hit.pos);
+        self.layout.node_pointer_event(
+            &press.node,
+            "pointerup",
+            on_canvas,
+            button,
+            modifiers,
+            Point::from((0., 0.)),
+        );
+        if under.is_some_and(|hit| hit.node == press.node) {
+            self.layout.node_pointer_event(
+                &press.node,
+                "click",
+                on_canvas,
+                button,
+                modifiers,
+                Point::from((0., 0.)),
+            );
+        }
+    }
+
+    /// Sends scrolling to the node that the tiling layout draws under the pointer, if there's one.
+    /// Returns whether a node took it.
+    pub fn node_scrolled(&mut self, delta: Point<f64, Logical>) -> bool {
+        let Some(hit) = self.pointer_contents.node.clone() else {
+            return false;
+        };
+
+        if delta != Point::from((0., 0.)) {
+            let modifiers = self.node_modifiers();
+            self.layout
+                .node_pointer_event(&hit.node, "wheel", hit.pos, 0, modifiers, delta);
+        }
+        true
     }
 
     pub fn output_under_cursor(&self) -> Option<Output> {
