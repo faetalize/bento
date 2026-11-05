@@ -1,6 +1,6 @@
-//! JSON that bento and layouts exchange, see `resources/layouts/prelude.js`.
+//! JSON that bento and layouts exchange, see `resources/layouts/prelude/index.js`.
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 /// Largest coordinate or size bento accepts from a layout, to keep arithmetic sane.
@@ -73,22 +73,6 @@ pub enum Mode {
     Maximized,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Preset {
-    Proportion(f64),
-    Fixed(f64),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Rules {
-    pub default_width: Option<Preset>,
-    pub default_height: Option<Preset>,
-    pub default_column_display: &'static str,
-    pub open_full_width: bool,
-}
-
 /// What bento tells the layout about a window.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,13 +80,16 @@ pub struct WindowInfo {
     pub id: u64,
     pub app_id: Option<String>,
     pub title: Option<String>,
+    /// Id of the workspace the window is on.
+    pub workspace: u64,
     pub size: Wh,
     pub min_size: Wh,
     pub max_size: Wh,
     pub borders: Wh,
     pub mode: Mode,
-    pub rules: Rules,
-    pub is_urgent: bool,
+    pub urgent: bool,
+    /// The layout's window rules that match the window, resolved.
+    pub rules: serde_json::Value,
     /// What the layout stored on the window.
     pub data: serde_json::Value,
     /// Where the window is, as a hint when a layout takes over.
@@ -110,62 +97,202 @@ pub struct WindowInfo {
     pub rect: Option<Rect>,
 }
 
+/// What bento tells the layout about a monitor.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorInfo {
+    pub name: String,
+    pub size: Wh,
+    pub scale: f64,
+    pub working_area: Rect,
+    /// Id of the workspace the monitor shows.
+    pub active: u64,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub up: Option<String>,
+    pub down: Option<String>,
+}
+
+/// The view of a workspace: its monitor's, or the last one it had.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewInfo {
+    pub size: Wh,
+    pub working_area: Rect,
+    pub scale: f64,
+}
+
+/// bento's settings for a workspace, that engines may follow.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConfigInfo {
+    pub gaps: f64,
+    pub struts: Struts,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Struts {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub bottom: f64,
+}
+
+/// What bento tells the layout about a workspace.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceInfo {
+    pub id: u64,
+    pub name: Option<String>,
+    /// Name of the monitor the workspace is on, if there is one.
+    pub monitor: Option<String>,
+    /// Place in the monitor's stack, from the top.
+    pub index: usize,
+    pub view: ViewInfo,
+    /// Where the camera is going, if it's moving.
+    pub camera: Xy,
+    pub config: ConfigInfo,
+    /// Id of the window that has the workspace's focus.
+    pub focused: Option<u64>,
+}
+
+/// What changed about the session since the layout was last told, which the prelude applies
+/// before it handles an event.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncInfo {
+    pub monitors: Vec<serde_json::Value>,
+    pub removed_monitors: Vec<String>,
+    pub workspaces: Vec<serde_json::Value>,
+    pub removed_workspaces: Vec<u64>,
+    pub windows: Vec<serde_json::Value>,
+    /// Name of the monitor with keyboard focus.
+    pub focused_monitor: Option<String>,
+    /// The layout's options, when they changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
+    /// Whether the focused monitor changed since the layout was last told.
+    #[serde(skip)]
+    pub focus_changed: bool,
+}
+
+impl SyncInfo {
+    /// Whether there's nothing to tell.
+    pub fn is_empty(&self) -> bool {
+        self.monitors.is_empty()
+            && self.removed_monitors.is_empty()
+            && self.workspaces.is_empty()
+            && self.removed_workspaces.is_empty()
+            && self.windows.is_empty()
+            && self.options.is_none()
+            && !self.focus_changed
+    }
+}
+
 /// What a layout call changed.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Output {
     #[serde(default)]
     pub result: serde_json::Value,
     pub error: Option<String>,
     #[serde(default)]
     pub logs: Vec<String>,
+    /// Window and workspace changes, in the order the layout made them.
+    #[serde(default)]
+    pub ops: Vec<Op>,
     #[serde(default)]
     pub windows: Vec<WindowChange>,
-    /// Window ids, bottom to top.
-    pub order: Option<Vec<u64>>,
-    #[serde(default, deserialize_with = "present")]
-    pub focused: Option<Option<u64>>,
-    pub camera: Option<CameraChange>,
-    #[serde(default, deserialize_with = "present")]
-    pub hint: Option<Option<Rect>>,
-    pub ipc: Option<Vec<(u64, Option<(usize, usize)>)>>,
-    /// All tab bars, when they changed.
-    pub tabs: Option<Vec<TabBarOut>>,
     /// Data the layout stored on windows.
-    pub data: Option<Vec<(u64, serde_json::Value)>>,
+    #[serde(default)]
+    pub data: Vec<(u64, serde_json::Value)>,
+    /// The window that has the focus of each workspace.
+    #[serde(default)]
+    pub focus: Vec<(u64, Option<u64>)>,
+    #[serde(default)]
+    pub cameras: Vec<CameraChange>,
+    /// The monitor that has keyboard focus.
+    #[serde(default, rename = "monitorFocus")]
+    pub monitor_focus: Option<String>,
+    #[serde(default)]
+    pub tree: Vec<TreeOp>,
+    /// Whether the layout says that its exposed state changed.
+    #[serde(default, rename = "stateChanged")]
+    pub state_changed: bool,
 }
 
+/// A change to the workspace structure that the layout asked for.
 #[derive(Debug, Deserialize)]
-pub struct TabBarOut {
-    pub key: String,
-    pub area: Rect,
-    pub windows: Vec<u64>,
-    pub active: u64,
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum Op {
+    Show {
+        workspace: u64,
+        animate: bool,
+    },
+    MoveWorkspace {
+        workspace: u64,
+        monitor: String,
+        index: Option<usize>,
+    },
+    Rename {
+        workspace: u64,
+        name: Option<String>,
+    },
+    MoveWindow {
+        window: u64,
+        workspace: u64,
+    },
+}
+
+/// A change to a workspace's tree of drawn nodes, see `prelude/nodes.js`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum TreeOp {
+    Create {
+        id: String,
+        kind: String,
+        props: serde_json::Value,
+    },
+    Set {
+        id: String,
+        props: serde_json::Value,
+    },
+    Append {
+        parent: String,
+        child: String,
+        before: Option<String>,
+    },
+    Remove {
+        id: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
 pub struct WindowChange {
     pub id: u64,
-    pub rect: Rect,
+    /// Where the layout put the window, or `None` if it didn't yet.
+    pub rect: Option<Rect>,
     pub visible: bool,
-    /// Whether the window is the active one in its column, if the layout engine says.
-    #[serde(default, rename = "activeInColumn")]
-    pub active_in_column: Option<bool>,
     pub mode: Mode,
     pub animate: bool,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CameraChange {
+    pub workspace: u64,
     pub x: f64,
     pub y: f64,
     pub animate: bool,
+    /// Initial velocity of the animation, after a swipe.
+    #[serde(default)]
+    pub velocity: f64,
 }
 
-/// Tells "present, but null" apart from "missing".
-fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
+/// What bento needs to know about how a cancelable event went.
+#[derive(Debug, Default, Deserialize)]
+pub struct Verdict {
+    /// Whether a listener prevented the event's default.
+    #[serde(default)]
+    pub prevented: bool,
+    /// Whether any listener took the event on, for events that are refused otherwise.
+    #[serde(default)]
+    pub handled: bool,
 }

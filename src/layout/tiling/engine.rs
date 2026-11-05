@@ -1,14 +1,13 @@
-//! The JS engine that runs tiling layouts.
+//! The JS engine that runs the tiling layout.
 //!
-//! There is one engine per thread, holding the current layout module. Each workspace has its own
-//! instance of the layout in it. bento and the layout talk in JSON through `prelude.js`, see
-//! `resources/layouts/bento-layout.d.ts` for the API.
+//! There is one engine per thread, holding the current layout module and its one instance, which
+//! sees the whole session. bento and the layout talk in JSON through the prelude, see
+//! `resources/layouts/prelude/` for it and `resources/layouts/bento-layout.d.ts` for the API.
 //!
 //! The engine has no access to files, the network or other modules, and every call has a time
 //! limit, so a broken layout can't hang the compositor.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -18,10 +17,32 @@ use niri_ipc::{
     LayoutEngineAction, LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOption,
     LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, SizeChange,
 };
-use rquickjs::{CatchResultExt as _, Context, Function, Module, Object, Persistent, Runtime};
+use rquickjs::loader::{BuiltinLoader, BuiltinResolver, ImportAttributes, Resolver};
+use rquickjs::{CatchResultExt as _, Context, Ctx, Function, Module, Object, Persistent, Runtime};
 use serde::{Deserialize, Deserializer};
 
-const PRELUDE: &str = include_str!("../../../resources/layouts/prelude.js");
+/// The prelude's entry point, which imports the rest.
+const PRELUDE: &str = include_str!("../../../resources/layouts/prelude/index.js");
+
+/// The prelude's other modules, by the name they import each other with.
+const PRELUDE_MODULES: &[(&str, &str)] = &[
+    (
+        "bento:prelude/events.js",
+        include_str!("../../../resources/layouts/prelude/events.js"),
+    ),
+    (
+        "bento:prelude/nodes.js",
+        include_str!("../../../resources/layouts/prelude/nodes.js"),
+    ),
+    (
+        "bento:prelude/objects.js",
+        include_str!("../../../resources/layouts/prelude/objects.js"),
+    ),
+    (
+        "bento:prelude/v1.js",
+        include_str!("../../../resources/layouts/prelude/v1.js"),
+    ),
+];
 
 /// Layouts that ship with bento.
 const BUILT_IN: &[(&str, &str)] = &[
@@ -33,49 +54,45 @@ const BUILT_IN: &[(&str, &str)] = &[
 /// The layout used when the configured one fails to load: windows side by side. It has no actions:
 /// the binds in the engine's file are for the engine that failed.
 const FALLBACK: &str = r#"
-export const meta = { api: 1, name: "fallback" };
-export default function create(ws) {
-    const order = [];
-    const layout = () => {
-        const gaps = ws.config.gaps;
-        const area = ws.view.workingArea;
-        const w = Math.max(1, (area.w - gaps) / 2 - gaps);
-        order.forEach((win, i) => {
+export const meta = { api: 2, name: "fallback" };
+export default function create(bento) {
+    const place = (windows) => {
+        windows.forEach((win, i) => {
+            const ws = win.workspace;
+            const gaps = ws.config.gaps;
+            const area = ws.tilingArea;
+            const w = Math.max(1, (area.w - gaps) / 2 - gaps);
             const x = area.x + gaps + i * (w + gaps);
-            ws.place(win, { x, y: area.y + gaps, w, h: area.h - gaps * 2 });
+            win.place({ x, y: area.y + gaps, w, h: area.h - gaps * 2 });
         });
     };
     const show = (win) => {
-        const area = ws.view.workingArea;
+        const ws = win.workspace;
+        const area = ws.tilingArea;
         const rect = win.rect;
         if (rect.x < ws.camera.x + area.x || ws.camera.x + area.x + area.w < rect.x + rect.w) {
-            ws.moveCamera({ x: rect.x - area.x - ws.config.gaps });
+            ws.camera.move({ x: rect.x - area.x - ws.config.gaps });
         }
     };
-    return {
-        windowAdded(win, how) {
-            order.push(win);
-            layout();
-            if (how.activate || ws.focused === null) {
-                ws.focus(win);
-                show(win);
-            }
-        },
-        windowRemoved(win) {
-            const i = order.indexOf(win);
-            order.splice(i, 1);
-            layout();
-            if (ws.focused === null && order.length > 0) {
-                const next = order[Math.min(i, order.length - 1)];
-                ws.focus(next);
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        const ws = win.workspace;
+        place(ws.windows);
+        if (e.activate || ws.focused === null) {
+            win.focus();
+            show(win);
+        }
+        win.addEventListener("remove", () => {
+            const rest = ws.windows.filter((other) => other !== win);
+            const i = ws.windows.indexOf(win);
+            place(rest);
+            if (ws.focused === win && rest.length > 0) {
+                const next = rest[Math.min(i, rest.length - 1)];
+                next.focus();
                 show(next);
             }
-        },
-        activate(win) {
-            ws.focus(win);
-            show(win);
-        },
-    };
+        });
+    });
 }
 "#;
 
@@ -89,7 +106,6 @@ thread_local! {
     static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
     /// Why the configured layout last failed to load.
     static LOAD_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
-    static NEXT_INSTANCE: Cell<u64> = const { Cell::new(1) };
     static GENERATION: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -101,6 +117,8 @@ pub struct LayoutMeta {
     #[serde(deserialize_with = "deserialize_actions")]
     pub actions: Vec<LayoutEngineAction>,
     pub options: Vec<OptionMeta>,
+    /// Whether bento's floating layer exists under the layout.
+    pub floating: bool,
 }
 
 impl LayoutMeta {
@@ -134,6 +152,8 @@ enum ArgType {
     String,
     Choice,
     Size,
+    Workspace,
+    Monitor,
 }
 
 fn deserialize_actions<'de, D: Deserializer<'de>>(
@@ -148,6 +168,8 @@ fn deserialize_actions<'de, D: Deserializer<'de>>(
             ArgType::String => LayoutEngineActionArgType::String,
             ArgType::Choice => LayoutEngineActionArgType::Choice,
             ArgType::Size => LayoutEngineActionArgType::Size,
+            ArgType::Workspace => LayoutEngineActionArgType::Workspace,
+            ArgType::Monitor => LayoutEngineActionArgType::Monitor,
         }),
         default: arg.default,
         optional: false,
@@ -200,17 +222,35 @@ struct Engine {
     /// Source of the layout, to tell whether a reload changed anything.
     source: String,
     meta: LayoutMeta,
-    /// Increases with every load; instances from an older generation are gone.
+    /// Increases with every load; the instance of an older generation is gone.
     generation: u64,
     deadline: Rc<Cell<Option<Instant>>>,
     // Field order matters: the functions have to go before the context and runtime.
     handle: Persistent<Function<'static>>,
     save_all: Persistent<Function<'static>>,
+    exposed_state: Persistent<Function<'static>>,
     context: Context,
     _runtime: Runtime,
-    /// State that instances saved before the previous layout was unloaded, by instance id, with
-    /// the name of the layout that saved it.
-    saved: HashMap<u64, (String, serde_json::Value)>,
+    /// State that the previous layout saved before it was unloaded, with its name.
+    saved: Option<(String, serde_json::Value)>,
+}
+
+/// Lets the prelude's modules import each other, and nothing else import them.
+struct PreludeResolver(BuiltinResolver);
+
+impl Resolver for PreludeResolver {
+    fn resolve<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        if !base.starts_with("bento:prelude/") {
+            return Err(rquickjs::Error::new_resolving(base, name));
+        }
+        self.0.resolve(ctx, base, name, attributes)
+    }
 }
 
 impl Engine {
@@ -218,6 +258,14 @@ impl Engine {
         let runtime = Runtime::new().context("error creating the JS runtime")?;
         runtime.set_memory_limit(MEMORY_LIMIT);
         runtime.set_max_stack_size(1024 * 1024);
+
+        let mut resolver = BuiltinResolver::default();
+        let mut loader = BuiltinLoader::default();
+        for (module, source) in PRELUDE_MODULES {
+            resolver.add_module(*module);
+            loader.add_module(*module, *source);
+        }
+        runtime.set_loader(PreludeResolver(resolver), loader);
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         let deadline_ = deadline.clone();
@@ -244,7 +292,8 @@ impl Engine {
                 module.namespace().map_err(|err| anyhow!("{err}"))
             };
 
-            let prelude = eval("bento:prelude", PRELUDE).context("error loading the prelude")?;
+            let prelude =
+                eval("bento:prelude/index.js", PRELUDE).context("error loading the prelude")?;
             let layout = eval(name, &source)?;
 
             let load: Function = prelude.get("load")?;
@@ -264,14 +313,16 @@ impl Engine {
 
             let handle: Function = prelude.get("handle")?;
             let save_all: Function = prelude.get("saveAll")?;
+            let exposed_state: Function = prelude.get("exposedState")?;
             Ok((
                 meta,
                 Persistent::save(&ctx, handle),
                 Persistent::save(&ctx, save_all),
+                Persistent::save(&ctx, exposed_state),
             ))
         });
         deadline.set(None);
-        let (meta, handle, save_all) = res?;
+        let (meta, handle, save_all, exposed_state) = res?;
 
         let generation = GENERATION.get() + 1;
         GENERATION.set(generation);
@@ -286,38 +337,39 @@ impl Engine {
             deadline,
             handle,
             save_all,
+            exposed_state,
             context,
             _runtime: runtime,
-            saved: HashMap::new(),
+            saved: None,
         })
     }
 
-    /// Saves the state of every instance, by instance id.
-    fn save_all(&self) -> HashMap<u64, (String, serde_json::Value)> {
+    /// Calls one of the prelude's functions that take nothing and answer with JSON.
+    fn call_json(
+        &self,
+        function: &Persistent<Function<'static>>,
+    ) -> anyhow::Result<serde_json::Value> {
         self.deadline.set(Some(Instant::now() + CALL_TIME_LIMIT));
         let res = self.context.with(|ctx| {
-            let save_all = self.save_all.clone().restore(&ctx)?;
-            save_all
+            let function = function.clone().restore(&ctx)?;
+            function
                 .call::<_, String>(())
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))
         });
         self.deadline.set(None);
+        serde_json::from_str(&res?).context("error reading the layout's answer")
+    }
 
-        let states: HashMap<u64, serde_json::Value> = match res
-            .and_then(|json| serde_json::from_str(&json).context("error reading saved states"))
-        {
-            Ok(states) => states,
+    /// Saves the layout's state, for the next instance of the same layout.
+    fn save_state(&self) -> Option<(String, serde_json::Value)> {
+        match self.call_json(&self.save_all) {
+            Ok(state) => Some((self.meta.name.clone(), state)),
             Err(err) => {
                 warn!("error saving layout engine state: {err:?}");
-                HashMap::new()
+                None
             }
-        };
-        let name = &self.meta.name;
-        states
-            .into_iter()
-            .map(|(id, state)| (id, (name.clone(), state)))
-            .collect()
+        }
     }
 
     fn call(&self, event: &str) -> anyhow::Result<String> {
@@ -361,7 +413,8 @@ fn read_source(config: &Tiling) -> anyhow::Result<(String, String)> {
 }
 
 /// Makes sure the engine runs the layout from `config`, loading it if it changed, and returns
-/// the engine generation.
+/// the engine generation. The instance of the layout it replaces is gone: whoever keeps the
+/// session's host creates it again when the generation changes.
 ///
 /// If the layout fails to load, keeps the previous one, or falls back to a simple built-in one.
 pub fn ensure_loaded(config: &Tiling) -> u64 {
@@ -385,16 +438,14 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
             Ok(Some(mut new)) => {
                 LOAD_ERROR.set(None);
                 if let Some(old) = engine.take() {
-                    let saved = old.save_all();
-                    new.saved = old.saved;
-                    new.saved.extend(saved);
+                    new.saved = old.save_state().or(old.saved);
                 }
                 info!("loaded layout engine {}", new.meta.name);
                 *engine = Some(new);
             }
             Ok(None) => {
                 LOAD_ERROR.set(None);
-                // Same source: only the options changed, which instances pick up on their own.
+                // Same source: only the options changed, which the host passes on.
                 let engine = engine.as_mut().unwrap();
                 engine.config = config.clone();
                 engine.layout = config.layout.clone();
@@ -430,6 +481,20 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
 /// Current engine generation, or 0 if no layout is loaded.
 pub fn generation() -> u64 {
     ENGINE.with_borrow(|engine| engine.as_ref().map_or(0, |engine| engine.generation))
+}
+
+/// Name of the current layout, or an empty string if none is loaded.
+pub fn name() -> String {
+    ENGINE.with_borrow(|engine| {
+        engine
+            .as_ref()
+            .map_or_else(String::new, |engine| engine.meta.name.clone())
+    })
+}
+
+/// Whether bento's floating layer exists under the current layout.
+pub fn floating_enabled() -> bool {
+    ENGINE.with_borrow(|engine| engine.as_ref().is_none_or(|engine| engine.meta.floating))
 }
 
 /// Metadata of the current layout.
@@ -514,36 +579,6 @@ pub fn options_json(config: &Tiling) -> serde_json::Value {
     serde_json::Value::Object(options.collect())
 }
 
-/// Forgets an instance whose workspace is gone, so that the layout engine frees what it kept for
-/// it. Without this, every workspace that comes and goes would add to the engine's memory until
-/// it runs out.
-pub fn destroy(instance: u64, generation: u64) {
-    // Workspaces can go away while bento shuts down, after the engine is gone.
-    let _ = ENGINE.try_with(|engine| {
-        let Ok(mut engine) = engine.try_borrow_mut() else {
-            return;
-        };
-        let Some(engine) = engine.as_mut() else {
-            return;
-        };
-        engine.saved.remove(&instance);
-        // An engine that reloaded since never knew this instance.
-        if engine.generation == generation {
-            let event = serde_json::json!({ "type": "destroy", "instance": instance });
-            if let Err(err) = engine.call(&event.to_string()) {
-                warn!("error destroying a layout engine instance: {err:?}");
-            }
-        }
-    });
-}
-
-/// A new unique instance id.
-pub fn next_instance() -> u64 {
-    let id = NEXT_INSTANCE.get();
-    NEXT_INSTANCE.set(id + 1);
-    id
-}
-
 /// Sends an event to the layout and returns its answer.
 pub fn call(event: &str) -> anyhow::Result<String> {
     ENGINE.with_borrow(|engine| {
@@ -554,22 +589,23 @@ pub fn call(event: &str) -> anyhow::Result<String> {
     })
 }
 
-/// Keeps state an instance saved, for when it's created again after the layout reloads.
-pub fn save_state(instance: u64, state: serde_json::Value) {
-    ENGINE.with_borrow_mut(|engine| {
-        if let Some(engine) = engine {
-            let name = engine.meta.name.clone();
-            engine.saved.insert(instance, (name, state));
-        }
-    });
-}
-
-/// Takes the state an instance saved, if the current layout is the one that saved it.
-pub fn take_state(instance: u64) -> Option<serde_json::Value> {
+/// Takes the state that the previous layout saved, if the current layout is the one that saved it.
+pub fn take_state() -> Option<serde_json::Value> {
     ENGINE.with_borrow_mut(|engine| {
         let engine = engine.as_mut()?;
-        let (name, state) = engine.saved.remove(&instance)?;
+        let (name, state) = engine.saved.take()?;
         (name == engine.meta.name).then_some(state)
+    })
+}
+
+/// The state that the layout exposes with `bento.exposeState()`, which is `null` if it exposes
+/// none.
+pub fn exposed_state() -> anyhow::Result<serde_json::Value> {
+    ENGINE.with_borrow(|engine| {
+        let engine = engine
+            .as_ref()
+            .ok_or_else(|| anyhow!("no layout engine is loaded"))?;
+        engine.call_json(&engine.exposed_state)
     })
 }
 

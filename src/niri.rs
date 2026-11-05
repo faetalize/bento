@@ -4692,8 +4692,6 @@ impl Niri {
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
 
-            mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
-
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
             push_popups_from_layer!(Layer::Top);
@@ -4720,8 +4718,6 @@ impl Niri {
 
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
-
-            mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
             // Macro instead of closure to avoid borrowing push().
             macro_rules! process {
@@ -7028,17 +7024,7 @@ impl Niri {
 
         if let Some(window) = &new_focus.window {
             if !self.layout.is_overview_open() && current_focus.window.as_ref() != Some(window) {
-                let (window, hit) = window;
-
-                // Don't trigger focus-follows-mouse over the tab indicator.
-                if matches!(
-                    hit,
-                    HitType::Activate {
-                        is_tab_indicator: true
-                    }
-                ) {
-                    return;
-                }
+                let (window, _) = window;
 
                 if !self.layout.should_trigger_focus_follows_mouse_on(window) {
                     return;

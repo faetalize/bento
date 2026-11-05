@@ -3,16 +3,14 @@ use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
 
-use niri_config::{CornerRadius, LayoutPart};
+use niri_config::LayoutPart;
 use smithay::backend::renderer::element::utils::{
     CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
 };
 use smithay::output::Output;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
-use super::tile::Tile;
-use super::tiling::ColumnWidth;
+use super::tile::{PendingMove, Tile};
 use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceRenderElement,
@@ -71,12 +69,6 @@ pub struct Monitor<W: LayoutElement> {
     pub(super) previous_workspace_id: Option<WorkspaceId>,
     /// In-progress switch between workspaces.
     pub(super) workspace_switch: Option<WorkspaceSwitch>,
-    /// Indication where an interactively-moved window is about to be placed.
-    pub(super) insert_hint: Option<InsertHint>,
-    /// Insert hint element for rendering.
-    insert_hint_element: InsertHintElement,
-    /// Location to render the insert hint element.
-    insert_hint_render_loc: Option<InsertHintRenderLoc>,
     /// Whether the overview is open.
     pub(super) overview_open: bool,
     /// Progress of the overview zoom animation, 1 is fully in overview.
@@ -129,8 +121,8 @@ pub struct WorkspaceSwitchGesture {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum InsertPosition {
-    /// In the tiling layout, where the layout puts the window; `None` when there's nowhere in
-    /// particular, like on a new workspace.
+    /// In the tiling layout, where the pointer and the window are on the workspace's canvas;
+    /// `None` when there's nowhere in particular, like on a new workspace.
     Tiled(Option<TiledDrop>),
     Floating,
 }
@@ -141,27 +133,12 @@ pub(super) struct TiledDrop {
     pub pointer: Point<f64, Logical>,
     /// Where the dragged tile is.
     pub rect: Rectangle<f64, Logical>,
-    /// Where the layout would put it, to highlight.
-    pub hint: Option<Rectangle<f64, Logical>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InsertWorkspace {
     Existing(WorkspaceId),
     NewAt(usize),
-}
-
-#[derive(Debug)]
-pub(super) struct InsertHint {
-    pub workspace: InsertWorkspace,
-    pub position: InsertPosition,
-    pub corner_radius: CornerRadius,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct InsertHintRenderLoc {
-    workspace: InsertWorkspace,
-    location: Point<f64, Logical>,
 }
 
 #[derive(Debug)]
@@ -180,8 +157,6 @@ pub enum MonitorAddWindowTarget<'a, W: LayoutElement> {
     Workspace {
         /// Id of the target workspace.
         id: WorkspaceId,
-        /// Override where the window will open as a new column.
-        column_idx: Option<usize>,
     },
     /// Next to this existing window.
     NextTo(&'a W::Id),
@@ -198,8 +173,6 @@ impl<'a, W: LayoutElement> Clone for MonitorAddWindowTarget<'a, W> {
 niri_render_elements! {
     MonitorInnerRenderElement<R> => {
         Workspace = CropRenderElement<WorkspaceRenderElement<R>>,
-        InsertHint = CropRenderElement<InsertHintRenderElement>,
-        UncroppedInsertHint = InsertHintRenderElement,
         Shadow = ShadowRenderElement,
         SolidColor = SolidColorRenderElement,
     }
@@ -262,15 +235,6 @@ impl WorkspaceSwitchGesture {
     fn animate_from(&mut self, from: f64, clock: Clock, config: niri_config::Animation) {
         let current = self.animation.as_ref().map_or(0., Animation::value);
         self.animation = Some(Animation::new(clock, from + current, 0., 0., config));
-    }
-}
-
-impl InsertWorkspace {
-    fn existing_id(self) -> Option<WorkspaceId> {
-        match self {
-            InsertWorkspace::Existing(id) => Some(id),
-            InsertWorkspace::NewAt(_) => None,
-        }
     }
 }
 
@@ -348,9 +312,6 @@ impl<W: LayoutElement> Monitor<W> {
             workspaces,
             active_workspace_idx,
             previous_workspace_id: None,
-            insert_hint: None,
-            insert_hint_element: InsertHintElement::new(options.layout.insert_hint),
-            insert_hint_render_loc: None,
             overview_open: false,
             overview_progress: None,
             workspace_switch: None,
@@ -510,14 +471,9 @@ impl<W: LayoutElement> Monitor<W> {
             MonitorAddWindowTarget::Auto => {
                 (self.active_workspace_idx, WorkspaceAddWindowTarget::Auto)
             }
-            MonitorAddWindowTarget::Workspace { id, column_idx } => {
+            MonitorAddWindowTarget::Workspace { id } => {
                 let idx = self.idx_of_ws(id).unwrap();
-                let target = if let Some(column_idx) = column_idx {
-                    WorkspaceAddWindowTarget::NewColumnAt(column_idx)
-                } else {
-                    WorkspaceAddWindowTarget::Auto
-                };
-                (idx, target)
+                (idx, WorkspaceAddWindowTarget::Auto)
             }
             MonitorAddWindowTarget::NextTo(win_id) => {
                 let idx = self
@@ -535,27 +491,15 @@ impl<W: LayoutElement> Monitor<W> {
         window: W,
         target: MonitorAddWindowTarget<W>,
         activate: ActivateWindow,
-        width: ColumnWidth,
-        is_full_width: bool,
         is_floating: bool,
     ) {
         // Currently, everything a workspace sets on a Tile is the same across all workspaces of a
         // monitor. So we can use any workspace, not necessarily the exact target workspace.
         let tile = self.workspaces[0].make_tile(window);
 
-        self.add_tile(
-            tile,
-            target,
-            activate,
-            true,
-            width,
-            is_full_width,
-            is_floating,
-            None,
-        );
+        self.add_tile(tile, target, activate, true, is_floating, None);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn add_tile(
         &mut self,
         tile: Tile<W>,
@@ -563,8 +507,6 @@ impl<W: LayoutElement> Monitor<W> {
         activate: ActivateWindow,
         // FIXME: Refactor ActivateWindow enum to make this better.
         allow_to_activate_workspace: bool,
-        width: ColumnWidth,
-        is_full_width: bool,
         is_floating: bool,
         anim: Option<niri_config::Animation>,
     ) {
@@ -572,15 +514,7 @@ impl<W: LayoutElement> Monitor<W> {
 
         let workspace = &mut self.workspaces[workspace_idx];
 
-        workspace.add_tile(
-            tile,
-            target,
-            activate,
-            width,
-            is_full_width,
-            is_floating,
-            anim,
-        );
+        workspace.add_tile(tile, target, activate, is_floating, anim);
 
         // After adding a new window, workspace becomes this output's own.
         if workspace.name().is_none() {
@@ -799,18 +733,13 @@ impl<W: LayoutElement> Monitor<W> {
 
         self.add_tile(
             removed.tile,
-            MonitorAddWindowTarget::Workspace {
-                id: new_id,
-                column_idx: None,
-            },
+            MonitorAddWindowTarget::Workspace { id: new_id },
             if activate {
                 ActivateWindow::Yes
             } else {
                 ActivateWindow::No
             },
             true,
-            removed.width,
-            removed.is_full_width,
             removed.is_floating,
             Some(config),
         );
@@ -831,12 +760,15 @@ impl<W: LayoutElement> Monitor<W> {
                 self.workspace_size_with_gap(1.).h * (source_workspace_idx as f64 - new_idx as f64);
         }
 
-        let (tile, new_render_pos) = self.workspaces[new_idx]
-            .tiles_with_render_positions_mut(false)
-            .find(|(tile, _)| tile.window().id() == &window)
-            .unwrap();
-        tile.animate_move_from_with_config(old_render_pos - new_render_pos, config);
-        tile.set_anim_y_between_workspaces();
+        // The layout engine places the tile after this, so it animates from where it was then.
+        self.workspaces[new_idx].set_pending_move(
+            &window,
+            PendingMove {
+                from: old_render_pos,
+                config: Some(config),
+                between_workspaces: true,
+            },
+        );
     }
 
     pub fn switch_workspace_up(&mut self) {
@@ -954,101 +886,12 @@ impl<W: LayoutElement> Monitor<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool) {
-        let mut insert_hint_ws_geo = None;
-        let insert_hint_ws_id = self
-            .insert_hint
-            .as_ref()
-            .and_then(|hint| hint.workspace.existing_id());
-
         for ws in &mut self.workspaces {
             ws.update_render_elements(is_active, RenderLayer::MovingBetweenWorkspaces);
         }
 
-        for (ws, geo) in self.workspaces_with_render_geo_mut(true) {
+        for (ws, _) in self.workspaces_with_render_geo_mut(true) {
             ws.update_render_elements(is_active, RenderLayer::Normal);
-
-            if Some(ws.id()) == insert_hint_ws_id {
-                insert_hint_ws_geo = Some(geo);
-            }
-        }
-
-        self.insert_hint_render_loc = None;
-        if let Some(hint) = &self.insert_hint {
-            match hint.workspace {
-                InsertWorkspace::Existing(ws_id) => {
-                    if let Some(idx) = self.idx_of_ws(ws_id) {
-                        let ws = &self.workspaces[idx];
-                        if let Some(mut area) = ws.insert_hint_area(hint.position) {
-                            let scale = ws.scale().fractional_scale();
-                            let view_size = ws.view_size();
-
-                            // Make sure the hint is at least partially visible.
-                            if matches!(hint.position, InsertPosition::Tiled(_)) {
-                                let zoom = self.overview_zoom();
-                                let geo = insert_hint_ws_geo.unwrap();
-                                let geo = geo.downscale(zoom);
-
-                                area.loc.x = area.loc.x.max(-geo.loc.x - area.size.w / 2.);
-                                area.loc.x =
-                                    area.loc.x.min(geo.loc.x + geo.size.w - area.size.w / 2.);
-                            }
-
-                            // Round to physical pixels.
-                            area = area.to_physical_precise_round(scale).to_logical(scale);
-
-                            let view_rect = Rectangle::new(area.loc.upscale(-1.), view_size);
-                            self.insert_hint_element.update_render_elements(
-                                area.size,
-                                view_rect,
-                                hint.corner_radius,
-                                scale,
-                            );
-                            self.insert_hint_render_loc = Some(InsertHintRenderLoc {
-                                workspace: hint.workspace,
-                                location: area.loc,
-                            });
-                        }
-                    } else {
-                        error!("insert hint workspace missing from monitor");
-                    }
-                }
-                InsertWorkspace::NewAt(ws_idx) => {
-                    let scale = self.scale.fractional_scale();
-                    let zoom = self.overview_zoom();
-                    let gap = self.workspace_gap(zoom);
-
-                    let hint_gap = round_logical_in_physical(scale, gap * 0.1);
-                    let hint_height = gap - hint_gap * 2.;
-
-                    let next_ws_geo = self.workspaces_render_geo().nth(ws_idx).unwrap();
-                    let hint_width = round_logical_in_physical(scale, next_ws_geo.size.w * 0.75);
-                    let hint_x =
-                        round_logical_in_physical(scale, (next_ws_geo.size.w - hint_width) / 2.);
-
-                    let hint_loc_diff = Point::from((-hint_x, hint_height + hint_gap));
-                    let hint_loc = next_ws_geo.loc - hint_loc_diff;
-                    let hint_size = Size::from((hint_width, hint_height));
-
-                    // Sometimes the hint ends up 1 px wider than necessary and/or 1 px
-                    // narrower than necessary. The values here seem correct. Might have to do with
-                    // how zooming out currently doesn't round to output scale properly.
-
-                    // Compute view rect as if we're above the next workspace (rather than below
-                    // the previous one).
-                    let view_rect = Rectangle::new(hint_loc_diff, next_ws_geo.size);
-
-                    self.insert_hint_element.update_render_elements(
-                        hint_size,
-                        view_rect,
-                        CornerRadius::default(),
-                        scale,
-                    );
-                    self.insert_hint_render_loc = Some(InsertHintRenderLoc {
-                        workspace: hint.workspace,
-                        location: hint_loc,
-                    });
-                }
-            }
         }
     }
 
@@ -1072,9 +915,6 @@ impl<W: LayoutElement> Monitor<W> {
             ws.update_config(options.clone());
         }
 
-        self.insert_hint_element
-            .update_config(options.layout.insert_hint);
-
         self.base_options = base_options;
         self.options = options;
     }
@@ -1094,8 +934,6 @@ impl<W: LayoutElement> Monitor<W> {
         for ws in &mut self.workspaces {
             ws.update_shaders();
         }
-
-        self.insert_hint_element.update_shaders();
     }
 
     pub fn update_output_size(&mut self) {
@@ -1523,31 +1361,6 @@ impl<W: LayoutElement> Monitor<W> {
         self.fullscreen_window_above_top_layer().is_some()
     }
 
-    pub fn render_insert_hint_between_workspaces<R: NiriRenderer>(
-        &self,
-        renderer: &mut R,
-        push: &mut dyn FnMut(MonitorRenderElement<R>),
-    ) {
-        if self.options.layout.insert_hint.off {
-            return;
-        }
-        let Some(render_loc) = self.insert_hint_render_loc else {
-            return;
-        };
-        let InsertWorkspace::NewAt(_) = render_loc.workspace else {
-            return;
-        };
-
-        self.insert_hint_element
-            .render(renderer, render_loc.location, &mut |elem| {
-                let elem = MonitorInnerRenderElement::UncroppedInsertHint(elem);
-                let elem = RescaleRenderElement::from_element(elem, Point::default(), 1.);
-                let elem =
-                    RelocateRenderElement::from_element(elem, Point::default(), Relocate::Relative);
-                push(elem);
-            });
-    }
-
     pub fn render_workspaces<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
@@ -1561,10 +1374,6 @@ impl<W: LayoutElement> Monitor<W> {
         let height = (self.view_size.h * scale).ceil() as i32;
 
         let zoom = self.overview_zoom();
-
-        let insert_hint_render_loc = self
-            .insert_hint_render_loc
-            .filter(|_| !self.options.layout.insert_hint.off);
 
         let scale_relocate = move |geo: Rectangle<f64, Logical>, elem| {
             let elem = RescaleRenderElement::from_element(elem, Point::from((0, 0)), zoom);
@@ -1618,7 +1427,6 @@ impl<W: LayoutElement> Monitor<W> {
                 };
 
             for (ws, geo) in self.workspaces_with_render_geo_cull(cull) {
-                // Macro instead of closure because ws and insert hint have different elem types.
                 macro_rules! push {
                     () => {{
                         &mut |elem| {
@@ -1651,16 +1459,6 @@ impl<W: LayoutElement> Monitor<W> {
                             RenderLayer::Normal,
                             push!(),
                         );
-
-                        if let Some(loc) = insert_hint_render_loc {
-                            if loc.workspace == InsertWorkspace::Existing(ws.id()) {
-                                self.insert_hint_element.render(
-                                    ctx.renderer,
-                                    loc.location,
-                                    push!(),
-                                );
-                            }
-                        }
                     }
                     2 => {
                         ws.render_scrolling(

@@ -155,13 +155,6 @@ impl<'a> WindowRef<'a> {
         }
     }
 
-    pub fn is_active_in_column(self) -> bool {
-        match self {
-            WindowRef::Unmapped(_) => true,
-            WindowRef::Mapped(mapped) => mapped.is_active_in_column(),
-        }
-    }
-
     pub fn is_floating(self) -> bool {
         match self {
             // FIXME: This means you cannot set initial configure rules based on is-floating. I'm
@@ -436,12 +429,6 @@ fn window_matches(window: WindowRef, role: &XdgToplevelSurfaceRoleAttributes, m:
             return false;
         };
         if !title_re.0.is_match(title) {
-            return false;
-        }
-    }
-
-    if let Some(is_active_in_column) = m.is_active_in_column {
-        if window.is_active_in_column() != is_active_in_column {
             return false;
         }
     }

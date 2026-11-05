@@ -36,20 +36,20 @@ use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
 
-use monitor::{InsertHint, InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
+use monitor::{InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
-    Config, CornerRadius, LayoutPart, PresetSize, Workspace as WorkspaceConfig, WorkspaceReference,
+    Config, CornerRadius, LayoutPart, Workspace as WorkspaceConfig, WorkspaceReference,
 };
-use niri_ipc::{PositionChange, SizeChange, WindowLayout};
+use niri_ipc::{PositionChange, WindowLayout};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::output::{self, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
-use tile::{Tile, TileRenderElement};
-use tiling::ColumnWidth;
+use tile::{PendingMove, Tile, TileRenderElement};
+use tiling::host::Host;
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId};
 
 use self::floating::FloatingSpace;
@@ -78,11 +78,9 @@ use crate::window::ResolvedWindowRules;
 pub mod closing_window;
 pub mod floating;
 pub mod focus_ring;
-pub mod insert_hint_element;
 pub mod monitor;
 pub mod opening_window;
 pub mod shadow;
-pub mod tab_indicator;
 pub mod tile;
 pub mod tiling;
 pub mod workspace;
@@ -239,7 +237,6 @@ pub trait LayoutElement {
     fn output_leave(&self, output: &Output);
     fn set_offscreen_data(&self, data: Option<OffscreenData>);
     fn set_activated(&mut self, active: bool);
-    fn set_active_in_column(&mut self, active: bool);
     fn set_floating(&mut self, floating: bool);
     fn set_bounds(&self, bounds: Size<i32, Logical>);
     fn is_ignoring_opacity_window_rule(&self) -> bool;
@@ -383,6 +380,8 @@ pub struct Layout<W: LayoutElement> {
     overview_progress: Option<OverviewProgress>,
     /// Configurable properties of the layout.
     options: Rc<Options>,
+    /// The tiling layout engine's view of the session.
+    host: Host,
 }
 
 #[derive(Debug)]
@@ -443,10 +442,6 @@ struct InteractiveMoveData<W: LayoutElement> {
     pub(self) output: Output,
     /// Current pointer position within output.
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
-    /// Window column width.
-    pub(self) width: ColumnWidth,
-    /// Whether the window column was full-width.
-    pub(self) is_full_width: bool,
     /// Whether the window targets the floating layout.
     pub(self) is_floating: bool,
     /// Pointer location within the visual window geometry as ratio from geometry size.
@@ -509,10 +504,6 @@ pub enum ConfigureIntent {
 /// Tile that was just removed from the layout.
 pub struct RemovedTile<W: LayoutElement> {
     tile: Tile<W>,
-    /// Width of the column the tile was in.
-    width: ColumnWidth,
-    /// Whether the column the tile was in was full-width.
-    is_full_width: bool,
     /// Whether the tile was floating.
     is_floating: bool,
 }
@@ -554,10 +545,7 @@ pub enum HitType {
     /// The hit can activate a window, but it is not in the input region so cannot send events.
     ///
     /// For example, this could be clicking on a tile border outside the window.
-    Activate {
-        /// Whether the hit was on the tab indicator.
-        is_tab_indicator: bool,
-    },
+    Activate,
 }
 
 #[derive(Debug)]
@@ -647,7 +635,7 @@ impl HitType {
     pub fn offset_win_pos(mut self, offset: Point<f64, Logical>) -> Self {
         match &mut self {
             HitType::Input { win_pos } => *win_pos += offset,
-            HitType::Activate { .. } => (),
+            HitType::Activate => (),
         }
         self
     }
@@ -664,10 +652,8 @@ impl HitType {
 
     pub fn to_activate(self) -> Self {
         match self {
-            HitType::Input { .. } => HitType::Activate {
-                is_tab_indicator: false,
-            },
-            HitType::Activate { .. } => self,
+            HitType::Input { .. } => HitType::Activate,
+            HitType::Activate => self,
         }
     }
 }
@@ -756,7 +742,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn with_options(clock: Clock, options: Options) -> Self {
-        Self {
+        let mut layout = Self {
             monitor_set: MonitorSet::NoOutputs { workspaces: vec![] },
             is_active: true,
             last_active_workspace_id: HashMap::new(),
@@ -767,7 +753,12 @@ impl<W: LayoutElement> Layout<W> {
             overview_open: false,
             overview_progress: None,
             options: Rc::new(options),
-        }
+            host: Host::default(),
+        };
+        // The layout engine sees the session from the start, so that it can answer queries.
+        tiling::engine::ensure_loaded(&layout.options.tiling);
+        layout.flush_engine();
+        layout
     }
 
     fn with_options_and_workspaces(clock: Clock, config: &Config, options: Options) -> Self {
@@ -781,7 +772,7 @@ impl<W: LayoutElement> Layout<W> {
             })
             .collect();
 
-        Self {
+        let mut layout = Self {
             monitor_set: MonitorSet::NoOutputs { workspaces },
             is_active: true,
             last_active_workspace_id: HashMap::new(),
@@ -792,10 +783,19 @@ impl<W: LayoutElement> Layout<W> {
             overview_open: false,
             overview_progress: None,
             options: opts,
-        }
+            host: Host::default(),
+        };
+        tiling::engine::ensure_loaded(&layout.options.tiling);
+        layout.flush_engine();
+        layout
     }
 
     pub fn add_output(&mut self, output: Output, layout_config: Option<LayoutPart>) {
+        self.add_output_inner(output, layout_config);
+        self.flush_engine();
+    }
+
+    fn add_output_inner(&mut self, output: Output, layout_config: Option<LayoutPart>) {
         self.monitor_set = match mem::take(&mut self.monitor_set) {
             MonitorSet::Normal {
                 mut monitors,
@@ -914,6 +914,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn remove_output(&mut self, output: &Output) {
+        self.remove_output_inner(output);
+        self.flush_engine();
+    }
+
+    fn remove_output_inner(&mut self, output: &Output) {
         self.monitor_set = match mem::take(&mut self.monitor_set) {
             MonitorSet::Normal {
                 mut monitors,
@@ -984,21 +989,25 @@ impl<W: LayoutElement> Layout<W> {
     /// Adds a new window to the layout.
     ///
     /// Returns an output that the window was added to, if there were any outputs.
-    #[allow(clippy::too_many_arguments)]
     pub fn add_window(
         &mut self,
         window: W,
         target: AddWindowTarget<W>,
-        width: Option<PresetSize>,
-        height: Option<PresetSize>,
-        is_full_width: bool,
         is_floating: bool,
         activate: ActivateWindow,
     ) -> Option<&Output> {
-        let scrolling_height = height.map(SizeChange::from);
         let id = window.id().clone();
 
-        match &mut self.monitor_set {
+        // With floating off, a window that asks to float stays with the layout engine, which is
+        // told about the request.
+        let float_request = is_floating && !tiling::engine::floating_enabled();
+        let is_floating = is_floating && !float_request;
+        let parent = match target {
+            AddWindowTarget::NextTo(next_to) => Some(next_to.clone()),
+            _ => None,
+        };
+
+        let output = match &mut self.monitor_set {
             MonitorSet::Normal {
                 monitors,
                 active_monitor_idx,
@@ -1017,13 +1026,7 @@ impl<W: LayoutElement> Layout<W> {
                     AddWindowTarget::Workspace(ws_id) => {
                         let mon_idx = monitors.iter().position(|mon| mon.has_ws(ws_id)).unwrap();
 
-                        (
-                            mon_idx,
-                            MonitorAddWindowTarget::Workspace {
-                                id: ws_id,
-                                column_idx: None,
-                            },
-                        )
+                        (mon_idx, MonitorAddWindowTarget::Workspace { id: ws_id })
                     }
                     AddWindowTarget::NextTo(next_to) => {
                         if let Some(output) = self
@@ -1059,27 +1062,13 @@ impl<W: LayoutElement> Layout<W> {
                 };
                 let mon = &mut monitors[mon_idx];
 
-                let (ws_idx, _) = mon.resolve_add_window_target(target);
-                let ws = &mon.workspaces[ws_idx];
-                let scrolling_width = ws.resolve_scrolling_width(&window, width);
-
-                mon.add_window(
-                    window,
-                    target,
-                    activate,
-                    scrolling_width,
-                    is_full_width,
-                    is_floating,
-                );
+                mon.add_window(window, target, activate, is_floating);
 
                 if activate.map_smart(|| false) {
                     *active_monitor_idx = mon_idx;
                 }
 
-                // The tiling layout gets the default height with the window rules.
-                let _ = scrolling_height;
-
-                Some(&mon.output)
+                Some(mon.output.clone())
             }
             MonitorSet::NoOutputs { workspaces } => {
                 let (ws_idx, target) = match target {
@@ -1133,32 +1122,33 @@ impl<W: LayoutElement> Layout<W> {
                 };
                 let ws = &mut workspaces[ws_idx];
 
-                let scrolling_width = ws.resolve_scrolling_width(&window, width);
-
                 let tile = ws.make_tile(window);
-                ws.add_tile(
-                    tile,
-                    target,
-                    activate,
-                    scrolling_width,
-                    is_full_width,
-                    is_floating,
-                    None,
-                );
-
-                // Set the default height for scrolling windows.
-                if !is_floating {
-                    if let Some(change) = scrolling_height {
-                        ws.apply_default_height(&id, change);
-                    }
-                }
+                ws.add_tile(tile, target, activate, is_floating, None);
 
                 None
             }
+        };
+
+        if float_request {
+            let reason = if parent.is_some() { "dialog" } else { "rule" };
+            self.queue_float_request(&id, reason, parent.as_ref(), None);
         }
+        self.flush_engine();
+
+        output.and_then(|output| self.outputs().find(|other| **other == output))
     }
 
     pub fn remove_window(
+        &mut self,
+        window: &W::Id,
+        transaction: Transaction,
+    ) -> Option<RemovedTile<W>> {
+        let removed = self.remove_window_inner(window, transaction);
+        self.flush_engine();
+        removed
+    }
+
+    fn remove_window_inner(
         &mut self,
         window: &W::Id,
         transaction: Transaction,
@@ -1178,6 +1168,8 @@ impl<W: LayoutElement> Layout<W> {
                             unreachable!()
                         };
 
+                        self.update_drag();
+
                         for mon in self.monitors_mut() {
                             mon.dnd_scroll_gesture_end();
                         }
@@ -1189,8 +1181,6 @@ impl<W: LayoutElement> Layout<W> {
 
                         return Some(RemovedTile {
                             tile: move_.tile,
-                            width: move_.width,
-                            is_full_width: move_.is_full_width,
                             is_floating: false,
                         });
                     }
@@ -1264,6 +1254,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn update_window(&mut self, window: &W::Id, serial: Option<Serial>) {
+        self.update_window_inner(window, serial);
+        self.flush_engine();
+    }
+
+    fn update_window_inner(&mut self, window: &W::Id, serial: Option<Serial>) {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if move_.tile.window().id() == window {
                 // Do this before calling update_window() so it can get up-to-date info.
@@ -1382,6 +1377,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn unname_workspace_by_id(&mut self, id: WorkspaceId) {
+        self.unname_workspace_by_id_inner(id);
+        self.flush_engine();
+    }
+
+    fn unname_workspace_by_id_inner(&mut self, id: WorkspaceId) {
         match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => {
                 for mon in monitors {
@@ -1508,6 +1508,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn update_output_size(&mut self, output: &Output) {
+        self.update_output_size_inner(output);
+        self.flush_engine();
+    }
+
+    fn update_output_size_inner(&mut self, output: &Output) {
         let _span = tracy_client::span!("Layout::update_output_size");
 
         let Some(mon) = self.monitor_for_output_mut(output) else {
@@ -1572,10 +1577,19 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn activate_window(&mut self, window: &W::Id) {
+        self.activate_window_inner(window);
+        self.flush_engine();
+    }
+
+    fn activate_window_inner(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return;
             }
+        }
+
+        if self.activate_prevented(window) {
+            return;
         }
 
         let MonitorSet::Normal {
@@ -1608,10 +1622,19 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn activate_window_without_raising(&mut self, window: &W::Id) {
+        self.activate_window_without_raising_inner(window);
+        self.flush_engine();
+    }
+
+    fn activate_window_without_raising_inner(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return;
             }
+        }
+
+        if self.activate_prevented(window) {
+            return;
         }
 
         let MonitorSet::Normal {
@@ -1849,6 +1872,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_to_workspace_up(&mut self, focus: bool) {
+        self.move_to_workspace_up_inner(focus);
+        self.flush_engine();
+    }
+
+    fn move_to_workspace_up_inner(&mut self, focus: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -1861,6 +1889,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_to_workspace_down(&mut self, focus: bool) {
+        self.move_to_workspace_down_inner(focus);
+        self.flush_engine();
+    }
+
+    fn move_to_workspace_down_inner(&mut self, focus: bool) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -1873,6 +1906,16 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_to_workspace(
+        &mut self,
+        window: Option<&W::Id>,
+        idx: usize,
+        activate: ActivateWindow,
+    ) {
+        self.move_to_workspace_inner(window, idx, activate);
+        self.flush_engine();
+    }
+
+    fn move_to_workspace_inner(
         &mut self,
         window: Option<&W::Id>,
         idx: usize,
@@ -1904,6 +1947,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn switch_workspace_up(&mut self) {
+        self.switch_workspace_up_inner();
+        self.flush_engine();
+    }
+
+    fn switch_workspace_up_inner(&mut self) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -1911,6 +1959,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn switch_workspace_down(&mut self) {
+        self.switch_workspace_down_inner();
+        self.flush_engine();
+    }
+
+    fn switch_workspace_down_inner(&mut self) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -1918,6 +1971,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn switch_workspace(&mut self, idx: usize) {
+        self.switch_workspace_inner(idx);
+        self.flush_engine();
+    }
+
+    fn switch_workspace_inner(&mut self, idx: usize) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -1925,6 +1983,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn switch_workspace_auto_back_and_forth(&mut self, idx: usize) {
+        self.switch_workspace_auto_back_and_forth_inner(idx);
+        self.flush_engine();
+    }
+
+    fn switch_workspace_auto_back_and_forth_inner(&mut self, idx: usize) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -1932,6 +1995,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn switch_workspace_previous(&mut self) {
+        self.switch_workspace_previous_inner();
+        self.flush_engine();
+    }
+
+    fn switch_workspace_previous_inner(&mut self) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -2370,6 +2438,9 @@ impl<W: LayoutElement> Layout<W> {
                 }
             }
         }
+
+        // Scrolling the view for a drag can tell the layout engine about it.
+        self.flush_engine();
     }
 
     pub fn are_animations_ongoing(&self, output: Option<&Output>) -> bool {
@@ -2439,8 +2510,6 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        self.update_insert_hint(output);
-
         let MonitorSet::Normal {
             monitors,
             active_monitor_idx,
@@ -2483,78 +2552,12 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    fn update_insert_hint(&mut self, output: Option<&Output>) {
-        let _span = tracy_client::span!("Layout::update_insert_hint");
-
-        for mon in self.monitors_mut() {
-            mon.insert_hint = None;
-        }
-
-        if !matches!(self.interactive_move, Some(InteractiveMoveState::Moving(_))) {
-            return;
-        }
-        let Some(InteractiveMoveState::Moving(move_)) = self.interactive_move.take() else {
-            unreachable!()
-        };
-        if output.is_some_and(|out| &move_.output != out) {
-            self.interactive_move = Some(InteractiveMoveState::Moving(move_));
-            return;
-        }
-
-        let _span = tracy_client::span!("Layout::update_insert_hint::update");
-
-        if let Some(mon) = self.monitor_for_output_mut(&move_.output) {
-            let zoom = mon.overview_zoom();
-            let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
-            match insert_ws {
-                InsertWorkspace::Existing(ws_id) => {
-                    let idx = mon.idx_of_ws(ws_id).unwrap();
-                    let ws = &mut mon.workspaces[idx];
-                    let pos_within_workspace =
-                        (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-                    let tile_pos_within_workspace =
-                        (move_.tile_render_location(zoom) - geo.loc).downscale(zoom);
-                    let position = if move_.is_floating {
-                        InsertPosition::Floating
-                    } else {
-                        ws.scrolling_insert_position(
-                            pos_within_workspace,
-                            &move_.tile,
-                            tile_pos_within_workspace,
-                        )
-                    };
-
-                    let border_width = move_.tile.effective_border_width().unwrap_or(0.);
-                    let corner_radius = move_
-                        .tile
-                        .window()
-                        .geometry_corner_radius()
-                        .expanded_by(border_width as f32);
-                    mon.insert_hint = Some(InsertHint {
-                        workspace: insert_ws,
-                        position,
-                        corner_radius,
-                    });
-                }
-                InsertWorkspace::NewAt(_) => {
-                    let position = if move_.is_floating {
-                        InsertPosition::Floating
-                    } else {
-                        InsertPosition::Tiled(None)
-                    };
-                    mon.insert_hint = Some(InsertHint {
-                        workspace: insert_ws,
-                        position,
-                        corner_radius: CornerRadius::default(),
-                    });
-                }
-            }
-        }
-
-        self.interactive_move = Some(InteractiveMoveState::Moving(move_));
+    pub fn ensure_named_workspace(&mut self, ws_config: &WorkspaceConfig) {
+        self.ensure_named_workspace_inner(ws_config);
+        self.flush_engine();
     }
 
-    pub fn ensure_named_workspace(&mut self, ws_config: &WorkspaceConfig) {
+    fn ensure_named_workspace_inner(&mut self, ws_config: &WorkspaceConfig) {
         if self.find_workspace_by_name(&ws_config.name.0).is_some() {
             return;
         }
@@ -2600,6 +2603,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn update_config(&mut self, config: &Config) {
+        self.update_config_inner(config);
+        self.flush_engine();
+    }
+
+    fn update_config_inner(&mut self, config: &Config) {
         // Update workspace-specific config for all named workspaces.
         for ws in self.workspaces_mut() {
             let Some(name) = ws.name() else { continue };
@@ -2613,6 +2621,10 @@ impl<W: LayoutElement> Layout<W> {
 
     fn update_options(&mut self, options: Options) {
         let options = Rc::new(options);
+
+        // A new layout engine, or a new version of it, replaces the one that runs. The next flush
+        // creates it for the session.
+        tiling::engine::ensure_loaded(&options.tiling);
 
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             let view_size = output_size(&move_.output);
@@ -2640,15 +2652,17 @@ impl<W: LayoutElement> Layout<W> {
         self.options = options;
     }
 
-    /// Runs an action that the tiling layout provides.
-    pub fn layout_action(&mut self, name: &str, args: &[niri_config::TilingOption]) {
-        let Some(workspace) = self.active_workspace_mut() else {
-            return;
-        };
-        workspace.layout_action(name, args);
+    pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
+        self.toggle_window_floating_inner(window);
+        self.flush_engine();
     }
 
-    pub fn toggle_window_floating(&mut self, window: Option<&W::Id>) {
+    fn toggle_window_floating_inner(&mut self, window: Option<&W::Id>) {
+        if !tiling::engine::floating_enabled() {
+            self.request_float(window);
+            return;
+        }
+
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 move_.is_floating = !move_.is_floating;
@@ -2711,7 +2725,34 @@ impl<W: LayoutElement> Layout<W> {
         workspace.toggle_window_floating(window);
     }
 
+    /// Tells the tiling layout engine that a window should float, with floating off: `window`, or
+    /// the focused one.
+    fn request_float(&mut self, window: Option<&W::Id>) {
+        let id = window.cloned().or_else(|| {
+            let ws = self.active_workspace()?;
+            if ws.floating_is_active() {
+                return None;
+            }
+            ws.active_window().map(|win| win.id().clone())
+        });
+        if let Some(id) = id {
+            self.queue_float_request(&id, "action", None, None);
+        }
+    }
+
     pub fn set_window_floating(&mut self, window: Option<&W::Id>, floating: bool) {
+        self.set_window_floating_inner(window, floating);
+        self.flush_engine();
+    }
+
+    fn set_window_floating_inner(&mut self, window: Option<&W::Id>, floating: bool) {
+        if !tiling::engine::floating_enabled() {
+            if floating {
+                self.request_float(window);
+            }
+            return;
+        }
+
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             if window.is_none() || window == Some(move_.tile.window().id()) {
                 if move_.is_floating != floating {
@@ -2738,6 +2779,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_floating(&mut self) {
+        self.focus_floating_inner();
+        self.flush_engine();
+    }
+
+    fn focus_floating_inner(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
@@ -2753,6 +2799,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_tiling(&mut self) {
+        self.focus_tiling_inner();
+        self.flush_engine();
+    }
+
+    fn focus_tiling_inner(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
@@ -2760,6 +2811,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn switch_focus_floating_tiling(&mut self) {
+        self.switch_focus_floating_tiling_inner();
+        self.flush_engine();
+    }
+
+    fn switch_focus_floating_tiling_inner(&mut self) {
         let Some(workspace) = self.active_workspace_mut() else {
             return;
         };
@@ -2767,6 +2823,17 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_floating_window(
+        &mut self,
+        id: Option<&W::Id>,
+        x: PositionChange,
+        y: PositionChange,
+        animate: bool,
+    ) {
+        self.move_floating_window_inner(id, x, y, animate);
+        self.flush_engine();
+    }
+
+    fn move_floating_window_inner(
         &mut self,
         id: Option<&W::Id>,
         x: PositionChange,
@@ -2792,6 +2859,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn focus_output(&mut self, output: &Output) {
+        self.focus_output_inner(output);
+        self.flush_engine();
+    }
+
+    fn focus_output_inner(&mut self, output: &Output) {
         if let MonitorSet::Normal {
             monitors,
             active_monitor_idx,
@@ -2808,6 +2880,17 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_to_output(
+        &mut self,
+        window: Option<&W::Id>,
+        output: &Output,
+        target_ws_idx: Option<usize>,
+        activate: ActivateWindow,
+    ) {
+        self.move_to_output_inner(window, output, target_ws_idx, activate);
+        self.flush_engine();
+    }
+
+    fn move_to_output_inner(
         &mut self,
         window: Option<&W::Id>,
         output: &Output,
@@ -2888,14 +2971,9 @@ impl<W: LayoutElement> Layout<W> {
             let mon = &mut monitors[new_idx];
             mon.add_tile(
                 removed.tile,
-                MonitorAddWindowTarget::Workspace {
-                    id: ws_id,
-                    column_idx: None,
-                },
+                MonitorAddWindowTarget::Workspace { id: ws_id },
                 activate,
                 true,
-                removed.width,
-                removed.is_full_width,
                 removed.is_floating,
                 None,
             );
@@ -2986,6 +3064,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_fullscreen(&mut self, id: &W::Id, is_fullscreen: bool) {
+        self.set_fullscreen_inner(id, is_fullscreen);
+        self.flush_engine();
+    }
+
+    fn set_fullscreen_inner(&mut self, id: &W::Id, is_fullscreen: bool) {
         // Check if this is a request to unset the windowed fullscreen state.
         if !is_fullscreen {
             let mut handled = false;
@@ -3015,6 +3098,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_fullscreen(&mut self, id: &W::Id) {
+        self.toggle_fullscreen_inner(id);
+        self.flush_engine();
+    }
+
+    fn toggle_fullscreen_inner(&mut self, id: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == id {
                 return;
@@ -3030,6 +3118,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_windowed_fullscreen(&mut self, id: &W::Id) {
+        self.toggle_windowed_fullscreen_inner(id);
+        self.flush_engine();
+    }
+
+    fn toggle_windowed_fullscreen_inner(&mut self, id: &W::Id) {
         let (_, window) = self.windows().find(|(_, win)| win.id() == id).unwrap();
         if window.pending_sizing_mode().is_fullscreen() {
             // Remove the real fullscreen.
@@ -3050,6 +3143,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_maximized(&mut self, id: &W::Id, maximize: bool) {
+        self.set_maximized_inner(id, maximize);
+        self.flush_engine();
+    }
+
+    fn set_maximized_inner(&mut self, id: &W::Id, maximize: bool) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == id {
                 return;
@@ -3065,6 +3163,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_maximized(&mut self, id: &W::Id) {
+        self.toggle_maximized_inner(id);
+        self.flush_engine();
+    }
+
+    fn toggle_maximized_inner(&mut self, id: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == id {
                 return;
@@ -3143,6 +3246,16 @@ impl<W: LayoutElement> Layout<W> {
         workspace_idx: Option<usize>,
         is_touchpad: bool,
     ) {
+        self.view_offset_gesture_begin_inner(output, workspace_idx, is_touchpad);
+        self.flush_engine();
+    }
+
+    fn view_offset_gesture_begin_inner(
+        &mut self,
+        output: &Output,
+        workspace_idx: Option<usize>,
+        is_touchpad: bool,
+    ) {
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
             MonitorSet::NoOutputs { .. } => unreachable!(),
@@ -3164,6 +3277,17 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn view_offset_gesture_update(
+        &mut self,
+        delta_x: f64,
+        timestamp: Duration,
+        is_touchpad: bool,
+    ) -> Option<Option<Output>> {
+        let result = self.view_offset_gesture_update_inner(delta_x, timestamp, is_touchpad);
+        self.flush_engine();
+        result
+    }
+
+    fn view_offset_gesture_update_inner(
         &mut self,
         delta_x: f64,
         timestamp: Duration,
@@ -3195,6 +3319,12 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn view_offset_gesture_end(&mut self, is_touchpad: Option<bool>) -> Option<Output> {
+        let result = self.view_offset_gesture_end_inner(is_touchpad);
+        self.flush_engine();
+        result
+    }
+
+    fn view_offset_gesture_end_inner(&mut self, is_touchpad: Option<bool>) -> Option<Output> {
         let monitors = match &mut self.monitor_set {
             MonitorSet::Normal { monitors, .. } => monitors,
             MonitorSet::NoOutputs { .. } => return None,
@@ -3350,6 +3480,19 @@ impl<W: LayoutElement> Layout<W> {
         output: Output,
         pointer_pos_within_output: Point<f64, Logical>,
     ) -> bool {
+        let result =
+            self.interactive_move_update_inner(window, delta, output, pointer_pos_within_output);
+        self.flush_engine();
+        result
+    }
+
+    fn interactive_move_update_inner(
+        &mut self,
+        window: &W::Id,
+        delta: Point<f64, Logical>,
+        output: Output,
+        pointer_pos_within_output: Point<f64, Logical>,
+    ) -> bool {
         let Some(state) = self.interactive_move.take() else {
             return false;
         };
@@ -3455,10 +3598,10 @@ impl<W: LayoutElement> Layout<W> {
 
                 let RemovedTile {
                     mut tile,
-                    width,
-                    is_full_width,
                     is_floating,
-                } = self.remove_window(window, Transaction::new()).unwrap();
+                } = self
+                    .remove_window_inner(window, Transaction::new())
+                    .unwrap();
 
                 tile.stop_move_animations();
                 tile.interactive_move_offset = Point::from((0., 0.));
@@ -3496,8 +3639,6 @@ impl<W: LayoutElement> Layout<W> {
                     tile,
                     output,
                     pointer_pos_within_output,
-                    width,
-                    is_full_width,
                     is_floating,
                     pointer_ratio_within_window,
                     output_config,
@@ -3568,10 +3709,17 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
+        self.update_drag();
+
         true
     }
 
     pub fn interactive_move_end(&mut self, window: &W::Id) {
+        self.interactive_move_end_inner(window);
+        self.flush_engine();
+    }
+
+    fn interactive_move_end_inner(&mut self, window: &W::Id) {
         let Some(move_) = &self.interactive_move else {
             return;
         };
@@ -3624,6 +3772,9 @@ impl<W: LayoutElement> Layout<W> {
         let Some(InteractiveMoveState::Moving(mut move_)) = self.interactive_move.take() else {
             unreachable!()
         };
+
+        // The window isn't over a workspace any more.
+        self.update_drag();
 
         for mon in self.monitors_mut() {
             mon.dnd_scroll_gesture_end();
@@ -3736,14 +3887,9 @@ impl<W: LayoutElement> Layout<W> {
                         let ws_id = ws.id();
                         mon.add_tile(
                             move_.tile,
-                            MonitorAddWindowTarget::Workspace {
-                                id: ws_id,
-                                column_idx: None,
-                            },
+                            MonitorAddWindowTarget::Workspace { id: ws_id },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
-                            move_.width,
-                            move_.is_full_width,
                             false,
                             None,
                         );
@@ -3781,38 +3927,53 @@ impl<W: LayoutElement> Layout<W> {
                         let ws_id = mon.workspaces[ws_idx].id();
                         mon.add_tile(
                             tile,
-                            MonitorAddWindowTarget::Workspace {
-                                id: ws_id,
-                                column_idx: None,
-                            },
+                            MonitorAddWindowTarget::Workspace { id: ws_id },
                             ActivateWindow::Yes,
                             allow_to_activate_workspace,
-                            move_.width,
-                            move_.is_full_width,
                             true,
                             None,
                         );
                     }
                 }
 
-                // needed because empty_workspace_above_first could have modified the idx
-                let (tile, tile_offset, ws_geo) = mon
-                    .workspaces_with_render_geo_mut(false)
-                    .find_map(|(ws, geo)| {
-                        ws.tiles_with_render_positions_mut(false)
-                            .find(|(tile, _)| tile.window().id() == &win_id)
-                            .map(|(tile, tile_offset)| (tile, tile_offset, geo))
-                    })
-                    .unwrap();
-                let new_tile_render_loc = ws_geo.loc + tile_offset.upscale(zoom);
+                // The workspace's index could have changed with empty_workspace_above_first.
+                match position {
+                    InsertPosition::Tiled(_) => {
+                        // The layout engine places the tile after this, so it animates from
+                        // where it was dropped then.
+                        let (ws, ws_geo) = mon
+                            .workspaces_with_render_geo_mut(false)
+                            .find(|(ws, _)| ws.has_window(&win_id))
+                            .unwrap();
+                        let from = (tile_render_loc - ws_geo.loc).downscale(zoom);
+                        ws.set_pending_move(
+                            &win_id,
+                            PendingMove {
+                                from,
+                                config: None,
+                                between_workspaces: true,
+                            },
+                        );
+                    }
+                    InsertPosition::Floating => {
+                        let (tile, tile_offset, ws_geo) = mon
+                            .workspaces_with_render_geo_mut(false)
+                            .find_map(|(ws, geo)| {
+                                ws.tiles_with_render_positions_mut(false)
+                                    .find(|(tile, _)| tile.window().id() == &win_id)
+                                    .map(|(tile, tile_offset)| (tile, tile_offset, geo))
+                            })
+                            .unwrap();
+                        let new_tile_render_loc = ws_geo.loc + tile_offset.upscale(zoom);
 
-                tile.animate_move_from((tile_render_loc - new_tile_render_loc).downscale(zoom));
-
-                // Interactive move into floating barely animates (it doesn't really move after
-                // being dropped), so setting it as moving between workspaces would just cause it to
-                // awkwardly sit unclipped for a moment before the animation runs out.
-                if !matches!(position, InsertPosition::Floating) {
-                    tile.set_anim_y_between_workspaces();
+                        // Interactive move into floating barely animates (it doesn't really move
+                        // after being dropped), so it doesn't count as moving between workspaces,
+                        // which would just make it awkwardly sit unclipped for a moment before the
+                        // animation runs out.
+                        tile.animate_move_from(
+                            (tile_render_loc - new_tile_render_loc).downscale(zoom),
+                        );
+                    }
                 }
             }
             MonitorSet::NoOutputs { workspaces, .. } => {
@@ -3829,8 +3990,6 @@ impl<W: LayoutElement> Layout<W> {
                     move_.tile,
                     WorkspaceAddWindowTarget::Auto,
                     ActivateWindow::Yes,
-                    move_.width,
-                    move_.is_full_width,
                     move_.is_floating,
                     None,
                 );
@@ -3867,6 +4026,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn dnd_end(&mut self) {
+        self.dnd_end_inner();
+        self.flush_engine();
+    }
+
+    fn dnd_end_inner(&mut self) {
         if self.dnd.is_none() {
             return;
         }
@@ -3883,29 +4047,33 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
-        match &mut self.monitor_set {
-            MonitorSet::Normal { monitors, .. } => {
-                for mon in monitors {
-                    for ws in &mut mon.workspaces {
-                        if ws.has_window(&window) {
-                            return ws.interactive_resize_begin(window, edges);
-                        }
-                    }
-                }
-            }
-            MonitorSet::NoOutputs { workspaces, .. } => {
-                for ws in workspaces {
-                    if ws.has_window(&window) {
-                        return ws.interactive_resize_begin(window, edges);
-                    }
-                }
-            }
-        }
+        let is_floating = match self.workspaces().find(|(_, _, ws)| ws.has_window(&window)) {
+            Some((_, _, ws)) => ws.is_floating(&window),
+            None => return false,
+        };
 
-        false
+        let began = if is_floating {
+            self.workspaces_mut()
+                .find(|ws| ws.has_window(&window))
+                .is_some_and(|ws| ws.floating_interactive_resize_begin(window, edges))
+        } else {
+            self.tiling_resize_begin(window, edges)
+        };
+        self.flush_engine();
+        began
     }
 
     pub fn interactive_resize_update(
+        &mut self,
+        window: &W::Id,
+        delta: Point<f64, Logical>,
+    ) -> bool {
+        let result = self.interactive_resize_update_inner(window, delta);
+        self.flush_engine();
+        result
+    }
+
+    fn interactive_resize_update_inner(
         &mut self,
         window: &W::Id,
         delta: Point<f64, Logical>,
@@ -3939,6 +4107,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn interactive_resize_end(&mut self, window: &W::Id) {
+        self.interactive_resize_end_inner(window);
+        self.flush_engine();
+    }
+
+    fn interactive_resize_end_inner(&mut self, window: &W::Id) {
         if let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move {
             if move_.tile.window().id() == window {
                 return;
@@ -3968,6 +4141,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_workspace_down(&mut self) {
+        self.move_workspace_down_inner();
+        self.flush_engine();
+    }
+
+    fn move_workspace_down_inner(&mut self) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -3975,6 +4153,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_workspace_up(&mut self) {
+        self.move_workspace_up_inner();
+        self.flush_engine();
+    }
+
+    fn move_workspace_up_inner(&mut self) {
         let Some(monitor) = self.active_monitor() else {
             return;
         };
@@ -3982,6 +4165,15 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn move_workspace_to_idx(
+        &mut self,
+        reference: Option<(Option<Output>, usize)>,
+        new_idx: usize,
+    ) {
+        self.move_workspace_to_idx_inner(reference, new_idx);
+        self.flush_engine();
+    }
+
+    fn move_workspace_to_idx_inner(
         &mut self,
         reference: Option<(Option<Output>, usize)>,
         new_idx: usize,
@@ -4013,6 +4205,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn set_workspace_name(&mut self, name: String, reference: Option<WorkspaceReference>) {
+        self.set_workspace_name_inner(name, reference);
+        self.flush_engine();
+    }
+
+    fn set_workspace_name_inner(&mut self, name: String, reference: Option<WorkspaceReference>) {
         // ignore the request if the name is already used by another workspace
         if self.find_workspace_by_name(&name).is_some() {
             return;
@@ -4063,6 +4260,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn unset_workspace_name(&mut self, reference: Option<WorkspaceReference>) {
+        self.unset_workspace_name_inner(reference);
+        self.flush_engine();
+    }
+
+    fn unset_workspace_name_inner(&mut self, reference: Option<WorkspaceReference>) {
         let ws = if let Some(reference) = reference {
             self.find_workspace_by_ref(reference)
         } else {
@@ -4123,6 +4325,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     pub fn toggle_overview_to_workspace(&mut self, ws_idx: usize) {
+        self.toggle_overview_to_workspace_inner(ws_idx);
+        self.flush_engine();
+    }
+
+    fn toggle_overview_to_workspace_inner(&mut self, ws_idx: usize) {
         let config = self.options.animations.overview_open_close.0;
         if let Some(mon) = self.active_monitor() {
             mon.activate_workspace_with_anim_config(ws_idx, Some(config));
@@ -4333,6 +4540,9 @@ impl<W: LayoutElement> Layout<W> {
     pub fn refresh(&mut self, is_active: bool) {
         let _span = tracy_client::span!("Layout::refresh");
 
+        // Tell the layout engine what happened since, before windows get their configures.
+        self.flush_engine();
+
         self.is_active = is_active;
 
         let mut ongoing_scrolling_dnd = self.dnd.is_some().then_some(true);
@@ -4340,7 +4550,6 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             let win = move_.tile.window_mut();
 
-            win.set_active_in_column(true);
             win.set_floating(move_.is_floating);
             win.set_activated(true);
 

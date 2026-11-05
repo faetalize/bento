@@ -107,7 +107,7 @@ wayland-scanner = "0.31.11"
 wayland-server = "0.31.14"
 xcursor = "0.3.11"
 zbus = { version = "5", optional = true }
-rquickjs = "0.14"
+rquickjs = { version = "0.14", features = ["loader"] }
 
 [dependencies.smithay]
 workspace = true
@@ -129,7 +129,7 @@ features = [
 
 # rquickjs ships no prebuilt bindings for these targets, so generate them.
 [target.'cfg(any(target_os = "freebsd", target_env = "musl"))'.dependencies]
-rquickjs = { version = "0.14", features = ["bindgen"] }
+rquickjs = { version = "0.14", features = ["bindgen", "loader"] }
 
 [dev-dependencies]
 approx = "0.5.1"

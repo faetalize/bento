@@ -56,7 +56,7 @@ use crate::niri::{CastTarget, Niri, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
 use crate::ui::screenshot_ui::ScreenshotUi;
 use crate::utils::spawning::{spawn, spawn_sh};
-use crate::utils::{center, CastSessionId, ResizeEdge};
+use crate::utils::{center, get_monotonic_time, CastSessionId, ResizeEdge};
 use crate::window::Mapped;
 
 pub mod backend_ext;
@@ -72,6 +72,8 @@ pub mod swipe_tracker;
 pub mod touch_overview_grab;
 
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
+
+pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
@@ -1765,18 +1767,6 @@ impl State {
             Action::SetFloatingWindowHeight(change) => {
                 self.floating_action(false, |f| f.set_window_height(None, change, true))
             }
-            Action::SwitchPresetFloatingWindowWidth => {
-                self.floating_action(false, |f| f.toggle_window_width(None, true))
-            }
-            Action::SwitchPresetFloatingWindowWidthBack => {
-                self.floating_action(false, |f| f.toggle_window_width(None, false))
-            }
-            Action::SwitchPresetFloatingWindowHeight => {
-                self.floating_action(false, |f| f.toggle_window_height(None, true))
-            }
-            Action::SwitchPresetFloatingWindowHeightBack => {
-                self.floating_action(false, |f| f.toggle_window_height(None, false))
-            }
             Action::MoveFloatingWindowById { id, x, y } => {
                 let window = if let Some(id) = id {
                     let window = self.niri.layout.windows().find(|(_, m)| m.id().get() == id);
@@ -2575,6 +2565,35 @@ impl State {
                         .unwrap_or(ResizeEdge::empty());
 
                     if !edges.is_empty() {
+                        // See if we got a double click on a resize edge.
+                        // FIXME: deduplicate with resize_request in xdg-shell somehow.
+                        let time = get_monotonic_time();
+                        let last_cell = mapped.last_interactive_resize_start();
+                        let mut last = last_cell.get();
+                        last_cell.set(Some((time, edges)));
+
+                        // Floating windows don't have the double click, so just allow it to
+                        // resize.
+                        if mapped.is_floating() {
+                            last = None;
+                            last_cell.set(None);
+                        }
+
+                        if let Some((last_time, last_edges)) = last {
+                            if time.saturating_sub(last_time) <= DOUBLE_CLICK_TIME {
+                                // Allow quick resize after a triple click.
+                                last_cell.set(None);
+
+                                let both = edges.intersection(last_edges);
+                                if !both.is_empty() {
+                                    self.niri.layout.edge_double_click(&window, both);
+                                }
+                                // FIXME: granular.
+                                self.niri.queue_redraw_all();
+                                return;
+                            }
+                        }
+
                         self.niri.layout.activate_window(&window);
 
                         if self

@@ -268,3 +268,130 @@ fn native_action_table_lists_every_bindable_action() {
         }
     }
 }
+
+/// Options for an API 2 layout engine from `source`, which runs from a file.
+fn options_for_source(name: &str, source: &str) -> Options {
+    let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{name}.js"));
+    std::fs::write(&path, source).unwrap();
+    Options {
+        tiling: niri_config::Tiling {
+            layout: niri_config::TilingLayout::File(path),
+            options: Vec::new(),
+        },
+        ..Options::default()
+    }
+}
+
+/// An engine that places windows in the left half of their workspace, and tells what it saw
+/// through `bento.exposeState`.
+const RECORDER: &str = r#"
+export const meta = { api: 2, name: "recorder", floating: false };
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => ({
+        monitors: bento.monitors.map((m) => [m.name, m.workspaces.length, m.activeWorkspace.index]),
+        windows: bento.windows.map((w) => [w.id, w.workspace.monitor.name, w.workspace.index]),
+        log,
+    }));
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        log.push(["windowadd", win.id, e.reason]);
+        const area = win.workspace.tilingArea;
+        win.place({ x: area.x, y: area.y, w: area.w / 2, h: area.h });
+        win.focus();
+        win.addEventListener("move", (m) => log.push(["move", win.id, m.from.index, m.to.index]));
+        win.addEventListener("floatrequest", (f) => log.push(["floatrequest", win.id, f.reason]));
+    });
+}
+"#;
+
+#[test]
+fn one_engine_sees_every_monitor_and_workspace() {
+    let ops = [
+        Op::AddOutput(1),
+        Op::AddOutput(2),
+        add_window(1),
+        Op::FocusOutput(2),
+        add_window(2),
+    ];
+    let layout = check_ops_with_options(options_for_source("sees-all", RECORDER), ops);
+    drop(layout);
+
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    // Each monitor has its window's workspace and an empty one below.
+    assert_eq!(
+        state["monitors"],
+        serde_json::json!([["output1", 2, 0], ["output2", 2, 0]])
+    );
+    assert_eq!(
+        state["windows"],
+        serde_json::json!([[1, "output1", 0], [2, "output2", 0]])
+    );
+}
+
+#[test]
+fn windows_moved_between_workspaces_are_told_to_the_engine() {
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 1,
+        },
+    ];
+    let layout = check_ops_with_options(options_for_source("moves", RECORDER), ops);
+    drop(layout);
+
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["windowadd", 1, "open"], ["move", 1, 0, 1]])
+    );
+}
+
+#[test]
+fn engines_without_floating_get_float_requests() {
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        Op::ToggleWindowFloating { id: Some(1) },
+    ];
+    let layout = check_ops_with_options(options_for_source("float", RECORDER), ops);
+
+    assert!(!layout.active_workspace().unwrap().is_floating(&1));
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["windowadd", 1, "open"], ["floatrequest", 1, "action"]])
+    );
+}
+
+#[test]
+fn nodes_that_the_engine_draws_are_in_the_workspace_tree() {
+    use crate::layout::tiling::tree::NodeKind;
+
+    let source = r##"
+    export const meta = { api: 2, name: "boxes" };
+    export default function create(bento) {
+        bento.addEventListener("windowadd", (e) => {
+            const win = e.window;
+            win.place({ x: 0, y: 0, w: 100, h: 100 });
+            win.focus();
+            const box = bento.createNode("box", { rect: { x: 0, y: 0, w: 10, h: 10 }, background: "#fff" });
+            win.workspace.tree.append(box);
+        });
+    }
+    "##;
+    let ops = [Op::AddOutput(1), add_window(1)];
+    let layout = check_ops_with_options(options_for_source("boxes", source), ops);
+
+    let ws = layout.active_workspace().unwrap();
+    let tree = ws.scrolling().tree();
+    let order = tree.draw_order();
+    // The window is at the bottom, and what the engine drew goes above it.
+    assert_eq!(order[1].1.kind, NodeKind::Window);
+    assert_eq!(order[2].1.kind, NodeKind::Box);
+    assert_eq!(order[2].1.props["background"], "#fff");
+}

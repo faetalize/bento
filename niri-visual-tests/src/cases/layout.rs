@@ -177,9 +177,6 @@ impl Layout {
         self.layout.add_window(
             window.clone(),
             AddWindowTarget::Auto,
-            width,
-            None,
-            false,
             false,
             ActivateWindow::default(),
         );
@@ -206,9 +203,6 @@ impl Layout {
         self.layout.add_window(
             window.clone(),
             AddWindowTarget::NextTo(right_of.id()),
-            width,
-            None,
-            false,
             false,
             ActivateWindow::default(),
         );

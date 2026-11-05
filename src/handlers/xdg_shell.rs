@@ -38,11 +38,13 @@ use tracing::field::Empty;
 
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
-use crate::input::AnyStartData;
+use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
 use crate::layout::ActivateWindow;
 use crate::niri::{CastTarget, PopupGrabState, State};
 use crate::utils::transaction::Transaction;
-use crate::utils::{output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge};
+use crate::utils::{
+    get_monotonic_time, output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge,
+};
 use crate::window::{InitialConfigureState, ResolvedWindowRules, Unmapped, WindowRef};
 
 impl XdgShellHandler for State {
@@ -242,6 +244,33 @@ impl XdgShellHandler for State {
 
         let edges = ResizeEdge::from(edges);
         let window = mapped.window.clone();
+
+        // See if we got a double click on a resize edge.
+        let time = get_monotonic_time();
+        let last_cell = mapped.last_interactive_resize_start();
+        let mut last = last_cell.get();
+        last_cell.set(Some((time, edges)));
+
+        // Floating windows don't have the double click, so just allow it to resize.
+        if mapped.is_floating() {
+            last = None;
+            last_cell.set(None);
+        }
+
+        if let Some((last_time, last_edges)) = last {
+            if time.saturating_sub(last_time) <= DOUBLE_CLICK_TIME {
+                // Allow quick resize after a triple click.
+                last_cell.set(None);
+
+                let both = edges.intersection(last_edges);
+                if !both.is_empty() {
+                    self.niri.layout.edge_double_click(&window, both);
+                }
+                // FIXME: granular.
+                self.niri.queue_redraw_all();
+                return;
+            }
+        }
 
         if !self
             .niri
@@ -1154,10 +1183,10 @@ impl State {
                 });
             }
 
-            width = ws.resolve_default_width(rules.default_width, false);
-            floating_width = ws.resolve_default_width(rules.default_width, true);
-            height = ws.resolve_default_height(rules.default_height, false);
-            floating_height = ws.resolve_default_height(rules.default_height, true);
+            width = ws.resolve_default_width(rules.default_width);
+            floating_width = ws.resolve_default_width(rules.default_width);
+            height = ws.resolve_default_height(rules.default_height);
+            floating_height = ws.resolve_default_height(rules.default_height);
 
             let configure_width = if is_floating {
                 floating_width

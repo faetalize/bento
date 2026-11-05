@@ -90,59 +90,36 @@ impl CompositorHandler for State {
 
                     let toplevel = window.toplevel().expect("no X11 support");
 
-                    let (
-                        rules,
-                        width,
-                        height,
-                        is_full_width,
-                        output,
-                        workspace_id,
-                        is_pending_maximized,
-                    ) = if let InitialConfigureState::Configured {
-                        rules,
-                        width,
-                        height,
-                        floating_width: _,
-                        floating_height: _,
-                        is_full_width,
-                        output,
-                        workspace_name,
-                        is_pending_maximized,
-                    } = state
-                    {
-                        // Check that the output is still connected.
-                        let output =
-                            output.filter(|o| self.niri.layout.monitor_for_output(o).is_some());
-
-                        // Check that the workspace still exists.
-                        let workspace_id = workspace_name
-                            .as_deref()
-                            .and_then(|n| self.niri.layout.find_workspace_by_name(n))
-                            .map(|(_, ws)| ws.id());
-
-                        (
+                    let (rules, output, workspace_id, is_pending_maximized) =
+                        if let InitialConfigureState::Configured {
                             rules,
-                            width,
-                            height,
-                            is_full_width,
+                            width: _,
+                            height: _,
+                            floating_width: _,
+                            floating_height: _,
+                            is_full_width: _,
                             output,
-                            workspace_id,
+                            workspace_name,
                             is_pending_maximized,
-                        )
-                    } else {
-                        // Can happen when a surface unmaps by attaching a null buffer while
-                        // there are in-flight pending configures.
-                        debug!("window mapped without proper initial configure");
-                        (
-                            ResolvedWindowRules::default(),
-                            None,
-                            None,
-                            false,
-                            None,
-                            None,
-                            false,
-                        )
-                    };
+                        } = state
+                        {
+                            // Check that the output is still connected.
+                            let output =
+                                output.filter(|o| self.niri.layout.monitor_for_output(o).is_some());
+
+                            // Check that the workspace still exists.
+                            let workspace_id = workspace_name
+                                .as_deref()
+                                .and_then(|n| self.niri.layout.find_workspace_by_name(n))
+                                .map(|(_, ws)| ws.id());
+
+                            (rules, output, workspace_id, is_pending_maximized)
+                        } else {
+                            // Can happen when a surface unmaps by attaching a null buffer while
+                            // there are in-flight pending configures.
+                            debug!("window mapped without proper initial configure");
+                            (ResolvedWindowRules::default(), None, None, false)
+                        };
 
                     // The GTK about dialog sets min/max size after the initial configure but
                     // before mapping, so we need to compute open_floating at the last possible
@@ -210,15 +187,10 @@ impl CompositorHandler for State {
                     } else {
                         AddWindowTarget::Auto
                     };
-                    let output = self.niri.layout.add_window(
-                        mapped,
-                        target,
-                        width,
-                        height,
-                        is_full_width,
-                        is_floating,
-                        activate,
-                    );
+                    let output = self
+                        .niri
+                        .layout
+                        .add_window(mapped, target, is_floating, activate);
                     let output = output.cloned();
 
                     // The window state cannot contain Fullscreen and Maximized at once. Therefore,
