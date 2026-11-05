@@ -8,11 +8,10 @@ use adw::prelude::*;
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::{gdk, gio, glib};
 
+use self::ratio::Ratio;
 use crate::kdl::Value;
 use crate::page::{open_file, PageContext};
 use crate::store::tilde;
-
-use self::ratio::Ratio;
 
 const KEY: &str = "layout.background-image";
 const PATH: &[&str] = &["layout", "background-image"];
@@ -377,7 +376,11 @@ mod ratio {
                 gtk::SizeRequestMode::HeightForWidth
             }
 
-            fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            fn measure(
+                &self,
+                orientation: gtk::Orientation,
+                for_size: i32,
+            ) -> (i32, i32, i32, i32) {
                 let child_min = self
                     .obj()
                     .first_child()
@@ -385,7 +388,11 @@ mod ratio {
                 let size = match orientation {
                     gtk::Orientation::Horizontal => self.width.get(),
                     _ => {
-                        let width = if for_size < 0 { self.width.get() } else { for_size };
+                        let width = if for_size < 0 {
+                            self.width.get()
+                        } else {
+                            for_size
+                        };
                         (f64::from(width) / RATIO).round() as i32
                     }
                 };
