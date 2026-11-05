@@ -454,14 +454,14 @@ async fn get(ctx: &ClientCtx, what: Get) -> Result<Response, String> {
             on_main(ctx, |state| {
                 let workspaces = read::workspaces(state);
                 let groups = read::groups(state);
-                Response::Focused(Focused {
+                Response::Focused(Box::new(Focused {
                     monitor: read::monitors(state, &workspaces)
                         .into_values()
                         .find(|monitor| monitor.focused),
                     window: read::windows(state, &groups)
                         .into_values()
                         .find(|window| window.focused),
-                })
+                }))
             })
             .await?
         }

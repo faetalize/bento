@@ -303,7 +303,7 @@ fn invalid_ops_are_errors_and_earlier_ops_stay_applied() {
         json!({ "op": "append", "parent": "r1" }),
         json!("create"),
     ] {
-        assert!(tree.apply(&[op.clone()]).is_err(), "{op}");
+        assert!(tree.apply(std::slice::from_ref(&op)).is_err(), "{op}");
     }
 }
 
@@ -988,7 +988,7 @@ fn a_node_moves_to_another_tree_before_a_sibling() {
     add(&mut to, "n4", "r1", json!({}));
 
     let subtree = from.take("n1").unwrap();
-    assert!(from.nodes.get("n1").is_none() && from.nodes.get("n2").is_none());
+    assert!(!from.nodes.contains_key("n1") && !from.nodes.contains_key("n2"));
     assert!(children(&from, "r1").is_empty());
 
     assert!(to.put(subtree, "r1", Some("n4")));

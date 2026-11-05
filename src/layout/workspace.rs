@@ -833,13 +833,12 @@ impl<W: LayoutElement> Workspace<W> {
             // When going from fullscreen to maximized, don't consider restore_to_floating yet.
             if tile.window().pending_sizing_mode().is_fullscreen()
                 && !self.scrolling.is_pending_maximized(window)
+                && tile.restore_to_floating
             {
-                if tile.restore_to_floating {
-                    // Unfullscreen and float in one call so it has a chance to notice and request a
-                    // (0, 0) size, rather than the scrolling column size.
-                    self.toggle_window_floating(Some(window));
-                    return;
-                }
+                // Unfullscreen and float in one call so it has a chance to notice and request a
+                // (0, 0) size, rather than the scrolling column size.
+                self.toggle_window_floating(Some(window));
+                return;
             }
         }
 

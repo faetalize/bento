@@ -354,7 +354,7 @@ impl<'a> Converter<'a> {
     /// Moves the engine's properties out of a window rule.
     fn window_rule(&mut self, node: &Node) {
         let is_matcher = |c: &Node| matches!(&**c.node_name, "match" | "exclude");
-        let matchers: Vec<&Node> = node.children().filter(|c| is_matcher(*c)).collect();
+        let matchers: Vec<&Node> = node.children().filter(|c| is_matcher(c)).collect();
 
         // The matcher can't be left out: without it the rule would reach windows it wasn't
         // written for, so none of the rule is kept.

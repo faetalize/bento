@@ -205,7 +205,7 @@ pub enum Response {
     /// The layer-shell surfaces.
     Layers(Vec<LayerSurface>),
     /// The focused monitor and window.
-    Focused(Focused),
+    Focused(Box<Focused>),
     /// The keyboard layouts.
     KeyboardLayouts(KeyboardLayouts),
     /// The overview.

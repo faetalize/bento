@@ -301,8 +301,7 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
     use crate::layout::tiling::engine;
 
     let (dir, layout) = typed_engine("check");
-    let mut config = niri_config::Config::default();
-    config.tiling = niri_config::Tiling {
+    let tiling = niri_config::Tiling {
         layout,
         options: vec![
             (String::from("nope"), vec![TilingOption::Bool(true)]),
@@ -321,6 +320,10 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
                 (String::from("zzz"), vec![TilingOption::Bool(true)]),
             ]),
         }],
+    };
+    let config = niri_config::Config {
+        tiling,
+        ..niri_config::Config::default()
     };
 
     let problems = engine::check(&config).unwrap_err();

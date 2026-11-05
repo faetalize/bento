@@ -305,11 +305,11 @@ impl OptionMeta {
 
     /// The values written for it in `values`, as bento shows them to clients.
     fn ipc_value(&self, values: &[TilingOption]) -> Option<LayoutEngineOptionValue> {
-        let values = values.iter().filter_map(ipc_scalar);
+        let mut values = values.iter().filter_map(ipc_scalar);
         if self.list {
             Some(LayoutEngineOptionValue::List(values.collect()))
         } else {
-            values.last()
+            values.next_back()
         }
     }
 }

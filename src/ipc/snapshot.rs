@@ -347,8 +347,10 @@ mod tests {
             names: vec![String::from("us"), String::from("de")],
             current_idx,
         };
-        let mut old = Snapshot::default();
-        old.keyboard_layouts = Some(layouts(0));
+        let old = Snapshot {
+            keyboard_layouts: Some(layouts(0)),
+            ..Snapshot::default()
+        };
         let mut new = old.clone();
         new.keyboard_layouts = Some(layouts(1));
 

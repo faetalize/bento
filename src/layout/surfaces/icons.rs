@@ -46,10 +46,8 @@ impl ThemeDir {
 
         if size < min {
             min - size
-        } else if size > max {
-            size - max
         } else {
-            0
+            size.saturating_sub(max)
         }
     }
 }
@@ -355,7 +353,10 @@ MaxSize=512
             .unwrap();
         }
 
-        assert_eq!(find_in(&[root.clone()], "a", "missing", 16), None);
+        assert_eq!(
+            find_in(std::slice::from_ref(&root), "a", "missing", 16),
+            None
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }
