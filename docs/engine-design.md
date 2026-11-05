@@ -425,12 +425,12 @@ from the running one. Switching engines on the Engine page brings up that engine
 This work started from the Shortcuts page in bento Settings, the first of the pages still marked
 as planned there. The order agreed on:
 
-1. **Groundwork on today's engines**, so the Shortcuts page has something complete to read. Done,
-   on branch `engine-action-args`, not committed yet:
+1. **Groundwork on today's engines**, so the Shortcuts page has something complete to read. Done, in
+   #27:
    - `meta.actions` with typed arguments, checked when an engine loads and by `bento validate`;
    - each engine's options and binds in its own `.kdl` file, and default `.kdl` files for the
      built-in engines, written on first run.
-2. **Engine action names, before the page.** Done, on the same branch. niri's layout actions are
+2. **Engine action names, before the page.** Done, in #27. niri's layout actions are
    no longer bento's native actions: they're `niri.js`'s own, bound in its file. `bento.js` and
    the template have names that say what they do. bento's internal layout methods named after
    niri's actions are gone, with the inherited tests that only exercised niri's columns. bento has
@@ -451,8 +451,7 @@ as planned there. The order agreed on:
    - the fallback engine, used when the configured one fails to load, has no actions;
    - the `default-window-height` window rule reaches the engine as niri's `set-window-height`, so
      only `niri.js` honours it, until engines declare their own window rules.
-3. **The Shortcuts page**, as described above, with bento's own action table. Done, on the same
-   branch.
+3. **The Shortcuts page**, as described above, with bento's own action table. Done, in #27.
 4. **The engine rework**, everything else in this document: one engine for the session, the
    object model, events, drawn surfaces, grouping, the socket. This document is the reference
    for refactoring the repo.
