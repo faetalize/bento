@@ -1,11 +1,8 @@
 use knuffel::errors::DecodeError;
-use niri_ipc::ColumnDisplay;
 
 use crate::appearance::{
     BackgroundEffect, BackgroundEffectRule, BlockOutFrom, BorderRule, CornerRadius, ShadowRule,
-    TabIndicatorRule,
 };
-use crate::layout::DefaultPresetSize;
 use crate::utils::{MergeWith, RegexEq};
 use crate::FloatOrInt;
 
@@ -17,16 +14,10 @@ pub struct WindowRule {
     pub excludes: Vec<Match>,
 
     // Rules applied at initial configure.
-    #[knuffel(child)]
-    pub default_column_width: Option<DefaultPresetSize>,
-    #[knuffel(child)]
-    pub default_window_height: Option<DefaultPresetSize>,
     #[knuffel(child, unwrap(argument))]
     pub open_on_output: Option<String>,
     #[knuffel(child, unwrap(argument))]
     pub open_on_workspace: Option<String>,
-    #[knuffel(child, unwrap(argument))]
-    pub open_maximized: Option<bool>,
     #[knuffel(child, unwrap(argument))]
     pub open_maximized_to_edges: Option<bool>,
     #[knuffel(child, unwrap(argument))]
@@ -54,8 +45,6 @@ pub struct WindowRule {
     pub border: BorderRule,
     #[knuffel(child, default)]
     pub shadow: ShadowRule,
-    #[knuffel(child, default)]
-    pub tab_indicator: TabIndicatorRule,
     #[knuffel(child, unwrap(argument))]
     pub draw_border_with_background: Option<bool>,
     #[knuffel(child, unwrap(argument))]
@@ -70,8 +59,6 @@ pub struct WindowRule {
     pub block_out_from: Option<BlockOutFrom>,
     #[knuffel(child, unwrap(argument))]
     pub variable_refresh_rate: Option<VrrRule>,
-    #[knuffel(child, unwrap(argument, str))]
-    pub default_column_display: Option<ColumnDisplay>,
     #[knuffel(child)]
     pub default_floating_position: Option<FloatingPosition>,
     #[knuffel(child, unwrap(argument))]
@@ -142,8 +129,6 @@ pub struct Match {
     pub is_active: Option<bool>,
     #[knuffel(property)]
     pub is_focused: Option<bool>,
-    #[knuffel(property)]
-    pub is_active_in_column: Option<bool>,
     #[knuffel(property)]
     pub is_floating: Option<bool>,
     #[knuffel(property)]

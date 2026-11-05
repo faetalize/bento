@@ -5,7 +5,7 @@ use knuffel::errors::DecodeError;
 use miette::{miette, IntoDiagnostic as _};
 use smithay::backend::renderer::Color32F;
 
-use crate::utils::{Flag, MergeWith};
+use crate::utils::MergeWith;
 use crate::FloatOrInt;
 
 pub const DEFAULT_BACKGROUND_COLOR: Color = Color::from_array_unpremul([0.25, 0.25, 0.25, 1.]);
@@ -498,77 +498,12 @@ impl Default for TabIndicator {
     }
 }
 
-impl MergeWith<TabIndicatorPart> for TabIndicator {
-    fn merge_with(&mut self, part: &TabIndicatorPart) {
-        self.off |= part.off;
-        if part.on {
-            self.off = false;
-        }
-
-        merge!(
-            (self, part),
-            hide_when_single_tab,
-            place_within_column,
-            gap,
-            width,
-            gaps_between_tabs,
-            corner_radius,
-        );
-
-        merge_clone!((self, part), length, position);
-
-        merge_color_gradient_opt!(
-            (self, part),
-            (active_color, active_gradient),
-            (inactive_color, inactive_gradient),
-            (urgent_color, urgent_gradient),
-        );
-    }
-}
-
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
-pub struct TabIndicatorPart {
-    #[knuffel(child)]
-    pub off: bool,
-    #[knuffel(child)]
-    pub on: bool,
-    #[knuffel(child)]
-    pub hide_when_single_tab: Option<Flag>,
-    #[knuffel(child)]
-    pub place_within_column: Option<Flag>,
-    #[knuffel(child, unwrap(argument))]
-    pub gap: Option<FloatOrInt<-65535, 65535>>,
-    #[knuffel(child, unwrap(argument))]
-    pub width: Option<FloatOrInt<0, 65535>>,
-    #[knuffel(child)]
-    pub length: Option<TabIndicatorLength>,
-    #[knuffel(child, unwrap(argument))]
-    pub position: Option<TabIndicatorPosition>,
-    #[knuffel(child, unwrap(argument))]
-    pub gaps_between_tabs: Option<FloatOrInt<0, 65535>>,
-    #[knuffel(child, unwrap(argument))]
-    pub corner_radius: Option<FloatOrInt<0, 65535>>,
-    #[knuffel(child)]
-    pub active_color: Option<Color>,
-    #[knuffel(child)]
-    pub inactive_color: Option<Color>,
-    #[knuffel(child)]
-    pub urgent_color: Option<Color>,
-    #[knuffel(child)]
-    pub active_gradient: Option<Gradient>,
-    #[knuffel(child)]
-    pub inactive_gradient: Option<Gradient>,
-    #[knuffel(child)]
-    pub urgent_gradient: Option<Gradient>,
-}
-
-#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabIndicatorLength {
-    #[knuffel(property)]
     pub total_proportion: Option<f64>,
 }
 
-#[derive(knuffel::DecodeScalar, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TabIndicatorPosition {
     Left,
     Right,
@@ -591,29 +526,6 @@ impl Default for InsertHint {
             gradient: None,
         }
     }
-}
-
-impl MergeWith<InsertHintPart> for InsertHint {
-    fn merge_with(&mut self, part: &InsertHintPart) {
-        self.off |= part.off;
-        if part.on {
-            self.off = false;
-        }
-
-        merge_color_gradient!((self, part), (color, gradient));
-    }
-}
-
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
-pub struct InsertHintPart {
-    #[knuffel(child)]
-    pub off: bool,
-    #[knuffel(child)]
-    pub on: bool,
-    #[knuffel(child)]
-    pub color: Option<Color>,
-    #[knuffel(child)]
-    pub gradient: Option<Gradient>,
 }
 
 #[derive(knuffel::DecodeScalar, Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,22 +576,6 @@ pub struct ShadowRule {
     pub inactive_color: Option<Color>,
 }
 
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
-pub struct TabIndicatorRule {
-    #[knuffel(child)]
-    pub active_color: Option<Color>,
-    #[knuffel(child)]
-    pub inactive_color: Option<Color>,
-    #[knuffel(child)]
-    pub urgent_color: Option<Color>,
-    #[knuffel(child)]
-    pub active_gradient: Option<Gradient>,
-    #[knuffel(child)]
-    pub inactive_gradient: Option<Gradient>,
-    #[knuffel(child)]
-    pub urgent_gradient: Option<Gradient>,
-}
-
 impl MergeWith<Self> for BorderRule {
     fn merge_with(&mut self, part: &Self) {
         merge_on_off!((self, part));
@@ -707,17 +603,6 @@ impl MergeWith<Self> for ShadowRule {
             draw_behind_window,
             color,
             inactive_color,
-        );
-    }
-}
-
-impl MergeWith<Self> for TabIndicatorRule {
-    fn merge_with(&mut self, part: &Self) {
-        merge_color_gradient_opt!(
-            (self, part),
-            (active_color, active_gradient),
-            (inactive_color, inactive_gradient),
-            (urgent_color, urgent_gradient),
         );
     }
 }
@@ -1294,23 +1179,11 @@ mod tests {
                     inactive-gradient from="#313131" to="#414141"
                     urgent-gradient from="#323232" to="#424242"
                 }
-
-                tab-indicator {
-                    active-gradient from="#505050" to="#606060"
-                    inactive-gradient from="#515151" to="#616161"
-                    urgent-gradient from="#525252" to="#626262"
-                }
             }
 
             // Override with color.
             window-rule {
                 border {
-                    active-color "#abcdef"
-                    inactive-color "#123456"
-                    urgent-color "#fedcba"
-                }
-
-                tab-indicator {
                     active-color "#abcdef"
                     inactive-color "#123456"
                     urgent-color "#fedcba"
@@ -1321,10 +1194,8 @@ mod tests {
         .unwrap();
 
         let mut border = config.layout.border;
-        let mut tab_indicator_rule = TabIndicatorRule::default();
         for rule in &config.window_rules {
             border.merge_with(&rule.border);
-            tab_indicator_rule.merge_with(&rule.tab_indicator);
         }
 
         // Gradient should be None because it's overwritten.
@@ -1333,15 +1204,9 @@ mod tests {
                 border.active_gradient.is_some(),
                 border.inactive_gradient.is_some(),
                 border.urgent_gradient.is_some(),
-                tab_indicator_rule.active_gradient.is_some(),
-                tab_indicator_rule.inactive_gradient.is_some(),
-                tab_indicator_rule.urgent_gradient.is_some(),
             ),
             @r"
         (
-            false,
-            false,
-            false,
             false,
             false,
             false,
