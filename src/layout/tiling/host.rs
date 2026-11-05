@@ -144,8 +144,6 @@ pub struct Host {
     windows: HashMap<u64, Value>,
     focused_monitor: Option<String>,
     options: Option<Value>,
-    /// Workspace of each node that the layout created and put in a tree.
-    node_workspaces: HashMap<String, u64>,
     /// What to tell the layout about again, because it changed it and bento may not agree.
     resend_all: bool,
     resend_workspaces: HashSet<u64>,
@@ -166,7 +164,6 @@ impl Host {
         self.windows.clear();
         self.focused_monitor = None;
         self.options = None;
-        self.node_workspaces.clear();
         self.resend_all = false;
         self.resend_workspaces.clear();
         self.resend_windows.clear();
@@ -370,8 +367,6 @@ impl<W: LayoutElement> Layout<W> {
             }
             keep
         });
-        host.node_workspaces
-            .retain(|_, workspace| seen.contains(workspace));
         host.resend_workspaces.clear();
 
         // Windows that the layout doesn't know are added by events, and windows that are gone
@@ -777,13 +772,17 @@ impl<W: LayoutElement> Layout<W> {
             .find_map(|(_, _, ws)| ws.scrolling().engine_id_of(window))
     }
 
-    /// The workspace that a node is in the tree of.
+    /// The workspace that a node is in the tree of. Windows take what's drawn on them along when
+    /// they move, so this looks where the nodes are now.
     fn node_workspace(&self, node: &str) -> Option<u64> {
         let number = || node.get(1..)?.parse::<u64>().ok();
         match node.chars().next()? {
             'r' => number().filter(|id| self.host.workspaces.contains_key(id)),
             'w' => self.workspace_of_window(number()?),
-            _ => self.host.node_workspaces.get(node).copied(),
+            _ => self
+                .workspaces()
+                .find(|(_, _, ws)| ws.scrolling().tree().contains(node))
+                .map(|(_, _, ws)| ws.id().get()),
         }
     }
 
@@ -836,15 +835,10 @@ impl<W: LayoutElement> Layout<W> {
                     let tree = ws.scrolling_mut().tree_mut();
                     match moved {
                         Some(moved) => {
-                            let ids: Vec<String> = moved.ids().map(str::to_owned).collect();
                             let TreeOp::Append { parent, before, .. } = op else {
                                 unreachable!()
                             };
-                            if tree.put(moved, &parent, before.as_deref()) {
-                                for id in ids {
-                                    self.host.node_workspaces.insert(id, to);
-                                }
-                            }
+                            tree.put(moved, &parent, before.as_deref());
                         }
                         None => {
                             let ops: Vec<Value> = create
@@ -854,9 +848,6 @@ impl<W: LayoutElement> Layout<W> {
                                 .collect();
                             if let Err(err) = tree.apply(&ops) {
                                 warn!("error in the nodes that the layout draws: {err}");
-                            }
-                            if child.starts_with('n') {
-                                self.host.node_workspaces.insert(child, to);
                             }
                         }
                     }
@@ -877,19 +868,11 @@ impl<W: LayoutElement> Layout<W> {
                     let Some(workspace) = self.node_workspace(id) else {
                         continue;
                     };
-                    let id = id.clone();
                     let Some(ws) = self.workspace_mut(workspace) else {
                         continue;
                     };
-                    let tree = ws.scrolling_mut().tree_mut();
-                    let ids = tree.subtree_ids(&id);
-                    match tree.apply(&[to_value(&op)]) {
-                        Ok(()) => {
-                            for id in ids {
-                                self.host.node_workspaces.remove(&id);
-                            }
-                        }
-                        Err(err) => warn!("error in the nodes that the layout draws: {err}"),
+                    if let Err(err) = ws.scrolling_mut().tree_mut().apply(&[to_value(&op)]) {
+                        warn!("error in the nodes that the layout draws: {err}");
                     }
                     touched.insert(workspace);
                 }

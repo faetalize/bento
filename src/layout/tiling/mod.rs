@@ -117,7 +117,9 @@ niri_render_elements! {
         // A tile that the tree scales or moves.
         Transformed = RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
         // A tile that the tree cuts off.
-        Clipped = CropRenderElement<RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>>,
+        Clipped = CropRenderElement<
+            RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
+        >,
         // What the layout draws besides windows.
         Surface = SurfaceRenderElement,
         ClosingWindow = ClosingWindowRenderElement,

@@ -578,3 +578,230 @@ fn nodes_that_the_engine_draws_are_in_the_workspace_tree() {
         Rectangle::new(Point::from((0., 0.)), Size::from((10., 10.)))
     );
 }
+
+/// An engine that puts a window at the top left of its workspace and draws buttons around it: one
+/// below it, one above it that overlaps it, one far from it, and a panel with a button in it. The
+/// buttons tell what they got through `bento.exposeState`, as `[button, event, button number,
+/// pointer x, pointer y, ctrl, wheel y]`.
+const BUTTONS: &str = r#"
+export const meta = { api: 2, name: "buttons" };
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => ({ log }));
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        win.place({ x: 0, y: 0, w: 100, h: 100 });
+        win.focus();
+        const tree = win.workspace.tree;
+        const button = (name, rect, parent, before) => {
+            const node = bento.createNode("box", { rect, interactive: true });
+            for (const type of ["pointerenter", "pointerleave", "pointermove", "pointerdown", "pointerup", "click", "wheel"]) {
+                node.addEventListener(type, (p) => {
+                    log.push([name, type, p.button, p.pointer.x, p.pointer.y, p.modifiers.ctrl, p.delta.y]);
+                });
+            }
+            parent.append(node, before);
+            return node;
+        };
+        button("below", { x: 0, y: 0, w: 30, h: 30 }, tree, win.node);
+        button("above", { x: 50, y: 50, w: 100, h: 100 }, tree);
+        button("far", { x: 500, y: 0, w: 50, h: 50 }, tree);
+        const panel = bento.createNode("box", { rect: { x: 600, y: 0, w: 100, h: 100 } });
+        tree.append(panel);
+        const inner = button("inner", { x: 610, y: 10, w: 20, h: 20 }, panel);
+        panel.addEventListener("click", (p) => log.push(["panel", "click", p.target === inner]));
+    });
+}
+"#;
+
+fn buttons_layout() -> Layout<TestWindow> {
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    check_ops_with_options(options_for_source("buttons", BUTTONS), ops)
+}
+
+/// The id of the interactive node under a point of the view, if there's one.
+fn node_under(layout: &Layout<TestWindow>, x: f64, y: f64) -> Option<String> {
+    let output = layout.active_output().unwrap();
+    layout
+        .node_under(output, Point::from((x, y)))
+        .map(|hit| hit.node)
+}
+
+fn node_log() -> serde_json::Value {
+    crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone()
+}
+
+#[test]
+fn nodes_are_under_the_pointer_unless_a_window_is_above_them() {
+    let layout = buttons_layout();
+
+    // The nodes are created in this order, as n1 to n5.
+    // Over the window, the node above it takes the pointer.
+    assert_eq!(node_under(&layout, 75., 75.).as_deref(), Some("n2"));
+    // Past the window it's still the node's.
+    assert_eq!(node_under(&layout, 120., 120.).as_deref(), Some("n2"));
+    // The node below the window is covered by it.
+    assert_eq!(node_under(&layout, 10., 10.), None);
+    assert_eq!(node_under(&layout, 520., 10.).as_deref(), Some("n3"));
+    // The panel isn't interactive, and what's in it is.
+    assert_eq!(node_under(&layout, 650., 80.), None);
+    assert_eq!(node_under(&layout, 620., 20.).as_deref(), Some("n5"));
+    assert_eq!(node_under(&layout, 300., 300.), None);
+}
+
+#[test]
+fn pointer_events_reach_the_engine_and_bubble() {
+    let mut layout = buttons_layout();
+    let none = [false; 4];
+    let origin = Point::from((0., 0.));
+
+    let hit = |layout: &Layout<TestWindow>, x, y| {
+        let output = layout.active_output().unwrap();
+        layout.node_under(output, Point::from((x, y)))
+    };
+
+    // Entering a node, and moving on it.
+    let far = hit(&layout, 520., 10.);
+    layout.node_pointer_moved(far.as_ref(), none);
+    assert_eq!(
+        node_log(),
+        serde_json::json!([
+            ["far", "pointerenter", 0, 520, 10, false, 0],
+            ["far", "pointermove", 0, 520, 10, false, 0],
+        ])
+    );
+
+    // Moving to another one leaves the first.
+    let inner = hit(&layout, 620., 20.);
+    layout.node_pointer_moved(inner.as_ref(), none);
+    assert_eq!(
+        node_log().as_array().unwrap()[2..],
+        [
+            serde_json::json!(["far", "pointerleave", 0, 620, 20, false, 0]),
+            serde_json::json!(["inner", "pointerenter", 0, 620, 20, false, 0]),
+            serde_json::json!(["inner", "pointermove", 0, 620, 20, false, 0]),
+        ]
+    );
+
+    // A click goes to the node, with its button and the modifiers, and bubbles to its parent.
+    let before = node_log().as_array().unwrap().len();
+    let pos = Point::from((620., 20.));
+    layout.node_pointer_event("n5", "pointerdown", pos, 1, none, origin);
+    layout.node_pointer_event("n5", "pointerup", pos, 1, none, origin);
+    layout.node_pointer_event("n5", "click", pos, 1, [false, true, false, false], origin);
+    layout.node_pointer_event("n5", "wheel", pos, 0, none, Point::from((0., 15.)));
+    assert_eq!(
+        node_log().as_array().unwrap()[before..],
+        [
+            serde_json::json!(["inner", "pointerdown", 1, 620, 20, false, 0]),
+            serde_json::json!(["inner", "pointerup", 1, 620, 20, false, 0]),
+            serde_json::json!(["inner", "click", 1, 620, 20, true, 0]),
+            serde_json::json!(["panel", "click", true]),
+            serde_json::json!(["inner", "wheel", 0, 620, 20, false, 15]),
+        ]
+    );
+
+    // The pointer leaving all nodes leaves the one it was on, and nothing else.
+    let before = node_log().as_array().unwrap().len();
+    layout.node_pointer_moved(None, none);
+    assert_eq!(
+        node_log().as_array().unwrap()[before..],
+        [serde_json::json!([
+            "inner",
+            "pointerleave",
+            0,
+            620,
+            20,
+            false,
+            0
+        ])]
+    );
+    layout.node_pointer_moved(None, none);
+    assert_eq!(node_log().as_array().unwrap().len(), before + 1);
+}
+
+#[test]
+fn a_window_covering_a_node_leaves_the_pointer_to_the_window() {
+    let mut layout = buttons_layout();
+    let none = [false; 4];
+
+    // On the node above the window, then on the window where the node below it is.
+    let output = layout.active_output().unwrap().clone();
+    let hit = layout.node_under(&output, Point::from((75., 75.)));
+    assert_eq!(hit.as_ref().map(|hit| hit.node.as_str()), Some("n2"));
+    layout.node_pointer_moved(hit.as_ref(), none);
+
+    let covered = layout.node_under(&output, Point::from((10., 10.)));
+    assert!(covered.is_none());
+    layout.node_pointer_moved(covered.as_ref(), none);
+
+    let log = node_log();
+    let events: Vec<_> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| (entry[0].as_str().unwrap(), entry[1].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            ("above", "pointerenter"),
+            ("above", "pointermove"),
+            ("above", "pointerleave"),
+        ]
+    );
+}
+
+#[test]
+fn what_is_drawn_on_a_window_moves_with_it_to_another_workspace() {
+    let source = r##"
+    export const meta = { api: 2, name: "badges" };
+    export default function create(bento) {
+        let badge;
+        bento.addEventListener("windowadd", (e) => {
+            const win = e.window;
+            win.place({ x: 0, y: 0, w: 100, h: 100 });
+            win.focus();
+            badge = bento.createNode("box", { rect: { x: 0, y: 0, w: 10, h: 10 } });
+            win.node.append(badge);
+            win.addEventListener("move", () => badge.set({ opacity: 0.5 }));
+        });
+    }
+    "##;
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 1,
+        },
+    ];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("badges", source), ops);
+
+    let (_, _, ws) = layout
+        .workspaces()
+        .find(|(_, _, ws)| ws.scrolling().has_window(&1))
+        .unwrap();
+    let engine_id = ws.scrolling().engine_id_of(&1).unwrap();
+    let tree = ws.scrolling().tree();
+    assert_eq!(
+        tree.path("n1"),
+        [
+            String::from("n1"),
+            format!("w{engine_id}"),
+            tree.root_id().to_owned()
+        ]
+    );
+    // The layout's change to the node went to the tree it's in now.
+    assert_eq!(tree.drawn("n1").unwrap().opacity, 0.5);
+
+    for (_, _, other) in layout
+        .workspaces()
+        .filter(|(_, _, other)| other.id() != ws.id())
+    {
+        assert!(other.scrolling().tree().window_order().is_empty());
+        assert!(!other.scrolling().tree().contains("n1"));
+    }
+}

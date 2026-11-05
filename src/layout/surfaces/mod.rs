@@ -127,13 +127,6 @@ pub struct WindowSlot {
 #[derive(Debug)]
 pub struct Subtree(Vec<(String, Node)>);
 
-impl Subtree {
-    /// Ids of the nodes in it, the one that was taken first.
-    pub fn ids(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().map(|(id, _)| id.as_str())
-    }
-}
-
 /// What a node's ancestors do to it, as seen from the node: it ends up at `scale` times its
 /// canvas position plus `offset`.
 #[derive(Debug, Clone, Copy)]
@@ -414,6 +407,11 @@ impl Tree {
         &self.root
     }
 
+    /// Whether the tree has a node, in it or created by the engine and not put in yet.
+    pub fn contains(&self, id: &str) -> bool {
+        self.nodes.contains_key(id)
+    }
+
     /// Changes what the names of transitions mean.
     pub fn set_animations(&mut self, animations: Animations) {
         self.animations = animations;
@@ -575,7 +573,7 @@ impl Tree {
     }
 
     /// The node and everything in it, the node first.
-    pub fn subtree_ids(&self, id: &str) -> Vec<String> {
+    fn subtree_ids(&self, id: &str) -> Vec<String> {
         let mut subtree = vec![id.to_owned()];
         let mut next = 0;
         while let Some(id) = subtree.get(next) {

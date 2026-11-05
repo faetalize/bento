@@ -941,7 +941,6 @@ fn a_window_moves_to_another_tree_with_what_is_drawn_on_it() {
     to.add_window(9);
 
     let subtree = from.take_window(7).unwrap();
-    assert_eq!(subtree.ids().collect::<Vec<_>>(), ["w7", "n1", "n2"]);
     for id in ["w7", "n1", "n2"] {
         assert!(!from.nodes.contains_key(id));
     }
@@ -965,9 +964,12 @@ fn windows_nested_in_a_window_stay_when_it_moves() {
     );
 
     let subtree = from.take_window(7).unwrap();
-    assert_eq!(subtree.ids().collect::<Vec<_>>(), ["w7"]);
     assert_eq!(from.window_order(), [8]);
     assert_eq!(children(&from, "r1"), ["w8"]);
+
+    let (mut to, _) = tree();
+    to.put_window(subtree);
+    assert_eq!(to.window_order(), [7]);
 }
 
 #[test]
