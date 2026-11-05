@@ -12,6 +12,8 @@ use crate::kdl::Value;
 use crate::page::{open_file, PageContext};
 use crate::store::tilde;
 
+use self::ratio::Ratio;
+
 const KEY: &str = "layout.background-image";
 const PATH: &[&str] = &["layout", "background-image"];
 
@@ -21,6 +23,10 @@ const EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 /// Pixel height thumbnails and the large preview are loaded at.
 const THUMBNAIL_HEIGHT: i32 = 180;
 const PREVIEW_HEIGHT: i32 = 720;
+
+/// The narrowest a thumbnail gets; four fit across the usual page width, then they widen to
+/// fill their column.
+const THUMBNAIL_WIDTH: i32 = 136;
 
 pub fn build(ctx: &PageContext) -> gtk::Widget {
     let group = adw::PreferencesGroup::builder().title("Wallpaper").build();
@@ -163,13 +169,11 @@ fn tile(path: &Path) -> gtk::FlowBoxChild {
         .overflow(gtk::Overflow::Hidden)
         .css_classes(["wallpaper-thumbnail"])
         .build();
-    let frame = gtk::AspectFrame::new(0.5, 0.5, 16. / 10., false);
-    frame.set_child(Some(&picture));
     load(path, THUMBNAIL_HEIGHT, &picture);
 
     let name = path.file_stem().map(|n| n.to_string_lossy().into_owned());
     gtk::FlowBoxChild::builder()
-        .child(&frame)
+        .child(&Ratio::new(&picture, THUMBNAIL_WIDTH))
         .tooltip_text(name.unwrap_or_default())
         .build()
 }
@@ -184,10 +188,8 @@ fn add_tile() -> gtk::FlowBoxChild {
     let inner = gtk::Box::builder().css_classes(["wallpaper-add"]).build();
     inner.append(&icon);
     icon.set_hexpand(true);
-    let frame = gtk::AspectFrame::new(0.5, 0.5, 16. / 10., false);
-    frame.set_child(Some(&inner));
     gtk::FlowBoxChild::builder()
-        .child(&frame)
+        .child(&Ratio::new(&inner, THUMBNAIL_WIDTH))
         .tooltip_text("Add Picture…")
         .build()
 }
@@ -215,7 +217,7 @@ fn choose(parent: &impl IsA<gtk::Widget>, ctx: &PageContext) {
 
 /// The current wallpaper, large, with its name and a button to remove it.
 struct Preview {
-    frame: gtk::AspectFrame,
+    frame: Ratio,
     picture: gtk::Picture,
     empty: gtk::Box,
     name: gtk::Label,
@@ -275,11 +277,9 @@ impl Preview {
         overlay.add_overlay(&empty);
         overlay.add_overlay(&name);
         overlay.add_overlay(&remove);
-        let frame = gtk::AspectFrame::new(0.5, 0.5, 16. / 10., false);
-        frame.set_child(Some(&overlay));
 
         Rc::new(Self {
-            frame,
+            frame: Ratio::new(&overlay, 0),
             picture,
             empty,
             name,
@@ -336,4 +336,84 @@ fn load(path: &Path, height: i32, picture: &gtk::Picture) {
         let texture = gdk::MemoryTexture::new(width, height, format, &bytes, stride);
         picture.set_paintable(Some(&texture));
     });
+}
+
+/// Keeps its child 16:10 at whatever width it gets. Pictures can't ask for a height that follows
+/// their width: their minimum is 0, so a short window would squash them.
+mod ratio {
+    use std::cell::Cell;
+
+    use gtk::glib;
+    use gtk::prelude::*;
+    use gtk::subclass::prelude::*;
+
+    const RATIO: f64 = 16. / 10.;
+
+    mod imp {
+        use super::*;
+
+        #[derive(Default)]
+        pub struct Ratio {
+            pub width: Cell<i32>,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for Ratio {
+            const NAME: &'static str = "BentoSettingsRatio";
+            type Type = super::Ratio;
+            type ParentType = gtk::Widget;
+        }
+
+        impl ObjectImpl for Ratio {
+            fn dispose(&self) {
+                while let Some(child) = self.obj().first_child() {
+                    child.unparent();
+                }
+            }
+        }
+
+        impl WidgetImpl for Ratio {
+            fn request_mode(&self) -> gtk::SizeRequestMode {
+                gtk::SizeRequestMode::HeightForWidth
+            }
+
+            fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+                let child_min = self
+                    .obj()
+                    .first_child()
+                    .map_or(0, |child| child.measure(orientation, for_size).0);
+                let size = match orientation {
+                    gtk::Orientation::Horizontal => self.width.get(),
+                    _ => {
+                        let width = if for_size < 0 { self.width.get() } else { for_size };
+                        (f64::from(width) / RATIO).round() as i32
+                    }
+                };
+                let size = size.max(child_min);
+                (size, size, -1, -1)
+            }
+
+            fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+                if let Some(child) = self.obj().first_child() {
+                    child.allocate(width, height, baseline, None);
+                }
+            }
+        }
+    }
+
+    glib::wrapper! {
+        pub struct Ratio(ObjectSubclass<imp::Ratio>)
+            @extends gtk::Widget,
+            @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
+    }
+
+    impl Ratio {
+        /// `width` is both the narrowest it gets and the width it asks for.
+        pub fn new(child: &impl IsA<gtk::Widget>, width: i32) -> Self {
+            let ratio: Self = glib::Object::new();
+            ratio.imp().width.set(width);
+            child.set_parent(&ratio);
+            ratio
+        }
+    }
 }
