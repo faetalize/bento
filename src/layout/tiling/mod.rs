@@ -608,11 +608,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.tree.reset(windows);
     }
 
-    /// Queues an event about the space for the layout.
-    fn queue(&self, event: Value) {
-        host::queue(event);
-    }
-
     /// Carries out what a layout call changed here: where windows go and where the camera points.
     pub(super) fn apply(
         &mut self,

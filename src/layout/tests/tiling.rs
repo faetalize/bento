@@ -450,6 +450,7 @@ fn options_for_source(name: &str, source: &str) -> Options {
         tiling: niri_config::Tiling {
             layout: niri_config::TilingLayout::File(path),
             options: Vec::new(),
+            window_rules: Vec::new(),
         },
         ..Options::default()
     }

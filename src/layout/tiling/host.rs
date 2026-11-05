@@ -490,7 +490,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     /// Sends what's queued for the layout, and carries out what it answers.
-    pub(super) fn flush_engine(&mut self) {
+    pub(in crate::layout) fn flush_engine(&mut self) {
         if self.host.flushing {
             return;
         }
@@ -929,6 +929,8 @@ impl<W: LayoutElement> Layout<W> {
                 LayoutEngineOptionValue::Boolean(value) => TilingOption::Bool(*value),
                 LayoutEngineOptionValue::Number(value) => TilingOption::Number(*value),
                 LayoutEngineOptionValue::String(value) => TilingOption::String(value.clone()),
+                // Action arguments are single values; only options are lists.
+                LayoutEngineOptionValue::List(_) => break,
             };
             values.push(convert(i, &default));
         }
@@ -955,7 +957,7 @@ impl<W: LayoutElement> Layout<W> {
     /// Asks the layout whether something may focus a window, like a click or an app. Returns
     /// whether the layout prevented it: otherwise bento shows the window's workspace, focuses
     /// its monitor and focuses the window.
-    pub(super) fn activate_prevented(&mut self, window: &W::Id) -> bool {
+    pub(in crate::layout) fn activate_prevented(&mut self, window: &W::Id) -> bool {
         let Some(id) = self.engine_id_of(window) else {
             return false;
         };
@@ -964,7 +966,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     /// Starts an interactive resize of a tiled window, if the layout allows it.
-    pub(super) fn tiling_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
+    pub(in crate::layout) fn tiling_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
         let Some(ws_id) = self
             .workspaces()
             .find(|(_, _, ws)| ws.scrolling().has_window(&window))
@@ -1019,7 +1021,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     /// Tells the layout that a window asks to float, when floating is off.
-    pub(super) fn queue_float_request(
+    pub(in crate::layout) fn queue_float_request(
         &self,
         window: &W::Id,
         reason: &str,
@@ -1070,7 +1072,7 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     /// Tells the layout where an interactively moved window is over a workspace, or that it left.
-    pub(super) fn update_drag(&mut self) {
+    pub(in crate::layout) fn update_drag(&mut self) {
         let target = self.drag_target();
         let previous = self.host.drag.take();
 

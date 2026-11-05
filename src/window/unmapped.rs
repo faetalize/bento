@@ -1,4 +1,3 @@
-use niri_config::PresetSize;
 use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::wayland::shell::xdg::ToplevelSurface;
@@ -33,28 +32,6 @@ pub enum InitialConfigureState {
         /// affect anything before that.
         rules: ResolvedWindowRules,
 
-        /// Resolved scrolling default width for this window.
-        ///
-        /// `None` means that the window will pick its own width.
-        width: Option<PresetSize>,
-
-        /// Resolved scrolling default height for this window.
-        ///
-        /// `None` means that the window will pick its own height.
-        height: Option<PresetSize>,
-
-        /// Resolved floating default width for this window.
-        ///
-        /// `None` means that the window will pick its own width.
-        floating_width: Option<PresetSize>,
-
-        /// Resolved floating default height for this window.
-        ///
-        /// `None` means that the window will pick its own height.
-        floating_height: Option<PresetSize>,
-
-        /// Whether the window should open full-width.
-        is_full_width: bool,
 
         /// Output to open this window on.
         ///

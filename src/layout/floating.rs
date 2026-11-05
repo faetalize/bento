@@ -1,16 +1,15 @@
-use std::cmp::max;
 use std::iter::zip;
 use std::rc::Rc;
 
 use niri_config::utils::MergeWith as _;
-use niri_config::{PresetSize, RelativeTo};
+use niri_config::RelativeTo;
 use niri_ipc::{PositionChange, SizeChange, WindowLayout};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
-use super::workspace::{InteractiveResize, ResolvedSize};
+use super::workspace::InteractiveResize;
 use super::{
     ConfigureIntent, InteractiveResizeData, LayoutElement, Options, RemovedTile, SizeFrac,
 };
@@ -1146,38 +1145,6 @@ impl<W: LayoutElement> FloatingSpace<W> {
         }
     }
 
-    pub fn new_window_size(
-        &self,
-        width: Option<PresetSize>,
-        height: Option<PresetSize>,
-        rules: &ResolvedWindowRules,
-    ) -> Size<i32, Logical> {
-        let border = self.options.layout.border.merged_with(&rules.border);
-
-        let resolve = |size: Option<PresetSize>, working_area_size: f64| {
-            if let Some(size) = size {
-                let size = match resolve_preset_size(size, working_area_size) {
-                    ResolvedSize::Tile(mut size) => {
-                        if !border.off {
-                            size -= border.width * 2.;
-                        }
-                        size
-                    }
-                    ResolvedSize::Window(size) => size,
-                };
-
-                max(1, size.floor() as i32)
-            } else {
-                0
-            }
-        };
-
-        let width = resolve(width, self.working_area.size.w);
-        let height = resolve(height, self.working_area.size.h);
-
-        Size::from((width, height))
-    }
-
     pub fn stored_or_default_tile_pos(&self, tile: &Tile<W>) -> Option<Point<f64, Logical>> {
         let pos = tile.floating_pos.map(|pos| self.scale_by_working_area(pos));
         pos.or_else(|| {
@@ -1303,9 +1270,3 @@ fn compute_toplevel_bounds(
     .to_i32_floor()
 }
 
-fn resolve_preset_size(preset: PresetSize, view_size: f64) -> ResolvedSize {
-    match preset {
-        PresetSize::Proportion(proportion) => ResolvedSize::Tile(view_size * proportion),
-        PresetSize::Fixed(width) => ResolvedSize::Window(f64::from(width)),
-    }
-}

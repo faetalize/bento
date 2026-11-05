@@ -2,8 +2,7 @@ use std::cmp::max;
 use std::rc::Rc;
 use std::time::Duration;
 
-use niri_config::utils::MergeWith as _;
-use niri_config::{CornerRadius, OutputName, PresetSize, Workspace as WorkspaceConfig};
+use niri_config::{CornerRadius, OutputName, Workspace as WorkspaceConfig};
 use niri_ipc::{PositionChange, WindowLayout};
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -152,15 +151,6 @@ pub(super) struct InteractiveResize<W: LayoutElement> {
     pub window: W::Id,
     pub original_window_size: Size<f64, Logical>,
     pub data: InteractiveResizeData,
-}
-
-/// Resolved width or height in logical pixels.
-#[derive(Debug, Clone, Copy)]
-pub enum ResolvedSize {
-    /// Size of the tile including borders.
-    Tile(f64),
-    /// Size of the window excluding borders.
-    Window(f64),
 }
 
 /// Whether the floating space is active.
@@ -755,30 +745,15 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.set_remove_reason(id, reason);
     }
 
-    pub fn resolve_default_width(
-        &self,
-        default_width: Option<Option<PresetSize>>,
-    ) -> Option<PresetSize> {
-        default_width.flatten()
-    }
-
-    pub fn resolve_default_height(
-        &self,
-        default_height: Option<Option<PresetSize>>,
-    ) -> Option<PresetSize> {
-        default_height.flatten()
-    }
-
     pub fn new_window_size(
         &self,
-        width: Option<PresetSize>,
-        height: Option<PresetSize>,
         is_floating: bool,
         rules: &ResolvedWindowRules,
         (min_size, max_size): (Size<i32, Logical>, Size<i32, Logical>),
     ) -> Size<i32, Logical> {
+        // Floating windows pick their own size.
         let mut size = if is_floating {
-            self.floating.new_window_size(width, height, rules)
+            Size::from((0, 0))
         } else {
             self.scrolling.new_window_size(rules)
         };
@@ -803,8 +778,6 @@ impl<W: LayoutElement> Workspace<W> {
     pub fn configure_new_window(
         &self,
         window: &Window,
-        width: Option<PresetSize>,
-        height: Option<PresetSize>,
         is_floating: bool,
         rules: &ResolvedWindowRules,
     ) {
@@ -825,7 +798,7 @@ impl<W: LayoutElement> Workspace<W> {
                 state.size = Some(self.working_area.size.to_i32_round());
             } else {
                 let size =
-                    self.new_window_size(width, height, is_floating, rules, (min_size, max_size));
+                    self.new_window_size(is_floating, rules, (min_size, max_size));
                 state.size = Some(size);
             }
 

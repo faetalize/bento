@@ -221,15 +221,6 @@ pub fn keyboard_layouts(state: &mut State) -> KeyboardLayouts {
     })
 }
 
-/// The index of the active keyboard layout.
-pub fn keyboard_layout_index(state: &mut State) -> u8 {
-    let keyboard = state.niri.seat.get_keyboard().unwrap();
-    keyboard.with_xkb_state(state, |context| {
-        let xkb = context.xkb().lock().unwrap();
-        xkb.active_layout().0 as u8
-    })
-}
-
 /// The screencasts, by stream id.
 pub fn casts(state: &mut State) -> BTreeMap<u64, Cast> {
     let mut casts = BTreeMap::new();

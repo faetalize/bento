@@ -93,11 +93,6 @@ impl CompositorHandler for State {
                     let (rules, output, workspace_id, is_pending_maximized) =
                         if let InitialConfigureState::Configured {
                             rules,
-                            width: _,
-                            height: _,
-                            floating_width: _,
-                            floating_height: _,
-                            is_full_width: _,
                             output,
                             workspace_name,
                             is_pending_maximized,

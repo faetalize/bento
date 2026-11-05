@@ -1,7 +1,6 @@
 use std::cell::Cell;
 
 use calloop::Interest;
-use niri_config::PresetSize;
 use smithay::backend::input::InputTime;
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, utils, LayerSurface,
@@ -524,7 +523,7 @@ impl XdgShellHandler for State {
                                 state.states.set(xdg_toplevel::State::Maximized);
                             }
                         });
-                        ws.configure_new_window(&unmapped.window, None, None, false, rules);
+                        ws.configure_new_window(&unmapped.window, false, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -560,11 +559,6 @@ impl XdgShellHandler for State {
                 }
                 InitialConfigureState::Configured {
                     rules,
-                    width,
-                    height,
-                    floating_width,
-                    floating_height,
-                    is_full_width,
                     output,
                     workspace_name,
                     is_pending_maximized,
@@ -625,25 +619,7 @@ impl XdgShellHandler for State {
                         });
 
                         let is_floating = rules.compute_open_floating(&toplevel);
-                        let configure_width = if is_floating {
-                            *floating_width
-                        } else if *is_full_width {
-                            Some(PresetSize::Proportion(1.))
-                        } else {
-                            *width
-                        };
-                        let configure_height = if is_floating {
-                            *floating_height
-                        } else {
-                            *height
-                        };
-                        ws.configure_new_window(
-                            &unmapped.window,
-                            configure_width,
-                            configure_height,
-                            is_floating,
-                            rules,
-                        );
+                        ws.configure_new_window(&unmapped.window, is_floating, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -735,7 +711,7 @@ impl XdgShellHandler for State {
                             state.states.set(xdg_toplevel::State::Fullscreen);
                             state.states.unset(xdg_toplevel::State::Maximized);
                         });
-                        ws.configure_new_window(&unmapped.window, None, None, false, rules);
+                        ws.configure_new_window(&unmapped.window, false, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -771,11 +747,6 @@ impl XdgShellHandler for State {
                 }
                 InitialConfigureState::Configured {
                     rules,
-                    width,
-                    height,
-                    floating_width,
-                    floating_height,
-                    is_full_width,
                     output,
                     workspace_name,
                     is_pending_maximized,
@@ -835,25 +806,7 @@ impl XdgShellHandler for State {
                         });
 
                         let is_floating = rules.compute_open_floating(&toplevel);
-                        let configure_width = if is_floating {
-                            *floating_width
-                        } else if *is_full_width {
-                            Some(PresetSize::Proportion(1.))
-                        } else {
-                            *width
-                        };
-                        let configure_height = if is_floating {
-                            *floating_height
-                        } else {
-                            *height
-                        };
-                        ws.configure_new_window(
-                            &unmapped.window,
-                            configure_width,
-                            configure_height,
-                            is_floating,
-                            rules,
-                        );
+                        ws.configure_new_window(&unmapped.window, is_floating, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -1149,11 +1102,6 @@ impl State {
             .map(|(mon, _)| mon.output().clone());
         let mon = mon.map(|(mon, _)| mon);
 
-        let mut width = None;
-        let mut floating_width = None;
-        let mut height = None;
-        let mut floating_height = None;
-        let is_full_width = rules.open_maximized.unwrap_or(false);
         let is_floating = rules.compute_open_floating(toplevel);
 
         // Tell the surface the preferred size and bounds for its likely output.
@@ -1184,26 +1132,7 @@ impl State {
                 });
             }
 
-            width = ws.resolve_default_width(rules.default_width);
-            floating_width = ws.resolve_default_width(rules.default_width);
-            height = ws.resolve_default_height(rules.default_height);
-            floating_height = ws.resolve_default_height(rules.default_height);
-
-            let configure_width = if is_floating {
-                floating_width
-            } else if is_full_width {
-                Some(PresetSize::Proportion(1.))
-            } else {
-                width
-            };
-            let configure_height = if is_floating { floating_height } else { height };
-            ws.configure_new_window(
-                window,
-                configure_width,
-                configure_height,
-                is_floating,
-                &rules,
-            );
+            ws.configure_new_window(window, is_floating, &rules);
         }
 
         // Set the tiled state for the initial configure.
@@ -1212,11 +1141,6 @@ impl State {
         // Set the configured settings.
         *state = InitialConfigureState::Configured {
             rules,
-            width,
-            height,
-            floating_width,
-            floating_height,
-            is_full_width,
             output,
             workspace_name: ws.and_then(|w| w.name().cloned()),
             is_pending_maximized,
