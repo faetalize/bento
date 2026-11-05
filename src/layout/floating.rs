@@ -1269,4 +1269,3 @@ fn compute_toplevel_bounds(
     ))
     .to_i32_floor()
 }
-

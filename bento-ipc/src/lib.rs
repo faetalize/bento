@@ -84,8 +84,8 @@ pub enum Request {
         what: Get,
     },
     /// Runs an action, native or one of the running engine's, written like in a bind:
-    /// `{"type":"action","name":"move-window-to-workspace","args":[3],"properties":{"focus":false}}`.
-    /// It's parsed the way a bind in the config is, so the same things are invalid.
+    /// `{"type":"action","name":"move-window-to-workspace","args":[3],"properties":{"focus":
+    /// false}}`. It's parsed the way a bind in the config is, so the same things are invalid.
     ///
     /// Screenshot actions also take a `path` property, which must be absolute.
     Action {

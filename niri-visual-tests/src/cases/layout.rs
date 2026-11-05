@@ -183,11 +183,7 @@ impl Layout {
         self.windows.push(window);
     }
 
-    fn add_window_right_of(
-        &mut self,
-        right_of: &TestWindow,
-        mut window: TestWindow,
-    ) {
+    fn add_window_right_of(&mut self, right_of: &TestWindow, mut window: TestWindow) {
         let ws = self.layout.active_workspace().unwrap();
         let min_size = window.min_size();
         let max_size = window.max_size();

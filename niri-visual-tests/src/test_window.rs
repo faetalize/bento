@@ -211,7 +211,6 @@ impl LayoutElement for TestWindow {
 
     fn set_activated(&mut self, _active: bool) {}
 
-
     fn set_floating(&mut self, _floating: bool) {}
 
     fn set_bounds(&self, _bounds: Size<i32, Logical>) {}

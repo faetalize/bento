@@ -3,9 +3,8 @@
 //! Only raster icons (`.png`) are found: bento has no SVG renderer.
 
 use std::collections::{HashSet, VecDeque};
-use std::env;
-use std::fs;
 use std::path::PathBuf;
+use std::{env, fs};
 
 #[derive(Debug, PartialEq)]
 enum DirKind {

@@ -1028,7 +1028,11 @@ impl<W: LayoutElement> Layout<W> {
     }
 
     /// Starts an interactive resize of a tiled window, if the layout allows it.
-    pub(in crate::layout) fn tiling_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
+    pub(in crate::layout) fn tiling_resize_begin(
+        &mut self,
+        window: W::Id,
+        edges: ResizeEdge,
+    ) -> bool {
         let Some(ws_id) = self
             .workspaces()
             .find(|(_, _, ws)| ws.scrolling().has_window(&window))

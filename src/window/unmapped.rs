@@ -32,7 +32,6 @@ pub enum InitialConfigureState {
         /// affect anything before that.
         rules: ResolvedWindowRules,
 
-
         /// Output to open this window on.
         ///
         /// This can be `None` in cases like:

@@ -797,8 +797,7 @@ impl<W: LayoutElement> Workspace<W> {
             } else if state.states.contains(xdg_toplevel::State::Maximized) {
                 state.size = Some(self.working_area.size.to_i32_round());
             } else {
-                let size =
-                    self.new_window_size(is_floating, rules, (min_size, max_size));
+                let size = self.new_window_size(is_floating, rules, (min_size, max_size));
                 state.size = Some(size);
             }
 

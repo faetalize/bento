@@ -36,6 +36,7 @@ use std::mem;
 use std::rc::Rc;
 use std::time::Duration;
 
+use groups::Groups;
 use monitor::{InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
@@ -48,7 +49,6 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::output::{self, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
-use groups::Groups;
 use tile::{PendingMove, Tile, TileRenderElement};
 use tiling::host::Host;
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId};
