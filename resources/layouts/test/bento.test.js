@@ -156,7 +156,7 @@ function ipc(host) {
     const starts = [...new Set(items.map((item) => item.area.col))].sort((a, b) => a - b);
     const stack = (col) =>
         items
-            .filter((item) => item.area.col <= col && col < item.area.right)
+            .filter((item) => item.area.col <= col && col < item.area.col + item.area.cols)
             .sort((a, b) => a.area.row - b.area.row)
             .flatMap((item) => item.windows.map((id) => [item, id]));
     return items

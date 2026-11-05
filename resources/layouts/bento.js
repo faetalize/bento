@@ -2255,18 +2255,18 @@ function createSpace(bento, ws) {
             fitToMode(item);
         }
 
+        if (wasEmpty) {
+            // The first window on an empty workspace, focused or not: whatever camera position was
+            // left over doesn't matter, so jump to where it would be for this window.
+            const x = itemX(item);
+            moveCamera({ x: x + viewOffsetFor(x, item, null) }, { animate: false });
+        }
+
         if (!activate) {
             if (active === null) {
                 active = item;
             }
             return;
-        }
-
-        if (wasEmpty) {
-            // The first window on an empty workspace: whatever camera position was left over
-            // doesn't matter, so jump to where it would be for this window.
-            const x = itemX(item);
-            moveCamera({ x: x + viewOffsetFor(x, item, null) }, { animate: false });
         }
 
         const prev = wasEmpty ? null : { opened: item, prev: active };

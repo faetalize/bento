@@ -196,14 +196,22 @@ export function handle(callJson) {
             if (session === null) {
                 throw new Error("no layout engine instance");
             }
+            // A window leaving takes it out of its group, so the engine hears that the window
+            // left before it hears what that did to the group.
+            const { groups, ...sync } = call.sync ?? {};
+            const groupsAfter = call.event.type === "windowremove" ? groups : undefined;
             if (call.sync) {
-                for (const fire of session.applySync(call.sync)) {
+                const first = groupsAfter === undefined ? call.sync : sync;
+                for (const fire of session.applySync(first)) {
                     fire();
                 }
             }
             isQuery = call.event.type === "newwindowsize";
             const focus = session.focusKey();
             result = deliver(call.event);
+            if (groupsAfter !== undefined) {
+                session.groups.apply(groupsAfter);
+            }
             if (!isQuery) {
                 session.fireFocusChanges(focus);
                 session.fireGroupChanges();

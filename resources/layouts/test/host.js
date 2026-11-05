@@ -284,6 +284,14 @@ export class TestHost {
     /** Sends an event, and carries out what the engine did. Returns the call's result. */
     send(event) {
         this.flush();
+        return this.sendNow(event);
+    }
+
+    /**
+     * Sends an event with what changed since the engine was last told, like bento sends what an
+     * event changed along with it.
+     */
+    sendNow(event) {
         const sync = this.sync();
         this.toldFocusedMonitor = this.focusedMonitor;
         const out = this.call({ sync, event });
@@ -515,6 +523,12 @@ export class TestHost {
         this.flush();
     }
 
+    /** Groups windows on bento's side, the way its native actions do, with `active` active. */
+    groupWindows(windows, active) {
+        this.createGroup(this.nextGroupId++, windows, active);
+        this.flush();
+    }
+
     /** bento's `ungroup-window`: the focused window leaves its group. */
     ungroupWindow() {
         const focused = this.focused();
@@ -583,6 +597,7 @@ export class TestHost {
     }
 
     close(id, reason = "close") {
+        this.flush();
         const win = this.windows.get(id);
         this.leaveGroup(id);
         this.windows.delete(id);
@@ -590,7 +605,7 @@ export class TestHost {
         this.trees.get(win.workspace).remove(`w${id}`);
         const ws = this.workspaces.get(win.workspace);
         if (ws.focused === id) ws.focused = null;
-        this.send({ type: "windowremove", id, reason });
+        this.sendNow({ type: "windowremove", id, reason });
     }
 
     /** Moves a window to another workspace like one of bento's own actions does. */
