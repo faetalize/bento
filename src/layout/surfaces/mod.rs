@@ -189,7 +189,7 @@ impl Space {
 
         // Its own transform moves a point `p` to `own.scale * (p - centre) + centre + (own.x,
         // own.y)`, which is `own.scale * p + b`. Its ancestors then move that.
-        let b = Point::from((
+        let b: Point<f64, Logical> = Point::from((
             centre.x * (1. - own.scale) + own.x,
             centre.y * (1. - own.scale) + own.y,
         ));
