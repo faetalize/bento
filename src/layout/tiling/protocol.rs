@@ -161,13 +161,6 @@ pub struct CameraChange {
     pub animate: bool,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct TransferOut {
-    pub windows: Vec<u64>,
-    #[serde(default)]
-    pub data: serde_json::Value,
-}
-
 /// Tells "present, but null" apart from "missing".
 fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where

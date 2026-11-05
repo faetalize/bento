@@ -187,7 +187,7 @@ pub fn setup(state: &mut State, config_path: &ConfigPath, includes: Vec<PathBuf>
     // Parsing the config actually takes > 20 ms on my beefy machine, so let's do it on the
     // watcher thread.
     let process = |path: &ConfigPath| {
-        path.load().map_config_res(|res| {
+        path.load_and_create_engine_config().map_config_res(|res| {
             res.map_err(|err| {
                 warn!("{err:?}");
             })

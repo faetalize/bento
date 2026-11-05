@@ -12,7 +12,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::tile::Tile;
-use super::tiling::{ColumnWidth, TileGroup};
+use super::tiling::ColumnWidth;
 use super::workspace::{
     compute_working_area, OutputId, Workspace, WorkspaceAddWindowTarget, WorkspaceId,
     WorkspaceRenderElement,
@@ -555,35 +555,6 @@ impl<W: LayoutElement> Monitor<W> {
         );
     }
 
-    pub fn add_group(
-        &mut self,
-        mut workspace_idx: usize,
-        group: TileGroup<W>,
-        activate: bool,
-        anim: Option<niri_config::Animation>,
-    ) {
-        let workspace = &mut self.workspaces[workspace_idx];
-
-        workspace.add_group(group, activate, anim);
-
-        // After adding a new window, workspace becomes this output's own.
-        if workspace.name().is_none() {
-            workspace.original_outputs = vec![OutputId::new(&self.output)];
-        }
-
-        if workspace_idx == self.workspaces.len() - 1 {
-            self.add_workspace_bottom();
-        }
-        if self.options.layout.empty_workspace_above_first && workspace_idx == 0 {
-            self.add_workspace_top();
-            workspace_idx += 1;
-        }
-
-        if activate {
-            self.activate_workspace(workspace_idx);
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn add_tile(
         &mut self,
@@ -768,43 +739,6 @@ impl<W: LayoutElement> Monitor<W> {
         self.clean_up_workspaces();
     }
 
-    pub fn move_down_or_to_workspace_down(&mut self) {
-        let moved = self.active_workspace().combined_action(
-            "move-window-down-or-to-workspace-down",
-            Workspace::move_down,
-        );
-        if !moved {
-            self.move_to_workspace_down(ActivateWindow::Smart);
-        }
-    }
-
-    pub fn move_up_or_to_workspace_up(&mut self) {
-        let moved = self
-            .active_workspace()
-            .combined_action("move-window-up-or-to-workspace-up", Workspace::move_up);
-        if !moved {
-            self.move_to_workspace_up(ActivateWindow::Smart);
-        }
-    }
-
-    pub fn focus_window_or_workspace_down(&mut self) {
-        let focused = self
-            .active_workspace()
-            .combined_action("focus-window-or-workspace-down", Workspace::focus_down);
-        if !focused {
-            self.switch_workspace_down();
-        }
-    }
-
-    pub fn focus_window_or_workspace_up(&mut self) {
-        let focused = self
-            .active_workspace()
-            .combined_action("focus-window-or-workspace-up", Workspace::focus_up);
-        if !focused {
-            self.switch_workspace_up();
-        }
-    }
-
     pub fn move_to_workspace_up(&mut self, activate: ActivateWindow) {
         let new_idx = self.active_workspace_idx.saturating_sub(1);
         self.move_to_workspace(None, new_idx, activate);
@@ -903,72 +837,6 @@ impl<W: LayoutElement> Monitor<W> {
             .unwrap();
         tile.animate_move_from_with_config(old_render_pos - new_render_pos, config);
         tile.set_anim_y_between_workspaces();
-    }
-
-    pub fn move_column_to_workspace_up(&mut self, activate: bool) {
-        let new_idx = self.active_workspace_idx.saturating_sub(1);
-        self.move_column_to_workspace(new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace_down(&mut self, activate: bool) {
-        let new_idx = min(self.active_workspace_idx + 1, self.workspaces.len() - 1);
-        self.move_column_to_workspace(new_idx, activate);
-    }
-
-    pub fn move_column_to_workspace(&mut self, idx: usize, activate: bool) {
-        let source_workspace_idx = self.active_workspace_idx;
-
-        let new_idx = min(idx, self.workspaces.len() - 1);
-        if new_idx == source_workspace_idx {
-            return;
-        }
-
-        let workspace = &mut self.workspaces[source_workspace_idx];
-        if workspace.floating_is_active() {
-            let activate = if activate {
-                ActivateWindow::Smart
-            } else {
-                ActivateWindow::No
-            };
-            self.move_to_workspace(None, idx, activate);
-            return;
-        }
-
-        let Some(group) = workspace.remove_active_group() else {
-            return;
-        };
-
-        // Animate vertical movement between workspaces.
-        let dy =
-            self.workspace_size_with_gap(1.).h * (source_workspace_idx as f64 - new_idx as f64);
-        let old_render_positions: Vec<_> = group
-            .tiles()
-            .map(|(tile, pos)| (tile.window().id().clone(), pos + Point::from((0., dy))))
-            .collect();
-
-        // If the view is following the windows, match the animation.
-        let config = if activate {
-            self.options.animations.workspace_switch.0
-        } else {
-            self.options.animations.window_movement.0
-        };
-
-        let new_id = self.workspaces[new_idx].id();
-        self.add_group(new_idx, group, activate, Some(config));
-
-        let new_idx = self.idx_of_ws(new_id).unwrap();
-        for (tile, new_render_pos) in
-            self.workspaces[new_idx].tiles_with_render_positions_mut(false)
-        {
-            let Some((_, old_render_pos)) = old_render_positions
-                .iter()
-                .find(|(id, _)| id == tile.window().id())
-            else {
-                continue;
-            };
-            tile.animate_move_from_with_config(*old_render_pos - new_render_pos, config);
-            tile.set_anim_y_between_workspaces();
-        }
     }
 
     pub fn switch_workspace_up(&mut self) {

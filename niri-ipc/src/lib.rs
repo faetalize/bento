@@ -340,152 +340,8 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: u64,
     },
-    /// Focus a window in the focused column by index.
-    FocusWindowInColumn {
-        /// Index of the window in the column.
-        ///
-        /// The index starts from 1 for the topmost window.
-        #[cfg_attr(feature = "clap", arg())]
-        index: u8,
-    },
     /// Focus the previously focused window.
     FocusWindowPrevious {},
-    /// Focus the column to the left.
-    FocusColumnLeft {},
-    /// Focus the column to the right.
-    FocusColumnRight {},
-    /// Focus the first column.
-    FocusColumnFirst {},
-    /// Focus the last column.
-    FocusColumnLast {},
-    /// Focus the next column to the right, looping if at end.
-    FocusColumnRightOrFirst {},
-    /// Focus the next column to the left, looping if at start.
-    FocusColumnLeftOrLast {},
-    /// Focus a column by index.
-    FocusColumn {
-        /// Index of the column to focus.
-        ///
-        /// The index starts from 1 for the first column.
-        #[cfg_attr(feature = "clap", arg())]
-        index: usize,
-    },
-    /// Focus the window or the monitor above.
-    FocusWindowOrMonitorUp {},
-    /// Focus the window or the monitor below.
-    FocusWindowOrMonitorDown {},
-    /// Focus the column or the monitor to the left.
-    FocusColumnOrMonitorLeft {},
-    /// Focus the column or the monitor to the right.
-    FocusColumnOrMonitorRight {},
-    /// Focus the window below.
-    FocusWindowDown {},
-    /// Focus the window above.
-    FocusWindowUp {},
-    /// Focus the window below or the column to the left.
-    FocusWindowDownOrColumnLeft {},
-    /// Focus the window below or the column to the right.
-    FocusWindowDownOrColumnRight {},
-    /// Focus the window above or the column to the left.
-    FocusWindowUpOrColumnLeft {},
-    /// Focus the window above or the column to the right.
-    FocusWindowUpOrColumnRight {},
-    /// Focus the window or the workspace below.
-    FocusWindowOrWorkspaceDown {},
-    /// Focus the window or the workspace above.
-    FocusWindowOrWorkspaceUp {},
-    /// Focus the topmost window.
-    FocusWindowTop {},
-    /// Focus the bottommost window.
-    FocusWindowBottom {},
-    /// Focus the window below or the topmost window.
-    FocusWindowDownOrTop {},
-    /// Focus the window above or the bottommost window.
-    FocusWindowUpOrBottom {},
-    /// Move the focused column to the left.
-    MoveColumnLeft {},
-    /// Move the focused column to the right.
-    MoveColumnRight {},
-    /// Move the focused column to the start of the workspace.
-    MoveColumnToFirst {},
-    /// Move the focused column to the end of the workspace.
-    MoveColumnToLast {},
-    /// Move the focused column to the left or to the monitor to the left.
-    MoveColumnLeftOrToMonitorLeft {},
-    /// Move the focused column to the right or to the monitor to the right.
-    MoveColumnRightOrToMonitorRight {},
-    /// Move the focused column to a specific index on its workspace.
-    MoveColumnToIndex {
-        /// New index for the column.
-        ///
-        /// The index starts from 1 for the first column.
-        #[cfg_attr(feature = "clap", arg())]
-        index: usize,
-    },
-    /// Move the focused window down in a column.
-    MoveWindowDown {},
-    /// Move the focused window up in a column.
-    MoveWindowUp {},
-    /// Move the focused window down in a column or to the workspace below.
-    MoveWindowDownOrToWorkspaceDown {},
-    /// Move the focused window up in a column or to the workspace above.
-    MoveWindowUpOrToWorkspaceUp {},
-    /// Consume or expel a window left.
-    #[cfg_attr(
-        feature = "clap",
-        clap(about = "Consume or expel the focused window left")
-    )]
-    ConsumeOrExpelWindowLeft {
-        /// Id of the window to consume or expel.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Consume or expel a window right.
-    #[cfg_attr(
-        feature = "clap",
-        clap(about = "Consume or expel the focused window right")
-    )]
-    ConsumeOrExpelWindowRight {
-        /// Id of the window to consume or expel.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Consume the window to the right into the focused column.
-    ConsumeWindowIntoColumn {},
-    /// Expel the bottom window from the focused column.
-    ExpelWindowFromColumn {},
-    /// Swap focused window with one to the right.
-    SwapWindowRight {},
-    /// Swap focused window with one to the left.
-    SwapWindowLeft {},
-    /// Toggle the focused column between normal and tabbed display.
-    ToggleColumnTabbedDisplay {},
-    /// Set the display mode of the focused column.
-    SetColumnDisplay {
-        /// Display mode to set.
-        #[cfg_attr(feature = "clap", arg())]
-        display: ColumnDisplay,
-    },
-    /// Center the focused column on the screen.
-    CenterColumn {},
-    /// Center a window on the screen.
-    #[cfg_attr(
-        feature = "clap",
-        clap(about = "Center the focused window on the screen")
-    )]
-    CenterWindow {
-        /// Id of the window to center.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Center all fully visible columns on the screen.
-    CenterVisibleColumns {},
     /// Focus the workspace below.
     FocusWorkspaceDown {},
     /// Focus the workspace above.
@@ -539,40 +395,6 @@ pub enum Action {
         /// If `true` (the default) and the window to move is focused, the focus will follow the
         /// window to the new workspace. If `false`, the focus will remain on the original
         /// workspace.
-        #[serde(default = "default_true")]
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
-    },
-    /// Move the focused column to the workspace below.
-    MoveColumnToWorkspaceDown {
-        /// Whether the focus should follow the target workspace.
-        ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
-        /// `false`, the focus will remain on the original workspace.
-        #[serde(default = "default_true")]
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
-    },
-    /// Move the focused column to the workspace above.
-    MoveColumnToWorkspaceUp {
-        /// Whether the focus should follow the target workspace.
-        ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
-        /// `false`, the focus will remain on the original workspace.
-        #[serde(default = "default_true")]
-        #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
-        focus: bool,
-    },
-    /// Move the focused column to a workspace by reference (index or name).
-    MoveColumnToWorkspace {
-        /// Reference (index or name) of the workspace to move the column to.
-        #[cfg_attr(feature = "clap", arg())]
-        reference: WorkspaceReferenceArg,
-
-        /// Whether the focus should follow the target workspace.
-        ///
-        /// If `true` (the default), the focus will follow the column to the new workspace. If
-        /// `false`, the focus will remain on the original workspace.
         #[serde(default = "default_true")]
         #[cfg_attr(feature = "clap", arg(long, action = clap::ArgAction::Set, default_value_t = true))]
         focus: bool,
@@ -671,106 +493,6 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg())]
         output: String,
     },
-    /// Move the focused column to the monitor to the left.
-    MoveColumnToMonitorLeft {},
-    /// Move the focused column to the monitor to the right.
-    MoveColumnToMonitorRight {},
-    /// Move the focused column to the monitor below.
-    MoveColumnToMonitorDown {},
-    /// Move the focused column to the monitor above.
-    MoveColumnToMonitorUp {},
-    /// Move the focused column to the previous monitor.
-    MoveColumnToMonitorPrevious {},
-    /// Move the focused column to the next monitor.
-    MoveColumnToMonitorNext {},
-    /// Move the focused column to a specific monitor.
-    MoveColumnToMonitor {
-        /// The target output name.
-        #[cfg_attr(feature = "clap", arg())]
-        output: String,
-    },
-    /// Change the width of a window.
-    #[cfg_attr(
-        feature = "clap",
-        clap(about = "Change the width of the focused window")
-    )]
-    SetWindowWidth {
-        /// Id of the window whose width to set.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-
-        /// How to change the width.
-        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
-        change: SizeChange,
-    },
-    /// Change the height of a window.
-    #[cfg_attr(
-        feature = "clap",
-        clap(about = "Change the height of the focused window")
-    )]
-    SetWindowHeight {
-        /// Id of the window whose height to set.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-
-        /// How to change the height.
-        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
-        change: SizeChange,
-    },
-    /// Reset the height of a window back to automatic.
-    #[cfg_attr(
-        feature = "clap",
-        clap(about = "Reset the height of the focused window back to automatic")
-    )]
-    ResetWindowHeight {
-        /// Id of the window whose height to reset.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Switch between preset column widths.
-    SwitchPresetColumnWidth {},
-    /// Switch between preset column widths backwards.
-    SwitchPresetColumnWidthBack {},
-    /// Switch between preset window widths.
-    SwitchPresetWindowWidth {
-        /// Id of the window whose width to switch.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Switch between preset window widths backwards.
-    SwitchPresetWindowWidthBack {
-        /// Id of the window whose width to switch.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Switch between preset window heights.
-    SwitchPresetWindowHeight {
-        /// Id of the window whose height to switch.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Switch between preset window heights backwards.
-    SwitchPresetWindowHeightBack {
-        /// Id of the window whose height to switch.
-        ///
-        /// If `None`, uses the focused window.
-        #[cfg_attr(feature = "clap", arg(long))]
-        id: Option<u64>,
-    },
-    /// Toggle the maximized state of the focused column.
-    MaximizeColumn {},
     /// Toggle the maximized-to-edges state of the focused window.
     MaximizeWindowToEdges {
         /// Id of the window to maximize.
@@ -779,14 +501,6 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(long))]
         id: Option<u64>,
     },
-    /// Change the width of the focused column.
-    SetColumnWidth {
-        /// How to change the width.
-        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
-        change: SizeChange,
-    },
-    /// Expand the focused column to space not taken up by other fully visible columns.
-    ExpandColumnToAvailableWidth {},
     /// Run an action that the tiling layout provides.
     LayoutAction {
         /// Name of the action.
@@ -896,6 +610,60 @@ pub enum Action {
         )]
         y: PositionChange,
     },
+    /// Focus the floating window to the left, and the floating layout.
+    FocusFloatingLeft {},
+    /// Focus the floating window to the right, and the floating layout.
+    FocusFloatingRight {},
+    /// Focus the floating window above, and the floating layout.
+    FocusFloatingUp {},
+    /// Focus the floating window below, and the floating layout.
+    FocusFloatingDown {},
+    /// Move the active floating window to the left.
+    MoveFloatingLeft {},
+    /// Move the active floating window to the right.
+    MoveFloatingRight {},
+    /// Move the active floating window up.
+    MoveFloatingUp {},
+    /// Move the active floating window down.
+    MoveFloatingDown {},
+    /// Focus the leftmost floating window, and the floating layout.
+    FocusFloatingLeftmost {},
+    /// Focus the rightmost floating window, and the floating layout.
+    FocusFloatingRightmost {},
+    /// Focus the topmost floating window, and the floating layout.
+    FocusFloatingTopmost {},
+    /// Focus the bottommost floating window, and the floating layout.
+    FocusFloatingBottommost {},
+    /// Center the active floating window on screen.
+    CenterFloatingWindow {},
+    /// Change the width of the active floating window.
+    #[cfg_attr(
+        feature = "clap",
+        clap(about = "Change the width of the active floating window")
+    )]
+    SetFloatingWindowWidth {
+        /// How to change the width.
+        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
+        change: SizeChange,
+    },
+    /// Change the height of the active floating window.
+    #[cfg_attr(
+        feature = "clap",
+        clap(about = "Change the height of the active floating window")
+    )]
+    SetFloatingWindowHeight {
+        /// How to change the height.
+        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
+        change: SizeChange,
+    },
+    /// Switch the active floating window to the next preset width.
+    SwitchPresetFloatingWindowWidth {},
+    /// Switch the active floating window to the previous preset width.
+    SwitchPresetFloatingWindowWidthBack {},
+    /// Switch the active floating window to the next preset height.
+    SwitchPresetFloatingWindowHeight {},
+    /// Switch the active floating window to the previous preset height.
+    SwitchPresetFloatingWindowHeightBack {},
     /// Toggle the opacity of a window.
     #[cfg_attr(
         feature = "clap",
@@ -1655,10 +1423,8 @@ pub struct LayoutEngine {
     pub source: LayoutEngineSource,
     /// Options of the layout engine, in the order it declares them.
     pub options: Vec<LayoutEngineOption>,
-    /// Actions that the layout engine adds, in the order it declares them.
-    ///
-    /// These are bound with `layout-action`. niri's built-in layout actions also go to the layout
-    /// engine, but aren't listed here.
+    /// Actions that the layout engine has, in the order it declares them. They're bound by name
+    /// in the layout engine's own config file, and run with `layout-action`.
     pub actions: Vec<LayoutEngineAction>,
 }
 
@@ -1728,16 +1494,64 @@ impl LayoutEngineOptionValue {
     }
 }
 
-/// An action that a layout engine adds.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+/// An action that a layout engine handles.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct LayoutEngineAction {
-    /// Name of the action, to bind as `layout-action "name"`.
+    /// Name of the action.
     pub name: String,
     /// Description of the action.
     pub description: Option<String>,
-    /// Names of the action's arguments, for documentation.
-    pub args: Vec<String>,
+    /// The action's arguments, in order.
+    pub args: Vec<LayoutEngineActionArg>,
+}
+
+/// An argument of a layout engine action.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct LayoutEngineActionArg {
+    /// Name of the argument, for documentation and settings screens.
+    pub name: String,
+    /// Type of the argument's values, or `None` if the layout engine doesn't say.
+    pub r#type: Option<LayoutEngineActionArgType>,
+    /// Value of the argument when it's left out. Arguments with a type and no default must be
+    /// given, unless they're `optional`.
+    pub default: Option<LayoutEngineOptionValue>,
+    /// Whether the argument can be left out even though it has no default.
+    #[serde(default)]
+    pub optional: bool,
+    /// Whether the argument is a named property, like `focus=false`, rather than a positional
+    /// argument. Only bento's own actions have these.
+    #[serde(default)]
+    pub property: bool,
+    /// The values a `Choice` argument accepts.
+    pub choices: Vec<String>,
+    /// Description of the argument.
+    pub description: Option<String>,
+}
+
+/// Type of a layout engine action argument.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum LayoutEngineActionArgType {
+    /// `true` or `false`.
+    Boolean,
+    /// A number.
+    Number,
+    /// A string.
+    String,
+    /// One of the strings in `choices`.
+    Choice,
+    /// A size or a change to one, like `"50%"`, `"+10%"`, `"800"` or `"-100"`. The layout engine
+    /// gets it as an object with `op`, `value` and `unit`.
+    Size,
+    /// A workspace, by its index on the monitor or its name. Only bento's own actions have these.
+    Workspace,
+    /// A monitor, by its name, like `"DP-2"`. Only bento's own actions have these.
+    Monitor,
+    /// A command and its arguments, taking the rest of the action's arguments. Only bento's own
+    /// actions have these.
+    Command,
 }
 
 /// A compositor event.

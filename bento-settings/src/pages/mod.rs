@@ -10,6 +10,7 @@ mod layout;
 mod layouts;
 mod planned;
 mod preview;
+pub mod shortcuts;
 mod system;
 mod theme;
 mod wallpaper;
@@ -36,7 +37,7 @@ pub fn sections() -> Vec<Section> {
                 input::mouse(),
                 input::touchpad(),
                 planned::gestures(),
-                planned::shortcuts(),
+                shortcuts::category(),
             ],
         ),
         Section::new(

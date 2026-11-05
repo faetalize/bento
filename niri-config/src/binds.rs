@@ -4,9 +4,7 @@ use std::time::Duration;
 use bitflags::bitflags;
 use knuffel::errors::DecodeError;
 use miette::miette;
-use niri_ipc::{
-    ColumnDisplay, LayoutSwitchTarget, PositionChange, SizeChange, WorkspaceReferenceArg,
-};
+use niri_ipc::{LayoutSwitchTarget, PositionChange, SizeChange, WorkspaceReferenceArg};
 use smithay::input::keyboard::keysyms::KEY_NoSymbol;
 use smithay::input::keyboard::xkb::{keysym_from_name, KEYSYM_CASE_INSENSITIVE, KEYSYM_NO_FLAGS};
 use smithay::input::keyboard::Keysym;
@@ -14,7 +12,7 @@ use tracing::warn;
 
 use crate::input::ModKey;
 use crate::recent_windows::{MruDirection, MruFilter, MruScope};
-use crate::tiling::TilingOption;
+use crate::tiling::{EngineFile, TilingOption};
 use crate::utils::{expect_only_children, MergeWith};
 
 #[derive(Debug, Default, PartialEq)]
@@ -294,63 +292,7 @@ pub enum Action {
     ToggleWindowedFullscreenById(u64),
     #[knuffel(skip)]
     FocusWindow(u64),
-    FocusWindowInColumn(#[knuffel(argument)] u8),
     FocusWindowPrevious,
-    FocusColumnLeft,
-    #[knuffel(skip)]
-    FocusColumnLeftUnderMouse,
-    FocusColumnRight,
-    #[knuffel(skip)]
-    FocusColumnRightUnderMouse,
-    FocusColumnFirst,
-    FocusColumnLast,
-    FocusColumnRightOrFirst,
-    FocusColumnLeftOrLast,
-    FocusColumn(#[knuffel(argument)] usize),
-    FocusWindowOrMonitorUp,
-    FocusWindowOrMonitorDown,
-    FocusColumnOrMonitorLeft,
-    FocusColumnOrMonitorRight,
-    FocusWindowDown,
-    FocusWindowUp,
-    FocusWindowDownOrColumnLeft,
-    FocusWindowDownOrColumnRight,
-    FocusWindowUpOrColumnLeft,
-    FocusWindowUpOrColumnRight,
-    FocusWindowOrWorkspaceDown,
-    FocusWindowOrWorkspaceUp,
-    FocusWindowTop,
-    FocusWindowBottom,
-    FocusWindowDownOrTop,
-    FocusWindowUpOrBottom,
-    MoveColumnLeft,
-    MoveColumnRight,
-    MoveColumnToFirst,
-    MoveColumnToLast,
-    MoveColumnLeftOrToMonitorLeft,
-    MoveColumnRightOrToMonitorRight,
-    MoveColumnToIndex(#[knuffel(argument)] usize),
-    MoveWindowDown,
-    MoveWindowUp,
-    MoveWindowDownOrToWorkspaceDown,
-    MoveWindowUpOrToWorkspaceUp,
-    ConsumeOrExpelWindowLeft,
-    #[knuffel(skip)]
-    ConsumeOrExpelWindowLeftById(u64),
-    ConsumeOrExpelWindowRight,
-    #[knuffel(skip)]
-    ConsumeOrExpelWindowRightById(u64),
-    ConsumeWindowIntoColumn,
-    ExpelWindowFromColumn,
-    SwapWindowLeft,
-    SwapWindowRight,
-    ToggleColumnTabbedDisplay,
-    SetColumnDisplay(#[knuffel(argument, str)] ColumnDisplay),
-    CenterColumn,
-    CenterWindow,
-    #[knuffel(skip)]
-    CenterWindowById(u64),
-    CenterVisibleColumns,
     FocusWorkspaceDown,
     #[knuffel(skip)]
     FocusWorkspaceDownUnderMouse,
@@ -371,12 +313,6 @@ pub enum Action {
         reference: WorkspaceReference,
         focus: bool,
     },
-    MoveColumnToWorkspaceDown(#[knuffel(property(name = "focus"), default = true)] bool),
-    MoveColumnToWorkspaceUp(#[knuffel(property(name = "focus"), default = true)] bool),
-    MoveColumnToWorkspace(
-        #[knuffel(argument)] WorkspaceReference,
-        #[knuffel(property(name = "focus"), default = true)] bool,
-    ),
     MoveWorkspaceDown,
     MoveWorkspaceUp,
     MoveWorkspaceToIndex(#[knuffel(argument)] usize),
@@ -419,48 +355,9 @@ pub enum Action {
         id: u64,
         output: String,
     },
-    MoveColumnToMonitorLeft,
-    MoveColumnToMonitorRight,
-    MoveColumnToMonitorDown,
-    MoveColumnToMonitorUp,
-    MoveColumnToMonitorPrevious,
-    MoveColumnToMonitorNext,
-    MoveColumnToMonitor(#[knuffel(argument)] String),
-    SetWindowWidth(#[knuffel(argument, str)] SizeChange),
-    #[knuffel(skip)]
-    SetWindowWidthById {
-        id: u64,
-        change: SizeChange,
-    },
-    SetWindowHeight(#[knuffel(argument, str)] SizeChange),
-    #[knuffel(skip)]
-    SetWindowHeightById {
-        id: u64,
-        change: SizeChange,
-    },
-    ResetWindowHeight,
-    #[knuffel(skip)]
-    ResetWindowHeightById(u64),
-    SwitchPresetColumnWidth,
-    SwitchPresetColumnWidthBack,
-    SwitchPresetWindowWidth,
-    SwitchPresetWindowWidthBack,
-    #[knuffel(skip)]
-    SwitchPresetWindowWidthById(u64),
-    #[knuffel(skip)]
-    SwitchPresetWindowWidthBackById(u64),
-    SwitchPresetWindowHeight,
-    SwitchPresetWindowHeightBack,
-    #[knuffel(skip)]
-    SwitchPresetWindowHeightById(u64),
-    #[knuffel(skip)]
-    SwitchPresetWindowHeightBackById(u64),
-    MaximizeColumn,
     MaximizeWindowToEdges,
     #[knuffel(skip)]
     MaximizeWindowToEdgesById(u64),
-    SetColumnWidth(#[knuffel(argument, str)] SizeChange),
-    ExpandColumnToAvailableWidth,
     LayoutAction(
         #[knuffel(argument)] String,
         #[knuffel(arguments)] Vec<TilingOption>,
@@ -491,6 +388,25 @@ pub enum Action {
         x: PositionChange,
         y: PositionChange,
     },
+    FocusFloatingLeft,
+    FocusFloatingRight,
+    FocusFloatingUp,
+    FocusFloatingDown,
+    MoveFloatingLeft,
+    MoveFloatingRight,
+    MoveFloatingUp,
+    MoveFloatingDown,
+    FocusFloatingLeftmost,
+    FocusFloatingRightmost,
+    FocusFloatingTopmost,
+    FocusFloatingBottommost,
+    CenterFloatingWindow,
+    SetFloatingWindowWidth(#[knuffel(argument, str)] SizeChange),
+    SetFloatingWindowHeight(#[knuffel(argument, str)] SizeChange),
+    SwitchPresetFloatingWindowWidth,
+    SwitchPresetFloatingWindowWidthBack,
+    SwitchPresetFloatingWindowHeight,
+    SwitchPresetFloatingWindowHeightBack,
     ToggleWindowRuleOpacity,
     #[knuffel(skip)]
     ToggleWindowRuleOpacityById(u64),
@@ -587,70 +503,7 @@ impl From<niri_ipc::Action> for Action {
                 Self::ToggleWindowedFullscreenById(id)
             }
             niri_ipc::Action::FocusWindow { id } => Self::FocusWindow(id),
-            niri_ipc::Action::FocusWindowInColumn { index } => Self::FocusWindowInColumn(index),
             niri_ipc::Action::FocusWindowPrevious {} => Self::FocusWindowPrevious,
-            niri_ipc::Action::FocusColumnLeft {} => Self::FocusColumnLeft,
-            niri_ipc::Action::FocusColumnRight {} => Self::FocusColumnRight,
-            niri_ipc::Action::FocusColumnFirst {} => Self::FocusColumnFirst,
-            niri_ipc::Action::FocusColumnLast {} => Self::FocusColumnLast,
-            niri_ipc::Action::FocusColumnRightOrFirst {} => Self::FocusColumnRightOrFirst,
-            niri_ipc::Action::FocusColumnLeftOrLast {} => Self::FocusColumnLeftOrLast,
-            niri_ipc::Action::FocusColumn { index } => Self::FocusColumn(index),
-            niri_ipc::Action::FocusWindowOrMonitorUp {} => Self::FocusWindowOrMonitorUp,
-            niri_ipc::Action::FocusWindowOrMonitorDown {} => Self::FocusWindowOrMonitorDown,
-            niri_ipc::Action::FocusColumnOrMonitorLeft {} => Self::FocusColumnOrMonitorLeft,
-            niri_ipc::Action::FocusColumnOrMonitorRight {} => Self::FocusColumnOrMonitorRight,
-            niri_ipc::Action::FocusWindowDown {} => Self::FocusWindowDown,
-            niri_ipc::Action::FocusWindowUp {} => Self::FocusWindowUp,
-            niri_ipc::Action::FocusWindowDownOrColumnLeft {} => Self::FocusWindowDownOrColumnLeft,
-            niri_ipc::Action::FocusWindowDownOrColumnRight {} => Self::FocusWindowDownOrColumnRight,
-            niri_ipc::Action::FocusWindowUpOrColumnLeft {} => Self::FocusWindowUpOrColumnLeft,
-            niri_ipc::Action::FocusWindowUpOrColumnRight {} => Self::FocusWindowUpOrColumnRight,
-            niri_ipc::Action::FocusWindowOrWorkspaceDown {} => Self::FocusWindowOrWorkspaceDown,
-            niri_ipc::Action::FocusWindowOrWorkspaceUp {} => Self::FocusWindowOrWorkspaceUp,
-            niri_ipc::Action::FocusWindowTop {} => Self::FocusWindowTop,
-            niri_ipc::Action::FocusWindowBottom {} => Self::FocusWindowBottom,
-            niri_ipc::Action::FocusWindowDownOrTop {} => Self::FocusWindowDownOrTop,
-            niri_ipc::Action::FocusWindowUpOrBottom {} => Self::FocusWindowUpOrBottom,
-            niri_ipc::Action::MoveColumnLeft {} => Self::MoveColumnLeft,
-            niri_ipc::Action::MoveColumnRight {} => Self::MoveColumnRight,
-            niri_ipc::Action::MoveColumnToFirst {} => Self::MoveColumnToFirst,
-            niri_ipc::Action::MoveColumnToLast {} => Self::MoveColumnToLast,
-            niri_ipc::Action::MoveColumnToIndex { index } => Self::MoveColumnToIndex(index),
-            niri_ipc::Action::MoveColumnLeftOrToMonitorLeft {} => {
-                Self::MoveColumnLeftOrToMonitorLeft
-            }
-            niri_ipc::Action::MoveColumnRightOrToMonitorRight {} => {
-                Self::MoveColumnRightOrToMonitorRight
-            }
-            niri_ipc::Action::MoveWindowDown {} => Self::MoveWindowDown,
-            niri_ipc::Action::MoveWindowUp {} => Self::MoveWindowUp,
-            niri_ipc::Action::MoveWindowDownOrToWorkspaceDown {} => {
-                Self::MoveWindowDownOrToWorkspaceDown
-            }
-            niri_ipc::Action::MoveWindowUpOrToWorkspaceUp {} => Self::MoveWindowUpOrToWorkspaceUp,
-            niri_ipc::Action::ConsumeOrExpelWindowLeft { id: None } => {
-                Self::ConsumeOrExpelWindowLeft
-            }
-            niri_ipc::Action::ConsumeOrExpelWindowLeft { id: Some(id) } => {
-                Self::ConsumeOrExpelWindowLeftById(id)
-            }
-            niri_ipc::Action::ConsumeOrExpelWindowRight { id: None } => {
-                Self::ConsumeOrExpelWindowRight
-            }
-            niri_ipc::Action::ConsumeOrExpelWindowRight { id: Some(id) } => {
-                Self::ConsumeOrExpelWindowRightById(id)
-            }
-            niri_ipc::Action::ConsumeWindowIntoColumn {} => Self::ConsumeWindowIntoColumn,
-            niri_ipc::Action::ExpelWindowFromColumn {} => Self::ExpelWindowFromColumn,
-            niri_ipc::Action::SwapWindowRight {} => Self::SwapWindowRight,
-            niri_ipc::Action::SwapWindowLeft {} => Self::SwapWindowLeft,
-            niri_ipc::Action::ToggleColumnTabbedDisplay {} => Self::ToggleColumnTabbedDisplay,
-            niri_ipc::Action::SetColumnDisplay { display } => Self::SetColumnDisplay(display),
-            niri_ipc::Action::CenterColumn {} => Self::CenterColumn,
-            niri_ipc::Action::CenterWindow { id: None } => Self::CenterWindow,
-            niri_ipc::Action::CenterWindow { id: Some(id) } => Self::CenterWindowById(id),
-            niri_ipc::Action::CenterVisibleColumns {} => Self::CenterVisibleColumns,
             niri_ipc::Action::FocusWorkspaceDown {} => Self::FocusWorkspaceDown,
             niri_ipc::Action::FocusWorkspaceUp {} => Self::FocusWorkspaceUp,
             niri_ipc::Action::FocusWorkspace { reference } => {
@@ -677,15 +530,6 @@ impl From<niri_ipc::Action> for Action {
                 reference: WorkspaceReference::from(reference),
                 focus,
             },
-            niri_ipc::Action::MoveColumnToWorkspaceDown { focus } => {
-                Self::MoveColumnToWorkspaceDown(focus)
-            }
-            niri_ipc::Action::MoveColumnToWorkspaceUp { focus } => {
-                Self::MoveColumnToWorkspaceUp(focus)
-            }
-            niri_ipc::Action::MoveColumnToWorkspace { reference, focus } => {
-                Self::MoveColumnToWorkspace(WorkspaceReference::from(reference), focus)
-            }
             niri_ipc::Action::MoveWorkspaceDown {} => Self::MoveWorkspaceDown,
             niri_ipc::Action::MoveWorkspaceUp {} => Self::MoveWorkspaceUp,
             niri_ipc::Action::SetWorkspaceName {
@@ -723,56 +567,10 @@ impl From<niri_ipc::Action> for Action {
                 id: Some(id),
                 output,
             } => Self::MoveWindowToMonitorById { id, output },
-            niri_ipc::Action::MoveColumnToMonitorLeft {} => Self::MoveColumnToMonitorLeft,
-            niri_ipc::Action::MoveColumnToMonitorRight {} => Self::MoveColumnToMonitorRight,
-            niri_ipc::Action::MoveColumnToMonitorDown {} => Self::MoveColumnToMonitorDown,
-            niri_ipc::Action::MoveColumnToMonitorUp {} => Self::MoveColumnToMonitorUp,
-            niri_ipc::Action::MoveColumnToMonitorPrevious {} => Self::MoveColumnToMonitorPrevious,
-            niri_ipc::Action::MoveColumnToMonitorNext {} => Self::MoveColumnToMonitorNext,
-            niri_ipc::Action::MoveColumnToMonitor { output } => Self::MoveColumnToMonitor(output),
-            niri_ipc::Action::SetWindowWidth { id: None, change } => Self::SetWindowWidth(change),
-            niri_ipc::Action::SetWindowWidth {
-                id: Some(id),
-                change,
-            } => Self::SetWindowWidthById { id, change },
-            niri_ipc::Action::SetWindowHeight { id: None, change } => Self::SetWindowHeight(change),
-            niri_ipc::Action::SetWindowHeight {
-                id: Some(id),
-                change,
-            } => Self::SetWindowHeightById { id, change },
-            niri_ipc::Action::ResetWindowHeight { id: None } => Self::ResetWindowHeight,
-            niri_ipc::Action::ResetWindowHeight { id: Some(id) } => Self::ResetWindowHeightById(id),
-            niri_ipc::Action::SwitchPresetColumnWidth {} => Self::SwitchPresetColumnWidth,
-            niri_ipc::Action::SwitchPresetColumnWidthBack {} => Self::SwitchPresetColumnWidthBack,
-            niri_ipc::Action::SwitchPresetWindowWidth { id: None } => Self::SwitchPresetWindowWidth,
-            niri_ipc::Action::SwitchPresetWindowWidthBack { id: None } => {
-                Self::SwitchPresetWindowWidthBack
-            }
-            niri_ipc::Action::SwitchPresetWindowWidth { id: Some(id) } => {
-                Self::SwitchPresetWindowWidthById(id)
-            }
-            niri_ipc::Action::SwitchPresetWindowWidthBack { id: Some(id) } => {
-                Self::SwitchPresetWindowWidthBackById(id)
-            }
-            niri_ipc::Action::SwitchPresetWindowHeight { id: None } => {
-                Self::SwitchPresetWindowHeight
-            }
-            niri_ipc::Action::SwitchPresetWindowHeightBack { id: None } => {
-                Self::SwitchPresetWindowHeightBack
-            }
-            niri_ipc::Action::SwitchPresetWindowHeight { id: Some(id) } => {
-                Self::SwitchPresetWindowHeightById(id)
-            }
-            niri_ipc::Action::SwitchPresetWindowHeightBack { id: Some(id) } => {
-                Self::SwitchPresetWindowHeightBackById(id)
-            }
-            niri_ipc::Action::MaximizeColumn {} => Self::MaximizeColumn,
             niri_ipc::Action::MaximizeWindowToEdges { id: None } => Self::MaximizeWindowToEdges,
             niri_ipc::Action::MaximizeWindowToEdges { id: Some(id) } => {
                 Self::MaximizeWindowToEdgesById(id)
             }
-            niri_ipc::Action::SetColumnWidth { change } => Self::SetColumnWidth(change),
-            niri_ipc::Action::ExpandColumnToAvailableWidth {} => Self::ExpandColumnToAvailableWidth,
             niri_ipc::Action::LayoutAction { name, args } => {
                 Self::LayoutAction(name, args.into_iter().map(TilingOption::from_arg).collect())
             }
@@ -831,6 +629,37 @@ impl From<niri_ipc::Action> for Action {
             }
             niri_ipc::Action::MoveFloatingWindow { id, x, y } => {
                 Self::MoveFloatingWindowById { id, x, y }
+            }
+            niri_ipc::Action::FocusFloatingLeft {} => Self::FocusFloatingLeft,
+            niri_ipc::Action::FocusFloatingRight {} => Self::FocusFloatingRight,
+            niri_ipc::Action::FocusFloatingUp {} => Self::FocusFloatingUp,
+            niri_ipc::Action::FocusFloatingDown {} => Self::FocusFloatingDown,
+            niri_ipc::Action::MoveFloatingLeft {} => Self::MoveFloatingLeft,
+            niri_ipc::Action::MoveFloatingRight {} => Self::MoveFloatingRight,
+            niri_ipc::Action::MoveFloatingUp {} => Self::MoveFloatingUp,
+            niri_ipc::Action::MoveFloatingDown {} => Self::MoveFloatingDown,
+            niri_ipc::Action::FocusFloatingLeftmost {} => Self::FocusFloatingLeftmost,
+            niri_ipc::Action::FocusFloatingRightmost {} => Self::FocusFloatingRightmost,
+            niri_ipc::Action::FocusFloatingTopmost {} => Self::FocusFloatingTopmost,
+            niri_ipc::Action::FocusFloatingBottommost {} => Self::FocusFloatingBottommost,
+            niri_ipc::Action::CenterFloatingWindow {} => Self::CenterFloatingWindow,
+            niri_ipc::Action::SetFloatingWindowWidth { change } => {
+                Self::SetFloatingWindowWidth(change)
+            }
+            niri_ipc::Action::SetFloatingWindowHeight { change } => {
+                Self::SetFloatingWindowHeight(change)
+            }
+            niri_ipc::Action::SwitchPresetFloatingWindowWidth {} => {
+                Self::SwitchPresetFloatingWindowWidth
+            }
+            niri_ipc::Action::SwitchPresetFloatingWindowWidthBack {} => {
+                Self::SwitchPresetFloatingWindowWidthBack
+            }
+            niri_ipc::Action::SwitchPresetFloatingWindowHeight {} => {
+                Self::SwitchPresetFloatingWindowHeight
+            }
+            niri_ipc::Action::SwitchPresetFloatingWindowHeightBack {} => {
+                Self::SwitchPresetFloatingWindowHeightBack
             }
             niri_ipc::Action::ToggleWindowRuleOpacity { id: None } => Self::ToggleWindowRuleOpacity,
             niri_ipc::Action::ToggleWindowRuleOpacity { id: Some(id) } => {
@@ -1069,10 +898,34 @@ where
         let mut press_action: Option<Action> = None;
         let mut release_action: Option<Action> = None;
 
+        let engine_file = ctx.get::<EngineFile>().is_some();
         let decode_action = |ctx: &mut knuffel::decode::Context<S>,
                              child: &knuffel::ast::SpannedNode<S>| {
             match Action::decode_node(child, ctx) {
+                // `layout-action` is for the command line. In a config, the engine's actions are
+                // bound by name in its own file, so the main config's binds work under every
+                // engine.
+                Ok(Action::LayoutAction(..)) => {
+                    ctx.emit_error(DecodeError::unexpected(
+                        &child.node_name,
+                        "action",
+                        if engine_file {
+                            "write the engine's action by its name, like `split-h;`"
+                        } else {
+                            "engine actions are bound by name in the engine's own file, like \
+                             `engines/bento.kdl` next to this config"
+                        },
+                    ));
+                    None
+                }
                 Ok(action) => Some(action),
+                // In the engine's file, a name that isn't one of bento's actions is the engine's.
+                // Whether the engine has it is checked when the engine runs.
+                Err(DecodeError::Conversion { span, .. })
+                    if engine_file && is_span(&span, child.node_name.span()) =>
+                {
+                    engine_action(child, ctx)
+                }
                 Err(e) => {
                     ctx.emit_error(e);
                     None
@@ -1230,6 +1083,41 @@ where
             hotkey_overlay_title,
         })
     }
+}
+
+fn is_span<S: knuffel::traits::ErrorSpan>(a: &S, b: &S) -> bool {
+    let a: miette::SourceSpan = a.clone().into();
+    let b: miette::SourceSpan = b.clone().into();
+    a == b
+}
+
+/// Reads an engine action written by bare name, like `resize 2 "right"`.
+fn engine_action<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Option<Action> {
+    for name in node.properties.keys() {
+        ctx.emit_error(DecodeError::unexpected(
+            name,
+            "property",
+            format!("unexpected property `{}`", name.escape_default()),
+        ));
+    }
+    if let Some(child) = node.children().next() {
+        ctx.emit_error(DecodeError::unexpected(
+            child,
+            "node",
+            "engine actions take arguments, not children",
+        ));
+    }
+    let mut args = Vec::new();
+    for value in &node.arguments {
+        match knuffel::traits::DecodeScalar::decode(value, ctx) {
+            Ok(value) => args.push(value),
+            Err(err) => ctx.emit_error(err),
+        }
+    }
+    Some(Action::LayoutAction(String::from(&**node.node_name), args))
 }
 
 impl FromStr for Key {

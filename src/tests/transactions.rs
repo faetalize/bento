@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
 use insta::assert_snapshot;
-use niri_ipc::SizeChange;
+use niri_config::TilingOption;
 use wayland_client::protocol::wl_surface::WlSurface;
 
 use super::client::ClientId;
@@ -47,7 +47,7 @@ fn stack_resize_waits_for_both_windows() {
     let _ = f.client(id).window(&surface2).recent_configures();
 
     // Stack the second window under the first.
-    f.niri().layout.consume_or_expel_window_left(None);
+    f.niri().layout.layout_action("stack-left", &[]);
     f.double_roundtrip(id);
 
     // Commit for the stacking.
@@ -75,9 +75,8 @@ fn stack_resize_waits_for_both_windows() {
 
     // Make the bottom window taller. The window above it is stuck to it, so it gets shorter, and
     // both resize together.
-    f.niri()
-        .layout
-        .set_window_height(None, SizeChange::SetProportion(75.));
+    let height = TilingOption::String(String::from("75%"));
+    f.niri().layout.layout_action("set-height", &[height]);
     f.double_roundtrip(id);
 
     // Commit window 1 in response to resize.

@@ -1,13 +1,14 @@
 //! The config behind the app.
 //!
-//! The app edits bento's `config.kdl` in place, changing only the values it sets (see `kdl.rs`).
-//! Values shown come from the whole config as bento parses it, includes and all. bento watches the
-//! file and applies changes itself.
+//! The app edits bento's `config.kdl` and the running engine's own file in place, changing only
+//! the values it sets (see `kdl.rs`). Values shown come from the whole config as bento parses it,
+//! includes, engine file and all. bento watches the files and applies changes itself.
 //!
 //! Parsing the config is slow next to drawing a frame, so the window never does it. Edits queue up
 //! and are written together on a background thread a moment after the last one.
 
 use std::cell::{Cell, Ref, RefCell};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,7 +16,7 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use niri_config::Config;
+use niri_config::{engine_config_path, Config};
 
 use crate::kdl::{Document, Value};
 
@@ -23,7 +24,20 @@ use crate::kdl::{Document, Value};
 const SAVE_DELAY: Duration = Duration::from_millis(150);
 
 /// A change to the config, keyed by what it changes so a newer one replaces an older one.
-type Edit = (String, Box<dyn FnOnce(&mut Document) + Send>);
+struct Edit {
+    key: String,
+    file: File,
+    f: Box<dyn FnOnce(&mut Document) + Send>,
+}
+
+/// Which file an edit goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum File {
+    /// bento's `config.kdl`.
+    Main,
+    /// The running engine's own file, with its options and binds.
+    Engine,
+}
 
 #[derive(Clone)]
 pub struct Store(Rc<Inner>);
@@ -36,12 +50,13 @@ struct Inner {
     /// Keys of the edits being saved right now.
     saving: RefCell<Option<Vec<String>>>,
     status: RefCell<Status>,
-    /// What the app last wrote, to tell its own writes from someone else's.
-    last_written: RefCell<Option<String>>,
+    /// What the app last wrote to each file, to tell its own writes from someone else's.
+    last_written: RefCell<HashMap<PathBuf, String>>,
     pending_save: RefCell<Option<glib::SourceId>>,
     pending_reload: RefCell<Option<glib::SourceId>>,
     listeners: RefCell<Vec<Rc<dyn Fn()>>>,
-    monitor: RefCell<Option<gio::FileMonitor>>,
+    /// The config and the running engine's file, with their monitors.
+    monitors: RefCell<Vec<(PathBuf, gio::FileMonitor)>>,
     notifying: Cell<bool>,
 }
 
@@ -57,7 +72,8 @@ pub struct Status {
 
 /// What a save on the background thread comes back with.
 struct Saved {
-    text: String,
+    /// Each file written, with its new text.
+    written: Vec<(PathBuf, String)>,
     config: Config,
 }
 
@@ -73,11 +89,11 @@ impl Store {
             queued: RefCell::new(Vec::new()),
             saving: RefCell::new(None),
             status: RefCell::new(Status::default()),
-            last_written: RefCell::new(None),
+            last_written: RefCell::new(HashMap::new()),
             pending_save: RefCell::new(None),
             pending_reload: RefCell::new(None),
             listeners: RefCell::new(Vec::new()),
-            monitor: RefCell::new(None),
+            monitors: RefCell::new(Vec::new()),
             notifying: Cell::new(false),
         }));
         let result = load(&store.0.config_path);
@@ -88,6 +104,11 @@ impl Store {
 
     pub fn config_path(&self) -> &Path {
         &self.0.config_path
+    }
+
+    /// The running engine's own file, which may not exist yet.
+    pub fn engine_path(&self) -> PathBuf {
+        engine_config_path(&self.0.config_path, &self.0.config.borrow().tiling.layout)
     }
 
     pub fn config(&self) -> Ref<'_, Config> {
@@ -118,7 +139,7 @@ impl Store {
     /// Whether a change to `key` hasn't reached the config yet. Rows showing it keep what the
     /// person set instead of the old value.
     pub fn is_pending(&self, key: &str) -> bool {
-        self.0.queued.borrow().iter().any(|(k, _)| k == key)
+        self.0.queued.borrow().iter().any(|edit| edit.key == key)
             || self
                 .0
                 .saving
@@ -130,9 +151,18 @@ impl Store {
     /// Queues a change to the config, saved shortly after the last one. `key` names what it
     /// changes, so a newer change to the same thing replaces the older one.
     pub fn edit(&self, key: &str, f: impl FnOnce(&mut Document) + Send + 'static) {
+        self.edit_in(File::Main, key, f);
+    }
+
+    /// Queues a change like [`Store::edit`], to `file`.
+    pub fn edit_in(&self, file: File, key: &str, f: impl FnOnce(&mut Document) + Send + 'static) {
         let mut queued = self.0.queued.borrow_mut();
-        queued.retain(|(k, _)| k != key);
-        queued.push((key.to_owned(), Box::new(f)));
+        queued.retain(|edit| edit.key != key);
+        queued.push(Edit {
+            key: key.to_owned(),
+            file,
+            f: Box::new(f),
+        });
         drop(queued);
         self.schedule_save();
     }
@@ -157,7 +187,7 @@ impl Store {
         let edits = self.0.queued.take();
         self.0
             .saving
-            .replace(Some(edits.iter().map(|(k, _)| k.clone()).collect()));
+            .replace(Some(edits.iter().map(|edit| edit.key.clone()).collect()));
 
         let path = self.0.config_path.clone();
         let store = self.clone();
@@ -176,7 +206,7 @@ impl Store {
     fn apply_save(&self, result: Result<Saved, String>) {
         match result {
             Ok(saved) => {
-                self.0.last_written.replace(Some(saved.text));
+                self.0.last_written.borrow_mut().extend(saved.written);
                 self.0.config.replace(saved.config);
                 let mut status = self.0.status.borrow_mut();
                 status.write_error = None;
@@ -184,6 +214,7 @@ impl Store {
             }
             Err(err) => self.0.status.borrow_mut().write_error = Some(err),
         }
+        self.watch();
         self.notify();
     }
 
@@ -208,6 +239,8 @@ impl Store {
             }
             Err(err) => status.config_error = Some(err),
         }
+        drop(status);
+        self.watch();
     }
 
     /// Re-reads the config, on a background thread.
@@ -223,14 +256,29 @@ impl Store {
         });
     }
 
+    /// Watches the config and the running engine's file, which changes with the engine.
     fn watch(&self) {
-        let file = gio::File::for_path(&self.0.config_path);
-        let Ok(monitor) = file.monitor_file(
-            gio::FileMonitorFlags::WATCH_MOVES,
-            None::<&gio::Cancellable>,
-        ) else {
-            return;
-        };
+        let paths = [self.0.config_path.clone(), self.engine_path()];
+        let mut monitors = self.0.monitors.borrow_mut();
+        monitors.retain(|(path, _)| paths.contains(path));
+        for path in paths {
+            if monitors.iter().any(|(watched, _)| *watched == path) {
+                continue;
+            }
+            if let Some(monitor) = self.monitor(&path) {
+                monitors.push((path, monitor));
+            }
+        }
+    }
+
+    fn monitor(&self, path: &Path) -> Option<gio::FileMonitor> {
+        let file = gio::File::for_path(path);
+        let monitor = file
+            .monitor_file(
+                gio::FileMonitorFlags::WATCH_MOVES,
+                None::<&gio::Cancellable>,
+            )
+            .ok()?;
         let store = Rc::downgrade(&self.0);
         monitor.connect_changed(move |_, _, _, event| {
             if matches!(
@@ -246,7 +294,7 @@ impl Store {
                 }
             }
         });
-        self.0.monitor.replace(Some(monitor));
+        Some(monitor)
     }
 
     fn schedule_reload(&self) {
@@ -256,8 +304,13 @@ impl Store {
         let store = self.clone();
         let source = glib::timeout_add_local_once(Duration::from_millis(150), move || {
             store.0.pending_reload.take();
-            let on_disk = fs::read_to_string(&store.0.config_path).ok();
-            if on_disk.is_none() || *store.0.last_written.borrow() != on_disk {
+            let last_written = store.0.last_written.borrow();
+            let changed = store.0.monitors.borrow().iter().any(|(path, _)| {
+                let on_disk = fs::read_to_string(path).ok();
+                on_disk.as_ref() != last_written.get(path)
+            });
+            drop(last_written);
+            if changed {
                 store.reload();
             }
         });
@@ -265,34 +318,72 @@ impl Store {
     }
 }
 
-/// Applies edits to the config file and writes it, if bento accepts the result. Runs off the main
-/// thread.
+/// Applies edits to the config and the engine's file and writes them, if bento accepts the result.
+/// Runs off the main thread.
 fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
-    // Start from the file as it is now, so edits made elsewhere since are kept.
+    let (engine_edits, main_edits): (Vec<_>, Vec<_>) = edits
+        .into_iter()
+        .partition(|edit| edit.file == File::Engine);
+    let engine_changes = !engine_edits.is_empty();
+    let main = apply(path, main_edits)?;
+
+    // The engine's file is known once the config says which engine runs, which an edit may have
+    // just changed.
+    let mut engine = None;
+    let parsed = Config::parse_with_engine(path, &main, |engine_path| {
+        let text = apply(engine_path, engine_edits);
+        let result = text.clone().map_err(std::io::Error::other);
+        engine = Some((engine_path.to_owned(), text));
+        result
+    });
+    let engine = match engine {
+        Some((path, text)) => Some((path, text?)),
+        None => None,
+    };
+    // Check the whole config first, so a bad value never reaches bento.
+    let config = parsed.config.map_err(|err| describe(&err))?;
+
+    let mut written = vec![(path.to_owned(), main)];
+    // Only an edit creates the engine's file.
+    written.extend(engine.filter(|_| engine_changes));
+    for (path, text) in &written {
+        write(path, text)?;
+    }
+    Ok(Saved { written, config })
+}
+
+/// Applies edits to the file at `path` as it is now, so changes made elsewhere since are kept.
+fn apply(path: &Path, edits: Vec<Edit>) -> Result<String, String> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(err) => return Err(format!("Couldn't read {}: {err}", path.display())),
     };
-    let mut doc = Document::parse(text).map_err(|err| describe(&err))?;
-    for (_, edit) in edits {
-        edit(&mut doc);
+    if edits.is_empty() {
+        return Ok(text);
     }
-    let text = doc.text().to_owned();
+    let mut doc = Document::parse(text).map_err(|err| describe(&err))?;
+    for edit in edits {
+        (edit.f)(&mut doc);
+    }
+    Ok(doc.text().to_owned())
+}
 
-    // Check the whole config first, so a bad value never reaches bento.
-    let config = Config::parse(path, &text)
-        .config
-        .map_err(|err| describe(&err))?;
-
+/// Writes `text` to `path` if it changed, creating the engine's directory if needed.
+fn write(path: &Path, text: &str) -> Result<(), String> {
+    if fs::read_to_string(path).is_ok_and(|on_disk| on_disk == text) {
+        return Ok(());
+    }
     // Write through a symlink rather than replacing it, for a config kept in a dotfiles repo. The
     // temporary file sits next to the real one so the rename stays on one disk.
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     let tmp = target.with_extension("kdl.tmp");
-    fs::write(&tmp, &text)
+    target
+        .parent()
+        .map_or(Ok(()), fs::create_dir_all)
+        .and_then(|()| fs::write(&tmp, text))
         .and_then(|()| fs::rename(&tmp, &target))
-        .map_err(|err| format!("Couldn't write {}: {err}", target.display()))?;
-    Ok(Saved { text, config })
+        .map_err(|err| format!("Couldn't write {}: {err}", target.display()))
 }
 
 fn load(path: &Path) -> Result<Config, String> {
@@ -410,6 +501,48 @@ mod tests {
         store.flush();
         assert_eq!(fs::read_to_string(&config_path).unwrap(), before);
         assert!(store.status().write_error.is_some());
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn engine_edits_land_in_the_engine_file() {
+        let dir =
+            std::env::temp_dir().join(format!("bento-settings-engine-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.kdl");
+        let text = "tiling {\n    layout \"niri\"\n}\n";
+        fs::write(&config_path, text).unwrap();
+        let engine_path = dir.join("engines").join("niri.kdl");
+
+        let store = Store::load_from(config_path.clone());
+        assert_eq!(store.engine_path(), engine_path);
+
+        // Editing the main config leaves the engine's file alone.
+        store.edit("layout.gaps", |doc| {
+            doc.set(&["layout", "gaps"], vec![Value::Int(8)])
+        });
+        store.flush();
+        assert!(!engine_path.exists());
+
+        store.edit_in(File::Engine, "options.gravity", |doc| {
+            doc.set(&["options", "gravity"], vec![Value::Bool(true)])
+        });
+        store.flush();
+        assert_eq!(
+            fs::read_to_string(&engine_path).unwrap(),
+            "options {\n    gravity true\n}\n"
+        );
+        assert!(!fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("gravity"));
+        assert_eq!(
+            store.config().tiling.options,
+            [(
+                String::from("gravity"),
+                niri_config::TilingOption::Bool(true)
+            )]
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }

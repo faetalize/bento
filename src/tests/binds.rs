@@ -947,7 +947,7 @@ fn release_binds() {
         Mod+Q {
             release { close-window; }
         }
-        Mod+U { center-column; }
+        Mod+U { center-floating-window; }
         Ctrl+Alt_L {
             release { switch-layout \"next\"; }
         }
@@ -1122,7 +1122,7 @@ fn press_and_release_binds() {
     binds {
         Mod+Q {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";
@@ -1220,7 +1220,7 @@ fn generic_modifier_press_release() {
     binds {
         Super+Shift {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
 
         Ctrl+Shift {
@@ -1452,7 +1452,7 @@ fn pass_through() {
     binds {
         Mod pass-through=true {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";
@@ -1500,7 +1500,7 @@ fn mod_key_press_and_release_bind() {
     binds {
         Mod {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";
@@ -1537,7 +1537,7 @@ fn mod_key_press_and_release_bind_focus_change() {
     binds {
         Mod {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";
@@ -1578,7 +1578,7 @@ fn modifier_key_trigger_binds() {
     binds {
         Mod+Control_L {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
         Alt+Control_L { close-window; }
     }
@@ -1987,7 +1987,7 @@ fn cooldown_skips_whole_bind() {
     binds {
         Mod+MouseLeft cooldown-ms=1000 {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";
@@ -2069,7 +2069,7 @@ fn cooldown_applies_to_press_action_only() {
     binds {
         Mod+Q cooldown-ms=1000 {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";
@@ -2316,11 +2316,11 @@ fn vt_switch_runs_release_actions_of_held_binds() {
     binds {
         Mod+Q {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
         Mod+MouseLeft {
             press { close-window; }
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";
@@ -2403,7 +2403,7 @@ fn mouse_button_press_cancels_release_only_key_bind() {
     let c = "
     binds {
         Mod {
-            release { center-column; }
+            release { center-floating-window; }
         }
         Mod+MouseLeft { close-window; }
     }
@@ -2429,7 +2429,7 @@ fn scroll_cancels_release_only_key_bind() {
     let c = "
     binds {
         Mod {
-            release { center-column; }
+            release { center-floating-window; }
         }
     }
     ";

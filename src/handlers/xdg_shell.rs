@@ -38,13 +38,11 @@ use tracing::field::Empty;
 
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
-use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
+use crate::input::AnyStartData;
 use crate::layout::ActivateWindow;
 use crate::niri::{CastTarget, PopupGrabState, State};
 use crate::utils::transaction::Transaction;
-use crate::utils::{
-    get_monotonic_time, output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge,
-};
+use crate::utils::{output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge};
 use crate::window::{InitialConfigureState, ResolvedWindowRules, Unmapped, WindowRef};
 
 impl XdgShellHandler for State {
@@ -244,41 +242,6 @@ impl XdgShellHandler for State {
 
         let edges = ResizeEdge::from(edges);
         let window = mapped.window.clone();
-
-        // See if we got a double resize-click gesture.
-        let time = get_monotonic_time();
-        let last_cell = mapped.last_interactive_resize_start();
-        let mut last = last_cell.get();
-        last_cell.set(Some((time, edges)));
-
-        // Floating windows don't have either of the double-resize-click gestures, so just allow it
-        // to resize.
-        if mapped.is_floating() {
-            last = None;
-            last_cell.set(None);
-        }
-
-        if let Some((last_time, last_edges)) = last {
-            if time.saturating_sub(last_time) <= DOUBLE_CLICK_TIME {
-                // Allow quick resize after a triple click.
-                last_cell.set(None);
-
-                let intersection = edges.intersection(last_edges);
-                if intersection.intersects(ResizeEdge::LEFT_RIGHT) {
-                    // FIXME: don't activate once we can pass specific windows to actions.
-                    self.niri.layout.activate_window(&window);
-                    self.niri.layer_shell_on_demand_focus = None;
-                    self.niri.layout.toggle_full_width();
-                }
-                if intersection.intersects(ResizeEdge::TOP_BOTTOM) {
-                    self.niri.layer_shell_on_demand_focus = None;
-                    self.niri.layout.reset_window_height(Some(&window));
-                }
-                // FIXME: granular.
-                self.niri.queue_redraw_all();
-                return;
-            }
-        }
 
         if !self
             .niri

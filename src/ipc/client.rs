@@ -864,9 +864,19 @@ fn print_layout_engine(engine: &LayoutEngine) {
         println!("Actions:");
     }
     for action in &engine.actions {
+        // Arguments that can be left out go in brackets.
         let mut usage = action.name.clone();
         for arg in &action.args {
-            usage.push_str(&format!(" <{arg}>"));
+            let name = if arg.choices.is_empty() {
+                arg.name.clone()
+            } else {
+                format!("{}: {}", arg.name, arg.choices.join("|"))
+            };
+            if arg.r#type.is_some() && arg.default.is_none() {
+                usage.push_str(&format!(" <{name}>"));
+            } else {
+                usage.push_str(&format!(" [{name}]"));
+            }
         }
         println!("  {usage}");
         if let Some(description) = &action.description {

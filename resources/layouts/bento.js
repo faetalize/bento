@@ -25,14 +25,144 @@
 // Layout changes like closing windows, pushes and gravity never move it; the windows that move
 // slide into place on screen while the rest stay still.
 
+// Arguments shared by several actions.
+const INDEX = [{ name: "index", type: "number", description: "Counting from 1." }];
+const SIZE = [
+    {
+        name: "change",
+        type: "size",
+        description: 'A size like "50%" or "800", or a change like "+10%" or "-100".',
+    },
+];
+
 export const meta = {
     api: 1,
     name: "bento",
     description: "Windows on a scrolling grid.",
+    // Every action, bound by name in engines/bento.kdl. A window's stack is the windows covering
+    // the same column of cells, and places are where windows start, counting from the left.
     actions: {
-        // Bind as `layout-action "split-h"` and so on. Each takes two presses: the first picks
-        // the focused window, then focus another window and press again. Pressing again on the
-        // same window cancels.
+        "focus-left": { description: "Focus the nearest window to the left." },
+        "focus-right": { description: "Focus the nearest window to the right." },
+        "focus-first": { description: "Focus the leftmost window in the row." },
+        "focus-last": { description: "Focus the rightmost window in the row." },
+        "focus-right-or-first": {
+            description: "Focus the nearest window to the right, or the leftmost one in the row.",
+        },
+        "focus-left-or-last": {
+            description: "Focus the nearest window to the left, or the rightmost one in the row.",
+        },
+        "focus-index": {
+            description: "Focus the window at a place where windows start, from the left.",
+            args: INDEX,
+        },
+        "focus-in-stack": {
+            description: "Focus a window in the focused window's stack, from the top.",
+            args: INDEX,
+        },
+        "focus-down": {
+            description: "Focus the next tab down, or the nearest window below, even diagonally.",
+        },
+        "focus-up": {
+            description: "Focus the next tab up, or the nearest window above, even diagonally.",
+        },
+        "focus-down-or-left": {
+            description: "Focus the window right below, or the nearest window to the left.",
+        },
+        "focus-down-or-right": {
+            description: "Focus the window right below, or the nearest window to the right.",
+        },
+        "focus-up-or-left": {
+            description: "Focus the window right above, or the nearest window to the left.",
+        },
+        "focus-up-or-right": {
+            description: "Focus the window right above, or the nearest window to the right.",
+        },
+        "focus-stack-top": { description: "Focus the top window in the focused window's stack." },
+        "focus-stack-bottom": {
+            description: "Focus the bottom window in the focused window's stack.",
+        },
+        "focus-down-or-top": {
+            description: "Focus the window right below, or the top of the stack from the bottom.",
+        },
+        "focus-up-or-bottom": {
+            description: "Focus the window right above, or the bottom of the stack from the top.",
+        },
+        "move-left": {
+            description: "Move the focused window one cell left, swapping with a window in the way.",
+        },
+        "move-right": {
+            description: "Move the focused window one cell right, swapping with a window in the way.",
+        },
+        "move-first": {
+            description: "Move the focused window to the start of its rows, pushing others right.",
+        },
+        "move-last": {
+            description: "Move the focused window past the end of the grid in its rows.",
+        },
+        "move-to-index": {
+            description: "Move the focused window to a place where windows start, from the left.",
+            args: INDEX,
+        },
+        "move-down": {
+            description: "Move the focused window one cell down, or its tab down among its tabs.",
+        },
+        "move-up": {
+            description: "Move the focused window one cell up, or its tab up among its tabs.",
+        },
+        "stack-left": {
+            description: "Stack the window under the one to its left, or take it out of its stack.",
+        },
+        "stack-right": {
+            description: "Stack the window under the one to its right, or take it out of its stack.",
+        },
+        "stack-from-right": {
+            description: "Stack the window to the right under the focused one.",
+        },
+        "unstack": {
+            description: "Take the focused window out of its stack or its tabs, to the right.",
+        },
+        "toggle-tabs": {
+            description: "Switch the focused window's area between tabs and a single window.",
+        },
+        "set-tabs": {
+            description: "Show the focused window's area as tabs or not.",
+            args: [{ name: "tabbed", type: "boolean" }],
+        },
+        "center": { description: "Center the focused window in the view." },
+        "center-visible": {
+            description: "Center the windows that are fully in view, together.",
+        },
+        "cycle-width": {
+            description: "Switch the focused window to the next preset width.",
+        },
+        "cycle-width-back": {
+            description: "Switch the focused window to the previous preset width.",
+        },
+        "cycle-height": {
+            description: "Switch the window to the next preset height.",
+        },
+        "cycle-height-back": {
+            description: "Switch the window to the previous preset height.",
+        },
+        "toggle-full-width": {
+            description: "Toggle the focused window between the full view width and its own width.",
+        },
+        "set-width": {
+            description: "Set or change the focused window's width, in whole cells.",
+            args: SIZE,
+        },
+        "set-height": {
+            description: "Set or change the window's height, in whole cells.",
+            args: SIZE,
+        },
+        "full-height": { description: "Make the window as tall as the grid." },
+        "fill-width": {
+            description: "Grow the focused window into the empty cells beside it in view.",
+        },
+
+        // Each takes two presses: the first picks the focused window, then focus another window
+        // and press again. Pressing again on the same window cancels.
         "split-h": { description: "Share a window's space with another, side by side." },
         "split-v": { description: "Share a window's space with another, stacked." },
         swap: { description: "Swap two windows." },
@@ -3303,7 +3433,7 @@ export default function create(ws) {
     // Moving between workspaces, reloading, switching engines
     // ---------------------------------------------------------------------------------------------
 
-    /** Reads a size intent from saved or transferred data, or `null` if it doesn't make sense. */
+    /** Reads a size intent from saved data, or `null` if it doesn't make sense. */
     function readIntent(data) {
         const isPreset = (p) =>
             p !== null &&
@@ -3329,38 +3459,6 @@ export default function create(ws) {
             rows: data.rows ?? null,
             maximized: data.maximized === true,
         };
-    }
-
-    /** A window moves to another workspace on its own, with its size. */
-    function transferOut(win) {
-        const item = itemOf(win);
-        if (item === null) {
-            return { windows: [win] };
-        }
-        return {
-            windows: [win],
-            data: {
-                layout: "bento",
-                windows: [{ id: win.id, ...intentOf(item), maximized: item.maximized }],
-            },
-        };
-    }
-
-    function transferIn(windows, data, how) {
-        const sizes = data?.layout === "bento" && Array.isArray(data.windows) ? data.windows : [];
-        windows.forEach((win, i) => {
-            const intent = readIntent(sizes.find((size) => size?.id === win.id));
-            if (intent !== null) {
-                remember(win.id, intent);
-            }
-            addWindow(win, {
-                reason: "move",
-                activate: how.activate && i === 0,
-                rect: null,
-                pointer: null,
-                nextTo: null,
-            });
-        });
     }
 
     /** State to come back to when the engine reloads. */
@@ -3620,98 +3718,79 @@ export default function create(ws) {
     // Actions
     // ---------------------------------------------------------------------------------------------
     //
-    // niri's layout actions by their config names, with their meanings on the grid. Each returns
-    // whether it did anything; bento falls back to monitors and workspaces for focus and move
-    // actions that return false.
+    // The actions by name, as `meta.actions` declares them. Each returns whether it did anything.
 
     const actions = {
-        "focus-column-left": () => focusGrid(Left),
-        "focus-column-right": () => focusGrid(Right),
-        "focus-column-or-monitor-left": () => focusGrid(Left),
-        "focus-column-or-monitor-right": () => focusGrid(Right),
-        "focus-column-first": () => focusGridEnd(false),
-        "focus-column-last": () => focusGridEnd(true),
-        "focus-column-right-or-first": () => focusGrid(Right) || focusGridEnd(false),
-        "focus-column-left-or-last": () => focusGrid(Left) || focusGridEnd(true),
-        "focus-column": ([index]) => focusColumn(index),
+        "focus-left": () => focusGrid(Left),
+        "focus-right": () => focusGrid(Right),
+        "focus-first": () => focusGridEnd(false),
+        "focus-last": () => focusGridEnd(true),
+        "focus-right-or-first": () => focusGrid(Right) || focusGridEnd(false),
+        "focus-left-or-last": () => focusGrid(Left) || focusGridEnd(true),
+        "focus-index": ([index]) => focusColumn(index),
 
         // Up and down can reach the nearest window further down or up, even diagonally. Actions
         // that fall back to something else only count windows sharing columns of cells.
-        "focus-window-down": () => focusTab(true) || focusGrid(Down),
-        "focus-window-up": () => focusTab(false) || focusGrid(Up),
-        "focus-window-or-workspace-down": () => focusDownAdjacent(),
-        "focus-window-or-workspace-up": () => focusUpAdjacent(),
-        "focus-window-or-monitor-down": () => focusDownAdjacent(),
-        "focus-window-or-monitor-up": () => focusUpAdjacent(),
-        "focus-window-down-or-column-left": () => focusDownAdjacent() || focusGrid(Left),
-        "focus-window-down-or-column-right": () => focusDownAdjacent() || focusGrid(Right),
-        "focus-window-up-or-column-left": () => focusUpAdjacent() || focusGrid(Left),
-        "focus-window-up-or-column-right": () => focusUpAdjacent() || focusGrid(Right),
+        "focus-down": () => focusTab(true) || focusGrid(Down),
+        "focus-up": () => focusTab(false) || focusGrid(Up),
+        "focus-down-or-left": () => focusDownAdjacent() || focusGrid(Left),
+        "focus-down-or-right": () => focusDownAdjacent() || focusGrid(Right),
+        "focus-up-or-left": () => focusUpAdjacent() || focusGrid(Left),
+        "focus-up-or-right": () => focusUpAdjacent() || focusGrid(Right),
 
         // Within the stack: the windows covering the same column of cells, tabs in order.
-        "focus-window-top": () => focusInStack(() => 0),
-        "focus-window-bottom": () => focusInStack((n) => n - 1),
-        "focus-window-down-or-top": () => focusDownAdjacent() || focusInStack(() => 0),
-        "focus-window-up-or-bottom": () => focusUpAdjacent() || focusInStack((n) => n - 1),
-        "focus-window-in-column": ([index]) =>
+        "focus-stack-top": () => focusInStack(() => 0),
+        "focus-stack-bottom": () => focusInStack((n) => n - 1),
+        "focus-down-or-top": () => focusDownAdjacent() || focusInStack(() => 0),
+        "focus-up-or-bottom": () => focusUpAdjacent() || focusInStack((n) => n - 1),
+        "focus-in-stack": ([index]) =>
             focusInStack((n) => clamp((Number.isFinite(index) ? toInt(index) : 1) - 1, 0, n - 1)),
 
-        "move-column-left": () => moveGrid(Left),
-        "move-column-right": () => moveGrid(Right),
-        "move-column-left-or-to-monitor-left": () => moveGrid(Left),
-        "move-column-right-or-to-monitor-right": () => moveGrid(Right),
-        "swap-window-left": () => moveGrid(Left),
-        "swap-window-right": () => moveGrid(Right),
-        "move-window-down": () => moveVertical(Down),
-        "move-window-up": () => moveVertical(Up),
-        "move-window-down-or-to-workspace-down": () => moveVertical(Down),
-        "move-window-up-or-to-workspace-up": () => moveVertical(Up),
+        "move-left": () => moveGrid(Left),
+        "move-right": () => moveGrid(Right),
+        "move-down": () => moveVertical(Down),
+        "move-up": () => moveVertical(Up),
         // Go to the start of the strip in the window's own rows, pushing others right, or past
         // its end.
-        "move-column-to-first": () => moveToColumn(() => [0, Right]),
-        "move-column-to-last": () => {
+        "move-first": () => moveToColumn(() => [0, Right]),
+        "move-last": () => {
             const width = grid.width();
             return moveToColumn(() => [width, Right]);
         },
-        "move-column-to-index": ([index]) => moveToIndex(index),
+        "move-to-index": ([index]) => moveToIndex(index),
 
-        "consume-or-expel-window-left": (args, target) => consumeOrExpel(target, Left),
-        "consume-or-expel-window-right": (args, target) => consumeOrExpel(target, Right),
+        "stack-left": (args, target) => consumeOrExpel(target, Left),
+        "stack-right": (args, target) => consumeOrExpel(target, Right),
         // Brings the window on the right under the focused one.
-        "consume-window-into-column": () => {
+        "stack-from-right": () => {
             const lines = focusLines();
             const right = lines && grid.adjacent(lines.item, Right, lines.row);
             return !!right && changeGrid(() => consume(right, lines.item));
         },
-        "expel-window-from-column": () => {
+        "unstack": () => {
             if (active === null) return false;
             const item = active;
             return item.windows.length > 1
                 ? changeGrid(() => expelTab(item, item.active, Right))
                 : changeGrid(() => expel(item, Right));
         },
-        "toggle-column-tabbed-display": () => active !== null && setDisplay(!active.tabbed),
-        "set-column-display": ([display]) => setDisplay(display === "tabbed"),
+        "toggle-tabs": () => active !== null && setDisplay(!active.tabbed),
+        "set-tabs": ([tabbed]) => setDisplay(tabbed === true),
 
-        "center-column": () => centerColumn(),
-        // Only the focused window can reasonably be centered.
-        "center-window": (args, target) => itemFor(target) === active && centerColumn(),
-        "center-visible-columns": () => centerVisibleColumns(),
+        "center": () => centerColumn(),
+        "center-visible": () => centerVisibleColumns(),
 
-        "set-column-width": ([change], target) => setWidth(target, change),
-        "set-window-width": ([change], target) => setWidth(target, change),
-        "set-window-height": ([change], target) => setHeight(target, change),
-        "reset-window-height": (args, target) => resizeItem(itemFor(target), null, metrics.rows),
-        "switch-preset-column-width": () => switchPresetWidth(null, true),
-        "switch-preset-column-width-back": () => switchPresetWidth(null, false),
-        "switch-preset-window-width": (args, target) => switchPresetWidth(target, true),
-        "switch-preset-window-width-back": (args, target) => switchPresetWidth(target, false),
-        "switch-preset-window-height": (args, target) => switchPresetHeight(target, true),
-        "switch-preset-window-height-back": (args, target) => switchPresetHeight(target, false),
-        "maximize-column": () => toggleFullWidth(),
-        "expand-column-to-available-width": () => expandToAvailableWidth(),
+        "set-width": ([change], target) => setWidth(target, change),
+        "set-height": ([change], target) => setHeight(target, change),
+        "full-height": (args, target) => resizeItem(itemFor(target), null, metrics.rows),
+        "cycle-width": () => switchPresetWidth(null, true),
+        "cycle-width-back": () => switchPresetWidth(null, false),
+        "cycle-height": (args, target) => switchPresetHeight(target, true),
+        "cycle-height-back": (args, target) => switchPresetHeight(target, false),
+        "toggle-full-width": () => toggleFullWidth(),
+        "fill-width": () => expandToAvailableWidth(),
 
-        // bento's own actions.
+        // Actions on two windows.
         "split-h": () => pick("split-h", (first, second) => split(first, second, true)),
         "split-v": () => pick("split-v", (first, second) => split(first, second, false)),
         swap: () => pick("swap", swap),
@@ -3723,16 +3802,10 @@ export default function create(ws) {
         // else cancels it.
         if (picking?.action === "stuff" && name !== "stuff") {
             const dir = {
-                "focus-column-left": Left,
-                "focus-column-or-monitor-left": Left,
-                "focus-column-right": Right,
-                "focus-column-or-monitor-right": Right,
-                "focus-window-up": Up,
-                "focus-window-or-monitor-up": Up,
-                "focus-window-or-workspace-up": Up,
-                "focus-window-down": Down,
-                "focus-window-or-monitor-down": Down,
-                "focus-window-or-workspace-down": Down,
+                "focus-left": Left,
+                "focus-right": Right,
+                "focus-up": Up,
+                "focus-down": Down,
             }[name];
             if (dir !== undefined) {
                 moveSeam(dir);
@@ -3762,11 +3835,9 @@ export default function create(ws) {
         resizeUpdate: changes(resizeUpdate),
         resizeEnd: changes(resizeEnd),
         gestureEnd: changes(gestureEnd),
-        transferIn: changes(transferIn),
         // Queries.
         dropTarget,
         newWindowSize,
-        transferOut,
         ipcPosition,
     };
 }

@@ -1,4 +1,4 @@
-use std::cell::{Cell, Ref, RefCell};
+use std::cell::{Ref, RefCell};
 use std::time::Duration;
 
 use niri_config::{Color, Config, CornerRadius, GradientInterpolation, WindowRule};
@@ -44,7 +44,6 @@ use crate::utils::transaction::Transaction;
 use crate::utils::{
     get_credentials_for_surface, send_scale_transform, update_tiled_state,
     with_toplevel_last_uncommitted_configure, with_toplevel_role, with_toplevel_role_and_current,
-    ResizeEdge,
 };
 
 #[derive(Debug)]
@@ -129,11 +128,6 @@ pub struct Mapped {
 
     /// State of an ongoing interactive resize.
     interactive_resize: Option<InteractiveResize>,
-
-    /// Last time interactive resize was started.
-    ///
-    /// Used for double-resize-click tracking.
-    last_interactive_resize_start: Cell<Option<(Duration, ResizeEdge)>>,
 
     /// Whether this window is in windowed (fake) fullscreen.
     ///
@@ -300,7 +294,6 @@ impl Mapped {
             transaction_for_next_configure: None,
             pending_transactions: Vec::new(),
             interactive_resize: None,
-            last_interactive_resize_start: Cell::new(None),
             is_windowed_fullscreen: false,
             is_pending_windowed_fullscreen: false,
             uncommitted_windowed_fullscreen: Vec::new(),
@@ -489,10 +482,6 @@ impl Mapped {
         }
 
         rv
-    }
-
-    pub fn last_interactive_resize_start(&self) -> &Cell<Option<(Duration, ResizeEdge)>> {
-        &self.last_interactive_resize_start
     }
 
     pub fn render_for_screen_cast<R: NiriRenderer>(

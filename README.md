@@ -140,7 +140,8 @@ To fix this, stop Waybar with `pkill waybar` command, then open `~/.config/bento
 Bento Settings is a GTK app for changing bento's settings without editing the config.
 Run `bento-settings`, or `bento-settings engine` to open a page directly, or `bento-settings --search gaps` to search.
 
-It edits `~/.config/bento/config.kdl` in place and changes only the values you set, so your comments and layout stay as they are.
+It edits `~/.config/bento/config.kdl` and the layout engine's own file in place, and changes only the values you set, so your comments and layout stay as they are.
+Its Shortcuts page lists every bind, bento's and the engine's, and records new ones by pressing them; binds from included files are shown but left alone.
 It checks every change with bento's own parser before saving, and bento applies it right away.
 
 ### Wallpaper
@@ -188,21 +189,27 @@ tiling {
 ```
 
 Engines aren't interchangeable presets.
-Each one defines how the workspace works, with its own actions and its own meaning for niri's actions, so switching engines usually means changing your binds too.
+Each one defines how the workspace works, with actions of its own.
+So each engine has a config file of its own for its options and its binds, loaded only while that engine runs:
+
+- `engines/bento.kdl` and `engines/niri.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
+- the engine file's path with `.kdl` instead of `.js` for an engine file, so `~/.config/bento/layouts/spiral.kdl` for the one above.
+
+The first time a built-in engine runs without its file, bento writes its defaults there, with binds for moving around and resizing windows; from then on the file is yours.
+Switching engines switches which file is loaded, so nothing breaks.
+A key bound in both the config and the engine's file is an error.
 
 When the engine file changes, bento reloads it, just like the config.
 Engines can keep their state across reloads, so your windows stay where they are while you work on an engine.
 
 ### Options
 
-Engines declare their own options, set in `options`:
+Engines declare their own options, set in `options` in the engine's file:
 
 ```kdl
-tiling {
-    layout "bento"
-    options {
-        gravity false
-    }
+// ~/.config/bento/engines/bento.kdl
+options {
+    gravity false
 }
 ```
 
@@ -216,29 +223,31 @@ Borders, focus rings, shadows and the tab indicator look the way the `layout {}`
 
 ### Actions
 
-niri's layout actions, like `focus-column-left`, `move-window-down` or `set-column-width`, go to the engine under their own names.
-Each engine gives them its meaning: in the `niri` engine they work like in niri, and in the `bento` engine they move around the grid.
-
-That includes actions that combine others, like `focus-column-or-monitor-left` or `focus-window-or-workspace-down`.
-The engine decides what happens within the workspace, and when it does nothing, bento does the rest: it focuses the monitor to the left, or switches to the workspace below.
-
-Engines can also add actions of their own.
-Bind them with `layout-action`, followed by the action's name and any arguments:
+Moving around and resizing tiled windows is the engine's: each engine has its own actions, named for what they do in it.
+The `niri` engine has niri's, like `focus-column-left` or `consume-or-expel-window-left`, and the `bento` engine has its own, like `focus-left` or `stack-left`.
+Bind them in the engine's file by name, followed by any arguments:
 
 ```kdl
+// ~/.config/bento/engines/bento.kdl
 binds {
-    Mod+Shift+S { layout-action "swap-with-first"; }
-    Mod+Shift+R { layout-action "resize" 2 "right"; }
+    Mod+H { focus-left; }
+    Mod+Minus { set-width "-10%"; }
 }
 ```
 
-Run them from the command line the same way:
+The main config can't bind them, so its binds work whichever engine runs.
+Everything else is bento's own and bound in the main config: spawning, screenshots, workspaces, monitors, the overview, and floating windows, which have their own actions like `focus-floating-left` and `move-floating-left`.
+
+Run an engine's action from the command line with `layout-action`, followed by the action's name and any arguments:
 
 ```sh
-bento msg action layout-action swap-with-first
+bento msg action layout-action focus-left
 ```
 
-`bento validate` checks that the engine has the actions your binds name.
+`bento validate` checks that the engine has the actions your binds name, and that their arguments fit.
+`bento msg layout-engine` lists every action the running engine has, with what it does and the arguments it takes.
+
+Engines only see their own workspace for now, so no engine action reaches another monitor or workspace; bento's own actions, like `focus-monitor-left` or `focus-workspace-down`, do that.
 
 ### Writing a layout engine
 
@@ -292,6 +301,23 @@ export default function create(ws) {
 }
 ```
 
+`meta.actions` lists every action the engine has, with a description of what it does.
+An action can't take the name of one of bento's own actions, like `spawn`: the engine fails to load if it does.
+An action that takes arguments says which, in order, so that bento can check binds and fill in defaults, and settings screens can offer the right field:
+
+```js
+"resize": {
+    description: "Grow the focused window towards a side.",
+    args: [
+        { name: "cells", type: "number", default: 1 },
+        { name: "side", type: "choice", choices: ["left", "right"] },
+    ],
+},
+```
+
+Argument types are `boolean`, `number`, `string`, `choice` (one of `choices`) and `size`, which is written like `"50%"`, `"+10%"` or `"800"` and reaches the engine as `{ op, value, unit }`.
+Arguments with a `default` can be left out, and an action without `args` takes none.
+
 For a complete engine to start from, copy [`examples/template.js`](resources/layouts/examples/template.js): under 300 lines, comments included, that put one main window on the left and stack the others on the right, with comments on every event, what bento does when an engine leaves one out, and tests next to it.
 
 The full API, with every event an engine can handle, is in [`bento-layout.d.ts`](resources/layouts/bento-layout.d.ts).
@@ -299,7 +325,7 @@ In short:
 
 - **Events** tell the engine what happened: windows added and removed, actions, focus requests, fullscreen requests, window size changes, view and config changes, pointer resizes, swipe gestures and dropped windows.
 - **The workspace** (`ws`) is everything an engine can do: place windows on the canvas, show and hide them, set fullscreen or maximized, focus, move the camera, highlight drop targets, and draw tab bars.
-- **Queries** ask the engine without changing anything: where a dragged window would land, what size a new window should start at, which windows move along to another workspace, and positions for IPC.
+- **Queries** ask the engine without changing anything: where a dragged window would land, what size a new window should start at, and positions for IPC.
 
 bento animates everything an engine changes, so engines only say where things go.
 
@@ -351,39 +377,38 @@ The view is a multiple of 12 columns wide, like the rows: bento picks the multip
 So halves, thirds, quarters and sixths of the view are whole numbers of cells, in both directions.
 Window sizes snap to whole cells.
 
-bento keeps niri's action and option names, so many of them still say "column", like `move-column-left` or `default-column-width`.
-Actions like `focus-column N` count the places where windows start, from left to right starting at 1.
-Actions that work within a column, like `focus-window-top`, work on the windows covering the same column of cells.
+Its actions are named for what they do on the grid, and `bento msg layout-engine` lists them all with what each does.
+`focus-left`, `focus-right`, `focus-up` and `focus-down` go to the nearest window that way, even diagonally, and `move-left` and the rest move the focused window one cell, swapping with a window in the way.
+A window's stack is the windows covering the same column of cells: `stack-left` and `stack-right` stack a window under its neighbour or take it out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-tabs` shows it as tabs.
+`set-width`, `set-height`, `cycle-width` and `cycle-height` size the focused window in whole cells.
+Actions like `focus-index N` count the places where windows start, from left to right starting at 1.
 
 By default, windows slide left within their rows until they touch another window, and the grid has a fixed left edge.
-You can turn this off with the engine's `gravity` option:
+You can turn this off with the engine's `gravity` option, in `~/.config/bento/engines/bento.kdl`:
 
 ```kdl
-tiling {
-    layout "bento"
-    options {
-        gravity false
-    }
+options {
+    gravity false
 }
 ```
 
 Without gravity, windows stay where you put them, and only columns of cells that are completely empty between windows collapse.
 The grid also has no left edge then, so windows can be pushed or moved further left than the first one.
 
-The `bento` engine has actions of its own for two windows at a time:
+It also has actions for two windows at a time:
 
-- `layout-action "split-h"` splits a window's cells in two side by side, and gives one half to another window.
-- `layout-action "split-v"` does the same with stacked halves.
-- `layout-action "swap"` swaps two windows' places and sizes.
+- `split-h` splits a window's cells in two side by side, and gives one half to another window.
+- `split-v` does the same with stacked halves.
+- `swap` swaps two windows' places and sizes.
 
 Each takes two presses.
 The first press picks the focused window and highlights it.
 Then focus another window as usual, and press again.
 Pressing again on the window you picked first cancels.
 
-`layout-action "stuff"` puts the focused window between two windows that touch, side by side or stacked.
+`stuff` puts the focused window between two windows that touch, side by side or stacked.
 The first press highlights where the window would go, at the seam nearest to it.
-While the highlight is up, `focus-column-left`, `focus-column-right`, `focus-window-up` and `focus-window-down` move it to the next seam in that direction, and any other action cancels.
+While the highlight is up, `focus-left`, `focus-right`, `focus-up` and `focus-down` move it to the next seam in that direction, and any other action cancels.
 The second press puts the window there.
 
 ## The niri engine
@@ -391,13 +416,14 @@ The second press puts the window there.
 The `niri` engine is niri's scrollable tiling as a bento layout engine, ported from niri's `src/layout/scrolling.rs` to JavaScript in [`resources/layouts/niri.js`](resources/layouts/niri.js).
 Its functions keep niri's names where they do the same thing, so the two are easy to compare.
 
-niri's layout actions, the `layout {}` options that describe columns, window rules that size and place new windows, tabbed columns, and the IPC all work like in niri.
-It differs in three ways:
+niri's layout actions, bound in `engines/niri.kdl`, the `layout {}` options that describe columns, window rules that size and place new windows, tabbed columns, and the IPC all work like in niri.
+It differs in these ways:
 
 - **Animations are bento's.**
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
-- **No actions of its own.**
-  The engine has no `layout-action`s; everything goes through niri's actions.
+- **Actions stay on their workspace.**
+  niri's actions that go on to another monitor or workspace at the edge, like `focus-column-or-monitor-left`, don't exist yet, because engines only see their own workspace for now.
+  bento's own `focus-monitor-left` or `focus-workspace-down` do that part.
 - **Switching engines starts from where the windows are.**
   The engine keeps its columns when bento reloads it, but when you switch to it from another engine, it builds columns from the windows' positions.
 

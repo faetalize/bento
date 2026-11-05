@@ -15,11 +15,11 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{anyhow, Context as _};
 use niri_config::{Tiling, TilingLayout, TilingOption};
 use niri_ipc::{
-    LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionType, LayoutEngineOptionValue,
-    LayoutEngineSource,
+    LayoutEngineAction, LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOption,
+    LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, SizeChange,
 };
 use rquickjs::{CatchResultExt as _, Context, Function, Module, Object, Persistent, Runtime};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 const PRELUDE: &str = include_str!("../../../resources/layouts/prelude.js");
 
@@ -30,7 +30,8 @@ const BUILT_IN: &[(&str, &str)] = &[
     ("fallback", FALLBACK),
 ];
 
-/// The layout used when the configured one fails to load: windows side by side.
+/// The layout used when the configured one fails to load: windows side by side. It has no actions:
+/// the binds in the engine's file are for the engine that failed.
 const FALLBACK: &str = r#"
 export const meta = { api: 1, name: "fallback" };
 export default function create(ws) {
@@ -65,22 +66,14 @@ export default function create(ws) {
             order.splice(i, 1);
             layout();
             if (ws.focused === null && order.length > 0) {
-                ws.focus(order[Math.min(i, order.length - 1)]);
+                const next = order[Math.min(i, order.length - 1)];
+                ws.focus(next);
+                show(next);
             }
         },
         activate(win) {
             ws.focus(win);
             show(win);
-        },
-        action(name) {
-            const i = order.indexOf(ws.focused);
-            const next = { "focus-column-left": i - 1, "focus-column-right": i + 1 }[name];
-            if (next === undefined || next < 0 || next >= order.length) {
-                return false;
-            }
-            ws.focus(order[next]);
-            show(order[next]);
-            return true;
         },
     };
 }
@@ -105,8 +98,87 @@ thread_local! {
 pub struct LayoutMeta {
     pub name: String,
     pub description: Option<String>,
+    #[serde(deserialize_with = "deserialize_actions")]
     pub actions: Vec<LayoutEngineAction>,
     pub options: Vec<OptionMeta>,
+}
+
+impl LayoutMeta {
+    pub fn action(&self, name: &str) -> Option<&LayoutEngineAction> {
+        self.actions.iter().find(|action| action.name == name)
+    }
+}
+
+/// An action as the prelude reports it, with argument types spelled like in the engine's `meta`.
+#[derive(Deserialize)]
+struct ActionMeta {
+    name: String,
+    description: Option<String>,
+    args: Vec<ArgMeta>,
+}
+
+#[derive(Deserialize)]
+struct ArgMeta {
+    name: String,
+    r#type: Option<ArgType>,
+    default: Option<LayoutEngineOptionValue>,
+    choices: Vec<String>,
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ArgType {
+    Boolean,
+    Number,
+    String,
+    Choice,
+    Size,
+}
+
+fn deserialize_actions<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<LayoutEngineAction>, D::Error> {
+    let actions = Vec::<ActionMeta>::deserialize(deserializer)?;
+    let arg = |arg: ArgMeta| LayoutEngineActionArg {
+        name: arg.name,
+        r#type: arg.r#type.map(|r#type| match r#type {
+            ArgType::Boolean => LayoutEngineActionArgType::Boolean,
+            ArgType::Number => LayoutEngineActionArgType::Number,
+            ArgType::String => LayoutEngineActionArgType::String,
+            ArgType::Choice => LayoutEngineActionArgType::Choice,
+            ArgType::Size => LayoutEngineActionArgType::Size,
+        }),
+        default: arg.default,
+        optional: false,
+        property: false,
+        choices: arg.choices,
+        description: arg.description,
+    };
+    let actions = actions.into_iter().map(|action| LayoutEngineAction {
+        name: action.name,
+        description: action.description,
+        args: action.args.into_iter().map(arg).collect(),
+    });
+    Ok(actions.collect())
+}
+
+/// Whether `name` is one of bento's own actions, as binds and `bento msg action` write it.
+fn is_native_action(name: &str) -> bool {
+    use clap::Subcommand as _;
+
+    let actions = niri_ipc::Action::augment_subcommands(clap::Command::new("action"));
+    actions.find_subcommand(name).is_some()
+}
+
+/// Reads a `Size` argument, written like `"50%"`, `"+10%"` or `"800"`.
+pub fn size_arg(value: &TilingOption) -> Option<SizeChange> {
+    match value {
+        TilingOption::String(value) => value.parse().ok(),
+        // Numbers come from configs and the command line, like `800` or `-100`.
+        TilingOption::Number(value) => value.to_string().parse().ok(),
+        TilingOption::Bool(_) => None,
+    }
 }
 
 /// An option the layout declares.
@@ -182,6 +254,13 @@ impl Engine {
                 .map_err(|err| anyhow!("{err}"))?;
             let meta: LayoutMeta = serde_json::from_str(&meta)
                 .context("error reading the layout engine's metadata")?;
+            // Binds name engine actions and bento's own the same way, so they can't share a name.
+            if let Some(action) = meta.actions.iter().find(|a| is_native_action(&a.name)) {
+                return Err(anyhow!(
+                    "the layout engine's action {:?} has the name of one of bento's actions",
+                    action.name
+                ));
+            }
 
             let handle: Function = prelude.get("handle")?;
             let save_all: Function = prelude.get("saveAll")?;
@@ -358,6 +437,11 @@ pub fn meta() -> Option<LayoutMeta> {
     ENGINE.with_borrow(|engine| engine.as_ref().map(|engine| engine.meta.clone()))
 }
 
+/// Arguments that the running engine declares for action `name`.
+pub fn action_args(name: &str) -> Option<Vec<LayoutEngineActionArg>> {
+    ENGINE.with_borrow(|engine| Some(engine.as_ref()?.meta.action(name)?.args.clone()))
+}
+
 /// The current layout engine for IPC, with the option values from `config`.
 pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
     ENGINE.with_borrow(|engine| {
@@ -490,8 +574,8 @@ pub fn take_state(instance: u64) -> Option<serde_json::Value> {
 }
 
 /// Checks the layout engine in `config` and what the config asks of it: that the engine loads,
-/// that the options exist and have the right types, and that `layout-action` binds name actions
-/// that the engine has.
+/// that the options exist and have the right types, and that binds to the engine's actions name
+/// actions that the engine has, with arguments that fit.
 pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     ensure_loaded(&config.tiling);
     if let Some(err) = LOAD_ERROR.with_borrow(Clone::clone) {
@@ -522,12 +606,13 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
 
     for bind in &config.binds.0 {
         for action in [bind.press_action(), bind.release_action()] {
-            if let Some(niri_config::Action::LayoutAction(name, _)) = action {
-                if !meta.actions.iter().any(|action| action.name == *name) {
-                    problems.push(format!(
+            if let Some(niri_config::Action::LayoutAction(name, args)) = action {
+                match meta.action(name) {
+                    None => problems.push(format!(
                         "the {} layout engine has no action called {name:?}",
                         meta.name
-                    ));
+                    )),
+                    Some(action) => check_args(action, args, &mut problems),
                 }
             }
         }
@@ -537,5 +622,57 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
         Ok(())
     } else {
         Err(problems)
+    }
+}
+
+/// Checks a bind's arguments for `action` against the ones it declares.
+fn check_args(action: &LayoutEngineAction, args: &[TilingOption], problems: &mut Vec<String>) {
+    let name = &action.name;
+    let declared = &action.args;
+    if args.len() > declared.len() {
+        let takes = match declared.len() {
+            0 => String::from("no arguments"),
+            1 => String::from("one argument"),
+            n => format!("up to {n} arguments"),
+        };
+        problems.push(format!("action {name:?} takes {takes}, not {}", args.len()));
+    }
+    for (i, arg) in declared.iter().enumerate() {
+        let Some(r#type) = arg.r#type else {
+            continue;
+        };
+        let Some(value) = args.get(i) else {
+            if arg.default.is_none() && !arg.optional {
+                problems.push(format!("action {name:?} needs its {:?} argument", arg.name));
+            }
+            continue;
+        };
+        let expected = match (r#type, value) {
+            (LayoutEngineActionArgType::Boolean, TilingOption::Bool(_))
+            | (LayoutEngineActionArgType::Number, TilingOption::Number(_))
+            | (LayoutEngineActionArgType::String, TilingOption::String(_)) => continue,
+            (LayoutEngineActionArgType::Choice, TilingOption::String(value))
+                if arg.choices.contains(value) =>
+            {
+                continue
+            }
+            (LayoutEngineActionArgType::Size, value) if size_arg(value).is_some() => continue,
+            (LayoutEngineActionArgType::Boolean, _) => String::from("true or false"),
+            (LayoutEngineActionArgType::Number, _) => String::from("a number"),
+            (LayoutEngineActionArgType::String, _) => String::from("a string"),
+            (LayoutEngineActionArgType::Choice, _) => format!("one of {:?}", arg.choices),
+            (LayoutEngineActionArgType::Size, _) => String::from(r#"a size, like "50%" or "+10%""#),
+            // Only bento's own actions have these, and the config parser checks them.
+            (
+                LayoutEngineActionArgType::Workspace
+                | LayoutEngineActionArgType::Monitor
+                | LayoutEngineActionArgType::Command,
+                _,
+            ) => continue,
+        };
+        problems.push(format!(
+            "the {:?} argument of action {name:?} must be {expected}",
+            arg.name
+        ));
     }
 }

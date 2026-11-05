@@ -19,9 +19,7 @@ use serde_json::{json, Value};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
 
-use self::protocol::{
-    Mode, Output, Preset, Rect, Rules, TransferOut, Wh, WindowChange, WindowInfo, Xy,
-};
+use self::protocol::{Mode, Output, Preset, Rect, Rules, Wh, WindowChange, WindowInfo, Xy};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
@@ -65,27 +63,6 @@ impl From<PresetSize> for ColumnWidth {
             PresetSize::Proportion(prop) => Self::Proportion(prop),
             PresetSize::Fixed(width) => Self::Fixed(f64::from(width.clamp(1, 100000))),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollDirection {
-    Left,
-    Right,
-}
-
-/// Windows that move to another workspace together, as the layout decides.
-#[derive(Debug)]
-pub struct TileGroup<W: LayoutElement> {
-    /// The tiles, with where they were on screen, relative to the workspace view.
-    tiles: Vec<(Tile<W>, Point<f64, Logical>)>,
-    /// What the layout wants to tell the layout on the other workspace about them.
-    data: Value,
-}
-
-impl<W: LayoutElement> TileGroup<W> {
-    pub fn tiles(&self) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>)> {
-        self.tiles.iter().map(|(tile, pos)| (tile, *pos))
     }
 }
 
@@ -1287,70 +1264,6 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
     }
 
-    /// Adds windows that moved here together from another workspace.
-    pub fn add_group(
-        &mut self,
-        group: TileGroup<W>,
-        activate: bool,
-        anim: Option<niri_config::Animation>,
-    ) {
-        self.ensure_instance();
-
-        let mut infos = Vec::new();
-        for (mut tile, _) in group.tiles {
-            tile.update_config(self.view_size, self.scale, self.options.clone());
-            tile.was_tiled = true;
-
-            let width = tile.window_expected_or_current_size().w;
-            let id = TILE_ID_COUNTER.next();
-            self.tiles.insert(0, tile);
-            self.data.insert(
-                0,
-                TileData {
-                    id,
-                    rect: None,
-                    visible: true,
-                    active_in_column: None,
-                    mode: Mode::Normal,
-                    maximized_under_fullscreen: false,
-                    ipc: None,
-                    default_width: Some(Preset::Fixed(width)),
-                    open_full_width: false,
-                    reported: None,
-                },
-            );
-            let info = self.window_info(0);
-            self.data[0].reported = Some(info.clone());
-            infos.push(info);
-        }
-
-        let first = infos.first().map(|info| info.id);
-        let event = json!({
-            "type": "transfer-in",
-            "windows": infos,
-            "data": group.data,
-            "activate": activate,
-        });
-        self.dispatch(
-            event,
-            Apply {
-                anim,
-                ..Apply::default()
-            },
-        );
-
-        if activate {
-            if let Some(first) = first {
-                if self
-                    .active
-                    .is_none_or(|id| !infos.iter().any(|info| info.id == id))
-                {
-                    self.active = Some(first);
-                }
-            }
-        }
-    }
-
     pub fn remove_tile(&mut self, id: &W::Id, transaction: Transaction) -> RemovedTile<W> {
         // The layout has to exist with the window in it to remove it.
         self.ensure_instance();
@@ -1413,34 +1326,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             is_full_width: false,
             is_floating: false,
         }
-    }
-
-    /// Removes the focused window together with the windows the layout moves along with it.
-    pub fn remove_active_group(&mut self) -> Option<TileGroup<W>> {
-        self.ensure_instance();
-        let active = self.active?;
-        let transfer = self
-            .query(json!({ "type": "transfer-out", "id": active }))
-            .and_then(|out| serde_json::from_value::<TransferOut>(out).ok())
-            .unwrap_or(TransferOut {
-                windows: vec![active],
-                data: Value::Null,
-            });
-
-        let mut tiles = Vec::new();
-        for id in transfer.windows {
-            let Some(idx) = self.idx_of_layout_id(id) else {
-                continue;
-            };
-            let (_, pos, _) = self.tiles_with_render_positions().nth(idx).unwrap();
-            let removed = self.remove_tile_by_idx(idx, "move", None);
-            tiles.push((removed.tile, pos));
-        }
-
-        Some(TileGroup {
-            tiles,
-            data: transfer.data,
-        })
     }
 
     pub fn start_close_animation_for_window(

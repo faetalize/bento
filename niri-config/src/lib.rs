@@ -28,6 +28,7 @@ use miette::{miette, Context as _, IntoDiagnostic as _};
 #[macro_use]
 pub mod macros;
 
+pub mod actions;
 pub mod animations;
 pub mod appearance;
 pub mod binds;
@@ -58,7 +59,10 @@ pub use crate::misc::*;
 pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
-pub use crate::tiling::{Tiling, TilingLayout, TilingOption};
+pub use crate::tiling::{
+    default_engine_config, engine_config_path, Tiling, TilingLayout, TilingOption,
+};
+use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
 use crate::utils::{expand_home_path, Flag, MergeWith as _};
 pub use crate::window_rule::{
@@ -67,6 +71,12 @@ pub use crate::window_rule::{
 pub use crate::workspace::{Workspace, WorkspaceLayoutPart};
 
 const RECURSION_LIMIT: u8 = 10;
+
+/// The config bento writes on first start.
+pub const DEFAULT_CONFIG: &str = include_str!("../../resources/default-config.kdl");
+
+/// Reads the engine's file at a path, like `fs::read_to_string`.
+type ReadEngine<'a> = dyn FnOnce(&Path) -> std::io::Result<String> + 'a;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Config {
@@ -91,10 +101,30 @@ pub struct Config {
     pub window_rules: Vec<WindowRule>,
     pub layer_rules: Vec<LayerRule>,
     pub binds: Binds,
+    pub bind_files: BindFiles,
     pub switch_events: SwitchBinds,
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
     pub recent_windows: RecentWindows,
+}
+
+/// The file each bind comes from, by its key: the main config, an included file or the engine's
+/// file.
+#[derive(Default, Clone, PartialEq)]
+pub struct BindFiles(pub Vec<(Key, PathBuf)>);
+
+impl BindFiles {
+    pub fn get(&self, key: &Key) -> Option<&Path> {
+        let file = self.0.iter().find(|(k, _)| k == key);
+        file.map(|(_, path)| path.as_path())
+    }
+}
+
+// Only the count, so config snapshots don't list every bind twice.
+impl std::fmt::Debug for BindFiles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BindFiles({})", self.0.len())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +148,8 @@ pub enum ConfigPath {
 
 // Newtypes for putting information into the knuffel context.
 struct BasePath(PathBuf);
+/// The file being parsed, to remember where binds come from.
+pub(crate) struct CurrentFile(pub(crate) PathBuf);
 struct RootBase(PathBuf);
 struct Recursion(u8);
 
@@ -234,8 +266,12 @@ where
                     // Remove existing binds matching any new bind.
                     binds
                         .retain(|bind| !part.0.iter().any(|new| new.key.conflicts_with(&bind.key)));
+                    let file = &ctx.get::<CurrentFile>().unwrap().0;
+                    let files = &mut config.bind_files.0;
+                    files.retain(|(key, _)| !part.0.iter().any(|new| new.key.conflicts_with(key)));
+                    files.extend(part.0.iter().map(|bind| (bind.key, file.clone())));
                     // Add all new binds.
-                    binds.extend(part.0);
+                    config.binds.0.extend(part.0);
                 }
                 "environment" => {
                     let part = Environment::decode_node(node, ctx)?;
@@ -413,6 +449,7 @@ where
                                 knuffel::span::Span,
                                 _,
                             >(filename, &text, |ctx| {
+                                ctx.set(CurrentFile(path.to_path_buf()));
                                 ctx.set(BasePath(base));
                                 ctx.set(RootBase(root_base.clone()));
                                 ctx.set(Recursion(recursion));
@@ -466,10 +503,7 @@ where
 
 impl Config {
     pub fn load_default() -> Self {
-        let res = Config::parse(
-            Path::new("default-config.kdl"),
-            include_str!("../../resources/default-config.kdl"),
-        );
+        let res = Config::parse_inner(Path::new("default-config.kdl"), DEFAULT_CONFIG, None);
 
         // Includes in the default config can break its parsing at runtime.
         assert!(
@@ -497,7 +531,26 @@ impl Config {
         })
     }
 
+    /// Parses the config at `path`, with the running engine's file read from disk.
     pub fn parse(path: &Path, text: &str) -> ConfigParseResult<Self, ConfigIncludeError> {
+        Self::parse_with_engine(path, text, |path| fs::read_to_string(path))
+    }
+
+    /// Parses the config at `path`, with `read_engine` reading the running engine's file from the
+    /// path it gets, like `fs::read_to_string`. A file that isn't found is an empty one.
+    pub fn parse_with_engine(
+        path: &Path,
+        text: &str,
+        read_engine: impl FnOnce(&Path) -> std::io::Result<String>,
+    ) -> ConfigParseResult<Self, ConfigIncludeError> {
+        Self::parse_inner(path, text, Some(Box::new(read_engine)))
+    }
+
+    fn parse_inner(
+        path: &Path,
+        text: &str,
+        read_engine: Option<Box<ReadEngine<'_>>>,
+    ) -> ConfigParseResult<Self, ConfigIncludeError> {
         let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let filename = path
             .file_name()
@@ -513,6 +566,7 @@ impl Config {
             filename,
             text,
             |ctx| {
+                ctx.set(CurrentFile(path.to_path_buf()));
                 ctx.set(BasePath(base.clone()));
                 ctx.set(RootBase(base));
                 ctx.set(Recursion(0));
@@ -524,20 +578,58 @@ impl Config {
             },
         );
 
-        let includes = includes.take().0;
+        let mut includes = includes.take().0;
         let include_errors = include_errors.take().0;
-        let config = part
-            .map(|_| config.take())
-            .map_err(move |err| ConfigIncludeError {
-                main: err,
-                includes: include_errors,
-            });
+        let mut part = part.map_err(move |err| ConfigIncludeError {
+            main: err,
+            includes: include_errors,
+        });
 
+        // The engine's file goes last, once the main config has said which engine runs.
+        if let (Ok(_), Some(read_engine)) = (&part, read_engine) {
+            let engine_path = engine_config_path(path, &config.borrow().tiling.layout);
+            // Watched even while it doesn't exist, so creating it applies it.
+            includes.push(engine_path.clone());
+            match read_engine(&engine_path) {
+                Ok(text) => {
+                    let parent = path.parent().unwrap_or(Path::new(""));
+                    let name = engine_path.strip_prefix(parent).unwrap_or(&engine_path);
+                    let name = name.to_string_lossy();
+                    let engine = knuffel::parse_with_context::<EnginePart, knuffel::span::Span, _>(
+                        &name,
+                        &text,
+                        |ctx| {
+                            let base = engine_path.parent().map(Path::to_path_buf);
+                            ctx.set(BasePath(base.unwrap_or_default()));
+                            ctx.set(CurrentFile(engine_path.clone()));
+                            ctx.set(EngineFile);
+                            ctx.set(config.clone());
+                        },
+                    );
+                    if let Err(err) = engine {
+                        part = Err(ConfigIncludeError {
+                            main: err,
+                            includes: Vec::new(),
+                        });
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => (),
+                Err(err) => warn!("error reading {engine_path:?}: {err}"),
+            }
+        }
+
+        let config = part.map(|_| config.take());
         ConfigParseResult { config, includes }
     }
 
+    /// Parses a config that isn't on disk, without an engine file.
     pub fn parse_mem(text: &str) -> Result<Self, ConfigIncludeError> {
-        Self::parse(Path::new("config.kdl"), text).config
+        Self::parse_inner(Path::new("config.kdl"), text, None).config
+    }
+
+    /// Parses a config that isn't on disk, with `engine` as the running engine's file.
+    pub fn parse_mem_with_engine(text: &str, engine: &str) -> Result<Self, ConfigIncludeError> {
+        Self::parse_with_engine(Path::new("config.kdl"), text, |_| Ok(engine.to_owned())).config
     }
 }
 
@@ -573,7 +665,39 @@ impl ConfigPath {
             })
             .map_config_res(|res| res.context("error loading config"));
 
-        (created_at, result)
+        (created_at, self.create_engine_config(result))
+    }
+
+    /// Loads the config like [`ConfigPath::load`], first writing the running built-in engine's
+    /// default file if it has none. For the compositor, which runs the engine.
+    pub fn load_and_create_engine_config(&self) -> ConfigParseResult<Config, miette::Report> {
+        let result = self.load();
+        self.create_engine_config(result)
+    }
+
+    /// Writes the default file of the built-in engine that a loaded config runs, if it has none
+    /// yet, and loads the config again with it.
+    fn create_engine_config(
+        &self,
+        result: ConfigParseResult<Config, miette::Report>,
+    ) -> ConfigParseResult<Config, miette::Report> {
+        let path = match self {
+            ConfigPath::Explicit(path) => path,
+            ConfigPath::Regular {
+                user_path,
+                system_path,
+            } => {
+                if user_path.exists() {
+                    user_path
+                } else {
+                    system_path
+                }
+            }
+        };
+        match &result.config {
+            Ok(config) if tiling::create_engine_config(path, &config.tiling.layout) => self.load(),
+            _ => result,
+        }
     }
 
     fn load_inner<'a>(
@@ -793,7 +917,7 @@ mod tests {
             binds {
                 Mod+Q {
                     close-window;
-                    press { center-column; }
+                    press { center-floating-window; }
                 }
             }
             "#,
@@ -806,7 +930,7 @@ mod tests {
             binds {
                 Mod+Q {
                     close-window;
-                    center-column;
+                    center-floating-window;
                 }
             }
             "#,
@@ -819,7 +943,7 @@ mod tests {
             binds {
                 Mod+Q {
                     press { close-window; }
-                    center-column;
+                    center-floating-window;
                 }
             }
             "#,
@@ -832,7 +956,7 @@ mod tests {
             binds {
                 Mod+Q {
                     press { close-window; }
-                    press { center-column; }
+                    press { center-floating-window; }
                 }
             }
             "#,
@@ -843,7 +967,7 @@ mod tests {
             r#"
             binds {
                 Mod+Q {
-                    center-column;
+                    center-floating-window;
                     release { close-window; }
                 }
             }
@@ -856,7 +980,7 @@ mod tests {
             binds {
                 Mod+Q {
                     release { close-window; }
-                    center-column;
+                    center-floating-window;
                 }
             }
             "#,
@@ -1006,7 +1130,7 @@ mod tests {
                     release { close-window; }
                 }
                 Alt_R {
-                    release { center-column; }
+                    release { center-floating-window; }
                 }
             }
             "#,
@@ -1093,7 +1217,7 @@ mod tests {
             r#"
             binds {
                 Alt_L { close-window; }
-                Alt+Alt_L { center-column; }
+                Alt+Alt_L { center-floating-window; }
             }
             "#,
             "duplicate keybind later defined here",
@@ -1102,7 +1226,7 @@ mod tests {
             r#"
             binds {
                 Alt { close-window; }
-                Alt+Alt { center-column; }
+                Alt+Alt { center-floating-window; }
             }
             "#,
             "duplicate keybind later defined here",
@@ -1111,7 +1235,7 @@ mod tests {
             r#"
             binds {
                 Mod { close-window; }
-                Mod+Mod { center-column; }
+                Mod+Mod { center-floating-window; }
             }
             "#,
             "duplicate keybind later defined here",
@@ -1424,8 +1548,7 @@ mod tests {
                 Mod+Shift+O { focus-monitor "eDP-1"; }
                 Mod+Ctrl+Shift+L { move-window-to-monitor-right; }
                 Mod+Ctrl+Alt+O { move-window-to-monitor "eDP-1"; }
-                Mod+Ctrl+Alt+P { move-column-to-monitor "DP-1"; }
-                Mod+Comma { consume-window-into-column; }
+                Mod+Comma { center-floating-window; }
                 Mod+1 { focus-workspace 1; }
                 Mod+Shift+1 { focus-workspace "workspace-1"; }
                 Mod+Shift+E allow-inhibiting=false { quit skip-confirmation=true; }
@@ -2660,27 +2783,6 @@ mod tests {
                     Bind {
                         key: Key {
                             trigger: Keysym(
-                                XK_p,
-                            ),
-                            modifiers: Modifiers(
-                                CTRL | ALT | COMPOSITOR,
-                            ),
-                        },
-                        action: Press(
-                            MoveColumnToMonitor(
-                                "DP-1",
-                            ),
-                        ),
-                        repeat: true,
-                        pass_through: None,
-                        cooldown: None,
-                        allow_when_locked: false,
-                        allow_inhibiting: true,
-                        hotkey_overlay_title: None,
-                    },
-                    Bind {
-                        key: Key {
-                            trigger: Keysym(
                                 XK_comma,
                             ),
                             modifiers: Modifiers(
@@ -2688,7 +2790,7 @@ mod tests {
                             ),
                         },
                         action: Press(
-                            ConsumeWindowIntoColumn,
+                            CenterFloatingWindow,
                         ),
                         repeat: true,
                         pass_through: None,
@@ -2840,6 +2942,7 @@ mod tests {
                     },
                 ],
             ),
+            bind_files: BindFiles(16),
             switch_events: SwitchBinds {
                 lid_open: None,
                 lid_close: None,
@@ -3101,6 +3204,9 @@ mod tests {
 
         -                0.6666666666666666,
         +                0.66667,
+
+        -    bind_files: BindFiles(0),
+        +    bind_files: BindFiles(98),
         "#,
         );
     }

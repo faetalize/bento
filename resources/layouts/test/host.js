@@ -238,11 +238,6 @@ export class TestHost {
         return true;
     }
 
-    /** Asks the engine which windows go along with `id` to another workspace. */
-    transferOut(id) {
-        return this.send({ type: "transfer-out", id }).result;
-    }
-
     newWindowSize(info = {}) {
         return this.send({
             type: "new-window-size",

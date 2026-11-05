@@ -32,6 +32,9 @@ export function load(module) {
 
     const actions = meta.actions ?? {};
     const options = meta.options ?? {};
+    const actionArgs = new Map(
+        Object.entries(actions).map(([name, spec]) => [name, checkArgs(name, spec?.args)]),
+    );
     for (const [name, spec] of Object.entries(options)) {
         if (!["boolean", "number", "string"].includes(spec.type)) {
             throw new Error(`option ${name} has an unknown type: ${spec.type}`);
@@ -52,15 +55,79 @@ export function load(module) {
         actions: Object.entries(actions).map(([name, spec]) => ({
             name,
             description: text(spec?.description),
-            args: Array.isArray(spec?.args)
-                ? spec.args.filter((arg) => typeof arg === "string")
-                : [],
+            args: actionArgs.get(name),
         })),
         options: Object.entries(options).map(([name, spec]) => ({
             name,
             default: spec.default,
             description: text(spec.description),
         })),
+    });
+}
+
+const ARG_TYPES = ["boolean", "number", "string", "choice", "size"];
+
+/**
+ * Checks the arguments that action `name` declares, and returns them as bento reads them. An
+ * action that declares none takes none. A plain string, the older way to declare an argument, is
+ * an argument of any type that may be left out.
+ */
+function checkArgs(name, args) {
+    if (args === undefined) {
+        return [];
+    }
+    if (!Array.isArray(args)) {
+        throw new Error(`the arguments of action ${name} must be an array`);
+    }
+    let optional = false;
+    return args.map((arg, i) => {
+        if (typeof arg === "string") {
+            arg = { name: arg };
+        }
+        const label = `argument ${i + 1} of action ${name}`;
+        if (arg === null || typeof arg !== "object" || typeof arg.name !== "string") {
+            throw new Error(`${label} must have a name`);
+        }
+        const type = arg.type ?? null;
+        if (type !== null && !ARG_TYPES.includes(type)) {
+            throw new Error(`${label} has an unknown type: ${type}`);
+        }
+        const choices = arg.choices ?? [];
+        if (type === "choice") {
+            if (!Array.isArray(choices) || choices.length === 0) {
+                throw new Error(`${label} is a choice, so it needs a list of choices`);
+            }
+            if (!choices.every((choice) => typeof choice === "string")) {
+                throw new Error(`the choices of ${label} must be strings`);
+            }
+        }
+        const value = arg.default ?? null;
+        if (type === null) {
+            // Untyped arguments aren't checked, so they never have to be given.
+        } else if (value !== null) {
+            const valid = {
+                boolean: typeof value === "boolean",
+                number: typeof value === "number",
+                string: typeof value === "string",
+                choice: choices.includes(value),
+                size: typeof value === "string",
+            }[type];
+            if (!valid) {
+                throw new Error(`the default of ${label} doesn't fit its type`);
+            }
+            optional = true;
+        } else if (optional) {
+            // Arguments are given in order, so one that must be given can't follow one that can
+            // be left out.
+            throw new Error(`${label} has no default, but an argument before it has one`);
+        }
+        return {
+            name: arg.name,
+            type,
+            default: value,
+            choices: type === "choice" ? choices : [],
+            description: typeof arg.description === "string" ? arg.description : null,
+        };
     });
 }
 
@@ -583,38 +650,6 @@ class Instance {
             case "resize-end": {
                 const win = this.mustWindow(event.id);
                 return this.run(false, () => layout.resizeEnd?.(win));
-            }
-            case "transfer-in": {
-                const wins = event.windows.map((info) => this.addWindow(info));
-                return this.run(false, () => {
-                    if (typeof layout.transferIn === "function") {
-                        layout.transferIn(wins, event.data ?? null, { activate: event.activate });
-                    } else {
-                        wins.forEach((win, i) =>
-                            layout.windowAdded(win, {
-                                reason: "move",
-                                activate: event.activate && i === 0,
-                                rect: null,
-                                pointer: null,
-                                nextTo: null,
-                            }),
-                        );
-                    }
-                });
-            }
-            case "transfer-out": {
-                const win = this.mustWindow(event.id);
-                return this.query(() => {
-                    const transfer =
-                        typeof layout.transferOut === "function"
-                            ? layout.transferOut(win)
-                            : { windows: [win] };
-                    const ids = transfer.windows.map((w) => this.mustWindow(w.id).id);
-                    if (!ids.includes(win.id)) {
-                        throw new Error("transferOut must include the window itself");
-                    }
-                    return { windows: ids, data: transfer.data ?? null };
-                });
             }
             case "drop-target": {
                 return this.query(() => {
