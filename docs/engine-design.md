@@ -276,6 +276,12 @@ Each workspace has its own tree. Workspaces and monitors aren't nodes: bento com
 workspaces itself, since switching between them and the overview are bento's, and an engine
 transforming a workspace would fight bento's animations.
 
+bento draws the tree with its own renderer, on smithay's, and borrows little else from a
+browser. Nodes come in a few kinds: boxes (a fill, a border and a corner radius), text, images,
+and windows. Any node can have a transform, opacity, clipping and transitions. Pointer events hit
+the topmost node under the pointer and bubble up to its parents, like the DOM's. There's no layout
+system, since engines do their own layout, and no browser engine underneath.
+
 Engines only ever draw inside workspaces. Anything above them on a monitor, like a panel, an OSD
 or a mini-map of an engine's columns, is the shell's job, and the shell can read the engine's
 state to draw it.
@@ -324,8 +330,9 @@ without bindings, it can be inspected with `bento msg -j`, and it works without 
 connection.
 
 The socket's format belongs to bento and its own programs, and can change at any time.
-Compatibility with niri's IPC isn't a goal. Third-party shells get the basics through standard
-Wayland protocols (`ext-workspace`, foreign-toplevel, output management).
+Compatibility with niri's IPC isn't a goal, and bento has no niri IPC socket: shells written for
+niri, like noctalia, lose what they read from it. Third-party shells get the basics through
+standard Wayland protocols (`ext-workspace`, foreign-toplevel, output management).
 
 Wayland protocols are only for things tied to a surface, like background effects, since only
 Wayland knows which window is which.
@@ -459,12 +466,3 @@ as planned there. The order agreed on:
 
 The other planned pages in bento Settings (Displays, Workspaces, Window Rules, Gestures, Startup
 Apps) and bento's own shell come after, in no agreed order yet.
-
-## Open questions
-
-- **How much of a browser to borrow.** Engines describing a retained tree that bento renders and
-  animates is a browser's compositor model. Not decided yet: which other parts to take (property
-  trees for transform, clip and effects; hit testing and events bubbling up the tree), how small
-  the vocabulary of drawable nodes stays (shapes, text, images, window contents and transitions,
-  with no layout system, since engines do their own layout), and whether to reuse Servo's crates,
-  like WebRender, or write it on smithay's renderer.

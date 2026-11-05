@@ -1,31 +1,35 @@
-// Types for bento layout engines, API version 1.
+// Types for bento layout engines, API version 2.
 //
-// A layout engine decides how a whole workspace behaves, out of the small primitives that bento
-// gives it: where tiled windows go, focus, the camera, and what actions do. It's a single ES module
-// that bento loads from the `tiling` section of its config:
+// A layout engine runs the presentation of the whole session: where windows go, focus, cameras,
+// what actions do, and anything it draws. bento runs one instance of it, which sees every monitor,
+// workspace and window. It's a single ES module that bento loads from the main config:
 //
 //     tiling {
 //         layout "bento"              // built in; also "niri", or a path to a .js file
-//         options {
-//             gravity true            // options that the engine declares in `meta.options`
-//         }
 //     }
 //
-// The module exports `meta`, describing the engine, and a default function that creates the engine
-// for one workspace:
+// The engine's options, binds and window rules live in its own .kdl file, see
+// `docs/engine-design.md`.
 //
-//     export const meta = { api: 1, name: "my-engine", actions: { ... }, options: { ... } };
-//     export default function create(ws) { return { windowAdded(win, how) { ... }, ... }; }
+// The module exports `meta`, describing the engine, and a default function that creates it:
 //
-// bento owns windows, rendering, animations, and the camera's motion. The engine owns everything
-// else: where windows go, which window has focus, where the camera points, and what actions do.
+//     export const meta = { api: 2, name: "my-engine", actions: { ... }, options: { ... } };
+//     export default function create(bento) {
+//         bento.addEventListener("windowadd", (e) => { ... });
+//     }
 //
-// Coordinates are logical pixels on the workspace canvas, which is unbounded in every direction.
-// The camera is the top-left corner of the visible view on the canvas. Window rects are tile rects:
-// they include borders, see `Window.borders`.
+// bento defines the objects (monitors, workspaces, windows, groups) and owns the workspace
+// structure, floating, panels, the lock screen and drawing. Engines read objects through
+// read-only properties and change them with methods. A method call can be refused, and returns
+// whether it worked. Engines learn about changes from events, the way the DOM works.
 //
-// Engines run in a sandbox: there is no file, network or module access, and every call has a time
-// and memory limit. Calls are synchronous, and bento applies what a call did when it returns.
+// Coordinates are logical pixels on a workspace's canvas, which is unbounded in every direction.
+// A workspace's camera is the top-left corner of the visible view on its canvas. Window rects
+// include borders, see `Window.borders`.
+//
+// Engines run in a sandbox: there is no file, network or module access, and every call has a
+// time and memory limit. Calls are synchronous, and bento applies what a call changed when it
+// returns. API version 1 engines (`bento-layout-v1.d.ts`) still run, one instance per workspace.
 
 export interface Point {
     x: number;
@@ -44,19 +48,12 @@ export interface Rect {
     h: number;
 }
 
-/**
- * A size from the config or window rules: a proportion of the working area, or fixed pixels. Like
- * in niri, a fixed size is for the window itself, without its borders.
- */
+/** A size from options or window rules, written `"50%"` or `"800"` in the .kdl file. */
 export type Preset = { proportion: number } | { fixed: number };
 
-/** How a window is sized, as the window is told. */
-export type SizingMode = "normal" | "fullscreen" | "maximized";
-
 /**
- * A size change from an action argument of type `"size"`, like `"+10%"`.
- *
- * `"%"` values are percentages of the working area, like in the config.
+ * A size change from an action argument of type `"size"`, written like `"+10%"`. `"%"` values are
+ * percentages of the working area.
  */
 export interface SizeChange {
     op: "set" | "adjust";
@@ -64,338 +61,543 @@ export interface SizeChange {
     unit: "px" | "%";
 }
 
-export interface WindowRules {
-    /** `default-column-width` from the window rules or the layout config; `null` if unset. */
-    defaultWidth: Preset | null;
-    /** `default-window-height` from the window rules; `null` if unset. */
-    defaultHeight: Preset | null;
-    /** `default-column-display` from the window rules or the layout config. */
-    defaultColumnDisplay: "normal" | "tabbed";
-    /** Whether the window opens as wide as the view, from `open-maximized`. */
-    openFullWidth: boolean;
-}
+/** How a window is sized, as the window is told. */
+export type SizingMode = "normal" | "fullscreen" | "maximized";
 
-/** A tiled window. Objects stay the same for the lifetime of the window on a workspace. */
-export interface Window {
-    readonly id: number;
-    readonly appId: string | null;
-    readonly title: string | null;
-    /** Tile size the window has right now. Windows don't always take the size they're given. */
-    readonly size: Size;
-    /** Smallest tile size the window accepts; 0 means no limit. */
-    readonly minSize: Size;
-    /** Largest tile size the window accepts; 0 means no limit. */
-    readonly maxSize: Size;
-    /** Total width and height of the borders around the window, included in tile sizes. */
-    readonly borders: Size;
-    /** Sizing mode the window was last told to take. */
-    readonly mode: SizingMode;
-    readonly rules: WindowRules;
-    readonly isUrgent: boolean;
-    /**
-     * Where the engine last placed the window, or `null` if it hasn't yet. In `adopt`, where the
-     * window was before the engine took over.
-     */
-    readonly rect: Rect | null;
-    /** Whether the window is shown. */
-    readonly visible: boolean;
-    /**
-     * Whether the engine marked the window as the active one in its column, see
-     * `Workspace.setActiveInColumn`, or `null` if it hasn't.
-     */
-    readonly activeInColumn: boolean | null;
-    /**
-     * What this engine stored on the window with `Workspace.setWindowData`, or `null`. It stays
-     * with the window when it moves to another workspace, floats and comes back, or is dragged,
-     * as long as the same engine gets it.
-     */
-    readonly data: unknown;
-}
+// Declarations.
 
-export interface View {
-    /** Size of the output. */
-    readonly size: Size;
-    /** Part of the view not covered by panels and other exclusive layer surfaces. */
-    readonly workingArea: Rect;
-    /**
-     * `workingArea` minus the struts from the config, starting at a physical pixel: where tiled
-     * windows go, if the engine follows the config's struts.
-     */
-    readonly tilingArea: Rect;
-    /** Output scale. Place windows on physical pixels to keep them sharp, see `Workspace.round`. */
-    readonly scale: number;
-}
+export type ValueType = "boolean" | "number" | "string" | "choice" | "size";
 
-/** The `layout {}` section of the config, which engines may follow or ignore. */
-export interface LayoutConfig {
-    readonly gaps: number;
-    /** Space to leave around tiled windows, already taken out of `View.tilingArea`. */
-    readonly struts: { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number };
-    readonly centerFocusedColumn: "never" | "always" | "on-overflow";
-    readonly alwaysCenterSingleColumn: boolean;
-    readonly defaultColumnWidth: Preset | null;
-    readonly presetColumnWidths: readonly Preset[];
-    readonly presetWindowHeights: readonly Preset[];
-    readonly defaultColumnDisplay: "normal" | "tabbed";
-    /** The tab indicator that bento draws for tab bars, see `Workspace.setTabBar`. */
-    readonly tabIndicator: TabIndicatorConfig;
-}
-
-export interface TabIndicatorConfig {
-    readonly off: boolean;
-    readonly position: "left" | "right" | "top" | "bottom";
-    /** Thickness of the indicator. */
-    readonly width: number;
-    /** Space between the indicator and the tabs; negative to overlap them. */
-    readonly gap: number;
-    /**
-     * Whether the indicator goes inside the tabbed area, so the windows should leave
-     * `width + gap` free on the indicator's side, see `Workspace.tabIndicatorSpace`.
-     */
-    readonly placeWithinColumn: boolean;
-    readonly hideWhenSingleTab: boolean;
-}
-
-/** Windows shown as tabs in one area, see `Workspace.setTabBar`. */
-export interface TabBar {
-    /** Where the tabs are; bento draws the indicator along this rect, as the config says. */
-    area: Rect;
-    /** The tabs, in order. */
-    windows: Window[];
-    /** The tab that's shown. */
-    active: Window;
-}
-
-export type OptionValue = boolean | number | string;
-
-/** Options an engine accepts in the `tiling { options {} }` section of the config. */
+/**
+ * An option, or a property an engine's window rules can set. Values are written in the engine's
+ * .kdl file: `center-focused-column "never"`, `preset-column-widths "33%" "50%" "67%"`.
+ */
 export interface OptionSpec {
-    type: "boolean" | "number" | "string";
-    default: OptionValue;
+    /** `"size"` values reach the engine as a `Preset`. */
+    type: ValueType;
+    /** Whether the value is a list, written as several arguments. */
+    list?: boolean;
+    default: unknown;
+    /** The values a `"choice"` accepts. */
+    choices?: string[];
     description?: string;
 }
 
-/** An action an engine handles. */
+/**
+ * An argument of an action. bento checks binds against it, and settings screens use it to offer
+ * the right field.
+ */
+export interface ArgSpec {
+    name: string;
+    /**
+     * - `"size"`: written like `"50%"`, `"+10%"`, `"800"` or `"-100"`; the engine gets a
+     *   `SizeChange`.
+     * - `"workspace"`: written as an index on the focused monitor, counting from 1, or a
+     *   workspace name; the engine gets a `Workspace`, or `null` when there's no such workspace.
+     * - `"monitor"`: written as a connector name like `"DP-2"`; the engine gets a `Monitor`, or
+     *   `null`.
+     */
+    type: ValueType | "workspace" | "monitor";
+    /** Value when the argument is left out. Arguments without one must be given. */
+    default?: boolean | number | string;
+    choices?: string[];
+    description?: string;
+}
+
 export interface ActionSpec {
     description?: string;
     /** The action's arguments, in order. An action without `args` takes none. */
     args?: ArgSpec[];
 }
 
-/**
- * An argument of an action. bento checks binds against it, and settings screens use it to offer
- * the right field. The engine gets the arguments in `Layout.action`, with defaults filled in.
- */
-export interface ArgSpec {
-    name: string;
-    /**
-     * - `"choice"`: one of `choices`.
-     * - `"size"`: a size or a change to one, written like `"50%"`, `"+10%"`, `"800"` or `"-100"`.
-     *   The engine gets it as a `SizeChange`.
-     */
-    type: "boolean" | "number" | "string" | "choice" | "size";
-    /** Value when the argument is left out. Arguments without one must be given. */
-    default?: OptionValue;
-    /** The values a `"choice"` argument accepts. */
-    choices?: string[];
-    description?: string;
-}
-
 export interface Meta {
-    /** API version the engine is written for. */
-    api: 1;
+    api: 2;
     name: string;
     description?: string;
     /**
-     * Every action the engine has. bento only sends an engine the actions it declares.
-     *
-     * Actions are bound by name in the engine's .kdl file, like `Mod+R { resize 2; }`, and run
-     * from the command line with `layout-action "name" args...`. An action can't take the name of
-     * one of bento's own actions, like `spawn`: the engine fails to load if it does. Fullscreen
-     * and maximize actions are bento's, and arrive as `Layout.modeRequested`.
+     * Every action the engine has. bento only sends an engine the actions it declares. An action
+     * can't take the name of one of bento's own actions: the engine fails to load if it does.
      */
     actions?: Record<string, ActionSpec>;
     options?: Record<string, OptionSpec>;
+    /**
+     * Properties the engine's window rules can set, like `default-column-width`. Rules are
+     * written in the engine's .kdl file with the same `match` and `exclude` as bento's own, and
+     * reach the engine resolved, as `Window.rules`.
+     */
+    windowRules?: Record<string, OptionSpec>;
+    /**
+     * Whether bento's floating layer exists under this engine; true by default. With it off,
+     * windows that ask to float stay with the engine, which gets `floatrequest`.
+     */
+    floating?: boolean;
 }
 
-/** Why a window is added to the engine. */
+// Events.
+
+/** A DOM-style event. Listeners run in the order they were added. */
+export interface BentoEvent {
+    readonly type: string;
+    /** The object the event is for. */
+    readonly target: unknown;
+    readonly defaultPrevented: boolean;
+    /** Stops bento's default for a cancelable event, where its description says what that is. */
+    preventDefault(): void;
+    /** Stops a node event from bubbling to the node's parents. */
+    stopPropagation(): void;
+}
+
+/** An event that asks the engine for an answer. bento uses the first answer given. */
+export interface QueryEvent<T> extends BentoEvent {
+    respondWith(value: T): void;
+}
+
+export interface EventTarget<Events> {
+    addEventListener<K extends keyof Events>(type: K, listener: (e: Events[K]) => void): void;
+    removeEventListener<K extends keyof Events>(type: K, listener: (e: Events[K]) => void): void;
+}
+
+/** Why a window comes to the engine. */
 export type AddReason =
     /** A new window opened. */
     | "open"
-    /** The window was on the workspace when the engine took over, see `Layout.adopt`. */
+    /** The window was there when the engine started, see `Bento.savedState`. */
     | "adopt"
-    /** The window was moved here from another workspace or output. */
-    | "move"
-    /** The window was dropped here at the end of a drag. */
+    /** The window was dropped at the end of a pointer drag. */
     | "drop"
     /** The window stopped floating. */
     | "tile";
 
-export interface AddInfo {
-    reason: AddReason;
+export interface WindowAddEvent extends BentoEvent {
+    readonly window: Window;
+    readonly reason: AddReason;
     /** Whether the window should get focus. */
-    activate: boolean;
+    readonly activate: boolean;
     /**
-     * Where the window was on this canvas: before the engine took over, while floating, or where a
-     * dragged window was dropped. A hint, which the engine is free to ignore.
+     * Where the window was on its workspace's canvas: before the engine started, while floating,
+     * or where it was dropped. A hint, which the engine is free to ignore.
      */
-    rect: Rect | null;
+    readonly rect: Rect | null;
     /** Pointer position on the canvas, when the window was dropped. */
-    pointer: Point | null;
+    readonly pointer: Point | null;
     /** For a new window, the window it's related to, like a dialog's parent. */
-    nextTo: Window | null;
+    readonly nextTo: Window | null;
 }
 
-/** Why a window is removed from the engine. */
-export type RemoveReason = "close" | "move" | "drag" | "float";
+/** Why a window leaves the engine. */
+export type RemoveReason = "close" | "drag" | "float";
 
-/** A pointer drag resizing a window. */
-export interface Resize {
-    edges: { left: boolean; right: boolean; top: boolean; bottom: boolean };
-    /** How far the pointer has moved since the drag started. */
-    delta: Point;
+export interface WindowRemoveEvent extends BentoEvent {
+    readonly reason: RemoveReason;
 }
 
-/** The workspace an engine instance manages, and everything the engine can do to it. */
-export interface Workspace {
-    /** Tiled windows the engine manages, bottom to top. */
-    readonly windows: readonly Window[];
-    readonly focused: Window | null;
-    readonly view: View;
-    /** Where the camera is going, if it's moving, or where it is. */
-    readonly camera: Point;
-    readonly config: LayoutConfig;
-    /** Values of the engine's options, with defaults filled in. */
-    readonly options: Readonly<Record<string, OptionValue>>;
-
-    /** Finds a window by id. */
-    window(id: number): Window | null;
-
-    /**
-     * Puts a window at `rect` on the canvas and asks it to take that size. Placing a window where
-     * it already is does nothing, so an engine can place every window after each change.
-     */
-    place(win: Window, rect: Rect, opts?: { animate?: boolean }): void;
-    /** Shows or hides a window, for example the inactive tabs of a tabbed column. */
-    setVisible(win: Window, visible: boolean): void;
-    /**
-     * Marks whether a window is the active one in its column, for the `is-active-in-column`
-     * window rule, like the window of a column that was focused last. What a column is is up to
-     * the engine. Windows the engine doesn't mark count as active while they're shown.
-     */
-    setActiveInColumn(win: Window, active: boolean): void;
-    /** Tells a window to be fullscreen, maximized or normal. The engine still places it. */
-    setMode(win: Window, mode: SizingMode): void;
-    /** Moves a window to the top, so it draws above windows that it overlaps. */
-    raise(win: Window): void;
-    /** Gives a window focus, or none. */
-    focus(win: Window | null): void;
-    /**
-     * Moves the camera. Coordinates left out stay as they are. While a swipe gesture moves the
-     * camera, bento ignores this; the engine gets `gestureEnd` when the swipe ends.
-     */
-    moveCamera(to: Partial<Point>, opts?: { animate?: boolean }): void;
-    /** Stores anything JSON-serializable on a window, see `Window.data`. */
-    setWindowData(win: Window, data: unknown): void;
-    /**
-     * Shows a highlight on the canvas, like around a window picked for a two-step action, or
-     * hides it with `null`. While a window is dragged, bento highlights `dropTarget` instead.
-     * Setting the same highlight again does nothing.
-     */
-    setHint(rect: Rect | null): void;
-    /**
-     * Draws a tab indicator for windows shown as tabs, or removes it with `null`. `key` tells
-     * tab bars apart, so that each keeps its animations; any string. Clicking a tab activates its
-     * window through `Layout.activate`. Hiding inactive tabs is up to the engine. Setting the same
-     * tab bar again does nothing.
-     */
-    setTabBar(key: string, bar: TabBar | null): void;
-    /** Keys of the tab bars shown, to remove the ones that went away. */
-    readonly tabBars: readonly string[];
-    /**
-     * Space the tab indicator takes inside a tabbed area of `count` tabs, from the config: `w` and
-     * `h` to leave free across and down, and `x` and `y` for how far the tabs start from the
-     * area's left and top edges. All 0 when the indicator goes outside the area or is hidden.
-     */
-    tabIndicatorSpace(count: number): Rect;
-    /** Rounds a coordinate to physical pixels. */
-    round(value: number): number;
-    /** Writes to bento's log. */
-    log(...args: unknown[]): void;
+/** bento moved a window to another workspace, with one of its own actions. */
+export interface WindowMoveEvent extends BentoEvent {
+    readonly from: Workspace;
+    readonly to: Workspace;
+    /** Whether the window should get focus. */
+    readonly activate: boolean;
 }
 
 /**
- * A layout engine for one workspace, as returned by the module's default export.
- *
- * Every window in the engine must have a rect after each call; a new window that the engine
- * doesn't place gets put in the middle of the view.
+ * The window, or an action, asks for a sizing mode. `request` says exactly what changes:
+ * `{ fullscreen: false }` leaves fullscreen, which can go back to maximized. `mode` is the mode
+ * that results if nothing else is on. Cancelable: by default the window takes `mode`.
  */
-export interface Layout {
-    /** A window is added. Place it, and focus it if `how.activate` is set. */
-    windowAdded(win: Window, how: AddInfo): void;
-    /** A window is removed. It's already gone from `ws.windows`. */
-    windowRemoved(win: Window, how: { reason: RemoveReason }): void;
-
-    /**
-     * The engine takes over a workspace that already has windows: when it starts, when the
-     * config switches engines, or when the engine's file is reloaded. The windows' `rect` is
-     * where they were. If the same engine saved state with `save`, it gets it back as `state`.
-     *
-     * Defaults to adding each window with reason `"adopt"`.
-     */
-    adopt?(windows: Window[], focused: Window | null, state: unknown): void;
-    /** State to keep when the engine is reloaded. Anything JSON-serializable. */
-    save?(): unknown;
-
-    /** Runs an action. Returns whether it did anything, for actions that fall back to others. */
-    action?(name: string, args: unknown[], target: Window | null): boolean;
-    /** Something wants focus on a window: a click, an app, or IPC. Defaults to focusing it. */
-    activate?(win: Window): void;
-    /**
-     * The window, or an action, asks for a sizing mode. `request` says exactly what changes:
-     * `{ fullscreen: false }` leaves fullscreen, which can go back to maximized, while
-     * `{ maximized: false }` leaves maximized. `mode` is the mode that results if nothing else is
-     * on. Defaults to `ws.setMode(win, mode)`.
-     */
-    modeRequested?(
-        win: Window,
-        mode: SizingMode,
-        request: { fullscreen?: boolean; maximized?: boolean },
-    ): void;
-    /** A swipe gesture starts moving the camera. Camera moves are ignored until `gestureEnd`. */
-    gestureBegin?(): void;
-
-    /** A window's size, limits, title or other properties changed. */
-    windowChanged?(win: Window): void;
-    /** The output size, working area or scale changed. */
-    viewChanged?(): void;
-    /** The config changed. */
-    configChanged?(): void;
-
-    /** A pointer drag starts resizing a window. Return false to refuse. */
-    resizeBegin?(win: Window, resize: Resize): boolean;
-    resizeUpdate?(win: Window, resize: Resize): void;
-    resizeEnd?(win: Window): void;
-
-    /**
-     * A swipe gesture that moved the camera ended. The camera is at `ws.camera`, moving at
-     * `velocity` (px/s), and would coast to `projected`. Snap it somewhere with `ws.moveCamera`;
-     * the animation continues from the swipe's speed. If the engine doesn't move it, the camera
-     * stays where the swipe left it.
-     */
-    gestureEnd?(velocity: Point, projected: Point): void;
-
-    // Queries. These must not change anything; bento discards changes they make.
-
-    /** Where a window dragged with the pointer at `pointer` would land, to highlight it. */
-    dropTarget?(win: Window, pointer: Point, rect: Rect): Rect | null;
-    /**
-     * Tile size to suggest to a new window before it opens, borders included like every size in
-     * this API; 0 lets the window choose.
-     */
-    newWindowSize?(info: { rules: WindowRules; minSize: Size; maxSize: Size; borders: Size }): Size;
-    /** Column and row of a window for IPC clients, 1-based, or `null`. */
-    ipcPosition?(win: Window): [number, number] | null;
+export interface ModeRequestEvent extends BentoEvent {
+    readonly mode: SizingMode;
+    readonly request: { fullscreen?: boolean; maximized?: boolean };
 }
 
-export type CreateLayout = (ws: Workspace) => Layout;
+/** Something wants focus on a window: a click, an app, or the socket. */
+export interface ActivateRequestEvent extends BentoEvent {
+    // Cancelable: by default bento shows the window's workspace, focuses its monitor and focuses
+    // the window.
+}
+
+/** With floating off, a window asks to float. */
+export interface FloatRequestEvent extends BentoEvent {
+    readonly reason: "dialog" | "rule" | "action";
+    /** For a dialog, its parent. */
+    readonly parent: Window | null;
+    /** The size the window asked for, or null. */
+    readonly size: Size | null;
+}
+
+export interface ActionEvent extends BentoEvent {
+    readonly name: string;
+    /** The arguments, with defaults filled in and values converted by type, see `ArgSpec`. */
+    readonly args: unknown[];
+    /** The window the action is for: the focused one, or one given on the command line. */
+    readonly window: Window | null;
+}
+
+export interface Edges {
+    left: boolean;
+    right: boolean;
+    top: boolean;
+    bottom: boolean;
+}
+
+/**
+ * A pointer drag starts resizing a window. Cancelable: bento refuses the resize when no listener
+ * handles it or one prevents it.
+ */
+export interface ResizeEvent extends BentoEvent {
+    readonly edges: Edges;
+    /** How far the pointer has moved since the drag started. */
+    readonly delta: Point;
+}
+
+/** A pointer drag carries a window over a workspace, for the engine to show where it would go. */
+export interface DragEvent extends BentoEvent {
+    readonly window: Window;
+    /** Pointer position on the workspace's canvas. */
+    readonly pointer: Point;
+    /** Where the dragged window is drawn. */
+    readonly rect: Rect;
+}
+
+/**
+ * A horizontal swipe on a workspace. bento only reports how the fingers move; the engine moves
+ * the camera, or does anything else, with it.
+ */
+export interface SwipeEvent extends BentoEvent {
+    /** How far the fingers moved since the last event, in logical pixels. */
+    readonly delta: number;
+    /** Speed at the end of the swipe, in px/s; 0 before the end. */
+    readonly velocity: number;
+    readonly touchpad: boolean;
+}
+
+export interface NewWindowSizeQuery extends QueryEvent<Size> {
+    /** The workspace the window will open on. */
+    readonly workspace: Workspace;
+    readonly rules: Readonly<Record<string, unknown>>;
+    readonly minSize: Size;
+    readonly maxSize: Size;
+    readonly borders: Size;
+}
+
+export interface UnloadEvent extends BentoEvent {
+    /**
+     * Keeps state for the next instance of this engine, after a reload. Anything
+     * JSON-serializable. It comes back as `Bento.savedState`.
+     */
+    saveState(state: unknown): void;
+}
+
+export interface BentoEvents {
+    windowadd: WindowAddEvent;
+    monitoradd: BentoEvent & { readonly monitor: Monitor };
+    workspaceadd: BentoEvent & { readonly workspace: Workspace };
+    groupadd: BentoEvent & { readonly group: Group };
+    action: ActionEvent;
+    /** The keyboard focus moved, to a window or to an empty workspace. */
+    focuschange: BentoEvent;
+    /** bento's config or the engine's options changed. */
+    configchange: BentoEvent;
+    newwindowsize: NewWindowSizeQuery;
+    unload: UnloadEvent;
+}
+
+export interface MonitorEvents {
+    /** Its size, scale, working area or neighbours changed. */
+    change: BentoEvent;
+    remove: BentoEvent;
+}
+
+export interface WorkspaceEvents {
+    /** Its name, monitor, place in the stack, or whether it's shown changed. */
+    change: BentoEvent;
+    remove: BentoEvent;
+    /** bento moved the camera itself, while a dragged window is near the view's edge. */
+    camerachange: BentoEvent;
+    dragenter: DragEvent;
+    dragmove: DragEvent;
+    dragleave: BentoEvent;
+    swipebegin: SwipeEvent;
+    swipeupdate: SwipeEvent;
+    swipeend: SwipeEvent;
+}
+
+export interface WindowEvents {
+    /** Its title, app id, size, size limits, urgency or rules changed. */
+    change: BentoEvent;
+    remove: WindowRemoveEvent;
+    move: WindowMoveEvent;
+    moderequest: ModeRequestEvent;
+    activaterequest: ActivateRequestEvent;
+    floatrequest: FloatRequestEvent;
+    resizebegin: ResizeEvent;
+    resizeupdate: ResizeEvent;
+    resizeend: BentoEvent;
+    /** A double click on one of the window's resize edges. */
+    edgedoubleclick: BentoEvent & { readonly edges: Edges };
+}
+
+export interface GroupEvents {
+    /** Windows joined or left it, or its active window changed. */
+    change: BentoEvent;
+    /** The group is gone: it was dissolved, or fewer than two windows are left. */
+    remove: BentoEvent;
+}
+
+export interface NodeEvents {
+    click: PointerEvent;
+    pointerdown: PointerEvent;
+    pointerup: PointerEvent;
+    pointermove: PointerEvent;
+    pointerenter: PointerEvent;
+    pointerleave: PointerEvent;
+    wheel: PointerEvent & { readonly delta: Point };
+}
+
+/** A pointer event on a drawn node. It bubbles to the node's parents. */
+export interface PointerEvent extends BentoEvent {
+    /** Pointer position on the workspace's canvas. */
+    readonly pointer: Point;
+    /** `1` left, `2` middle, `3` right; 0 for moves. */
+    readonly button: number;
+    readonly modifiers: { shift: boolean; ctrl: boolean; alt: boolean; super: boolean };
+}
+
+// Objects.
+
+/** bento's native settings that engines may follow: what works under every engine. */
+export interface Config {
+    readonly gaps: number;
+    /** Space to leave around tiled windows, already taken out of `Workspace.tilingArea`. */
+    readonly struts: { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number };
+}
+
+/** What `create(bento)` receives. */
+export interface Bento extends EventTarget<BentoEvents> {
+    readonly monitors: readonly Monitor[];
+    /** The monitor with keyboard focus. */
+    readonly focusedMonitor: Monitor | null;
+    /** The window with keyboard focus, if the engine places it. */
+    readonly focused: Window | null;
+    /** Every window the engine places, on every workspace. Floating windows aren't the engine's. */
+    readonly windows: readonly Window[];
+    readonly groups: readonly Group[];
+    /** The engine's options, from its .kdl file, with defaults filled in. */
+    readonly options: Readonly<Record<string, unknown>>;
+    /** State the previous instance of this engine saved in `unload`, or `null`. */
+    readonly savedState: unknown;
+
+    window(id: number): Window | null;
+    workspace(id: number): Workspace | null;
+    monitor(name: string): Monitor | null;
+
+    /** Groups windows, which leave any group they're in. Returns null for fewer than two. */
+    createGroup(windows: Window[], active?: Window): Group | null;
+
+    /**
+     * Makes the engine's state readable from outside: the shell, bento Settings and scripts read
+     * it through bento's socket. bento calls `provider` when someone reads it, and the result
+     * must be JSON-serializable. Its shape is the engine's own.
+     */
+    exposeState(provider: () => unknown): void;
+    /** Tells those watching the engine's state that it changed. */
+    stateChanged(): void;
+
+    /** Creates a node to draw, see `Node`. It shows once it's added to a workspace's tree. */
+    createNode(kind: "box" | "text" | "image", props?: NodeProps): Node;
+
+    log(...args: unknown[]): void;
+}
+
+export interface Monitor extends EventTarget<MonitorEvents> {
+    /** Connector name, like `"DP-2"`. */
+    readonly name: string;
+    readonly size: Size;
+    readonly scale: number;
+    /** The monitor minus panels and other exclusive layer surfaces, in view coordinates. */
+    readonly workingArea: Rect;
+    /** Its vertical stack of workspaces, top to bottom. */
+    readonly workspaces: readonly Workspace[];
+    readonly activeWorkspace: Workspace;
+    readonly focused: boolean;
+    /** Neighbouring monitors, from their positions, or null. */
+    readonly left: Monitor | null;
+    readonly right: Monitor | null;
+    readonly up: Monitor | null;
+    readonly down: Monitor | null;
+
+    /** Moves keyboard focus to this monitor: to its active workspace's focused window, if any. */
+    focus(): boolean;
+    /** Snaps a coordinate to physical pixels on this monitor. */
+    round(value: number): number;
+}
+
+export interface Workspace extends EventTarget<WorkspaceEvents> {
+    readonly id: number;
+    readonly name: string | null;
+    readonly monitor: Monitor;
+    /** Place in its monitor's stack, from 0 at the top. */
+    readonly index: number;
+    /** Windows the engine places on it, bottom to top. */
+    readonly windows: readonly Window[];
+    /** The window that has focus when this workspace does, or null. */
+    readonly focused: Window | null;
+    /** Whether it's the one its monitor shows. */
+    readonly active: boolean;
+    readonly camera: Camera;
+    /** bento's settings for this workspace, which can differ per monitor or workspace. */
+    readonly config: Config;
+    /** The monitor's working area minus the config's struts, starting at a physical pixel. */
+    readonly tilingArea: Rect;
+    /** The root of what's drawn on this workspace: window nodes and the engine's own nodes. */
+    readonly tree: Node;
+
+    /** Switches its monitor to it. */
+    show(opts?: { animate?: boolean }): boolean;
+    /** Moves it to another monitor, or within its stack, at `index` or at the end. */
+    moveTo(monitor: Monitor, index?: number): boolean;
+    /** Names it, or unnames it with null. */
+    rename(name: string | null): boolean;
+}
+
+export interface Window extends EventTarget<WindowEvents> {
+    readonly id: number;
+    readonly appId: string | null;
+    readonly title: string | null;
+    readonly workspace: Workspace;
+    /** Where the engine last placed it, or null if it hasn't yet. */
+    readonly rect: Rect | null;
+    /** The size it actually took. Windows don't always take the size they're given. */
+    readonly size: Size;
+    /** Smallest size it accepts; 0 means no limit. */
+    readonly minSize: Size;
+    /** Largest size it accepts; 0 means no limit. */
+    readonly maxSize: Size;
+    /** Total width and height of its borders, included in its rect. */
+    readonly borders: Size;
+    readonly mode: SizingMode;
+    readonly visible: boolean;
+    readonly urgent: boolean;
+    /** The engine's window rules that match it, resolved, by property name. */
+    readonly rules: Readonly<Record<string, unknown>>;
+    readonly group: Group | null;
+    /** The window's node in its workspace's tree. */
+    readonly node: Node;
+    /** What this engine stored on it, or null. It survives engine reloads. */
+    readonly data: unknown;
+
+    /**
+     * Puts it at `rect` on its workspace's canvas and asks it to take that size. Placing a window
+     * where it already is does nothing. Returns false if the window refuses the size.
+     */
+    place(rect: Rect, opts?: { animate?: boolean }): boolean;
+    /**
+     * Makes it its workspace's focused window. It gets keyboard focus when its workspace is the
+     * focused monitor's active one; `focus` doesn't switch workspaces or monitors.
+     */
+    focus(): boolean;
+    /** Draws it above its siblings in the tree. */
+    raise(): boolean;
+    /** Moves it to another workspace, on any monitor. The engine places it there. */
+    moveTo(workspace: Workspace): boolean;
+    /** Tells it to be fullscreen, maximized or normal. The engine still places it. */
+    setMode(mode: SizingMode): boolean;
+    /** Shows or hides it, like the inactive windows of a group shown as tabs. */
+    setVisible(visible: boolean): boolean;
+    setData(data: unknown): void;
+}
+
+export interface Camera {
+    /** Where it's going, if it's moving, or where it is. */
+    readonly x: number;
+    readonly y: number;
+
+    /**
+     * Moves it. Coordinates left out stay as they are. `velocity` continues a swipe's speed into
+     * the animation, in px/s.
+     */
+    move(to: Partial<Point>, opts?: { animate?: boolean; velocity?: number }): boolean;
+}
+
+/**
+ * Windows grouped together, and which one is active. Which windows are grouped is bento's state;
+ * order, looks and layout are the engine's.
+ */
+export interface Group extends EventTarget<GroupEvents> {
+    readonly id: number;
+    readonly windows: readonly Window[];
+    readonly active: Window;
+
+    add(win: Window): boolean;
+    remove(win: Window): boolean;
+    activate(win: Window): boolean;
+    /** Ungroups its windows. */
+    dissolve(): void;
+}
+
+// Drawing.
+
+/**
+ * How a property animates when it changes, like a CSS transition: the name of one of bento's
+ * animations from the config, like `"window-movement"`, or an easing.
+ */
+export type Transition =
+    | string
+    | { duration: number; curve: "linear" | "ease-out-quad" | "ease-out-cubic" | "ease-out-expo" }
+    | { spring: { dampingRatio: number; stiffness: number; epsilon: number } };
+
+/** A colour, written `"#rgb"`, `"#rrggbb"` or `"#rrggbbaa"`. */
+export type Color = string;
+
+export interface NodeProps {
+    /**
+     * Where it's drawn, on the workspace's canvas. For a window's node this is its place, set by
+     * `Window.place`.
+     */
+    rect?: Rect;
+    opacity?: number;
+    /** Scales and moves it, and its children, around the centre of its rect. */
+    transform?: { scale?: number; x?: number; y?: number };
+    /** Whether its children are clipped to its rect, with its corner radius. */
+    clip?: boolean;
+    cornerRadius?: number;
+    /** `"box"`: fill. */
+    background?: Color | null;
+    /** `"box"`: a border drawn inside its rect. */
+    border?: { width: number; color: Color } | null;
+    /** `"text"`: what it says. */
+    text?: string;
+    /** `"text"`: a Pango font description, like `"sans 11"`. */
+    font?: string;
+    /** `"text"`: its colour. */
+    color?: Color;
+    /** `"image"`: an icon name from the icon theme, or an absolute path. */
+    image?: string;
+    /** Whether it gets pointer events. Nodes without listeners can leave it off. */
+    interactive?: boolean;
+    /** How each property animates when it changes; properties left out change at once. */
+    transitions?: Partial<Record<"rect" | "opacity" | "transform" | "cornerRadius" | "background", Transition>>;
+}
+
+/**
+ * Something drawn on a workspace: a box, text, an image, or a window. Nodes form a tree per
+ * workspace, rooted at `Workspace.tree`; children draw above their parent, later siblings above
+ * earlier ones. bento draws the tree and runs its transitions, so no engine code runs per frame.
+ */
+export interface Node extends EventTarget<NodeEvents> {
+    readonly kind: "root" | "box" | "text" | "image" | "window";
+    /** The window, for a window's node. */
+    readonly window: Window | null;
+    readonly parent: Node | null;
+    readonly children: readonly Node[];
+    readonly props: Readonly<NodeProps>;
+
+    /** Changes some properties. Those with a transition animate to their new value. */
+    set(props: NodeProps): void;
+    /** Adds a child last, or before `before`, moving it from wherever it was. */
+    append(child: Node, before?: Node): void;
+    /** Takes it out of the tree. A window's node can't be removed, only moved. */
+    remove(): void;
+}
+
+/** The module's default export. */
+export type CreateEngine = (bento: Bento) => void;
