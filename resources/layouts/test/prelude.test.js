@@ -81,11 +81,8 @@ test("load refuses engines that don't fit", () => {
     assert.throws(load({ api: 2 }), /must be a string/);
     assert.throws(load({ api: 2, name: "x" }, null), /default function/);
     assert.throws(load({ api: 2, name: "x", actions: { a: { args: [{ name: "n", type: "nope" }] } } }), /unknown type/);
-    assert.throws(
-        load({ api: 2, name: "x", options: { o: { type: "choice", choices: ["a"], default: "b" } } }),
-        /must be a choice/,
-    );
-    assert.throws(load({ api: 2, name: "x", options: { o: { type: "number", default: "1" } } }), /must be a number/);
+    assert.throws(load({ api: 2, name: "x", options: { o: { type: "colour", default: "1" } } }), /unknown type/);
+    assert.throws(load({ api: 2, name: "x", options: { o: { type: "choice", default: "a" } } }), /list of choices/);
     // Workspaces and monitors are API 2 types.
     assert.throws(
         load({ api: 1, name: "x", actions: { a: { args: [{ name: "n", type: "workspace" }] } } }),
@@ -359,28 +356,34 @@ test("state is saved on unload, and windows are adopted when the engine starts a
     ]);
 });
 
-test("options are filled in from the declarations, and checked", () => {
+test("options reach the engine as bento resolves them", () => {
     const seen = [];
     const h = host(
         (bento) => {
             bento.addEventListener("configchange", () => seen.push({ ...bento.options }));
             bento.exposeState(() => ({ ...bento.options }));
         },
-        { options: { a: 2, nope: 1, b: "x" } },
+        { options: { a: 2, w: "25%" } },
         {
             options: {
                 a: { type: "number", default: 1 },
                 b: { type: "boolean", default: true },
-                c: { type: "string", default: "c" },
+                w: { type: "size", default: "50%" },
+                p: { type: "size", list: true, default: ["50%", "800"] },
             },
         },
     );
-    assert.deepEqual(h.exposedState(), { a: 2, b: true, c: "c" });
-    assert.match(h.logs.join("\n"), /unknown layout engine option: nope/);
-    assert.match(h.logs.join("\n"), /option b must be a boolean/);
+    assert.deepEqual(h.exposedState(), {
+        a: 2,
+        b: true,
+        w: { proportion: 0.25 },
+        p: [{ proportion: 0.5 }, { fixed: 800 }],
+    });
 
     h.setOptions({ a: 3 });
-    assert.deepEqual(seen, [{ a: 3, b: true, c: "c" }]);
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0].a, 3);
+    assert.deepEqual(seen[0].w, { proportion: 0.5 });
 });
 
 test("workspaces report their config and tiling area", () => {

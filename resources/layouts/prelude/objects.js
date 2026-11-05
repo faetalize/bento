@@ -39,51 +39,6 @@ function copyJson(value) {
     return value === undefined ? null : JSON.parse(JSON.stringify(value));
 }
 
-/** Whether a value fits an option or window rule property. */
-function fitsSpec(spec, value) {
-    const one = (v) => {
-        switch (spec.type) {
-            case "boolean":
-            case "number":
-            case "string":
-                return typeof v === spec.type;
-            case "choice":
-                return typeof v === "string" && (spec.choices ?? []).includes(v);
-            case "size":
-                return v !== null && typeof v === "object" && (Number.isFinite(v.proportion) || Number.isFinite(v.fixed));
-            default:
-                return false;
-        }
-    };
-    if (spec.list) {
-        return Array.isArray(value) && value.every(one);
-    }
-    return one(value) || (spec.type === "size" && value === null);
-}
-
-export function specTypeName(spec) {
-    return `${spec.list ? "list of " : ""}${spec.type}`;
-}
-
-/** Options with defaults filled in from the engine's declarations, and the problems with `given`. */
-export function resolveOptions(specs, given) {
-    const options = {};
-    const problems = [];
-    for (const [name, spec] of Object.entries(specs)) {
-        options[name] = spec.default;
-    }
-    for (const [name, value] of Object.entries(given ?? {})) {
-        const spec = specs[name];
-        if (spec === undefined) {
-            problems.push(`unknown layout engine option: ${name}`);
-        } else if (!fitsSpec(spec, value)) {
-            problems.push(`layout engine option ${name} must be a ${specTypeName(spec)}`);
-        } else {
-            options[name] = value;
-        }
-    }
-    return { options: Object.freeze(options), problems };
-}
 
 /** What the engine's calls changed, for bento to carry out. */
 class Recorder {
@@ -595,10 +550,8 @@ export class Session {
 
     /** Sets the engine's options, and returns whether they changed. */
     setOptions(given) {
-        const { options, problems } = resolveOptions(this.meta.options ?? {}, given);
-        for (const problem of problems) {
-            this.rec.logs.push(problem);
-        }
+        // bento checks the options, fills in defaults and converts them by type before sending.
+        const options = Object.freeze(copyJson(given ?? {}));
         const changed = JSON.stringify(options) !== JSON.stringify(this.options);
         this.options = options;
         return changed;

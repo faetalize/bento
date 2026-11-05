@@ -88,7 +88,8 @@ export default function create(bento) {
             const rest = ws.windows.filter((other) => other !== win);
             const i = ws.windows.indexOf(win);
             place(rest);
-            if (ws.focused === win && rest.length > 0) {
+            // bento may have taken the focus off the window already.
+            if ((ws.focused === win || ws.focused === null) && rest.length > 0) {
                 const next = rest[Math.min(i, rest.length - 1)];
                 next.focus();
                 show(next);

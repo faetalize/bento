@@ -11,7 +11,7 @@
 
 import { BentoEvent, QueryEvent, UnloadEvent, dispatch, listenerCount, response, setErrorSink } from "./events.js";
 import { dispatchPointer } from "./nodes.js";
-import { Session, specTypeName } from "./objects.js";
+import { Session } from "./objects.js";
 import { V1Adapter } from "./v1.js";
 
 const API_VERSIONS = [1, 2];
@@ -104,32 +104,9 @@ function checkSpecs(what, specs, types) {
         if (spec.list !== undefined && typeof spec.list !== "boolean") {
             throw new Error(`\`list\` of ${what} ${name} must be a boolean`);
         }
-        if (!defaultFits(spec)) {
-            throw new Error(`the default of ${what} ${name} must be a ${specTypeName(spec)}`);
-        }
     }
 }
 
-function defaultFits(spec) {
-    const one = (v) => {
-        switch (spec.type) {
-            case "boolean":
-            case "number":
-            case "string":
-                return typeof v === spec.type;
-            case "choice":
-                return spec.choices.includes(v);
-            case "size":
-                return v !== null && typeof v === "object" && (Number.isFinite(v.proportion) || Number.isFinite(v.fixed));
-            default:
-                return false;
-        }
-    };
-    if (spec.list) {
-        return Array.isArray(spec.default) && spec.default.every(one);
-    }
-    return one(spec.default) || (spec.type === "size" && spec.default === null);
-}
 
 /**
  * Checks the arguments that action `name` declares, and returns them as bento reads them. An

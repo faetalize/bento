@@ -462,19 +462,25 @@ const RECORDER: &str = r#"
 export const meta = { api: 2, name: "recorder", floating: false };
 export default function create(bento) {
     const log = [];
+    // Window ids are unique across the process, so windows go by the order the engine saw them.
+    const seen = new Map();
+    const n = (win) => {
+        if (!seen.has(win.id)) seen.set(win.id, seen.size + 1);
+        return seen.get(win.id);
+    };
     bento.exposeState(() => ({
         monitors: bento.monitors.map((m) => [m.name, m.workspaces.length, m.activeWorkspace.index]),
-        windows: bento.windows.map((w) => [w.id, w.workspace.monitor.name, w.workspace.index]),
+        windows: bento.windows.map((w) => [n(w), w.workspace.monitor.name, w.workspace.index]),
         log,
     }));
     bento.addEventListener("windowadd", (e) => {
         const win = e.window;
-        log.push(["windowadd", win.id, e.reason]);
+        log.push(["windowadd", n(win), e.reason]);
         const area = win.workspace.tilingArea;
         win.place({ x: area.x, y: area.y, w: area.w / 2, h: area.h });
         win.focus();
-        win.addEventListener("move", (m) => log.push(["move", win.id, m.from.index, m.to.index]));
-        win.addEventListener("floatrequest", (f) => log.push(["floatrequest", win.id, f.reason]));
+        win.addEventListener("move", (m) => log.push(["move", n(win), m.from.index, m.to.index]));
+        win.addEventListener("floatrequest", (f) => log.push(["floatrequest", n(win), f.reason]));
     });
 }
 "#;

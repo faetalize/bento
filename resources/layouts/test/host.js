@@ -236,9 +236,10 @@ export class TestHost {
             }
         }
         sync.focusedMonitor = this.focusedMonitor;
-        if (JSON.stringify(this.toldOptions) !== JSON.stringify(this.options)) {
-            sync.options = this.options;
-            this.toldOptions = structuredClone(this.options);
+        const options = this.engineOptions();
+        if (JSON.stringify(this.toldOptions) !== JSON.stringify(options)) {
+            sync.options = options;
+            this.toldOptions = options;
         }
         return sync;
     }
@@ -263,7 +264,7 @@ export class TestHost {
             this.told.windows.set(win.id, this.windowInfo(this.windows.get(win.id)));
         }
         this.call(
-            { sync, event: { type: "create", options: this.options, savedState: state, windows, focused: this.focused() } },
+            { sync, event: { type: "create", options: this.engineOptions(), savedState: state, windows, focused: this.focused() } },
             true,
         );
         this.flush();
@@ -539,6 +540,28 @@ export class TestHost {
     setOptions(options) {
         this.options = options;
         this.flush();
+    }
+
+    /**
+     * The engine's options as bento sends them: `this.options`, written as in the .kdl file, with
+     * defaults filled in and sizes turned into presets.
+     */
+    engineOptions() {
+        const preset = (value) => {
+            if (typeof value !== "string") return value;
+            return value.endsWith("%")
+                ? { proportion: Number(value.slice(0, -1)) / 100 }
+                : { fixed: Number(value) };
+        };
+        const options = {};
+        for (const spec of this.meta.options) {
+            let value = spec.name in this.options ? this.options[spec.name] : spec.default;
+            if (spec.type === "size") {
+                value = spec.list ? value.map(preset) : preset(value);
+            }
+            options[spec.name] = value;
+        }
+        return options;
     }
 
     /** Switches a monitor to a workspace, like bento's own actions do. */
