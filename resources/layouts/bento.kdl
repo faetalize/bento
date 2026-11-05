@@ -1,0 +1,100 @@
+// Options and binds for the bento engine, loaded only while it runs. bento copies this file to
+// ~/.config/bento/engines/bento.kdl the first time the engine runs without one; from then on
+// it's yours to edit.
+//
+// A key bound here can't also be bound in config.kdl.
+// https://github.com/faetalize/bento#layout-engines
+
+options {
+    // With gravity, windows slide left until they touch another window.
+    // gravity false
+}
+
+binds {
+    // Focus the nearest window in a direction, even diagonally.
+    Mod+Left  { focus-left; }
+    Mod+Down  { focus-down; }
+    Mod+Up    { focus-up; }
+    Mod+Right { focus-right; }
+    Mod+H     { focus-left; }
+    Mod+J     { focus-down; }
+    Mod+K     { focus-up; }
+    Mod+L     { focus-right; }
+
+    // Move the focused window one cell, swapping with a window in the way.
+    Mod+Ctrl+Left  { move-left; }
+    Mod+Ctrl+Down  { move-down; }
+    Mod+Ctrl+Up    { move-up; }
+    Mod+Ctrl+Right { move-right; }
+    Mod+Ctrl+H     { move-left; }
+    Mod+Ctrl+J     { move-down; }
+    Mod+Ctrl+K     { move-up; }
+    Mod+Ctrl+L     { move-right; }
+
+    // The leftmost and rightmost windows in the row.
+    Mod+Home { focus-first; }
+    Mod+End  { focus-last; }
+    Mod+Ctrl+Home { move-first; }
+    Mod+Ctrl+End  { move-last; }
+
+    Mod+WheelScrollRight      { focus-right; }
+    Mod+WheelScrollLeft       { focus-left; }
+    Mod+Ctrl+WheelScrollRight { move-right; }
+    Mod+Ctrl+WheelScrollLeft  { move-left; }
+
+    // Usually scrolling up and down with Shift in applications results in
+    // horizontal scrolling; these binds replicate that.
+    Mod+Shift+WheelScrollDown      { focus-right; }
+    Mod+Shift+WheelScrollUp        { focus-left; }
+    Mod+Ctrl+Shift+WheelScrollDown { move-right; }
+    Mod+Ctrl+Shift+WheelScrollUp   { move-left; }
+
+    // Stack the window under the one beside it, or take it out of its stack.
+    Mod+BracketLeft  { stack-left; }
+    Mod+BracketRight { stack-right; }
+
+    // Stack the window to the right under the focused one.
+    Mod+Comma  { stack-from-right; }
+    // Take the focused window out of its stack, to the right.
+    Mod+Period { unstack; }
+
+    // Cycle the focused window through the preset widths, and back.
+    Mod+R { cycle-width; }
+    Mod+Shift+R { cycle-width-back; }
+
+    // Cycle through the preset heights, or make the window as tall as the grid.
+    Mod+Ctrl+Shift+R { cycle-height; }
+    Mod+Ctrl+R { full-height; }
+
+    // Toggle the focused window between the full view width and its own width.
+    Mod+F { toggle-full-width; }
+
+    // Grow the focused window into the empty cells beside it.
+    Mod+Ctrl+F { fill-width; }
+
+    Mod+C { center; }
+
+    // Center the windows that are fully in view, together.
+    Mod+Ctrl+C { center-visible; }
+
+    // Change the focused window's size, in whole cells.
+    Mod+Minus { set-width "-10%"; }
+    Mod+Equal { set-width "+10%"; }
+    Mod+Shift+Minus { set-height "-10%"; }
+    Mod+Shift+Equal { set-height "+10%"; }
+
+    // Switch the focused window's area between tabs and a single window.
+    Mod+W { toggle-tabs; }
+
+    // Actions on two windows. Each takes two presses: the first picks the focused window, then
+    // focus another window and press again.
+    // Share a window's space with another, side by side or stacked.
+    Mod+S      { split-h; }
+    Mod+Ctrl+S { split-v; }
+    // Swap two windows.
+    Mod+X { swap; }
+
+    // Squeeze the focused window between two others. While it shows where the window would
+    // go, focusing in a direction picks another place, and pressing again puts it there.
+    Mod+G { stuff; }
+}

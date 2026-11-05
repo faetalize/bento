@@ -988,45 +988,6 @@ describe("swipes", () => {
 });
 
 describe("moving between workspaces", () => {
-    test("whole columns move with their sizes", async () => {
-        const from = await load();
-        const [a, b] = openStacked(from);
-        from.action("set-column-width", px(800));
-        from.action("toggle-column-tabbed-display");
-        const transfer = from.transferOut(a);
-        assert.deepEqual(transfer.windows, [a, b]);
-        for (const id of transfer.windows) {
-            from.forget(id);
-            from.send({ type: "remove", id, reason: "move" });
-        }
-
-        const to = await load();
-        const c = to.open();
-        const infos = transfer.windows.map(() => to.info(to.makeWindow({})));
-        to.send({ type: "transfer-in", windows: infos, data: transfer.data, activate: true });
-        const [na, nb] = infos.map((info) => info.id);
-        assert.deepEqual(to.rect(c), rect(0, 16, 616, 688));
-        assert.deepEqual(to.rect(na), rect(632, 16, 800, 688));
-        assert.deepEqual(to.rect(nb), rect(632, 16, 800, 688));
-        assert.equal(to.isVisible(na), false);
-        assert.equal(to.focused, nb);
-    });
-
-    test("moved windows without data get columns of their own", async () => {
-        const host = await load();
-        const a = host.open();
-        const win = host.makeWindow({});
-        win.size = { w: 405, h: 688 };
-        host.send({ type: "transfer-in", windows: [host.info(win)], data: null, activate: true });
-        // 405 px matches the 1/3 preset, so the column keeps that.
-        assert.deepEqual(host.rect(win.id), rect(632, 16, 405, 688));
-        host.action("switch-preset-column-width");
-        assert.equal(host.rect(win.id).w, 616);
-        assert.deepEqual(host.rect(a), rect(0, 16, 616, 688));
-    });
-});
-
-describe("reloading", () => {
     test("reloading gives back the same layout", async () => {
         const host = await load();
         const [a, b] = openStacked(host);

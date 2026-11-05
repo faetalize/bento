@@ -16,60 +16,6 @@ fn fullscreen() {
 }
 
 #[test]
-fn unfullscreen_window_in_column() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SetFullscreenWindow {
-            window: 2,
-            is_fullscreen: false,
-        },
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn unfullscreen_view_offset_not_reset_on_removal() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::FullscreenWindow(0),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeOrExpelWindowRight { id: None },
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn unfullscreen_view_offset_not_reset_on_consume() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::FullscreenWindow(0),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeWindowIntoColumn,
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
 fn unfullscreen_view_offset_not_reset_on_quick_double_toggle() {
     let ops = [
         Op::AddOutput(1),
@@ -77,23 +23,6 @@ fn unfullscreen_view_offset_not_reset_on_quick_double_toggle() {
             params: TestWindowParams::new(0),
         },
         Op::FullscreenWindow(0),
-        Op::FullscreenWindow(0),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn unfullscreen_view_offset_set_on_fullscreening_inactive_tile_in_column() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
         Op::FullscreenWindow(0),
     ];
 
@@ -119,58 +48,6 @@ fn unfullscreen_view_offset_not_reset_on_gesture() {
         Op::ViewOffsetGestureEnd {
             is_touchpad: Some(true),
         },
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn one_window_in_column_becomes_weight_1_after_fullscreen() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::SetFixed(100),
-        },
-        Op::Communicate(2),
-        Op::FocusWindowUp,
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::SetFixed(200),
-        },
-        Op::Communicate(1),
-        Op::CloseWindow(0),
-        Op::FullscreenWindow(1),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn disable_tabbed_mode_in_fullscreen() {
-    let ops = [
-        Op::AddOutput(0),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::ToggleColumnTabbedDisplay,
-        Op::FullscreenWindow(0),
-        Op::ToggleColumnTabbedDisplay,
     ];
 
     check_ops(ops);
@@ -227,52 +104,6 @@ fn windowed_fullscreen_to_fullscreen() {
         Op::Communicate(0),              // Commit fullscreen state.
         Op::ToggleWindowedFullscreen(0), // Switch is_fullscreen() to false.
         Op::FullscreenWindow(0),         // Switch is_fullscreen() back to true.
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn move_pending_unfullscreen_window_out_of_active_column() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::FullscreenWindow(1),
-        Op::Communicate(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeWindowIntoColumn,
-        // Window 1 is now pending unfullscreen.
-        // Moving it out should reset view_offset_before_fullscreen.
-        Op::MoveWindowToWorkspaceDown(true),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn move_unfocused_pending_unfullscreen_window_out_of_active_column() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::FullscreenWindow(1),
-        Op::Communicate(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeWindowIntoColumn,
-        // Window 1 is now pending unfullscreen.
-        // Moving it out should reset view_offset_before_fullscreen.
-        Op::FocusWindowDown,
-        Op::MoveWindowToWorkspace {
-            window_id: Some(1),
-            workspace_idx: 1,
-        },
     ];
 
     check_ops(ops);

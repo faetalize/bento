@@ -54,7 +54,7 @@ export type Preset = { proportion: number } | { fixed: number };
 export type SizingMode = "normal" | "fullscreen" | "maximized";
 
 /**
- * A size change from an action, like `set-column-width "+10%"`.
+ * A size change from an action argument of type `"size"`, like `"+10%"`.
  *
  * `"%"` values are percentages of the working area, like in the config.
  */
@@ -175,11 +175,30 @@ export interface OptionSpec {
     description?: string;
 }
 
-/** An action an engine provides, to bind as `layout-action "name" args...`. */
+/** An action an engine handles. */
 export interface ActionSpec {
     description?: string;
-    /** Names of the arguments, for documentation. */
-    args?: string[];
+    /** The action's arguments, in order. An action without `args` takes none. */
+    args?: ArgSpec[];
+}
+
+/**
+ * An argument of an action. bento checks binds against it, and settings screens use it to offer
+ * the right field. The engine gets the arguments in `Layout.action`, with defaults filled in.
+ */
+export interface ArgSpec {
+    name: string;
+    /**
+     * - `"choice"`: one of `choices`.
+     * - `"size"`: a size or a change to one, written like `"50%"`, `"+10%"`, `"800"` or `"-100"`.
+     *   The engine gets it as a `SizeChange`.
+     */
+    type: "boolean" | "number" | "string" | "choice" | "size";
+    /** Value when the argument is left out. Arguments without one must be given. */
+    default?: OptionValue;
+    /** The values a `"choice"` argument accepts. */
+    choices?: string[];
+    description?: string;
 }
 
 export interface Meta {
@@ -188,13 +207,12 @@ export interface Meta {
     name: string;
     description?: string;
     /**
-     * Actions the engine provides on top of niri's built-in ones.
+     * Every action the engine has. bento only sends an engine the actions it declares.
      *
-     * niri's built-in layout actions, like `focus-column-left` or `set-column-width`, go to every
-     * engine under their own names, so an engine can give them its own meaning. That includes
-     * actions that combine others: for `focus-column-or-monitor-left`, the engine decides what
-     * happens within the workspace, and if `Layout.action` returns false, bento focuses the
-     * monitor to the left. Fullscreen and maximize actions arrive as `Layout.modeRequested`.
+     * Actions are bound by name in the engine's .kdl file, like `Mod+R { resize 2; }`, and run
+     * from the command line with `layout-action "name" args...`. An action can't take the name of
+     * one of bento's own actions, like `spawn`: the engine fails to load if it does. Fullscreen
+     * and maximize actions are bento's, and arrive as `Layout.modeRequested`.
      */
     actions?: Record<string, ActionSpec>;
     options?: Record<string, OptionSpec>;
@@ -230,13 +248,6 @@ export interface AddInfo {
 
 /** Why a window is removed from the engine. */
 export type RemoveReason = "close" | "move" | "drag" | "float";
-
-/** Windows that move to another workspace together, see `Layout.transferOut`. */
-export interface Transfer {
-    windows: Window[];
-    /** Anything JSON-serializable, given to the engine on the other workspace. */
-    data?: unknown;
-}
 
 /** A pointer drag resizing a window. */
 export interface Resize {
@@ -383,14 +394,6 @@ export interface Layout {
      * this API; 0 lets the window choose.
      */
     newWindowSize?(info: { rules: WindowRules; minSize: Size; maxSize: Size; borders: Size }): Size;
-    /**
-     * Windows that move along with `win` to another workspace or output, for the actions that move
-     * a whole column, like `move-column-to-workspace-down`. Defaults to just `win`. Actions that
-     * move one window, like `move-window-to-workspace-down`, only move `win`.
-     */
-    transferOut?(win: Window): Transfer;
-    /** Windows arrive from another workspace. Defaults to adding each with reason `"move"`. */
-    transferIn?(windows: Window[], data: unknown, how: { activate: boolean }): void;
     /** Column and row of a window for IPC clients, 1-based, or `null`. */
     ipcPosition?(win: Window): [number, number] | null;
 }

@@ -10,8 +10,8 @@
 //         layout "~/path/to/my-engine.js"
 //     }
 //
-// bento reloads the file when it changes. Switching engines usually means changing binds too: an
-// engine's own actions, and what niri's built-in ones do, come with the engine. The full API is in
+// bento reloads the file when it changes. The engine's options and binds go in `my-engine.kdl` next
+// to it, loaded only while it runs, with its actions bound by name. The full API is in
 // `../bento-layout.d.ts`, and `template.test.js` next to this file shows how to test an engine
 // with node, without bento.
 //
@@ -24,11 +24,22 @@ export const meta = {
     api: 1,
     name: "main-and-stack",
     description: "One main window on the left, the others stacked on the right.",
-    // The engine's own actions, to bind as `layout-action "promote"`.
+    // Every action the engine has, bound by name in the engine's .kdl file, like
+    // `Mod+P { promote; }`. Settings screens list these, and bento checks binds against them.
     actions: {
+        "focus-main": { description: "Focus the main window." },
+        "focus-stack": { description: "Focus the stack." },
+        "focus-up": { description: "Focus the window above in the stack." },
+        "focus-down": { description: "Focus the window below in the stack." },
+        "move-up": { description: "Move the focused window up the stack." },
+        "move-down": { description: "Move the focused window down the stack." },
+        "set-main-width": {
+            description: "Set or change the main window's width.",
+            args: [{ name: "change", type: "size" }],
+        },
         promote: { description: "Swap the focused window with the main one." },
     },
-    // Options for the `tiling { options {} }` section of the config.
+    // Options for the `options {}` section of the engine's .kdl file.
     options: {
         "main-width": {
             type: "number",
@@ -113,7 +124,7 @@ export default function create(ws) {
         return true;
     }
 
-    /** `set-column-width`: `"%"` is a percentage of the working area, like in the config. */
+    /** `set-main-width`: `"%"` is a percentage of the working area, like in the config. */
     function setMainWidth(change) {
         const full = ws.view.tilingArea.w;
         const value = change.unit === "%" ? change.value / 100 : change.value / full;
@@ -176,11 +187,8 @@ export default function create(ws) {
         },
 
         /**
-         * Actions: the engine's own, from `meta.actions`, and niri's built-in ones, which go to
-         * every engine under their config names. Each gets the meaning that fits the engine.
-         * Returning false means nothing happened, so bento can do the rest of actions that
-         * combine others: for `focus-column-or-monitor-left`, it focuses the monitor to the left.
-         * Default: none do anything.
+         * The actions from `meta.actions`, by name, with their arguments. Returns whether
+         * anything happened. Default: none do anything.
          */
         action(name, args) {
             const idx = order.indexOf(ws.focused);
@@ -188,38 +196,22 @@ export default function create(ws) {
                 return false;
             }
             switch (name) {
+                // Swaps the main window with the top of the stack when it's the focused one.
                 case "promote":
                     return swap(idx, idx === 0 ? 1 : 0);
-                // Left and right go between the main window and the stack, up and down within the
-                // stack. The actions that combine them with monitors and workspaces do the same,
-                // and bento does the rest when they return false.
-                case "focus-column-left":
-                case "focus-column-or-monitor-left":
+                case "focus-main":
                     return idx > 0 && focusAt(0);
-                case "focus-column-right":
-                case "focus-column-or-monitor-right":
+                case "focus-stack":
                     return idx === 0 && focusAt(1);
-                case "focus-window-up":
-                case "focus-window-or-monitor-up":
-                case "focus-window-or-workspace-up":
+                case "focus-up":
                     return idx > 1 && focusAt(idx - 1);
-                case "focus-window-down":
-                case "focus-window-or-monitor-down":
-                case "focus-window-or-workspace-down":
+                case "focus-down":
                     return idx > 0 && focusAt(idx + 1);
-                case "move-column-left":
-                case "move-column-left-or-to-monitor-left":
-                    return idx > 0 && swap(idx, 0);
-                case "move-column-right":
-                case "move-column-right-or-to-monitor-right":
-                    return idx === 0 && swap(0, 1);
-                case "move-window-up":
-                case "move-window-up-or-to-workspace-up":
+                case "move-up":
                     return idx > 1 && swap(idx, idx - 1);
-                case "move-window-down":
-                case "move-window-down-or-to-workspace-down":
+                case "move-down":
                     return idx > 0 && swap(idx, idx + 1);
-                case "set-column-width":
+                case "set-main-width":
                     return setMainWidth(args[0]);
                 default:
                     return false;
@@ -280,8 +272,6 @@ export default function create(ws) {
         // - resizeBegin, resizeUpdate, resizeEnd: resizing with the mouse. bento refuses it.
         // - dropTarget(win, pointer, rect): where a dragged window would land. No highlight.
         // - newWindowSize(info): the size a window opens at. The window picks it.
-        // - transferOut(win), transferIn(windows, data, how): windows moving to another workspace
-        //   together. Each window moves on its own, through `windowRemoved` and `windowAdded`.
         // - ipcPosition(win): a window's column and row for IPC clients. None.
         // Tabs are up to the engine too, with `ws.setTabBar` and `ws.tabIndicatorSpace`; see
         // `../bento.js` and `../niri.js`.

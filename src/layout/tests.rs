@@ -13,7 +13,6 @@ use smithay::utils::Rectangle;
 
 use super::*;
 
-mod animations;
 mod fullscreen;
 mod tiling;
 
@@ -297,17 +296,6 @@ fn arbitrary_bbox() -> impl Strategy<Value = Rectangle<i32, Logical>> {
     })
 }
 
-fn arbitrary_size_change() -> impl Strategy<Value = SizeChange> {
-    prop_oneof![
-        (0..).prop_map(SizeChange::SetFixed),
-        (0f64..).prop_map(SizeChange::SetProportion),
-        any::<i32>().prop_map(SizeChange::AdjustFixed),
-        any::<f64>().prop_map(SizeChange::AdjustProportion),
-        // Interactive resize can have negative values here.
-        Just(SizeChange::SetFixed(-100)),
-    ]
-}
-
 fn arbitrary_position_change() -> impl Strategy<Value = PositionChange> {
     prop_oneof![
         (-1000f64..1000f64).prop_map(PositionChange::SetFixed),
@@ -397,14 +385,6 @@ fn arbitrary_parent_id() -> impl Strategy<Value = Option<usize>> {
     ]
 }
 
-fn arbitrary_scroll_direction() -> impl Strategy<Value = ScrollDirection> {
-    prop_oneof![Just(ScrollDirection::Left), Just(ScrollDirection::Right)]
-}
-
-fn arbitrary_column_display() -> impl Strategy<Value = ColumnDisplay> {
-    prop_oneof![Just(ColumnDisplay::Normal), Just(ColumnDisplay::Tabbed)]
-}
-
 #[derive(Debug, Clone, Arbitrary)]
 enum Op {
     AddOutput(#[proptest(strategy = "1..=5usize")] usize),
@@ -463,61 +443,7 @@ enum Op {
         is_fullscreen: bool,
     },
     ToggleWindowedFullscreen(#[proptest(strategy = "1..=5usize")] usize),
-    FocusColumnLeft,
-    FocusColumnRight,
-    FocusColumnFirst,
-    FocusColumnLast,
-    FocusColumnRightOrFirst,
-    FocusColumnLeftOrLast,
-    FocusColumn(#[proptest(strategy = "1..=5usize")] usize),
-    FocusWindowOrMonitorUp(#[proptest(strategy = "1..=2u8")] u8),
-    FocusWindowOrMonitorDown(#[proptest(strategy = "1..=2u8")] u8),
-    FocusColumnOrMonitorLeft(#[proptest(strategy = "1..=2u8")] u8),
-    FocusColumnOrMonitorRight(#[proptest(strategy = "1..=2u8")] u8),
-    FocusWindowDown,
-    FocusWindowUp,
-    FocusWindowDownOrColumnLeft,
-    FocusWindowDownOrColumnRight,
-    FocusWindowUpOrColumnLeft,
-    FocusWindowUpOrColumnRight,
-    FocusWindowOrWorkspaceDown,
-    FocusWindowOrWorkspaceUp,
     FocusWindow(#[proptest(strategy = "1..=5usize")] usize),
-    FocusWindowInColumn(#[proptest(strategy = "1..=5u8")] u8),
-    FocusWindowTop,
-    FocusWindowBottom,
-    FocusWindowDownOrTop,
-    FocusWindowUpOrBottom,
-    MoveColumnLeft,
-    MoveColumnRight,
-    MoveColumnToFirst,
-    MoveColumnToLast,
-    MoveColumnLeftOrToMonitorLeft(#[proptest(strategy = "1..=2u8")] u8),
-    MoveColumnRightOrToMonitorRight(#[proptest(strategy = "1..=2u8")] u8),
-    MoveColumnToIndex(#[proptest(strategy = "1..=5usize")] usize),
-    MoveWindowDown,
-    MoveWindowUp,
-    MoveWindowDownOrToWorkspaceDown,
-    MoveWindowUpOrToWorkspaceUp,
-    ConsumeOrExpelWindowLeft {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    ConsumeOrExpelWindowRight {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    ConsumeWindowIntoColumn,
-    ExpelWindowFromColumn,
-    SwapWindowInDirection(#[proptest(strategy = "arbitrary_scroll_direction()")] ScrollDirection),
-    ToggleColumnTabbedDisplay,
-    SetColumnDisplay(#[proptest(strategy = "arbitrary_column_display()")] ColumnDisplay),
-    CenterColumn,
-    CenterWindow {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    CenterVisibleColumns,
     FocusWorkspaceDown,
     FocusWorkspaceUp,
     FocusWorkspace(#[proptest(strategy = "0..=4usize")] usize),
@@ -531,9 +457,6 @@ enum Op {
         #[proptest(strategy = "0..=4usize")]
         workspace_idx: usize,
     },
-    MoveColumnToWorkspaceDown(bool),
-    MoveColumnToWorkspaceUp(bool),
-    MoveColumnToWorkspace(#[proptest(strategy = "0..=4usize")] usize, bool),
     MoveWorkspaceDown,
     MoveWorkspaceUp,
     MoveWorkspaceToIndex {
@@ -566,54 +489,13 @@ enum Op {
         #[proptest(strategy = "proptest::option::of(0..=4usize)")]
         target_ws_idx: Option<usize>,
     },
-    MoveColumnToOutput {
-        #[proptest(strategy = "1..=5usize")]
-        output_id: usize,
-        #[proptest(strategy = "proptest::option::of(0..=4usize)")]
-        target_ws_idx: Option<usize>,
-        activate: bool,
-    },
-    SwitchPresetColumnWidth,
-    SwitchPresetColumnWidthBack,
-    SwitchPresetWindowWidth {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    SwitchPresetWindowWidthBack {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    SwitchPresetWindowHeight {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    SwitchPresetWindowHeightBack {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    MaximizeColumn,
     MaximizeWindowToEdges {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
     },
-    SetColumnWidth(#[proptest(strategy = "arbitrary_size_change()")] SizeChange),
-    SetWindowWidth {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-        #[proptest(strategy = "arbitrary_size_change()")]
-        change: SizeChange,
-    },
-    SetWindowHeight {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-        #[proptest(strategy = "arbitrary_size_change()")]
-        change: SizeChange,
-    },
-    ResetWindowHeight {
-        #[proptest(strategy = "proptest::option::of(1..=5usize)")]
-        id: Option<usize>,
-    },
-    ExpandColumnToAvailableWidth,
+    /// Runs one of the engine's actions by name, like a bind in its file does.
+    #[proptest(skip)]
+    LayoutAction(&'static str, Vec<niri_config::TilingOption>),
     ToggleWindowFloating {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
@@ -1086,103 +968,7 @@ impl Op {
                 }
                 layout.toggle_windowed_fullscreen(&id);
             }
-            Op::FocusColumnLeft => layout.focus_left(),
-            Op::FocusColumnRight => layout.focus_right(),
-            Op::FocusColumnFirst => layout.focus_column_first(),
-            Op::FocusColumnLast => layout.focus_column_last(),
-            Op::FocusColumnRightOrFirst => layout.focus_column_right_or_first(),
-            Op::FocusColumnLeftOrLast => layout.focus_column_left_or_last(),
-            Op::FocusColumn(index) => layout.focus_column(index),
-            Op::FocusWindowOrMonitorUp(id) => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.focus_window_up_or_output(&output);
-            }
-            Op::FocusWindowOrMonitorDown(id) => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.focus_window_down_or_output(&output);
-            }
-            Op::FocusColumnOrMonitorLeft(id) => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.focus_column_left_or_output(&output);
-            }
-            Op::FocusColumnOrMonitorRight(id) => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.focus_column_right_or_output(&output);
-            }
-            Op::FocusWindowDown => layout.focus_down(),
-            Op::FocusWindowUp => layout.focus_up(),
-            Op::FocusWindowDownOrColumnLeft => layout.focus_down_or_left(),
-            Op::FocusWindowDownOrColumnRight => layout.focus_down_or_right(),
-            Op::FocusWindowUpOrColumnLeft => layout.focus_up_or_left(),
-            Op::FocusWindowUpOrColumnRight => layout.focus_up_or_right(),
-            Op::FocusWindowOrWorkspaceDown => layout.focus_window_or_workspace_down(),
-            Op::FocusWindowOrWorkspaceUp => layout.focus_window_or_workspace_up(),
             Op::FocusWindow(id) => layout.activate_window(&id),
-            Op::FocusWindowInColumn(index) => layout.focus_window_in_column(index),
-            Op::FocusWindowTop => layout.focus_window_top(),
-            Op::FocusWindowBottom => layout.focus_window_bottom(),
-            Op::FocusWindowDownOrTop => layout.focus_window_down_or_top(),
-            Op::FocusWindowUpOrBottom => layout.focus_window_up_or_bottom(),
-            Op::MoveColumnLeft => layout.move_left(),
-            Op::MoveColumnRight => layout.move_right(),
-            Op::MoveColumnToFirst => layout.move_column_to_first(),
-            Op::MoveColumnToLast => layout.move_column_to_last(),
-            Op::MoveColumnLeftOrToMonitorLeft(id) => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.move_column_left_or_to_output(&output);
-            }
-            Op::MoveColumnRightOrToMonitorRight(id) => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.move_column_right_or_to_output(&output);
-            }
-            Op::MoveColumnToIndex(index) => layout.move_column_to_index(index),
-            Op::MoveWindowDown => layout.move_down(),
-            Op::MoveWindowUp => layout.move_up(),
-            Op::MoveWindowDownOrToWorkspaceDown => layout.move_down_or_to_workspace_down(),
-            Op::MoveWindowUpOrToWorkspaceUp => layout.move_up_or_to_workspace_up(),
-            Op::ConsumeOrExpelWindowLeft { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.consume_or_expel_window_left(id.as_ref());
-            }
-            Op::ConsumeOrExpelWindowRight { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.consume_or_expel_window_right(id.as_ref());
-            }
-            Op::ConsumeWindowIntoColumn => layout.consume_into_column(),
-            Op::ExpelWindowFromColumn => layout.expel_from_column(),
-            Op::SwapWindowInDirection(direction) => layout.swap_window_in_direction(direction),
-            Op::ToggleColumnTabbedDisplay => layout.toggle_column_tabbed_display(),
-            Op::SetColumnDisplay(display) => layout.set_column_display(display),
-            Op::CenterColumn => layout.center_column(),
-            Op::CenterWindow { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.center_window(id.as_ref());
-            }
-            Op::CenterVisibleColumns => layout.center_visible_columns(),
             Op::FocusWorkspaceDown => layout.switch_workspace_down(),
             Op::FocusWorkspaceUp => layout.switch_workspace_up(),
             Op::FocusWorkspace(idx) => layout.switch_workspace(idx),
@@ -1199,9 +985,6 @@ impl Op {
                 let window_id = window_id.filter(|id| layout.has_window(id));
                 layout.move_to_workspace(window_id.as_ref(), workspace_idx, ActivateWindow::Smart);
             }
-            Op::MoveColumnToWorkspaceDown(focus) => layout.move_column_to_workspace_down(focus),
-            Op::MoveColumnToWorkspaceUp(focus) => layout.move_column_to_workspace_up(focus),
-            Op::MoveColumnToWorkspace(idx, focus) => layout.move_column_to_workspace(idx, focus),
             Op::MoveWindowToOutput {
                 window_id,
                 output_id: id,
@@ -1221,18 +1004,6 @@ impl Op {
                     target_ws_idx,
                     ActivateWindow::Smart,
                 );
-            }
-            Op::MoveColumnToOutput {
-                output_id: id,
-                target_ws_idx,
-                activate,
-            } => {
-                let name = format!("output{id}");
-                let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
-                    return;
-                };
-
-                layout.move_column_to_output(&output, target_ws_idx, activate);
             }
             Op::MoveWorkspaceDown => layout.move_workspace_down(),
             Op::MoveWorkspaceUp => layout.move_workspace_up(),
@@ -1308,25 +1079,7 @@ impl Op {
 
                 layout.move_workspace_to_output_by_id(old_idx, Some(old_output), &output);
             }
-            Op::SwitchPresetColumnWidth => layout.toggle_width(true),
-            Op::SwitchPresetColumnWidthBack => layout.toggle_width(false),
-            Op::SwitchPresetWindowWidth { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_width(id.as_ref(), true);
-            }
-            Op::SwitchPresetWindowWidthBack { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_width(id.as_ref(), false);
-            }
-            Op::SwitchPresetWindowHeight { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_height(id.as_ref(), true);
-            }
-            Op::SwitchPresetWindowHeightBack { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.toggle_window_height(id.as_ref(), false);
-            }
-            Op::MaximizeColumn => layout.toggle_full_width(),
+            Op::LayoutAction(name, args) => layout.layout_action(name, &args),
             Op::MaximizeWindowToEdges { id } => {
                 let id = id.or_else(|| layout.focus().map(|win| *win.id()));
                 let Some(id) = id else {
@@ -1337,20 +1090,6 @@ impl Op {
                 }
                 layout.toggle_maximized(&id);
             }
-            Op::SetColumnWidth(change) => layout.set_column_width(change),
-            Op::SetWindowWidth { id, change } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.set_window_width(id.as_ref(), change);
-            }
-            Op::SetWindowHeight { id, change } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.set_window_height(id.as_ref(), change);
-            }
-            Op::ResetWindowHeight { id } => {
-                let id = id.filter(|id| layout.has_window(id));
-                layout.reset_window_height(id.as_ref());
-            }
-            Op::ExpandColumnToAvailableWidth => layout.expand_column_to_available_width(),
             Op::ToggleWindowFloating { id } => {
                 let id = id.filter(|id| layout.has_window(id));
                 layout.toggle_window_floating(id.as_ref());
@@ -1820,29 +1559,6 @@ fn operations_dont_panic() {
         Op::MaximizeWindowToEdges { id: Some(1) },
         Op::MaximizeWindowToEdges { id: Some(2) },
         Op::MaximizeWindowToEdges { id: Some(3) },
-        Op::FocusColumnLeft,
-        Op::FocusColumnRight,
-        Op::FocusColumnRightOrFirst,
-        Op::FocusColumnLeftOrLast,
-        Op::FocusWindowOrMonitorUp(0),
-        Op::FocusWindowOrMonitorDown(1),
-        Op::FocusColumnOrMonitorLeft(0),
-        Op::FocusColumnOrMonitorRight(1),
-        Op::FocusWindowUp,
-        Op::FocusWindowUpOrColumnLeft,
-        Op::FocusWindowUpOrColumnRight,
-        Op::FocusWindowOrWorkspaceUp,
-        Op::FocusWindowDown,
-        Op::FocusWindowDownOrColumnLeft,
-        Op::FocusWindowDownOrColumnRight,
-        Op::FocusWindowOrWorkspaceDown,
-        Op::MoveColumnLeft,
-        Op::MoveColumnRight,
-        Op::MoveColumnLeftOrToMonitorLeft(0),
-        Op::MoveColumnRightOrToMonitorRight(1),
-        Op::ConsumeWindowIntoColumn,
-        Op::ExpelWindowFromColumn,
-        Op::CenterColumn,
         Op::FocusWorkspaceDown,
         Op::FocusWorkspaceUp,
         Op::FocusWorkspace(1),
@@ -1857,18 +1573,7 @@ fn operations_dont_panic() {
             window_id: None,
             workspace_idx: 2,
         },
-        Op::MoveColumnToWorkspaceDown(true),
-        Op::MoveColumnToWorkspaceUp(true),
-        Op::MoveColumnToWorkspace(1, true),
-        Op::MoveColumnToWorkspace(2, true),
-        Op::MoveWindowDown,
-        Op::MoveWindowDownOrToWorkspaceDown,
-        Op::MoveWindowUp,
-        Op::MoveWindowUpOrToWorkspaceUp,
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::ConsumeOrExpelWindowRight { id: None },
         Op::MoveWorkspaceToOutput(1),
-        Op::ToggleColumnTabbedDisplay,
     ];
 
     for third in &every_op {
@@ -1910,8 +1615,6 @@ fn operations_from_starting_state_dont_panic() {
         Op::AddWindow {
             params: TestWindowParams::new(3),
         },
-        Op::FocusColumnLeft,
-        Op::ConsumeWindowIntoColumn,
         Op::AddWindow {
             params: TestWindowParams::new(4),
         },
@@ -1994,29 +1697,6 @@ fn operations_from_starting_state_dont_panic() {
             window: 2,
             is_fullscreen: true,
         },
-        Op::FocusColumnLeft,
-        Op::FocusColumnRight,
-        Op::FocusColumnRightOrFirst,
-        Op::FocusColumnLeftOrLast,
-        Op::FocusWindowOrMonitorUp(0),
-        Op::FocusWindowOrMonitorDown(1),
-        Op::FocusColumnOrMonitorLeft(0),
-        Op::FocusColumnOrMonitorRight(1),
-        Op::FocusWindowUp,
-        Op::FocusWindowUpOrColumnLeft,
-        Op::FocusWindowUpOrColumnRight,
-        Op::FocusWindowOrWorkspaceUp,
-        Op::FocusWindowDown,
-        Op::FocusWindowDownOrColumnLeft,
-        Op::FocusWindowDownOrColumnRight,
-        Op::FocusWindowOrWorkspaceDown,
-        Op::MoveColumnLeft,
-        Op::MoveColumnRight,
-        Op::MoveColumnLeftOrToMonitorLeft(0),
-        Op::MoveColumnRightOrToMonitorRight(1),
-        Op::ConsumeWindowIntoColumn,
-        Op::ExpelWindowFromColumn,
-        Op::CenterColumn,
         Op::FocusWorkspaceDown,
         Op::FocusWorkspaceUp,
         Op::FocusWorkspace(1),
@@ -2036,18 +1716,6 @@ fn operations_from_starting_state_dont_panic() {
             window_id: None,
             workspace_idx: 3,
         },
-        Op::MoveColumnToWorkspaceDown(true),
-        Op::MoveColumnToWorkspaceUp(true),
-        Op::MoveColumnToWorkspace(1, true),
-        Op::MoveColumnToWorkspace(2, true),
-        Op::MoveColumnToWorkspace(3, true),
-        Op::MoveWindowDown,
-        Op::MoveWindowDownOrToWorkspaceDown,
-        Op::MoveWindowUp,
-        Op::MoveWindowUpOrToWorkspaceUp,
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::ConsumeOrExpelWindowRight { id: None },
-        Op::ToggleColumnTabbedDisplay,
     ];
 
     for third in &every_op {
@@ -2262,26 +1930,6 @@ fn workspaces_update_original_output_on_moving_to_same_monitor() {
 }
 
 #[test]
-fn large_negative_height_change() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::AdjustProportion(-1e129),
-        },
-    ];
-
-    let mut options = Options::default();
-    options.layout.border.off = false;
-    options.layout.border.width = 1.;
-
-    check_ops_with_options(options, ops);
-}
-
-#[test]
 fn large_max_size() {
     let ops = [
         Op::AddOutput(1),
@@ -2345,23 +1993,6 @@ fn workspace_transfer_during_switch_from_last() {
         Op::AddOutput(2),
         Op::RemoveOutput(1),
         Op::FocusWorkspaceUp,
-        Op::AddOutput(1),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn workspace_transfer_during_switch_gets_cleaned_up() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::RemoveOutput(1),
-        Op::AddOutput(2),
-        Op::MoveColumnToWorkspaceDown(true),
-        Op::MoveColumnToWorkspaceDown(true),
         Op::AddOutput(1),
     ];
 
@@ -2524,131 +2155,6 @@ fn config_change_updates_cached_sizes() {
     layout.update_config(&config);
 
     layout.verify_invariants();
-}
-
-#[test]
-fn preset_height_change_removes_preset() {
-    let mut config = Config::default();
-    config.layout.preset_window_heights = vec![PresetSize::Fixed(1), PresetSize::Fixed(2)];
-
-    let mut layout = Layout::new(Clock::default(), &config);
-
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SwitchPresetWindowHeight { id: None },
-        Op::SwitchPresetWindowHeight { id: None },
-    ];
-    for op in ops {
-        op.apply(&mut layout);
-    }
-
-    // Leave only one.
-    config.layout.preset_window_heights = vec![PresetSize::Fixed(1)];
-
-    layout.update_config(&config);
-
-    layout.verify_invariants();
-}
-
-#[test]
-fn set_window_height_recomputes_to_auto() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::SetFixed(100),
-        },
-        Op::FocusWindowUp,
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::SetFixed(200),
-        },
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn one_window_in_column_becomes_weight_1() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::SetFixed(100),
-        },
-        Op::Communicate(2),
-        Op::FocusWindowUp,
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::SetFixed(200),
-        },
-        Op::Communicate(1),
-        Op::CloseWindow(0),
-        Op::CloseWindow(1),
-    ];
-
-    check_ops(ops);
-}
-
-#[test]
-fn fixed_height_takes_max_non_auto_into_account() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::SetWindowHeight {
-            id: Some(0),
-            change: SizeChange::SetFixed(704),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-    ];
-
-    let options = Options {
-        layout: niri_config::Layout {
-            border: niri_config::Border {
-                off: false,
-                width: 4.,
-                ..Default::default()
-            },
-            gaps: 0.,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    check_ops_with_options(options, ops);
 }
 
 #[test]
@@ -3156,35 +2662,6 @@ fn interactive_move_from_workspace_with_layout_config() {
 }
 
 #[test]
-fn set_width_fixed_negative() {
-    let ops = [
-        Op::AddOutput(3),
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::ToggleWindowFloating { id: Some(3) },
-        Op::SetColumnWidth(SizeChange::SetFixed(-100)),
-    ];
-    check_ops(ops);
-}
-
-#[test]
-fn set_height_fixed_negative() {
-    let ops = [
-        Op::AddOutput(3),
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::ToggleWindowFloating { id: Some(3) },
-        Op::SetWindowHeight {
-            id: None,
-            change: SizeChange::SetFixed(-100),
-        },
-    ];
-    check_ops(ops);
-}
-
-#[test]
 fn interactive_resize_to_negative() {
     let ops = [
         Op::AddOutput(3),
@@ -3434,167 +2911,6 @@ fn move_workspace_to_same_monitor_doesnt_reorder() {
 }
 
 #[test]
-fn removing_window_above_preserves_focused_window() {
-    let ops = [
-        Op::AddOutput(0),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::FocusColumnFirst,
-        Op::ConsumeWindowIntoColumn,
-        Op::ConsumeWindowIntoColumn,
-        Op::FocusWindowDown,
-        Op::CloseWindow(0),
-    ];
-
-    let layout = check_ops(ops);
-    let win = layout.focus().unwrap();
-    assert_eq!(win.0.id, 1);
-}
-
-#[test]
-fn preset_column_width_reset_after_set_width() {
-    let ops = [
-        Op::AddOutput(0),
-        Op::AddWindow {
-            params: TestWindowParams::new(0),
-        },
-        Op::SwitchPresetColumnWidth,
-        Op::SetWindowWidth {
-            id: None,
-            change: SizeChange::AdjustFixed(-10),
-        },
-        Op::SwitchPresetColumnWidth,
-    ];
-
-    let options = Options {
-        layout: niri_config::Layout {
-            preset_column_widths: vec![PresetSize::Fixed(500), PresetSize::Fixed(1000)],
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let layout = check_ops_with_options(options, ops);
-    let win = layout.windows().next().unwrap().1;
-    assert_eq!(win.requested_size().unwrap().w, 500);
-}
-
-#[test]
-fn move_column_to_workspace_unfocused_with_multiple_monitors() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::SetWorkspaceName {
-            new_ws_name: 101,
-            ws_name: None,
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::FocusWorkspaceDown,
-        Op::SetWorkspaceName {
-            new_ws_name: 102,
-            ws_name: None,
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::AddOutput(2),
-        Op::FocusOutput(2),
-        Op::SetWorkspaceName {
-            new_ws_name: 201,
-            ws_name: None,
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(4),
-        },
-        Op::MoveColumnToOutput {
-            output_id: 1,
-            target_ws_idx: Some(0),
-            activate: false,
-        },
-        Op::FocusOutput(1),
-    ];
-
-    let layout = check_ops(ops);
-
-    assert_eq!(layout.active_workspace().unwrap().name().unwrap(), "ws102");
-
-    for (mon, win) in layout.windows() {
-        let mon = mon.unwrap();
-        let ws = mon
-            .workspaces
-            .iter()
-            .find(|w| w.has_window(win.id()))
-            .unwrap();
-
-        assert_eq!(
-            ws.name().unwrap(),
-            match win.id() {
-                1 | 4 => "ws101",
-                2 => "ws102",
-                3 => "ws201",
-                _ => unreachable!(),
-            }
-        );
-    }
-}
-
-#[test]
-fn move_column_to_workspace_down_focus_false_on_floating_window() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ToggleWindowFloating { id: None },
-        Op::MoveColumnToWorkspaceDown(false),
-    ];
-
-    let layout = check_ops(ops);
-
-    let MonitorSet::Normal { monitors, .. } = layout.monitor_set else {
-        unreachable!()
-    };
-
-    assert_eq!(monitors[0].active_workspace_idx, 0);
-}
-
-#[test]
-fn move_column_to_workspace_focus_false_on_floating_window() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ToggleWindowFloating { id: None },
-        Op::MoveColumnToWorkspace(1, false),
-    ];
-
-    let layout = check_ops(ops);
-
-    let MonitorSet::Normal { monitors, .. } = layout.monitor_set else {
-        unreachable!()
-    };
-
-    assert_eq!(monitors[0].active_workspace_idx, 0);
-}
-
-#[test]
 fn restore_to_floating_persists_across_fullscreen_maximize() {
     let ops = [
         Op::AddOutput(1),
@@ -3659,26 +2975,6 @@ fn unmaximize_during_fullscreen_does_not_float() {
 }
 
 #[test]
-fn move_column_to_workspace_maximize_and_fullscreen() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::MaximizeWindowToEdges { id: None },
-        Op::FullscreenWindow(1),
-        Op::MoveColumnToWorkspaceDown(true),
-        Op::FullscreenWindow(1),
-    ];
-
-    let layout = check_ops(ops);
-    let (_, win) = layout.windows().next().unwrap();
-
-    // Unfullscreening should return to maximized because the window was maximized before.
-    assert_eq!(win.pending_sizing_mode(), SizingMode::Maximized);
-}
-
-#[test]
 fn move_window_to_workspace_maximize_and_fullscreen() {
     let ops = [
         Op::AddOutput(1),
@@ -3701,73 +2997,6 @@ fn move_window_to_workspace_maximize_and_fullscreen() {
     // the column. MoveWindowToWorkspace removes the window from the column and this information is
     // forgotten.
     assert_eq!(win.pending_sizing_mode(), SizingMode::Normal);
-}
-
-#[test]
-fn tabs_with_different_border() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams {
-                rules: Some(ResolvedWindowRules {
-                    border: niri_config::BorderRule {
-                        on: true,
-                        ..Default::default()
-                    },
-                    ..ResolvedWindowRules::default()
-                }),
-                ..TestWindowParams::new(2)
-            },
-        },
-        Op::SwitchPresetWindowHeight { id: None },
-        Op::ToggleColumnTabbedDisplay,
-        Op::AddWindow {
-            params: TestWindowParams::new(3),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: None },
-    ];
-
-    let options = Options {
-        layout: niri_config::Layout {
-            struts: Struts {
-                left: FloatOrInt(0.),
-                right: FloatOrInt(0.),
-                top: FloatOrInt(20000.),
-                bottom: FloatOrInt(0.),
-            },
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    check_ops_with_options(options, ops);
-}
-
-#[test]
-fn expel_pending_left_from_fullscreen_tabbed_column() {
-    let ops = [
-        Op::AddOutput(1),
-        Op::AddWindow {
-            params: TestWindowParams::new(1),
-        },
-        Op::FullscreenWindow(1),
-        Op::Communicate(1),
-        // 1 is now fullscreen, view_offset_to_restore is set.
-        Op::ToggleColumnTabbedDisplay,
-        Op::AddWindow {
-            params: TestWindowParams::new(2),
-        },
-        Op::ConsumeOrExpelWindowLeft { id: Some(2) },
-        // 2 is consumed into a fullscreen column, fullscreen is requested but not applied.
-        //
-        // Now, get it back out while keeping it focused.
-        //
-        // Importantly, we expel it *left*, which results in adding a new column with the exact
-        // same active_column_idx.
-        Op::FocusWindow(2),
-        Op::ConsumeOrExpelWindowLeft { id: None },
-    ];
-
-    check_ops(ops);
 }
 
 #[test]

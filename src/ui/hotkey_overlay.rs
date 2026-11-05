@@ -228,53 +228,22 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
 
     actions.extend(&[
         &Action::CloseWindow,
-        &Action::FocusColumnLeft,
-        &Action::FocusColumnRight,
-        &Action::MoveColumnLeft,
-        &Action::MoveColumnRight,
         &Action::FocusWorkspaceDown,
         &Action::FocusWorkspaceUp,
     ]);
 
-    // Prefer move-column-to-workspace-down, but fall back to move-window-to-workspace-down.
-    if let Some(action) = binds
-        .iter()
-        .flat_map(bind_actions)
-        .find(|action| matches!(action, Action::MoveColumnToWorkspaceDown(_)))
-    {
-        actions.push(action);
-    } else if binds
-        .iter()
-        .flat_map(bind_actions)
-        .any(|action| matches!(action, Action::MoveWindowToWorkspaceDown(_)))
-    {
-        actions.push(&Action::MoveWindowToWorkspaceDown(true));
-    } else {
-        actions.push(&Action::MoveColumnToWorkspaceDown(true));
-    }
-
-    // Same for -up.
-    if let Some(action) = binds
-        .iter()
-        .flat_map(bind_actions)
-        .find(|action| matches!(action, Action::MoveColumnToWorkspaceUp(_)))
-    {
-        actions.push(action);
-    } else if binds
-        .iter()
-        .flat_map(bind_actions)
-        .any(|action| matches!(action, Action::MoveWindowToWorkspaceUp(_)))
-    {
-        actions.push(&Action::MoveWindowToWorkspaceUp(true));
-    } else {
-        actions.push(&Action::MoveColumnToWorkspaceUp(true));
-    }
+    // The binds' own `focus` property, if there's a bind.
+    let bound = |f: fn(&Action) -> bool| binds.iter().flat_map(bind_actions).find(|a| f(a));
+    actions.push(
+        bound(|a| matches!(a, Action::MoveWindowToWorkspaceDown(_)))
+            .unwrap_or(&Action::MoveWindowToWorkspaceDown(true)),
+    );
+    actions.push(
+        bound(|a| matches!(a, Action::MoveWindowToWorkspaceUp(_)))
+            .unwrap_or(&Action::MoveWindowToWorkspaceUp(true)),
+    );
 
     actions.extend(&[
-        &Action::SwitchPresetColumnWidth,
-        &Action::MaximizeColumn,
-        &Action::ConsumeOrExpelWindowLeft,
-        &Action::ConsumeOrExpelWindowRight,
         &Action::ToggleWindowFloating,
         &Action::SwitchFocusBetweenFloatingAndTiling,
         &Action::ToggleOverview,
@@ -488,20 +457,10 @@ fn action_name(action: &Action) -> String {
         Action::Quit(_) => String::from("Exit niri"),
         Action::ShowHotkeyOverlay => String::from("Show Important Hotkeys"),
         Action::CloseWindow => String::from("Close Focused Window"),
-        Action::FocusColumnLeft => String::from("Focus Column to the Left"),
-        Action::FocusColumnRight => String::from("Focus Column to the Right"),
-        Action::MoveColumnLeft => String::from("Move Column Left"),
-        Action::MoveColumnRight => String::from("Move Column Right"),
         Action::FocusWorkspaceDown => String::from("Switch Workspace Down"),
         Action::FocusWorkspaceUp => String::from("Switch Workspace Up"),
-        Action::MoveColumnToWorkspaceDown(_) => String::from("Move Column to Workspace Down"),
-        Action::MoveColumnToWorkspaceUp(_) => String::from("Move Column to Workspace Up"),
         Action::MoveWindowToWorkspaceDown(_) => String::from("Move Window to Workspace Down"),
         Action::MoveWindowToWorkspaceUp(_) => String::from("Move Window to Workspace Up"),
-        Action::SwitchPresetColumnWidth => String::from("Switch Preset Column Widths"),
-        Action::MaximizeColumn => String::from("Maximize Column"),
-        Action::ConsumeOrExpelWindowLeft => String::from("Consume or Expel Window Left"),
-        Action::ConsumeOrExpelWindowRight => String::from("Consume or Expel Window Right"),
         Action::ToggleWindowFloating => String::from("Move Window Between Floating and Tiling"),
         Action::SwitchFocusBetweenFloatingAndTiling => {
             String::from("Switch Focus Between Floating and Tiling")
@@ -923,13 +882,13 @@ mod tests {
         let config = Config::parse_mem(
             r#"binds {
                 Mod+Q hotkey-overlay-title="Custom" {
-                    release { center-column; }
+                    release { focus-monitor-left; }
                 }
             }"#,
         )
         .unwrap();
 
-        assert!(collect_actions(&config).contains(&&Action::CenterColumn));
+        assert!(collect_actions(&config).contains(&&Action::FocusMonitorLeft));
 
         // Various filtering behavior.
         let config = Config::parse_mem(

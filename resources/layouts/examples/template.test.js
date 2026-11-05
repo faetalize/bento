@@ -39,43 +39,40 @@ test("the main window takes the left, the others share the right", async () => {
     assert.deepEqual(host.rect(2), rect(710, 368, 554, 336));
 });
 
-test("left and right go between the main window and the stack, up and down within it", async () => {
+test("focus goes between the main window and the stack, and up and down within it", async () => {
     const host = await setUpThree();
     assert.equal(host.focused, 3);
 
-    assert.equal(host.action("focus-window-down"), true);
+    assert.equal(host.action("focus-down"), true);
     assert.equal(host.focused, 2);
-    assert.equal(host.action("focus-column-left"), true);
+    assert.equal(host.action("focus-main"), true);
     assert.equal(host.focused, 1);
 
-    // Nothing further left, so bento can fall back, like to the monitor on the left.
-    assert.equal(host.action("focus-column-left"), false);
-    assert.equal(host.action("focus-column-right"), true);
+    // Already there, so nothing happens.
+    assert.equal(host.action("focus-main"), false);
+    assert.equal(host.action("focus-stack"), true);
     assert.equal(host.focused, 3);
 });
 
-test("actions that combine others do their part within the workspace", async () => {
+test("promote on the main window swaps it with the top of the stack", async () => {
     const host = await setUpThree();
-    assert.equal(host.action("focus-column-or-monitor-left"), true);
-    assert.equal(host.focused, 1);
-    // Nothing further left: bento focuses the monitor to the left, if there's one.
-    assert.equal(host.action("focus-column-or-monitor-left"), false);
-    assert.equal(host.action("move-column-right-or-to-monitor-right"), true);
+    host.action("focus-main");
+    assert.equal(host.action("promote"), true);
     assert.deepEqual(host.rect(1), rect(710, 16, 554, 336));
 });
 
 test("promote swaps the focused window with the main one", async () => {
     const host = await setUpThree();
-    host.action("focus-window-down");
+    host.action("focus-down");
     assert.equal(host.action("promote"), true);
     assert.deepEqual(host.rect(2), rect(16, 16, 678, 688));
     assert.deepEqual(host.rect(3), rect(710, 16, 554, 336));
     assert.deepEqual(host.rect(1), rect(710, 368, 554, 336));
 });
 
-test("set-column-width changes the width of the main window", async () => {
+test("set-main-width changes the width of the main window", async () => {
     const host = await setUpThree();
-    host.action("set-column-width", { op: "adjust", value: 10, unit: "%" });
+    host.action("set-main-width", { op: "adjust", value: 10, unit: "%" });
     assert.deepEqual(host.rect(1), rect(16, 16, 801, 688));
     assert.deepEqual(host.rect(3), rect(833, 16, 431, 336));
 
@@ -115,9 +112,9 @@ test("swiping doesn't move the view", async () => {
 
 test("reloading keeps the order and the width", async () => {
     const host = await setUpThree();
-    host.action("focus-window-down");
+    host.action("focus-down");
     host.action("promote");
-    host.action("set-column-width", { op: "set", value: 40, unit: "%" });
+    host.action("set-main-width", { op: "set", value: 40, unit: "%" });
     const before = [1, 2, 3].map((id) => host.rect(id));
 
     host.reload();

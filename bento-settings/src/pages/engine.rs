@@ -18,7 +18,7 @@ use crate::ipc;
 use crate::kdl::{self, Value};
 use crate::model::Category;
 use crate::page::PageContext;
-use crate::store::{option_value, tilde};
+use crate::store::{option_value, tilde, File};
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
@@ -144,8 +144,6 @@ fn show_values(view: &View, engine: &LayoutEngine) {
 fn set_layout(ctx: &PageContext, layout: String) {
     ctx.store.edit("tiling.layout", move |doc| {
         doc.set(&["tiling", "layout"], vec![Value::Str(layout)]);
-        // Options belong to the engine that declared them; bento rejects unknown ones.
-        doc.remove(&["tiling", "options"]);
     });
 }
 
@@ -261,7 +259,7 @@ fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
 }
 
 fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
-    let path = format!("tiling.options.{}", option.name);
+    let path = format!("options.{}", option.name);
     let title = sentence_case(&option.name.replace(['-', '_'], " "));
 
     let write = {
@@ -274,7 +272,7 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
                 return;
             }
             let (key, path, default) = (path.clone(), path.clone(), default.clone());
-            ctx.store.edit(&key, move |doc| {
+            ctx.store.edit_in(File::Engine, &key, move |doc| {
                 let parts = kdl::split(&path);
                 // An option at its default stays out of the config.
                 if value == default {
@@ -366,7 +364,7 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
             .map_or(action.name.as_str(), |d| d.trim_end_matches('.'));
         let row = adw::ActionRow::builder()
             .title(title)
-            .tooltip_text(format!("layout-action \"{}\"", action.name))
+            .tooltip_text(&action.name)
             .build();
 
         let keys: Vec<&Key> = config

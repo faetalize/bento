@@ -12,10 +12,133 @@
 // Coordinates: column `i` starts at canvas x `columnX(i)`, like niri's `column_x`, and the camera
 // is at `columnX(activeColumnIdx) + viewOffset`. The camera's y stays 0, so canvas y is view y.
 
+// Arguments shared by several actions.
+const INDEX = [{ name: "index", type: "number", description: "Counting from 1." }];
+const SIZE = [
+    {
+        name: "change",
+        type: "size",
+        description: 'A size like "50%" or "800", or a change like "+10%" or "-100".',
+    },
+];
+
 export const meta = {
     api: 1,
     name: "niri",
     description: "niri's scrollable tiling: columns of windows on an infinite horizontal strip.",
+    // niri's layout actions, all of which this engine handles like niri does.
+    actions: {
+        "focus-column-left": { description: "Focus the column to the left." },
+        "focus-column-right": { description: "Focus the column to the right." },
+        "focus-column-first": { description: "Focus the first column." },
+        "focus-column-last": { description: "Focus the last column." },
+        "focus-column-right-or-first": {
+            description: "Focus the column to the right, or the first one from the last one.",
+        },
+        "focus-column-left-or-last": {
+            description: "Focus the column to the left, or the last one from the first one.",
+        },
+        "focus-column": { description: "Focus a column by its index.", args: INDEX },
+        "focus-window-in-column": {
+            description: "Focus a window in the focused column by its index.",
+            args: INDEX,
+        },
+        "focus-window-down": { description: "Focus the window below in the column." },
+        "focus-window-up": { description: "Focus the window above in the column." },
+        "focus-window-down-or-column-left": {
+            description: "Focus the window below, or the column to the left from the bottom window.",
+        },
+        "focus-window-down-or-column-right": {
+            description: "Focus the window below, or the column to the right from the bottom window.",
+        },
+        "focus-window-up-or-column-left": {
+            description: "Focus the window above, or the column to the left from the top window.",
+        },
+        "focus-window-up-or-column-right": {
+            description: "Focus the window above, or the column to the right from the top window.",
+        },
+        "focus-window-top": { description: "Focus the top window in the column." },
+        "focus-window-bottom": { description: "Focus the bottom window in the column." },
+        "focus-window-down-or-top": {
+            description: "Focus the window below, or the top window from the bottom one.",
+        },
+        "focus-window-up-or-bottom": {
+            description: "Focus the window above, or the bottom window from the top one.",
+        },
+        "move-column-left": { description: "Move the focused column to the left." },
+        "move-column-right": { description: "Move the focused column to the right." },
+        "move-column-to-first": { description: "Move the focused column to the start." },
+        "move-column-to-last": { description: "Move the focused column to the end." },
+        "move-column-to-index": {
+            description: "Move the focused column to an index.",
+            args: INDEX,
+        },
+        "move-window-down": { description: "Move the focused window down in its column." },
+        "move-window-up": { description: "Move the focused window up in its column." },
+        "consume-or-expel-window-left": {
+            description: "Put the focused window into the column to the left, or take it out of its column to the left.",
+        },
+        "consume-or-expel-window-right": {
+            description: "Put the focused window into the column to the right, or take it out of its column to the right.",
+        },
+        "consume-window-into-column": {
+            description: "Put the first window of the column to the right into the focused column.",
+        },
+        "expel-window-from-column": {
+            description: "Take the bottom window of the focused column out into a column of its own.",
+        },
+        "swap-window-left": {
+            description: "Swap the focused window with the one in the column to the left.",
+        },
+        "swap-window-right": {
+            description: "Swap the focused window with the one in the column to the right.",
+        },
+        "toggle-column-tabbed-display": {
+            description: "Switch the focused column between tabs and stacked windows.",
+        },
+        "set-column-display": {
+            description: "Show the focused column's windows as tabs or stacked.",
+            args: [{ name: "display", type: "choice", choices: ["normal", "tabbed"] }],
+        },
+        "center-column": { description: "Center the focused column in the view." },
+        "center-window": { description: "Center the window's column, if it's the focused one." },
+        "center-visible-columns": {
+            description: "Center the columns that are fully in view, together.",
+        },
+        "switch-preset-column-width": {
+            description: "Switch the focused column to the next preset width.",
+        },
+        "switch-preset-column-width-back": {
+            description: "Switch the focused column to the previous preset width.",
+        },
+        "switch-preset-window-width": {
+            description: "Switch the window's column to the next preset width.",
+        },
+        "switch-preset-window-width-back": {
+            description: "Switch the window's column to the previous preset width.",
+        },
+        "switch-preset-window-height": {
+            description: "Switch the window to the next preset height.",
+        },
+        "switch-preset-window-height-back": {
+            description: "Switch the window to the previous preset height.",
+        },
+        "maximize-column": {
+            description: "Toggle the focused column between the full view width and its own width.",
+        },
+        "set-column-width": {
+            description: "Set or change the focused column's width.",
+            args: SIZE,
+        },
+        "set-window-width": { description: "Set or change the window's column width.", args: SIZE },
+        "set-window-height": { description: "Set or change the window's height.", args: SIZE },
+        "reset-window-height": {
+            description: "Give the window back its automatic height in its column.",
+        },
+        "expand-column-to-available-width": {
+            description: "Widen the focused column into the space other fully visible columns leave.",
+        },
+    },
 };
 
 // Limits from niri, which keep sizes in a range where nothing overflows.
@@ -1692,7 +1815,7 @@ export default function create(ws) {
             : { kind: "auto", weight: 1 };
     }
 
-    /** Rebuilds a column saved by `save()` or sent by `transferOut()`. */
+    /** Rebuilds a column saved by `save()`. */
     function restoreColumn(saved, tiles, keepId = false) {
         const col = makeColumn(saved.width, !!saved.isFullWidth);
         if (keepId && Number.isInteger(saved.id)) {
@@ -1979,15 +2102,10 @@ export default function create(ws) {
         if (columns.length === 0) return;
         const col = columns[activeColumnIdx];
 
-        // Actions that combine others, like `focus-column-or-monitor-left`, do their basic part
-        // here, like in niri; bento does the rest, like focusing the next monitor, when nothing
-        // changed.
         switch (name) {
             case "focus-column-left":
-            case "focus-column-or-monitor-left":
                 return focusLeft();
             case "focus-column-right":
-            case "focus-column-or-monitor-right":
                 return focusRight();
             case "focus-column-first":
                 return focusColumnFirst();
@@ -2004,12 +2122,8 @@ export default function create(ws) {
             case "focus-window-in-column":
                 return activateTile(col, clamp(index(args) - 1, 0, col.tiles.length - 1));
             case "focus-window-down":
-            case "focus-window-or-monitor-down":
-            case "focus-window-or-workspace-down":
                 return focusDown();
             case "focus-window-up":
-            case "focus-window-or-monitor-up":
-            case "focus-window-or-workspace-up":
                 return focusUp();
             case "focus-window-down-or-column-left":
                 if (!focusDown()) focusLeft();
@@ -2035,10 +2149,8 @@ export default function create(ws) {
                 return;
 
             case "move-column-left":
-            case "move-column-left-or-to-monitor-left":
                 return moveLeft();
             case "move-column-right":
-            case "move-column-right-or-to-monitor-right":
                 return moveRight();
             case "move-column-to-first":
                 return moveColumnTo(0);
@@ -2047,10 +2159,8 @@ export default function create(ws) {
             case "move-column-to-index":
                 return moveColumnTo(clamp(index(args) - 1, 0, columns.length - 1));
             case "move-window-down":
-            case "move-window-down-or-to-workspace-down":
                 return moveInColumn(1);
             case "move-window-up":
-            case "move-window-up-or-to-workspace-up":
                 return moveInColumn(-1);
 
             case "consume-or-expel-window-left":
@@ -2311,50 +2421,6 @@ export default function create(ws) {
             else h = Math.max(h, min.h);
 
             return { w: w === 0 ? 0 : w + borders.w, h: h + borders.h };
-        },
-
-        transferOut(win) {
-            const found = find(win);
-            if (found === null) return { windows: [win] };
-            const col = columns[found[0]];
-            return {
-                windows: col.tiles.map((tile) => tile.win),
-                data: {
-                    layout: "niri",
-                    width: col.width,
-                    isFullWidth: col.isFullWidth,
-                    presetWidthIdx: col.presetWidthIdx,
-                    pendingFullscreen: col.pendingFullscreen,
-                    pendingMaximized: col.pendingMaximized,
-                    display: col.display,
-                    activeTileIdx: col.activeTileIdx,
-                    heights: col.tiles.map((tile) => tile.height),
-                },
-            };
-        },
-
-        transferIn(windows, data, how) {
-            mutate(
-                () => {
-                    if (data?.layout === "niri" && data.heights?.length === windows.length) {
-                        const tiles = windows.map((win, idx) =>
-                            makeTile(win, validHeight(data.heights[idx])),
-                        );
-                        addColumn(null, restoreColumn(data, tiles), how.activate);
-                        return;
-                    }
-                    windows.forEach((win, idx) => {
-                        addWindow(win, {
-                            reason: "move",
-                            activate: how.activate && idx === 0,
-                            rect: null,
-                            pointer: null,
-                            nextTo: null,
-                        });
-                    });
-                },
-                { focus: how.activate ? "always" : "follow" },
-            );
         },
 
         ipcPosition(win) {

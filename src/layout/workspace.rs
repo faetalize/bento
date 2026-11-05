@@ -6,7 +6,7 @@ use niri_config::utils::MergeWith as _;
 use niri_config::{
     CenterFocusedColumn, CornerRadius, OutputName, PresetSize, Workspace as WorkspaceConfig,
 };
-use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
+use niri_ipc::{PositionChange, SizeChange, WindowLayout};
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::desktop::{layer_map_for_output, Window};
@@ -21,9 +21,7 @@ use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
 use super::monitor::TiledDrop;
 use super::shadow::Shadow;
 use super::tile::{Tile, TileRenderSnapshot};
-use super::tiling::{
-    ColumnWidth, ScrollDirection, TileGroup, TilingSpace, TilingSpaceRenderElement,
-};
+use super::tiling::{ColumnWidth, TilingSpace, TilingSpaceRenderElement};
 use super::{
     ActivateWindow, HitType, InsertPosition, InteractiveResizeData, LayoutElement, Options,
     RemovedTile, SizeFrac,
@@ -735,23 +733,6 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn add_group(
-        &mut self,
-        group: TileGroup<W>,
-        activate: bool,
-        anim: Option<niri_config::Animation>,
-    ) {
-        for (tile, _) in group.tiles() {
-            self.enter_output_for_window(tile.window());
-        }
-
-        self.scrolling.add_group(group, activate, anim);
-
-        if activate {
-            self.floating_is_active = FloatingActive::No;
-        }
-    }
-
     fn update_focus_floating_tiling_after_removing(&mut self, removed_from_floating: bool) {
         if removed_from_floating {
             if self.floating.is_empty() {
@@ -781,26 +762,6 @@ impl<W: LayoutElement> Workspace<W> {
         self.update_focus_floating_tiling_after_removing(from_floating);
 
         removed
-    }
-
-    /// Removes the focused tiled window, along with the windows the layout moves with it.
-    pub fn remove_active_group(&mut self) -> Option<TileGroup<W>> {
-        let from_floating = self.floating_is_active.get();
-        if from_floating {
-            return None;
-        }
-
-        let group = self.scrolling.remove_active_group()?;
-
-        if let Some(output) = &self.output {
-            for (tile, _) in group.tiles() {
-                tile.window().output_leave(output);
-            }
-        }
-
-        self.update_focus_floating_tiling_after_removing(from_floating);
-
-        Some(group)
     }
 
     /// Tells the tiling layout why `id` is about to be removed, when it isn't closing.
@@ -926,382 +887,9 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn focus_left(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.focus_left()
-        } else {
-            self.scrolling.focus_left()
-        }
-    }
-
-    pub fn focus_right(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.focus_right()
-        } else {
-            self.scrolling.focus_right()
-        }
-    }
-
-    pub fn focus_column_first(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_leftmost();
-        } else {
-            self.scrolling.focus_column_first();
-        }
-    }
-
-    pub fn focus_column_last(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_rightmost();
-        } else {
-            self.scrolling.focus_column_last();
-        }
-    }
-
-    /// Runs one of niri's actions that combine others, like `focus-column-or-monitor-left`. The
-    /// tiling layout engine gets it under its own name and decides what it means; the floating
-    /// layout does `floating`, the part of it within the workspace. Returns whether it did
-    /// anything, for the caller to fall back to the rest, like focusing the next monitor.
-    pub fn combined_action(
-        &mut self,
-        name: &str,
-        floating: impl FnOnce(&mut Self) -> bool,
-    ) -> bool {
-        if self.floating_is_active.get() {
-            floating(self)
-        } else {
-            self.scrolling.combined_action(name)
-        }
-    }
-
-    pub fn focus_column_right_or_first(&mut self) {
-        self.combined_action("focus-column-right-or-first", |ws| {
-            if !ws.focus_right() {
-                ws.focus_column_first();
-            }
-            true
-        });
-    }
-
-    pub fn focus_column_left_or_last(&mut self) {
-        self.combined_action("focus-column-left-or-last", |ws| {
-            if !ws.focus_left() {
-                ws.focus_column_last();
-            }
-            true
-        });
-    }
-
-    pub fn focus_column(&mut self, index: usize) {
-        if self.floating_is_active.get() {
-            self.focus_tiling();
-        }
-        self.scrolling.focus_column(index);
-    }
-
-    pub fn focus_window_in_column(&mut self, index: u8) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.focus_window_in_column(index);
-    }
-
-    pub fn focus_down(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.focus_down()
-        } else {
-            self.scrolling.focus_down()
-        }
-    }
-
-    pub fn focus_up(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.focus_up()
-        } else {
-            self.scrolling.focus_up()
-        }
-    }
-
-    pub fn focus_down_or_left(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_down();
-        } else {
-            self.scrolling.focus_down_or_left();
-        }
-    }
-
-    pub fn focus_down_or_right(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_down();
-        } else {
-            self.scrolling.focus_down_or_right();
-        }
-    }
-
-    pub fn focus_up_or_left(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_up();
-        } else {
-            self.scrolling.focus_up_or_left();
-        }
-    }
-
-    pub fn focus_up_or_right(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_up();
-        } else {
-            self.scrolling.focus_up_or_right();
-        }
-    }
-
-    pub fn focus_window_top(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_topmost();
-        } else {
-            self.scrolling.focus_top();
-        }
-    }
-
-    pub fn focus_window_bottom(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.focus_bottommost();
-        } else {
-            self.scrolling.focus_bottom();
-        }
-    }
-
-    pub fn focus_window_down_or_top(&mut self) {
-        self.combined_action("focus-window-down-or-top", |ws| {
-            if !ws.focus_down() {
-                ws.focus_window_top();
-            }
-            true
-        });
-    }
-
-    pub fn focus_window_up_or_bottom(&mut self) {
-        self.combined_action("focus-window-up-or-bottom", |ws| {
-            if !ws.focus_up() {
-                ws.focus_window_bottom();
-            }
-            true
-        });
-    }
-
-    pub fn move_left(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.move_left();
-            true
-        } else {
-            self.scrolling.move_left()
-        }
-    }
-
-    pub fn move_right(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.move_right();
-            true
-        } else {
-            self.scrolling.move_right()
-        }
-    }
-
-    pub fn move_column_to_first(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.move_column_to_first();
-    }
-
-    pub fn move_column_to_last(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.move_column_to_last();
-    }
-
-    pub fn move_column_to_index(&mut self, index: usize) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.move_column_to_index(index);
-    }
-
-    pub fn move_down(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.move_down();
-            true
-        } else {
-            self.scrolling.move_down()
-        }
-    }
-
-    pub fn move_up(&mut self) -> bool {
-        if self.floating_is_active.get() {
-            self.floating.move_up();
-            true
-        } else {
-            self.scrolling.move_up()
-        }
-    }
-
-    pub fn consume_or_expel_window_left(&mut self, window: Option<&W::Id>) {
-        if window.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            return;
-        }
-        self.scrolling.consume_or_expel_window_left(window);
-    }
-
-    pub fn consume_or_expel_window_right(&mut self, window: Option<&W::Id>) {
-        if window.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            return;
-        }
-        self.scrolling.consume_or_expel_window_right(window);
-    }
-
-    pub fn consume_into_column(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.consume_into_column();
-    }
-
-    pub fn expel_from_column(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.expel_from_column();
-    }
-
-    pub fn swap_window_in_direction(&mut self, direction: ScrollDirection) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.swap_window_in_direction(direction);
-    }
-
-    pub fn toggle_column_tabbed_display(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.toggle_column_tabbed_display();
-    }
-
-    pub fn set_column_display(&mut self, display: ColumnDisplay) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.set_column_display(display);
-    }
-
-    pub fn center_column(&mut self) {
-        if self.floating_is_active.get() {
-            self.floating.center_window(None);
-        } else {
-            self.scrolling.center_column();
-        }
-    }
-
-    pub fn center_window(&mut self, id: Option<&W::Id>) {
-        if id.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            self.floating.center_window(id);
-        } else {
-            self.scrolling.center_window(id);
-        }
-    }
-
-    pub fn center_visible_columns(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.center_visible_columns();
-    }
-
-    pub fn toggle_width(&mut self, forwards: bool) {
-        if self.floating_is_active.get() {
-            self.floating.toggle_window_width(None, forwards);
-        } else {
-            self.scrolling.toggle_width(forwards);
-        }
-    }
-
-    pub fn toggle_full_width(&mut self) {
-        if self.floating_is_active.get() {
-            // Leave this unimplemented for now. For good UX, this probably needs moving the tile
-            // to be against the left edge of the working area while it is full-width.
-            return;
-        }
-        self.scrolling.toggle_full_width();
-    }
-
-    pub fn set_column_width(&mut self, change: SizeChange) {
-        if self.floating_is_active.get() {
-            self.floating.set_window_width(None, change, true);
-        } else {
-            self.scrolling.set_window_width(None, change);
-        }
-    }
-
-    pub fn set_window_width(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if window.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            self.floating.set_window_width(window, change, true);
-        } else {
-            self.scrolling.set_window_width(window, change);
-        }
-    }
-
-    pub fn set_window_height(&mut self, window: Option<&W::Id>, change: SizeChange) {
-        if window.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            self.floating.set_window_height(window, change, true);
-        } else {
-            self.scrolling.set_window_height(window, change);
-        }
-    }
-
-    pub fn reset_window_height(&mut self, window: Option<&W::Id>) {
-        if window.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            return;
-        }
-        self.scrolling.reset_window_height(window);
-    }
-
-    pub fn toggle_window_width(&mut self, window: Option<&W::Id>, forwards: bool) {
-        if window.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            self.floating.toggle_window_width(window, forwards);
-        } else {
-            self.scrolling.toggle_window_width(window, forwards);
-        }
-    }
-
-    pub fn toggle_window_height(&mut self, window: Option<&W::Id>, forwards: bool) {
-        if window.map_or(self.floating_is_active.get(), |id| {
-            self.floating.has_window(id)
-        }) {
-            self.floating.toggle_window_height(window, forwards);
-        } else {
-            self.scrolling.toggle_window_height(window, forwards);
-        }
-    }
-
-    pub fn expand_column_to_available_width(&mut self) {
-        if self.floating_is_active.get() {
-            return;
-        }
-        self.scrolling.expand_column_to_available_width();
+    /// Applies the `default-window-height` window rule to a new tiled window.
+    pub fn apply_default_height(&mut self, window: &W::Id, change: SizeChange) {
+        self.scrolling.apply_default_height(window, change);
     }
 
     pub fn set_fullscreen(&mut self, window: &W::Id, is_fullscreen: bool) {
@@ -1498,6 +1086,15 @@ impl<W: LayoutElement> Workspace<W> {
         if !self.floating_is_active.get() {
             self.switch_focus_floating_tiling();
         }
+    }
+
+    /// Runs one of bento's floating actions on the floating layout. With `focus`, the floating
+    /// layout gets focus first.
+    pub fn floating_action(&mut self, focus: bool, f: impl FnOnce(&mut FloatingSpace<W>)) {
+        if focus {
+            self.focus_floating();
+        }
+        f(&mut self.floating);
     }
 
     pub fn focus_tiling(&mut self) {

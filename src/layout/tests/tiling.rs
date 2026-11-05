@@ -10,10 +10,6 @@ use insta::assert_snapshot;
 
 use super::*;
 
-fn options() -> Options {
-    options_for("fallback")
-}
-
 fn options_for(layout: &str) -> Options {
     Options {
         tiling: niri_config::Tiling {
@@ -73,7 +69,7 @@ fn layout_places_windows_and_moves_the_camera() {
         add_window(3),
     ];
     ops.extend(settle());
-    let mut layout = check_ops_with_options(options(), ops);
+    let mut layout = check_ops_with_options(options_for("fallback"), ops);
 
     // The third window is off to the right, so the camera followed it.
     assert_snapshot!(format_tiles(&layout), @"
@@ -82,18 +78,8 @@ fn layout_places_windows_and_moves_the_camera() {
     616 × 688 at x:   16 y: 16 focused
     ");
 
-    // Focusing left goes through the layout's action.
-    let mut ops = vec![Op::FocusColumnLeft];
-    ops.extend(settle());
-    check_ops_on_layout(&mut layout, ops);
-    assert_snapshot!(format_tiles(&layout), @"
-    616 × 688 at x: -616 y: 16
-    616 × 688 at x:   16 y: 16 focused
-    616 × 688 at x:  648 y: 16
-    ");
-
-    // Closing the focused window closes the gap and focuses the next one.
-    let mut ops = vec![Op::CloseWindow(2)];
+    // Closing the focused window focuses the one before it, and the camera follows it.
+    let mut ops = vec![Op::CloseWindow(3)];
     ops.extend(settle());
     check_ops_on_layout(&mut layout, ops);
     assert_snapshot!(format_tiles(&layout), @"
@@ -111,8 +97,8 @@ fn niri_layout_runs_in_the_engine() {
         add_window(3),
     ];
     ops.extend([
-        Op::FocusColumnLeft,
-        Op::ConsumeOrExpelWindowLeft { id: None },
+        Op::LayoutAction("focus-column-left", vec![]),
+        Op::LayoutAction("consume-or-expel-window-left", vec![]),
     ]);
     ops.extend(settle());
     let layout = check_ops_with_options(options_for("niri"), ops);
@@ -131,15 +117,12 @@ fn bento_layout_runs_in_the_engine() {
         add_window(2),
         add_window(3),
     ];
+    let half = || vec![niri_config::TilingOption::String(String::from("50%"))];
     ops.extend([
-        Op::SetWindowHeight {
-            id: Some(2),
-            change: SizeChange::SetProportion(50.),
-        },
-        Op::SetWindowHeight {
-            id: Some(3),
-            change: SizeChange::SetProportion(50.),
-        },
+        Op::FocusWindow(2),
+        Op::LayoutAction("set-height", half()),
+        Op::FocusWindow(3),
+        Op::LayoutAction("set-height", half()),
     ]);
     ops.extend(settle());
     let layout = check_ops_with_options(options_for("bento"), ops);
@@ -151,8 +134,82 @@ fn bento_layout_runs_in_the_engine() {
 }
 
 #[test]
+fn layout_action_binds_are_checked_against_declared_args() {
+    use crate::layout::tiling::engine;
+
+    let config = niri_config::Config::parse_mem_with_engine(
+        r#"
+        tiling {
+            layout "bento"
+        }
+        "#,
+        r#"
+        binds {
+            Mod+A { set-width "+10%"; }
+            Mod+B { set-tabs true; }
+            Mod+C { focus-index 2; }
+            Mod+D { set-width true; }
+            Mod+E { set-tabs "sideways"; }
+            Mod+F { focus-index; }
+            Mod+G { swap 1; }
+            Mod+H { nope; }
+            Mod+I { split-h; }
+            Mod+J { focus-column-left; }
+        }
+        "#,
+    )
+    .unwrap();
+
+    let problems = engine::check(&config).unwrap_err();
+    assert_eq!(
+        problems,
+        [
+            r#"the "change" argument of action "set-width" must be a size, like "50%" or "+10%""#,
+            r#"the "tabbed" argument of action "set-tabs" must be true or false"#,
+            r#"action "focus-index" needs its "index" argument"#,
+            r#"action "swap" takes no arguments, not 1"#,
+            r#"the bento layout engine has no action called "nope""#,
+            // niri's names belong to niri.js.
+            r#"the bento layout engine has no action called "focus-column-left""#,
+        ]
+    );
+}
+
+#[test]
+fn engine_actions_cannot_take_native_names() {
+    use crate::layout::tiling::engine;
+
+    let dir = std::env::temp_dir().join(format!("bento-engine-names-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("clash.js");
+    std::fs::write(
+        &path,
+        r#"
+        export const meta = { api: 1, name: "clash", actions: { spawn: { description: "x" } } };
+        export default function create(ws) { return {}; }
+        "#,
+    )
+    .unwrap();
+
+    let mut config = niri_config::Config::default();
+    config.tiling.layout = niri_config::TilingLayout::File(path);
+    let problems = engine::check(&config).unwrap_err();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(problems.len(), 1);
+    assert!(
+        problems[0].contains(
+            r#"the layout engine's action "spawn" has the name of one of bento's actions"#
+        ),
+        "{problems:?}"
+    );
+}
+
+#[test]
 fn layout_engine_ipc_info_has_options_and_actions() {
-    use niri_ipc::{LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource};
+    use niri_ipc::{
+        LayoutEngineActionArgType, LayoutEngineOptionType, LayoutEngineOptionValue,
+        LayoutEngineSource,
+    };
 
     use crate::layout::tiling::engine;
 
@@ -177,5 +234,37 @@ fn layout_engine_ipc_info_has_options_and_actions() {
     assert!(gravity.description.is_some());
 
     let actions: Vec<_> = info.actions.iter().map(|a| a.name.as_str()).collect();
-    assert_eq!(actions, ["split-h", "split-v", "swap", "stuff"]);
+    assert_eq!(actions[0], "focus-left");
+    assert!(actions.ends_with(&["split-h", "split-v", "swap", "stuff"]));
+
+    let width = info.actions.iter().find(|a| a.name == "set-width").unwrap();
+    assert_eq!(width.args.len(), 1);
+    assert_eq!(width.args[0].r#type, Some(LayoutEngineActionArgType::Size));
+}
+
+/// Checks the native action table against the actions `bento msg action` knows. Actions only
+/// configs have, like `suspend`, aren't in that list, so this can't catch those.
+#[test]
+fn native_action_table_lists_every_bindable_action() {
+    use clap::Subcommand as _;
+
+    let declared: Vec<_> = niri_config::actions::native_actions()
+        .into_iter()
+        .map(|action| action.name)
+        .collect();
+    let actions = niri_ipc::Action::augment_subcommands(clap::Command::new("action"));
+    for action in actions.get_subcommands() {
+        let name = action.get_name();
+        if declared.iter().any(|d| d == name) || name == "layout-action" {
+            continue;
+        }
+        // Actions only for the command line, like `focus-window --id`, don't parse in a config.
+        for args in ["", " 1", " \"x\""] {
+            let text = format!("binds {{\n    Mod+A {{ {name}{args}; }}\n}}");
+            assert!(
+                niri_config::Config::parse_mem(&text).is_err(),
+                "{name} can be bound but isn't in the native action table"
+            );
+        }
+    }
 }
