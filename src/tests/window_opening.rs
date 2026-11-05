@@ -443,11 +443,12 @@ fn target_size() {
     //
     // * want fullscreen
     // * open-fullscreen
-    // * open-maximized
+    // * open-full-width
     // * open-floating
-    // * default-column-width
+    // * default-width
+    // * default-height
     // * border
-    // * default-column-display normal, tabbed
+    // * default-tabs
 
     let open_fullscreen = [None, Some("false"), Some("true")];
     let want_fullscreen = [
@@ -515,7 +516,14 @@ fn check_target_size(
     let mut snapshot_desc = Vec::new();
     let mut snapshot_suffix = Vec::new();
 
+    // bento's own rules go in the main config, and the sizing rules in the engine's file, under
+    // the names bento.js gives them.
     let mut config = String::from(
+        r##"
+window-rule {
+"##,
+    );
+    let mut engine = String::from(
         r##"
 window-rule {
 "##,
@@ -529,7 +537,7 @@ window-rule {
     }
 
     if let Some(x) = open_maximized {
-        writeln!(config, "    open-maximized {x}").unwrap();
+        writeln!(engine, "    open-full-width {x}").unwrap();
 
         let x = if x == "true" { "T" } else { "F" };
         snapshot_suffix.push(format!("om{x}"));
@@ -542,25 +550,21 @@ window-rule {
         snapshot_suffix.push(format!("of{x}"));
     }
 
-    if let Some(x) = default_width {
-        let value = match x {
-            DefaultSize::WindowChooses => String::new(),
-            DefaultSize::Proportion(prop) => format!("proportion {prop};"),
-            DefaultSize::Fixed(fixed) => format!("fixed {fixed};"),
-        };
-        writeln!(config, "    default-column-width {{ {value} }}").unwrap();
+    let size = |x: DefaultSize| match x {
+        DefaultSize::WindowChooses => String::new(),
+        DefaultSize::Proportion(prop) => {
+            format!(" \"{}%\"", prop.parse::<f64>().unwrap() * 100.)
+        }
+        DefaultSize::Fixed(fixed) => format!(" \"{fixed}\""),
+    };
 
+    if let Some(x) = default_width {
+        writeln!(engine, "    default-width{}", size(x)).unwrap();
         snapshot_suffix.push(format!("dw{x}"));
     }
 
     if let Some(x) = default_height {
-        let value = match x {
-            DefaultSize::WindowChooses => String::new(),
-            DefaultSize::Proportion(prop) => format!("proportion {prop};"),
-            DefaultSize::Fixed(fixed) => format!("fixed {fixed};"),
-        };
-        writeln!(config, "    default-window-height {{ {value} }}").unwrap();
-
+        writeln!(engine, "    default-height{}", size(x)).unwrap();
         snapshot_suffix.push(format!("dh{x}"));
     }
 
@@ -570,10 +574,11 @@ window-rule {
     }
 
     if tabbed {
-        writeln!(config, "    default-column-display \"tabbed\"").unwrap();
+        writeln!(engine, "    default-tabs true").unwrap();
     }
 
     config.push('}');
+    engine.push('}');
 
     match &want_fullscreen {
         WantFullscreen::No => (),
@@ -584,20 +589,13 @@ window-rule {
     }
 
     if tabbed {
-        config.push_str(
-            "\n
-layout {
-    tab-indicator {
-        place-within-column
-    }
-}",
-        );
         snapshot_suffix.push(String::from("t"));
     }
 
     snapshot_desc.push(format!("config:{config}"));
+    snapshot_desc.push(format!("engine:{engine}"));
 
-    let config = Config::parse_mem(&config).unwrap();
+    let config = Config::parse_mem_with_engine(&config, &engine).unwrap();
 
     let mut f = Fixture::with_config(config);
     f.add_output(1, (1280, 720));

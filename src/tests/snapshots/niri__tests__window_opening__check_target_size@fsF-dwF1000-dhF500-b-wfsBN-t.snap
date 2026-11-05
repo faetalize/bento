@@ -1,10 +1,10 @@
 ---
 source: src/tests/window_opening.rs
-description: "want fullscreen: BN\nconfig:\nwindow-rule {\n    open-fullscreen false\n    default-column-width { fixed 1000; }\n    default-window-height { fixed 500; }\n    border { on; }\n    default-column-display \"tabbed\"\n}\n\nlayout {\n    tab-indicator {\n        place-within-column\n    }\n}"
+description: "want fullscreen: BN\nconfig:\nwindow-rule {\n    open-fullscreen false\n    border { on; }\n}\nengine:\nwindow-rule {\n    default-width \"1000\"\n    default-height \"500\"\n    default-tabs true\n}"
 expression: snapshot
 ---
 initial configure:
-size: 968 × 504, bounds: 1231 × 680, states: []
+size: 977 × 504, bounds: 1240 × 680, states: []
 
 post-map configures:
-size: 968 × 504, bounds: 1231 × 680, states: [Activated]
+size: 977 × 504, bounds: 1240 × 680, states: [Activated]
