@@ -3640,6 +3640,13 @@ impl<W: LayoutElement> Layout<W> {
                     .unwrap();
                 ws.set_fullscreen(window, false);
                 ws.set_maximized(window, false);
+                // The engine decides about modes, so it hears these while it still places the
+                // window, and the window takes the size it gives back.
+                self.flush_engine();
+                let ws = self
+                    .workspaces_mut()
+                    .find(|ws| ws.has_window(&window_id))
+                    .unwrap();
                 ws.set_remove_reason(window, "drag");
 
                 let RemovedTile {
