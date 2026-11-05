@@ -403,10 +403,6 @@ pub enum Action {
     CenterFloatingWindow,
     SetFloatingWindowWidth(#[knuffel(argument, str)] SizeChange),
     SetFloatingWindowHeight(#[knuffel(argument, str)] SizeChange),
-    SwitchPresetFloatingWindowWidth,
-    SwitchPresetFloatingWindowWidthBack,
-    SwitchPresetFloatingWindowHeight,
-    SwitchPresetFloatingWindowHeightBack,
     ToggleWindowRuleOpacity,
     #[knuffel(skip)]
     ToggleWindowRuleOpacityById(u64),
@@ -648,18 +644,6 @@ impl From<niri_ipc::Action> for Action {
             }
             niri_ipc::Action::SetFloatingWindowHeight { change } => {
                 Self::SetFloatingWindowHeight(change)
-            }
-            niri_ipc::Action::SwitchPresetFloatingWindowWidth {} => {
-                Self::SwitchPresetFloatingWindowWidth
-            }
-            niri_ipc::Action::SwitchPresetFloatingWindowWidthBack {} => {
-                Self::SwitchPresetFloatingWindowWidthBack
-            }
-            niri_ipc::Action::SwitchPresetFloatingWindowHeight {} => {
-                Self::SwitchPresetFloatingWindowHeight
-            }
-            niri_ipc::Action::SwitchPresetFloatingWindowHeightBack {} => {
-                Self::SwitchPresetFloatingWindowHeightBack
             }
             niri_ipc::Action::ToggleWindowRuleOpacity { id: None } => Self::ToggleWindowRuleOpacity,
             niri_ipc::Action::ToggleWindowRuleOpacity { id: Some(id) } => {

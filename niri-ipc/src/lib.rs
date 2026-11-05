@@ -656,14 +656,6 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
         change: SizeChange,
     },
-    /// Switch the active floating window to the next preset width.
-    SwitchPresetFloatingWindowWidth {},
-    /// Switch the active floating window to the previous preset width.
-    SwitchPresetFloatingWindowWidthBack {},
-    /// Switch the active floating window to the next preset height.
-    SwitchPresetFloatingWindowHeight {},
-    /// Switch the active floating window to the previous preset height.
-    SwitchPresetFloatingWindowHeightBack {},
     /// Toggle the opacity of a window.
     #[cfg_attr(
         feature = "clap",

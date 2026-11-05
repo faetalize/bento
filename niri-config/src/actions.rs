@@ -263,26 +263,6 @@ pub fn native_actions() -> Vec<Declaration> {
                 "A size like \"50%\" or \"800\", or a change like \"+10%\".",
             )],
         ),
-        action(
-            "switch-preset-floating-window-width",
-            "Switch the floating window to the next preset width.",
-            vec![],
-        ),
-        action(
-            "switch-preset-floating-window-width-back",
-            "Switch the floating window to the previous preset width.",
-            vec![],
-        ),
-        action(
-            "switch-preset-floating-window-height",
-            "Switch the floating window to the next preset height.",
-            vec![],
-        ),
-        action(
-            "switch-preset-floating-window-height-back",
-            "Switch the floating window to the previous preset height.",
-            vec![],
-        ),
         // Workspaces.
         action(
             "focus-workspace-down",
