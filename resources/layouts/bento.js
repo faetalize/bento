@@ -4562,7 +4562,7 @@ export default function create(bento) {
         // An action on a window the engine doesn't place, like a floating one, is for the space.
         const target = e.window !== null && space.has(e.window) ? e.window : null;
         const args = [...e.args];
-        if (e.name in across) {
+        if (Object.hasOwn(across, e.name)) {
             across[e.name](ws, space, target, args);
         } else {
             space.action(e.name, args, target);
