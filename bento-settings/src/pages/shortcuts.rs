@@ -1291,15 +1291,26 @@ fn key_label(key: &Key, mod_key: Modifiers) -> String {
 
 /// Draws a bind's keys as keycaps, with the compositor's Mod key spelled out.
 fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
-    match gdk_key(key.trigger) {
-        Some(gdk_key) => {
-            let (_, mask) = shown_modifiers(key, mod_key);
-            let label = gtk::ShortcutLabel::new(&gtk::accelerator_name(gdk_key, mask));
-            label.set_valign(gtk::Align::Center);
-            label.upcast()
+    let Some(gdk_key) = gdk_key(key.trigger) else {
+        // Mouse buttons and scrolling have no keycap; spell them the way the config does.
+        return dim_label(&key_label(key, mod_key)).upcast();
+    };
+    let (_, mask) = shown_modifiers(key, mod_key);
+    let label = gtk::ShortcutLabel::new(&gtk::accelerator_name(gdk_key, mask));
+    label.set_valign(gtk::Align::Center);
+    // The keycaps read on their own; hide the "+" GTK puts between them. If GTK ever draws
+    // them differently, the worst case is that the "+" shows again.
+    let mut child = label.first_child();
+    while let Some(widget) = child {
+        if widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|l| l.label() == "+")
+        {
+            widget.set_visible(false);
         }
-        None => dim_label(&key_label(key, mod_key)).upcast(),
+        child = widget.next_sibling();
     }
+    label.upcast()
 }
 
 #[cfg(test)]
