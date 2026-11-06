@@ -345,9 +345,10 @@ Wayland knows which window is which.
 
 ### A failing engine falls back
 
-An engine that fails to load, throws while it starts, or fails three calls in a row is replaced by
-the fallback engine, which places windows side by side and has no actions, until its file
-changes. The error shows in `bento validate`, `bento msg engine` and bento Settings.
+An engine that fails to load, throws while it starts, or runs out of time or memory three calls in
+a row is replaced by the fallback engine, which places windows side by side and has no actions,
+until its file changes. When a new version of a running engine fails to load, the running one
+stays. The error shows in `bento validate`, `bento msg engine` and bento Settings.
 
 ### Old engines keep working for a while
 

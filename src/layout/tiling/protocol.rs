@@ -239,6 +239,9 @@ pub struct Output {
     /// Whether the layout says that its exposed state changed.
     #[serde(default, rename = "stateChanged")]
     pub state_changed: bool,
+    /// Whether the layout threw while it started.
+    #[serde(default, rename = "startFailed")]
+    pub start_failed: bool,
 }
 
 /// A change to the workspace structure or the groups that the layout asked for.

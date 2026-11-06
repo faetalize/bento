@@ -137,6 +137,9 @@ fn refresh(view: &Rc<View>) {
         .append(&choice_group(view, engine.as_ref().ok()));
     match &engine {
         Ok(engine) => {
+            if let Some(error) = &engine.error {
+                view.column.append(&failed_group(error));
+            }
             view.column.append(&options_group(view, engine));
             view.column.append(&shortcuts_group(view, engine));
             show_values(view, engine);
@@ -666,6 +669,20 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
     row.connect_activated(|row| {
         let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
     });
+    group.add(&row);
+    group
+}
+
+/// Says why the configured engine isn't running, when bento runs the fallback one instead.
+fn failed_group(error: &str) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    let row = adw::ActionRow::builder()
+        .title("Engine Failed")
+        .subtitle(format!(
+            "bento runs a fallback engine until the engine's file changes.\n{error}"
+        ))
+        .subtitle_selectable(true)
+        .build();
     group.add(&row);
     group
 }

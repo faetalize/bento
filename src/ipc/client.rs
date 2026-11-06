@@ -793,6 +793,10 @@ fn print_layout_engine(engine: &LayoutEngine) {
     if !engine.floating {
         println!("  bento's floating layer is off under this engine.");
     }
+    if let Some(error) = &engine.error {
+        println!();
+        println!("The configured engine isn't running: {error}");
+    }
 
     println!();
     if engine.options.is_empty() {

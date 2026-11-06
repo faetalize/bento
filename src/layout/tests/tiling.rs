@@ -1021,3 +1021,38 @@ fn a_move_off_a_workspace_that_goes_away_reaches_the_engine() {
     let windows = state["windows"].as_array().unwrap();
     assert!(windows.iter().any(|w| w[0] == 1), "{windows:?}");
 }
+
+#[test]
+fn an_engine_that_throws_while_it_starts_falls_back() {
+    let source = r#"
+        export const meta = { api: 2, name: "broken" };
+        export default function create(bento) {
+            throw new Error("no");
+        }
+    "#;
+    let ops = [Op::AddOutput(1), add_window(1)];
+    let layout = check_ops_with_options(options_for_source("broken", source), ops);
+    drop(layout);
+    assert_eq!(crate::layout::tiling::engine::name(), "fallback");
+}
+
+#[test]
+fn an_engine_that_keeps_running_out_of_time_falls_back() {
+    let source = r#"
+        export const meta = { api: 2, name: "stuck" };
+        export default function create(bento) {
+            bento.addEventListener("windowadd", () => {
+                for (;;) {}
+            });
+        }
+    "#;
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ];
+    let layout = check_ops_with_options(options_for_source("stuck", source), ops);
+    drop(layout);
+    assert_eq!(crate::layout::tiling::engine::name(), "fallback");
+}

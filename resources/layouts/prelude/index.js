@@ -189,6 +189,7 @@ export function handle(callJson) {
 
     let result = null;
     let isQuery = false;
+    let startFailed = false;
     try {
         if (call.event.type === "create") {
             create(call);
@@ -219,6 +220,8 @@ export function handle(callJson) {
         }
     } catch (e) {
         errors.push(describe(e));
+        // An engine that throws while it starts doesn't run.
+        startFailed = call.event.type === "create";
     }
 
     let out;
@@ -233,6 +236,7 @@ export function handle(callJson) {
     }
     out.result = result;
     out.error = errors.length > 0 ? errors.join("\n") : null;
+    out.startFailed = startFailed;
     return JSON.stringify(out);
 }
 

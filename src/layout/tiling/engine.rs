@@ -628,6 +628,29 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
     })
 }
 
+/// Runs the fallback layout instead of the current one, which failed while running. The failed
+/// layout loads again once its file or the config changes.
+pub fn fail(error: String) {
+    warn!("{error}, using the fallback layout engine");
+    LOAD_ERROR.set(Some(error));
+    ENGINE.with_borrow_mut(|engine| {
+        let Some(old) = engine.take() else {
+            return;
+        };
+        let fallback = Tiling {
+            layout: TilingLayout::BuiltIn(String::from("fallback")),
+            ..Tiling::default()
+        };
+        let new = Engine::load(&fallback, String::from(FALLBACK), "fallback")
+            .expect("the fallback layout engine must load");
+        *engine = Some(Engine {
+            config: old.config.clone(),
+            mtime: old.mtime,
+            ..new
+        });
+    });
+}
+
 /// Current engine generation, or 0 if no layout is loaded.
 pub fn generation() -> u64 {
     ENGINE.with_borrow(|engine| engine.as_ref().map_or(0, |engine| engine.generation))
@@ -704,6 +727,7 @@ pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
             options: options.collect(),
             window_rules: window_rules.collect(),
             actions: meta.actions.clone(),
+            error: LOAD_ERROR.with_borrow(Clone::clone),
         })
     })
 }

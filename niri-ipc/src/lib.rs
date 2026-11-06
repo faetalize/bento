@@ -1041,6 +1041,10 @@ pub struct LayoutEngine {
     /// Actions that the layout engine has, in the order it declares them. They're bound by name
     /// in the layout engine's own config file, and run with `layout-action`.
     pub actions: Vec<LayoutEngineAction>,
+    /// Why the configured layout engine isn't the one running, when it failed to load, to start
+    /// or to answer, and the fallback engine runs instead.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Where a layout engine comes from.

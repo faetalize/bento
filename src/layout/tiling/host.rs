@@ -36,6 +36,10 @@ use crate::utils::{output_size, ResizeEdge};
 /// keeps answering what it's told.
 const MAX_ROUNDS: usize = 8;
 
+/// Calls in a row that may run out of time or fail before bento gives up on the engine and runs
+/// the fallback one, so that an engine that keeps failing can't stall every frame.
+const MAX_FAILURES: u32 = 3;
+
 struct Queued {
     event: Value,
     anim: Option<niri_config::Animation>,
@@ -138,6 +142,9 @@ pub struct Host {
     generation: u64,
     /// Generation in which creating the instance failed, to not retry over and over.
     failed_generation: u64,
+    /// Calls in a row that ran out of time or failed, to give up on an engine that keeps
+    /// failing.
+    failures: u32,
     /// What the layout was last told about each monitor, workspace and window.
     monitors: HashMap<String, Value>,
     workspaces: HashMap<u64, Value>,
@@ -507,8 +514,14 @@ impl<W: LayoutElement> Layout<W> {
             "focused": focused,
         });
         if self.send_engine(event, Some(sync), None, None).is_none() {
-            self.host.failed_generation = generation;
             self.host.generation = 0;
+            // An engine that can't start runs the fallback one instead, unless that's the one
+            // that can't.
+            if engine::generation() == generation && engine::name() != "fallback" {
+                engine::fail(String::from("the layout engine failed to start"));
+            } else {
+                self.host.failed_generation = generation;
+            }
             return false;
         }
         true
@@ -578,12 +591,19 @@ impl<W: LayoutElement> Layout<W> {
         };
         match call(&call_json) {
             Ok(out) => {
+                self.host.failures = 0;
                 let result = out.result.clone();
                 for log in &out.logs {
                     info!("layout engine: {log}");
                 }
                 if let Some(error) = &out.error {
                     warn!("error in the layout engine: {error}");
+                }
+                if out.start_failed {
+                    let error = out.error.unwrap_or_default();
+                    engine::fail(format!("the layout engine failed to start: {error}"));
+                    self.host.generation = 0;
+                    return None;
                 }
                 if out.state_changed {
                     self.host.state_changed = true;
@@ -592,7 +612,15 @@ impl<W: LayoutElement> Layout<W> {
                 Some(result)
             }
             Err(err) => {
-                warn!("error in the layout engine, starting it over: {err:?}");
+                self.host.failures += 1;
+                if self.host.failures >= MAX_FAILURES {
+                    self.host.failures = 0;
+                    engine::fail(format!(
+                        "the layout engine failed {MAX_FAILURES} calls in a row: {err:?}"
+                    ));
+                } else {
+                    warn!("error in the layout engine, starting it over: {err:?}");
+                }
                 // Create the instance again next time, from where the windows are now.
                 self.host.generation = 0;
                 None
