@@ -2416,9 +2416,10 @@ impl State {
                 .niri
                 .node_press
                 .as_ref()
-                .is_some_and(|press| press.button_code == button_code)
+                .is_some_and(|(code, _)| *code == button_code)
         {
-            if let (Some(press), Some(number)) = (self.niri.node_press.take(), node_button(button))
+            if let (Some((_, press)), Some(number)) =
+                (self.niri.node_press.take(), node_button(button))
             {
                 self.niri.node_button_released(press, number);
                 self.niri.queue_redraw_all();
@@ -3162,6 +3163,7 @@ impl State {
         }
 
         let under = self.niri.contents_under(pos);
+        self.niri.update_node_hover(&under, true);
 
         let tablet_seat = self.niri.seat.tablet_seat();
         let tool = tablet_seat.get_tool(&event.tool());
@@ -3304,6 +3306,12 @@ impl State {
                                 window,
                             );
                             tool.set_grab(self, grab, time, serial, Focus::Clear);
+                        } else if let Some(hit) = &under.node {
+                            // Nodes that the tiling layout draws are on top of windows, so a
+                            // press on one is theirs and doesn't focus or move the windows below.
+                            let press = self.niri.node_pressed(hit, 1);
+                            self.niri.tablet_node_press = Some(press);
+                            self.niri.queue_redraw_all();
                         } else if let Some((window, _)) = under.window {
                             self.niri.layout.activate_window(&window);
 
@@ -3346,6 +3354,16 @@ impl State {
                     if capture {
                         self.confirm_screenshot(true);
                     } else {
+                        self.niri.queue_redraw_all();
+                    }
+                }
+
+                if let Some(press) = self.niri.tablet_node_press.take() {
+                    let pos = self
+                        .compute_tablet_position(&event)
+                        .or(self.niri.tablet_cursor_location);
+                    if let Some(pos) = pos {
+                        self.niri.node_released(press, pos, 1);
                         self.niri.queue_redraw_all();
                     }
                 }
@@ -3946,6 +3964,10 @@ impl State {
                     window,
                 );
                 handle.set_grab(self, grab, serial);
+            } else if self.niri.node_touch_began(slot, &under, pos) {
+                // Nodes that the tiling layout draws are on top of windows, so a touch on one is
+                // theirs and doesn't focus or move the windows below.
+                self.niri.queue_redraw_all();
             } else if let Some((window, _)) = under.window {
                 self.niri.layout.activate_window(&window);
 
@@ -4002,6 +4024,11 @@ impl State {
             }
         }
 
+        if self.niri.touch_node_presses.contains_key(&slot) {
+            self.niri.node_touch_ended(slot);
+            self.niri.queue_redraw_all();
+        }
+
         let serial = SERIAL_COUNTER.next_serial();
         handle.up(
             self,
@@ -4032,6 +4059,10 @@ impl State {
         }
 
         let under = self.niri.contents_under(pos);
+        if self.niri.touch_node_presses.contains_key(&slot) {
+            self.niri.node_touch_moved(slot, &under, pos);
+            self.niri.queue_redraw_all();
+        }
         handle.motion(
             self,
             under.surface,
@@ -4063,6 +4094,7 @@ impl State {
         let Some(handle) = self.niri.seat.get_touch() else {
             return;
         };
+        self.niri.node_touches_cancelled();
         handle.cancel(self);
     }
 

@@ -22,7 +22,7 @@ use niri_config::{
     WorkspaceReference, Xkb,
 };
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::input::{InputTime, Keycode};
+use smithay::backend::input::{InputTime, Keycode, TouchSlot};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
@@ -411,8 +411,13 @@ pub struct Niri {
     /// taking grabs into account is expected, because we pass the information to pointer.motion()
     /// which passes it down through grabs, which decide what to do with it as they see fit.
     pub pointer_contents: PointContents,
-    /// The button press that a node drawn by the tiling layout took, until the button is released.
-    pub node_press: Option<NodePress>,
+    /// The mouse button press that a node drawn by the tiling layout took, with the button's code,
+    /// until the button is released.
+    pub node_press: Option<(u32, NodePress)>,
+    /// The tablet tool's tip press that a node took, until the tip is lifted.
+    pub tablet_node_press: Option<NodePress>,
+    /// The touches that a node took, with where each last was, until they end.
+    pub touch_node_presses: HashMap<TouchSlot, (NodePress, Point<f64, Logical>)>,
     pub pointer_visibility: PointerVisibility,
     pub pointer_inactivity_timer: Option<RegistrationToken>,
     /// Whether the pointer inactivity timer got reset this event loop iteration.
@@ -611,10 +616,10 @@ pub struct PointContents {
     pub node: Option<NodeHit>,
 }
 
-/// A button press on a node that the tiling layout draws.
+/// A press on a node that the tiling layout draws, by a mouse button, a touch or a tablet tool's
+/// tip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodePress {
-    pub button_code: u32,
     /// Id of the workspace that the node is drawn on.
     pub workspace: u64,
     /// Id of the node that got the press.
@@ -2888,6 +2893,8 @@ impl Niri {
             dnd_icon: None,
             pointer_contents: PointContents::default(),
             node_press: None,
+            tablet_node_press: None,
+            touch_node_presses: HashMap::new(),
             pointer_visibility: PointerVisibility::Visible,
             pointer_inactivity_timer: None,
             pointer_inactivity_timer_got_reset: false,
@@ -3818,21 +3825,10 @@ impl Niri {
         }
     }
 
-    /// Sends a button press to the node that the tiling layout draws under the pointer, if there's
-    /// one. `button` is 1, 2 or 3 for the left, middle and right button. Returns whether a node
-    /// took the press.
-    pub fn node_button_pressed(&mut self, button: u8, button_code: u32) -> bool {
-        let pos = self.seat.get_pointer().unwrap().current_location();
-        let Some(hit) = self.contents_under(pos).node else {
-            return false;
-        };
-
-        self.node_press = Some(NodePress {
-            button_code,
-            workspace: hit.workspace,
-            node: hit.node.clone(),
-            pos: hit.pos,
-        });
+    /// Sends a press of `button` to the node `hit`, which gets `pointerdown`, and returns what to
+    /// keep until the press ends. `button` is 1, 2 or 3 for the left, middle and right button; a
+    /// touch or a tablet tool's tip presses the left one.
+    pub fn node_pressed(&mut self, hit: &NodeHit, button: u8) -> NodePress {
         let modifiers = self.node_modifiers();
         self.layout.node_pointer_event(
             &hit.node,
@@ -3842,13 +3838,30 @@ impl Niri {
             modifiers,
             Point::from((0., 0.)),
         );
+        NodePress {
+            workspace: hit.workspace,
+            node: hit.node.clone(),
+            pos: hit.pos,
+        }
+    }
+
+    /// Sends a mouse button press to the node that the tiling layout draws under the pointer, if
+    /// there's one. `button` is 1, 2 or 3 for the left, middle and right button. Returns whether a
+    /// node took the press.
+    pub fn node_button_pressed(&mut self, button: u8, button_code: u32) -> bool {
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        let Some(hit) = self.contents_under(pos).node else {
+            return false;
+        };
+
+        let press = self.node_pressed(&hit, button);
+        self.node_press = Some((button_code, press));
         true
     }
 
-    /// Sends the release of a button that a node took the press of to that node, and a click if
-    /// the pointer is still on it.
-    pub fn node_button_released(&mut self, press: NodePress, button: u8) {
-        let pos = self.seat.get_pointer().unwrap().current_location();
+    /// Sends the end of a press that a node took to that node, with the pointer, touch or tool
+    /// at `pos`: `pointerup`, and a click if it's still on the node.
+    pub fn node_released(&mut self, press: NodePress, pos: Point<f64, Logical>, button: u8) {
         let under = self.contents_under(pos).node;
         let modifiers = self.node_modifiers();
 
@@ -3874,6 +3887,69 @@ impl Niri {
                 Point::from((0., 0.)),
             );
         }
+    }
+
+    /// Sends the release of a mouse button that a node took the press of to that node, and a click
+    /// if the pointer is still on it.
+    pub fn node_button_released(&mut self, press: NodePress, button: u8) {
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        self.node_released(press, pos, button);
+    }
+
+    /// Sends a touch that begins at `pos`, where `under` is, to the node that the tiling layout
+    /// draws there, if there's one. Returns whether a node took it.
+    pub fn node_touch_began(
+        &mut self,
+        slot: TouchSlot,
+        under: &PointContents,
+        pos: Point<f64, Logical>,
+    ) -> bool {
+        let Some(hit) = &under.node else {
+            return false;
+        };
+
+        self.update_node_hover(under, false);
+        let press = self.node_pressed(hit, 1);
+        self.touch_node_presses.insert(slot, (press, pos));
+        true
+    }
+
+    /// Tells the node that took a touch that it moved to `pos`, where `under` is.
+    pub fn node_touch_moved(
+        &mut self,
+        slot: TouchSlot,
+        under: &PointContents,
+        pos: Point<f64, Logical>,
+    ) {
+        let Some((_, last)) = self.touch_node_presses.get_mut(&slot) else {
+            return;
+        };
+
+        *last = pos;
+        self.update_node_hover(under, true);
+    }
+
+    /// Sends the end of a touch to the node that took it, with a click if it's still on it.
+    pub fn node_touch_ended(&mut self, slot: TouchSlot) {
+        let Some((press, pos)) = self.touch_node_presses.remove(&slot) else {
+            return;
+        };
+
+        self.node_released(press, pos, 1);
+        // The finger is gone, so it's not on any node.
+        let modifiers = self.node_modifiers();
+        self.layout.node_hover(None, modifiers);
+    }
+
+    /// Forgets the touches that nodes took, which were cancelled.
+    pub fn node_touches_cancelled(&mut self) {
+        if self.touch_node_presses.is_empty() {
+            return;
+        }
+
+        self.touch_node_presses.clear();
+        let modifiers = self.node_modifiers();
+        self.layout.node_hover(None, modifiers);
     }
 
     /// Sends scrolling to the node that the tiling layout draws under the pointer, if there's one.
