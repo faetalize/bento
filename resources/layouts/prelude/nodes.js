@@ -3,7 +3,7 @@
 // The tree lives here, and bento gets the changes as an ordered list of ops:
 //
 //     { op: "create", id, kind, props }       a node enters a tree for the first time, or again
-//                                             after it was removed
+//                                             after it was removed; its `enter` props start it
 //     { op: "set", id, props }                changed properties
 //     { op: "append", parent, child, before } puts a node last in a parent, or before another child,
 //                                             moving it from wherever it was
@@ -62,7 +62,24 @@ function checkProps(props) {
             throw new Error(`invalid ${name}: ${JSON.stringify(props[name])}`);
         }
     }
+    if (props.enter !== undefined) {
+        if (props.enter === null || typeof props.enter !== "object") {
+            throw new TypeError("`enter` must be an object");
+        }
+        const { enter } = props;
+        if ("enter" in enter) {
+            throw new Error("`enter` can't have an `enter`");
+        }
+        const unknown = Object.keys(enter).filter((name) => !ENTER_PROPS.includes(name));
+        if (unknown.length > 0) {
+            throw new Error(`\`enter\` takes only ${ENTER_PROPS.join(", ")}, not ${unknown.join(", ")}`);
+        }
+        checkProps(enter);
+    }
 }
+
+/** The properties that `enter` can start from, which are the ones that can have a transition. */
+const ENTER_PROPS = ["rect", "opacity", "transform", "cornerRadius", "background"];
 
 function copyValue(value) {
     return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -123,6 +140,9 @@ export class Node extends EventTarget {
     /** Changes some properties. Those with a transition animate to their new value. */
     set(props) {
         checkProps(props);
+        if (props.enter !== undefined && this.#sent && !sameValue(this.#props.enter, props.enter)) {
+            throw new Error("`enter` is for before a node is added to a tree, and this one was");
+        }
         const changed = {};
         for (const [name, value] of Object.entries(props)) {
             if (value !== undefined && !sameValue(this.#props[name], value)) {

@@ -1,23 +1,28 @@
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::{fs, mem};
 
 use anyhow::{anyhow, bail, Context as _};
+use glam::{Mat3, Vec2};
 use niri_config::{Color, CornerRadius, Gradient, GradientRelativeTo};
 use pangocairo::cairo::{self, ImageSurface};
 use pangocairo::pango::{EllipsizeMode, FontDescription};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::utils::CropRenderElement;
 use smithay::backend::renderer::element::{Element, Kind};
-use smithay::backend::renderer::gles::GlesTexture;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
+use smithay::backend::renderer::gles::{GlesTexture, Uniform};
+use smithay::backend::renderer::Texture as _;
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 
 use super::props::Paint;
-use super::{icons, svg, Drawn, Node, NodeKind, WindowSlot};
+use super::{icons, svg, Clip, Drawn, Node, NodeKind, WindowSlot};
 use crate::niri_render_elements;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::memory::MemoryBuffer;
+use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
+use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 use crate::utils::to_physical_precise_round;
@@ -31,6 +36,9 @@ niri_render_elements! {
         ClippedSolidColor = CropRenderElement<SolidColorRenderElement>,
         ClippedBorder = CropRenderElement<BorderRenderElement>,
         ClippedTexture = CropRenderElement<PrimaryGpuTextureRenderElement>,
+        // A group of nodes drawn to a texture, and the same cut off by an ancestor's clip.
+        Group = OffscreenRenderElement,
+        ClippedGroup = CropRenderElement<OffscreenRenderElement>,
     }
 }
 
@@ -44,6 +52,7 @@ pub enum RenderItem {
 }
 
 /// Where and how sharply a tree is drawn.
+#[derive(Clone, Copy)]
 pub(super) struct Target<'a> {
     /// Where the canvas origin is on the output.
     pub location: Point<f64, Logical>,
@@ -56,6 +65,18 @@ pub(super) struct Target<'a> {
     pub has_border_shader: bool,
 }
 
+impl Target<'_> {
+    /// The same, with the canvas' origin at the output's, for what a group draws to a texture. A
+    /// group's texture doesn't change when the camera moves, only where it's drawn does.
+    pub fn canvas(&self) -> Self {
+        Self {
+            location: Point::from((0., 0.)),
+            view: Rectangle::new(self.view.loc - self.location, self.view.size),
+            ..*self
+        }
+    }
+}
+
 /// What a node keeps between frames, so that its elements keep their ids and its textures their
 /// contents.
 #[derive(Debug, Default)]
@@ -66,6 +87,47 @@ pub(super) struct Visuals {
     ring_shader: BorderRenderElement,
     text: Option<CachedText>,
     image: Option<CachedImage>,
+    fade: Group,
+    clip: Group,
+}
+
+/// How a node's subtree is drawn as one: for its opacity, or for its clip's rounded corners.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum GroupKind {
+    Fade,
+    Clip,
+}
+
+/// The textures that a node's group is drawn to: one for each run of nodes between windows, which
+/// the caller draws.
+#[derive(Debug, Default)]
+struct Group {
+    runs: Vec<Run>,
+}
+
+#[derive(Debug, Default)]
+struct Run {
+    buffer: OffscreenBuffer,
+    /// How the texture was cut the last time it was drawn.
+    mask: Option<Mask>,
+}
+
+/// The rounded rectangle that a clip group's texture is cut to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Mask {
+    /// Where it is on the output.
+    area: Rectangle<i32, Physical>,
+    /// In logical pixels, as the shader takes it.
+    radius: CornerRadius,
+}
+
+impl Visuals {
+    fn group_mut(&mut self, kind: GroupKind) -> &mut Group {
+        match kind {
+            GroupKind::Fade => &mut self.fade,
+            GroupKind::Clip => &mut self.clip,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -129,7 +191,221 @@ fn emit<E>(
     }
 }
 
-/// Draws a box, text or image node. Window nodes only get a slot, from the caller.
+/// Where a rectangle on the canvas is on the output.
+fn physical_area(rect: Rectangle<f64, Logical>, target: &Target) -> Rectangle<i32, Physical> {
+    Rectangle::new(rect.loc + target.location, rect.size).to_physical_precise_round(target.scale)
+}
+
+/// Whether clip groups can be cut to rounded corners.
+pub(super) fn can_round_clips<R: NiriRenderer>(renderer: &mut R) -> bool {
+    Shaders::get(renderer).clipped_surface.is_some()
+}
+
+/// Frees the textures of a node's group, once it isn't drawn as one.
+pub(super) fn release_group(node: &Node, kind: GroupKind) {
+    let mut visuals = node.visuals.borrow_mut();
+    let group = visuals.group_mut(kind);
+    if !group.runs.is_empty() {
+        group.runs.clear();
+    }
+}
+
+impl Mask {
+    fn new(clip: Clip, target: &Target) -> Self {
+        let area = physical_area(clip.rect, target);
+        let size: Size<f64, Logical> = area.size.to_f64().to_logical(target.scale);
+        Self {
+            area,
+            radius: CornerRadius::from(clip.radius as f32).fit_to(size.w as f32, size.h as f32),
+        }
+    }
+
+    /// What cuts a texture to it, for the clipped surface shader: where the texture's coordinates
+    /// are in the rectangle, from 0 to 1 inside it, and the rectangle's size and corners in logical
+    /// pixels. `texture_size` is the whole texture, and `texture_loc` is where its top left is on
+    /// the output.
+    fn uniforms(
+        &self,
+        texture_size: Size<i32, Buffer>,
+        texture_loc: Point<i32, Physical>,
+        scale: f64,
+    ) -> MaskUniforms {
+        let texture = Vec2::new(texture_size.w as f32, texture_size.h as f32);
+        let loc = Vec2::new(
+            (self.area.loc.x - texture_loc.x) as f32,
+            (self.area.loc.y - texture_loc.y) as f32,
+        );
+        let size = Vec2::new(self.area.size.w as f32, self.area.size.h as f32);
+
+        MaskUniforms {
+            input_to_geo: Mat3::from_scale(texture / size) * Mat3::from_translation(-loc / texture),
+            geo_size: size / scale as f32,
+            corner_radius: self.radius.into(),
+        }
+    }
+}
+
+struct MaskUniforms {
+    input_to_geo: Mat3,
+    geo_size: Vec2,
+    corner_radius: [f32; 4],
+}
+
+/// Draws the nodes in `items`, which are a node's subtree drawn with `target.canvas()`, as
+/// textures, and hands the textures to `out` with `alpha`, and cut to the rounded corners of
+/// `clip` if it's given. The windows in `items` go to `out` in place, between the textures of the
+/// nodes around them. `crop` is where the node's ancestors clip it. `target` is where the group
+/// is drawn.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn group<R: NiriRenderer>(
+    renderer: &mut R,
+    node: &Node,
+    kind: GroupKind,
+    items: Vec<RenderItem>,
+    alpha: f64,
+    clip: Option<Clip>,
+    crop: Option<Clip>,
+    target: &Target,
+    out: &mut Vec<RenderItem>,
+) {
+    let canvas = target.canvas();
+    let mask = clip.map(|clip| Mask::new(clip, &canvas));
+    if mask.is_some_and(|mask| mask.area.is_empty()) {
+        release_group(node, kind);
+        return;
+    }
+
+    let run_target = RunTarget {
+        mask,
+        crop: crop.map(|clip| physical_area(clip.rect, target)),
+        // A texture only needs what's seen.
+        view: canvas.view.to_physical_precise_round(target.scale),
+        location: target.location,
+        scale: target.scale,
+    };
+
+    let mut run = Vec::new();
+    let mut runs = 0;
+    for item in items {
+        match item {
+            RenderItem::Element(elem) => run.push(elem),
+            RenderItem::Window(slot) => {
+                if !run.is_empty() {
+                    let elements = mem::take(&mut run);
+                    draw_run(
+                        renderer,
+                        node,
+                        kind,
+                        runs,
+                        elements,
+                        alpha,
+                        &run_target,
+                        out,
+                    );
+                    runs += 1;
+                }
+                out.push(RenderItem::Window(slot));
+            }
+        }
+    }
+    if !run.is_empty() {
+        draw_run(renderer, node, kind, runs, run, alpha, &run_target, out);
+        runs += 1;
+    }
+
+    node.visuals
+        .borrow_mut()
+        .group_mut(kind)
+        .runs
+        .truncate(runs);
+}
+
+/// Where and how a group's textures are drawn.
+struct RunTarget {
+    mask: Option<Mask>,
+    /// What the node's ancestors clip it to, on the output.
+    crop: Option<Rectangle<i32, Physical>>,
+    /// The part of the canvas that's seen, in the textures' pixels.
+    view: Rectangle<i32, Physical>,
+    /// Where the canvas origin is on the output.
+    location: Point<f64, Logical>,
+    scale: f64,
+}
+
+/// Draws one run of a group's nodes to the texture it keeps, and hands the texture to `out`.
+#[allow(clippy::too_many_arguments)]
+fn draw_run<R: NiriRenderer>(
+    renderer: &mut R,
+    node: &Node,
+    kind: GroupKind,
+    index: usize,
+    elements: Vec<SurfaceRenderElement>,
+    alpha: f64,
+    target: &RunTarget,
+    out: &mut Vec<RenderItem>,
+) {
+    let scale = Scale::from(target.scale);
+    let elements: Vec<_> = elements
+        .into_iter()
+        .filter_map(|elem| CropRenderElement::from_element(elem, scale, target.view))
+        .collect();
+    if elements.is_empty() {
+        return;
+    }
+
+    let program = target
+        .mask
+        .and_then(|_| Shaders::get(renderer).clipped_surface.clone());
+
+    let mut visuals = node.visuals.borrow_mut();
+    let group = visuals.group_mut(kind);
+    if group.runs.len() <= index {
+        group.runs.resize_with(index + 1, Run::default);
+    }
+    let run = &mut group.runs[index];
+
+    // How the texture is cut isn't in its contents, so a change in it has to be damage.
+    if run.mask != target.mask {
+        run.mask = target.mask;
+        run.buffer.damage_all();
+    }
+
+    let rendered = run
+        .buffer
+        .render(renderer.as_gles_renderer(), scale, &elements);
+    let mut elem = match rendered {
+        Ok((elem, _sync, _data)) => elem.with_alpha(alpha as f32),
+        Err(err) => {
+            warn!("error drawing a group of nodes to a texture: {err:?}");
+            return;
+        }
+    };
+
+    if let (Some(mask), Some(program)) = (target.mask, program) {
+        let uniforms = mask.uniforms(
+            elem.texture().size(),
+            elem.geometry(scale).loc,
+            target.scale,
+        );
+        elem = elem.with_program(
+            program,
+            Rc::new([
+                Uniform::new("niri_scale", target.scale as f32),
+                Uniform::new("geo_size", uniforms.geo_size.to_array()),
+                Uniform::new("corner_radius", uniforms.corner_radius),
+                mat3_uniform("input_to_geo", uniforms.input_to_geo),
+            ]),
+        );
+    }
+
+    // The texture was drawn with the canvas' origin at the output's.
+    let offset = target.location + elem.offset();
+    let elem = elem.with_offset(offset);
+    emit(elem, target.crop, target.scale, &mut |item| out.push(item));
+}
+
+/// Draws a box, text or image node, with the opacity it has in its group. Window nodes only get a
+/// slot, from the caller.
 pub(super) fn draw<R: NiriRenderer>(
     renderer: &mut R,
     node: &Node,
@@ -142,18 +418,15 @@ pub(super) fn draw<R: NiriRenderer>(
     }
 
     let bounds = drawn.bounds();
-    if drawn.opacity <= 0. || bounds.size.w <= 0. || bounds.size.h <= 0. {
+    if drawn.local_opacity <= 0. || bounds.size.w <= 0. || bounds.size.h <= 0. {
         return;
     }
 
     let scale = target.scale;
-    let alpha = drawn.opacity as f32;
+    let alpha = drawn.local_opacity as f32;
     let size = bounds.size;
     let loc = bounds.loc + target.location;
-    let crop: Option<Rectangle<i32, Physical>> = drawn.clip.map(|clip| {
-        Rectangle::new(clip.rect.loc + target.location, clip.rect.size)
-            .to_physical_precise_round(scale)
-    });
+    let crop = drawn.clip.map(|clip| physical_area(clip.rect, target));
 
     let radius = CornerRadius::from((node.corner_radius.current() * drawn.transform.scale) as f32)
         .fit_to(size.w as f32, size.h as f32);
@@ -350,7 +623,7 @@ fn draw_text<R: NiriRenderer>(
     let elem = TextureRenderElement::from_texture_buffer(
         buffer,
         bounds.loc + target.location + offset,
-        drawn.opacity as f32,
+        drawn.local_opacity as f32,
         None,
         Some(size),
         Kind::Unspecified,
@@ -422,7 +695,7 @@ fn draw_image<R: NiriRenderer>(
     let elem = TextureRenderElement::from_texture_buffer(
         buffer,
         bounds.loc + target.location + offset,
-        drawn.opacity as f32,
+        drawn.local_opacity as f32,
         None,
         Some(size),
         Kind::Unspecified,
@@ -577,6 +850,8 @@ fn load_svg(path: &Path, size: u32) -> anyhow::Result<MemoryBuffer> {
 
 #[cfg(test)]
 mod tests {
+    use glam::Vec3;
+
     use super::*;
 
     #[test]
@@ -600,6 +875,84 @@ mod tests {
             gradient_area(&spanning_view, size, loc, view),
             Rectangle::new(Point::from((-30., -20.)), view.size)
         );
+    }
+
+    fn target(scale: f64) -> Target<'static> {
+        Target {
+            location: Point::from((0., 0.)),
+            scale,
+            view: Rectangle::from_size(Size::from((1280., 720.))),
+            icon_theme: "hicolor",
+            has_border_shader: false,
+        }
+    }
+
+    #[test]
+    fn a_canvas_target_has_the_canvas_origin_at_the_outputs() {
+        let mut moved = target(2.);
+        moved.location = Point::from((-100., -50.));
+
+        let canvas = moved.canvas();
+        assert_eq!(canvas.location, Point::from((0., 0.)));
+        assert_eq!(canvas.scale, 2.);
+        // The view starts at the output's origin, which is (100, 50) on the canvas.
+        assert_eq!(
+            canvas.view,
+            Rectangle::new(Point::from((100., 50.)), Size::from((1280., 720.)))
+        );
+
+        // Nothing moved on it.
+        assert_eq!(target(1.).canvas().view, target(1.).view);
+    }
+
+    #[test]
+    fn a_mask_is_where_the_clip_is_on_the_output_with_its_corners_fit() {
+        let clip = Clip {
+            rect: Rectangle::new(Point::from((10., 20.)), Size::from((100., 20.))),
+            radius: 500.,
+        };
+        let mask = Mask::new(clip, &target(1.));
+
+        assert_eq!(
+            mask.area,
+            Rectangle::new(Point::from((10, 20)), Size::from((100, 20)))
+        );
+        // The corners can't be larger than half of the smaller side.
+        assert_eq!(mask.radius, CornerRadius::from(10.));
+
+        // The canvas' origin is somewhere else on the output, and the output is scaled.
+        let mut moved = target(2.);
+        moved.location = Point::from((-5., 0.));
+        let mask = Mask::new(clip, &moved);
+        assert_eq!(
+            mask.area,
+            Rectangle::new(Point::from((10, 40)), Size::from((200, 40)))
+        );
+        assert_eq!(mask.radius, CornerRadius::from(10.));
+    }
+
+    #[test]
+    fn a_mask_maps_the_textures_coordinates_to_its_rectangle() {
+        let mask = Mask {
+            area: Rectangle::new(Point::from((30, 40)), Size::from((100, 50))),
+            radius: CornerRadius::from(8.),
+        };
+        // The texture is 200 × 100 pixels and its top left is at (10, 20) on the output.
+        let uniforms = mask.uniforms(Size::from((200, 100)), Point::from((10, 20)), 2.);
+        let at = |x: f32, y: f32| uniforms.input_to_geo * Vec3::new(x, y, 1.);
+
+        // The mask's corners are at (20, 20) and (120, 70) in the texture.
+        let top_left = at(20. / 200., 20. / 100.);
+        assert!(top_left.x.abs() < 1e-6 && top_left.y.abs() < 1e-6);
+        let bottom_right = at(120. / 200., 70. / 100.);
+        assert!((bottom_right.x - 1.).abs() < 1e-6 && (bottom_right.y - 1.).abs() < 1e-6);
+        // Outside it is outside 0 to 1.
+        assert!(at(0., 0.).x < 0.);
+        assert!(at(1., 1.).x > 1.);
+
+        // The shader takes the size and the corners in logical pixels, and the output has scale 2.
+        assert_eq!(uniforms.geo_size, Vec2::new(50., 25.));
+        assert_eq!(uniforms.corner_radius, [8.; 4]);
     }
 
     fn key(text: &str) -> TextKey {

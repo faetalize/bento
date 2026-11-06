@@ -716,11 +716,18 @@ export interface NodeProps {
      * `Window.place`.
      */
     rect?: Rect;
-    /** From 0 to 1. It applies to each node on its own, so overlapping children show through. */
+    /**
+     * From 0 to 1. It applies to the node and its children together, as one picture, so that
+     * overlapping children don't show through each other. A window is drawn on its own, so it gets
+     * the opacity of the nodes above it but isn't part of their picture.
+     */
     opacity?: number;
     /** Scales and moves it, and its children, around the centre of its rect. */
     transform?: { scale?: number; x?: number; y?: number };
-    /** Whether its children are clipped to its rect, with its corner radius. */
+    /**
+     * Whether its children, of every kind, are clipped to its rect, with its corner radius. Clips
+     * of nested nodes cut one inside the other.
+     */
     clip?: boolean;
     cornerRadius?: number;
     /** Fill, for every node but a window's. */
@@ -735,8 +742,11 @@ export interface NodeProps {
     color?: Color;
     /**
      * `"image"`: an icon name from the icon theme, or an absolute path, drawn as large as fits
-     * its rect, centred. Raster images only: icons are found as PNGs, and a path can be a PNG,
-     * JPEG or WebP.
+     * its rect, centred. The icon theme is the one apps on the session use, from GNOME's
+     * interface settings or `gtk-icon-theme-name` in `~/.config/gtk-4.0/settings.ini`, with the
+     * themes it inherits from and `hicolor`. Icons are PNGs or SVGs, and a path can be a PNG,
+     * JPEG, WebP or SVG. An SVG is drawn at the size of the node, and shows no text or images
+     * that it embeds.
      */
     image?: string;
     /** Whether it gets pointer events. Nodes without listeners can leave it off. */
@@ -751,8 +761,20 @@ export interface NodeProps {
     /** `"search"`: what the field shows while the query is empty. */
     placeholder?: string;
     /** How each property animates when it changes; properties left out change at once. */
-    transitions?: Partial<Record<"rect" | "opacity" | "transform" | "cornerRadius" | "background", Transition>>;
+    transitions?: Partial<Record<Transitioned, Transition>>;
+    /**
+     * The values of some properties that the node starts from when it enters a tree, which it
+     * then goes from to its own values with its `transitions`, like CSS's `@starting-style`: a
+     * tab indicator that grows in has an `enter` rect that is zero wide. Properties without a
+     * transition don't start anywhere else. It's for before the node is added to a tree, and
+     * `set` throws if it changes it for a node that is in one. A node that's taken out of a tree
+     * and added to one again enters again.
+     */
+    enter?: Partial<Pick<NodeProps, Transitioned>>;
 }
+
+/** The properties that can have a transition, and an `enter` value. */
+export type Transitioned = "rect" | "opacity" | "transform" | "cornerRadius" | "background";
 
 /**
  * Something drawn on a workspace: a box, text, an image, or a window. Nodes form a tree per
