@@ -40,7 +40,7 @@ use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::{RenderLayer, SizingMode};
 use crate::niri_render_elements;
-use crate::render_helpers::clipped_surface::ClippedSurfaceRenderElement;
+use crate::render_helpers::clipped_surface::{rounded_overlap, ClippedSurfaceRenderElement};
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
@@ -1383,6 +1383,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 focus_ring,
                 opacity,
                 true,
+                None,
                 &mut |elem| push(elem.into()),
             );
             return;
@@ -1410,6 +1411,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             focus_ring,
             opacity,
             !clipped,
+            placement.corners_from(tile_pos),
             &mut |elem| {
                 let elem = placement.round_corners(elem, clip_shader.as_ref());
                 if let Some(elem) = placement.place(elem) {
@@ -2164,6 +2166,15 @@ impl Placement {
         }
     }
 
+    /// The rounded corners of the clip, relative to `location`, where the tile is drawn.
+    fn corners_from(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(Rectangle<f64, Logical>, CornerRadius)> {
+        self.corners
+            .map(|(area, radius)| (Rectangle::new(area.loc - location, area.size), radius))
+    }
+
     /// The same placement without the clip.
     fn uncropped(self) -> Self {
         Self {
@@ -2256,35 +2267,6 @@ fn toplevel_bounds(
         f64::max(working_area.h - gaps * 2. - border, 1.),
     ))
     .to_i32_floor()
-}
-
-/// Where two rounded rectangles overlap, as one rounded rectangle. Each corner of the overlap is
-/// rounded like the corner of either rectangle that it's at, less how far it's inset from that
-/// corner, so that a corner one of them rounds close by stays rounded. Corners that both round
-/// take the rounder.
-fn rounded_overlap(
-    a: (Rectangle<f64, Logical>, CornerRadius),
-    b: (Rectangle<f64, Logical>, CornerRadius),
-) -> Option<(Rectangle<f64, Logical>, CornerRadius)> {
-    let area = a.0.intersection(b.0)?;
-    let corner = |at: fn(Rectangle<f64, Logical>) -> Point<f64, Logical>,
-                  radius: fn(CornerRadius) -> f32| {
-        [a, b]
-            .into_iter()
-            .map(|(rect, radii)| {
-                let (p, q) = (at(area), at(rect));
-                let inset = f64::max((p.x - q.x).abs(), (p.y - q.y).abs());
-                f32::max(radius(radii) - inset as f32, 0.)
-            })
-            .fold(0., f32::max)
-    };
-    let radius = CornerRadius {
-        top_left: corner(|r| r.loc, |c| c.top_left),
-        top_right: corner(|r| r.loc + Point::from((r.size.w, 0.)), |c| c.top_right),
-        bottom_right: corner(|r| r.loc + r.size.to_point(), |c| c.bottom_right),
-        bottom_left: corner(|r| r.loc + Point::from((0., r.size.h)), |c| c.bottom_left),
-    };
-    Some((area, radius.fit_to(area.size.w as f32, area.size.h as f32)))
 }
 
 #[cfg(test)]
