@@ -284,6 +284,11 @@ Engines only ever draw inside workspaces. Anything above them on a monitor, like
 or a mini-map of an engine's columns, is the shell's job, and the shell can read the engine's
 state to draw it.
 
+bento draws everything engines show, and the shell provides nothing inside workspaces. Only bento
+can draw windows, and everything an engine shows composes with them, so it all comes from one
+place. Engines never get a raw text field: where typing is needed, like searching, it's a bento
+function with its own text handling, and the engine only presents it.
+
 ### Engines decide where input on a window goes
 
 A window can be drawn anywhere and at any size, so the engine says, for each window's node, where
@@ -344,6 +349,18 @@ Which windows are grouped is bento's state, not the engine's. Engines can call o
 change it, like `bento.createGroup([a, b])`, `group.add(win)`, `group.remove(win)` and
 `group.activate(win)`, and native group binds work under every engine. An engine reads the
 groups from bento and knows how to deal with them, but doesn't keep track of them itself.
+
+### Search is bento's, its presentation is the engine's
+
+bento can search windows, like groups, as a function any engine calls on. An engine starts a
+search over a group's windows, a workspace's, or every window, and bento owns the rest of what
+searching is: the query, typing with input methods and screen readers, and matching it against
+windows' titles and app ids. The engine is told whenever the query or the matching windows
+change, best match first, and decides how all of it looks: where the field sits and how it's
+drawn, and what results look like, like dimming tabs that don't match.
+
+Enter picks the best match, which reaches the engine as a request to activate that window, and
+Escape cancels. Either way, the engine is told the search ended.
 
 ### An engine's state is readable from outside
 
