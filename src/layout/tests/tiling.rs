@@ -1223,3 +1223,57 @@ fn a_float_request_says_the_size_of_the_window() {
     let sizes = crate::layout::tiling::engine::exposed_state().unwrap();
     assert_eq!(sizes, serde_json::json!([{ "w": 300, "h": 200 }]));
 }
+
+/// An engine that places two windows apart, and moves them 300 px to the right with an action. The
+/// first one's node has a `rect` transition.
+const SLIDERS: &str = r#"
+export const meta = { api: 2, name: "sliders", floating: false, actions: { slide: {} } };
+export default function create(bento) {
+    let count = 0;
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        win.place({ x: count * 400, y: 0, w: 200, h: 100 });
+        win.focus();
+        if (count++ === 0) {
+            win.node.set({ transitions: { rect: { duration: 1000, curve: "linear" } } });
+        }
+    });
+    bento.addEventListener("action", () => {
+        for (const win of bento.windows) {
+            win.place({ ...win.rect, x: win.rect.x + 300 });
+        }
+    });
+}
+"#;
+
+#[test]
+fn a_window_node_with_a_rect_transition_moves_as_it_says() {
+    // Windows would move instantly, if their nodes didn't say otherwise.
+    let mut options = options_for_source("sliders", SLIDERS);
+    options.animations.window_movement.0.off = true;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options, ops);
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::LayoutAction("slide", vec![], None),
+            Op::AdvanceAnimations { msec_delta: 500 },
+        ],
+    );
+
+    let ws = layout.active_workspace().unwrap();
+    let offset = |id: usize| {
+        ws.tiles_with_render_positions()
+            .map(|(tile, _, _)| tile)
+            .find(|tile| tile.window().0.id == id)
+            .unwrap()
+            .render_offset()
+    };
+    // Half a second into the first window's second, it's halfway from where it was. The second
+    // window's node says nothing, so it moved as the configuration says, at once.
+    assert!((offset(1).x + 150.).abs() < 1e-6, "{:?}", offset(1));
+    assert_eq!(offset(2), Point::from((0., 0.)));
+}

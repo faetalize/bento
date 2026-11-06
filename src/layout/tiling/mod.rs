@@ -773,10 +773,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         let tile = &mut self.tiles[idx];
         let data = &mut self.data[idx];
 
+        // A window whose node has a `rect` transition moves as that says, instead of with the
+        // configured window movement.
+        let transition = self.tree.window_rect_transition(data.id);
+
         if let Some(prev) = data.rect {
             if animate && prev.loc != rect.loc {
-                let config = apply
-                    .anim
+                let config = transition
+                    .or(apply.anim)
                     .unwrap_or(self.options.animations.window_movement.0);
                 tile.animate_move_from_with_config(prev.loc - rect.loc, config);
             }
@@ -798,6 +802,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             let pos = rect.loc - camera + tile.render_offset();
             let config = moved
                 .config
+                .or(transition)
                 .unwrap_or(self.options.animations.window_movement.0);
             tile.animate_move_from_with_config(moved.from - pos, config);
             if moved.between_workspaces {

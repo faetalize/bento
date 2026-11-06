@@ -690,6 +690,9 @@ impl<W: LayoutElement> Layout<W> {
             self.apply_op(op);
         }
 
+        // What's drawn goes first: windows move as the transitions of their nodes say.
+        let mut stacked = self.apply_tree_ops(out.tree);
+
         // Group what concerns each workspace.
         let mut changes: HashMap<u64, Vec<WindowChange>> = HashMap::new();
         for change in out.windows {
@@ -721,7 +724,6 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let mut stacked = self.apply_tree_ops(out.tree);
         for (ws_id, window) in out.focus {
             self.host.resend_workspaces.insert(ws_id);
             if let Some(ws) = self.workspace_mut(ws_id) {

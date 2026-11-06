@@ -699,6 +699,12 @@ impl Tree {
         self.attach(parent, &id, before);
     }
 
+    /// How placing a window animates, if the engine gave the window's node a `rect` transition.
+    pub fn window_rect_transition(&self, window: u64) -> Option<niri_config::Animation> {
+        let node = self.nodes.get(&window_key(window))?;
+        node.transitions.rect.as_ref()?.resolve(&self.animations)
+    }
+
     /// Starts over for a new engine: its nodes are gone, and the windows are in the root in the
     /// order given, from the bottom to the top.
     pub fn reset(&mut self, windows: impl IntoIterator<Item = u64>) {

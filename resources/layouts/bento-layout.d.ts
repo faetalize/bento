@@ -750,7 +750,11 @@ export interface NodeProps {
     input?: "app" | "engine" | "none";
     /** `"search"`: what the field shows while the query is empty. */
     placeholder?: string;
-    /** How each property animates when it changes; properties left out change at once. */
+    /**
+     * How each property animates when it changes; properties left out change at once. A window's
+     * node animates the window's movement with its `rect` transition, instead of bento's
+     * `"window-movement"`; its size still animates as bento's `"window-resize"` says.
+     */
     transitions?: Partial<Record<"rect" | "opacity" | "transform" | "cornerRadius" | "background", Transition>>;
 }
 
