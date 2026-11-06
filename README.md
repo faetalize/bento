@@ -452,6 +452,7 @@ In short:
 - **Groups** are bento's own: a set of windows and which one is active. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
 - **Nodes** are what the engine draws: boxes, text and images in a tree for each workspace, which also holds the windows. Tab bars, hints and drop targets are nodes. bento renders the tree and runs the transitions the engine describes, so no engine code runs per frame.
 - **State** can be exposed with `bento.exposeState`, so that the shell, bento Settings and scripts can read it through bento's socket, and `unload` can keep state for the next instance of the engine when it reloads.
+- **Timers and the keyboard**: `bento.setTimeout` calls back after a delay, between events, and ends with the engine. `bento.grabKeyboard()` takes the keyboard for a short interaction the person started, like picking a window by the letter it shows: keys come as `keydown` and `keyup` with their name, the text they type and the modifiers held, and apps get none until `releaseKeyboard()`, Escape (unless the engine prevents it), a click outside what the engine draws, the lock screen or keyboard focus moving elsewhere ends it, which `keyboardrelease` says. Outside a grab, an engine only hears `modifierschange`.
 - **Queries** ask the engine without changing anything, like `newwindowsize`, what size a new window should start at.
 
 bento animates everything an engine changes, so engines only say where things go.
@@ -460,7 +461,7 @@ Engines written for API 1, with `api: 1` and one instance for each workspace, st
 ### Testing layout engines
 
 Engines can be tested with [node](https://nodejs.org), without running bento.
-`resources/layouts/test/host.js` plays bento's role: it opens and closes windows, runs actions, drags and resizes, and shows where the engine puts everything.
+`resources/layouts/test/host.js` plays bento's role: it opens and closes windows, runs actions, drags and resizes, types keys, lets time pass for timers, and shows where the engine puts everything.
 
 ```js
 import { test } from "node:test";

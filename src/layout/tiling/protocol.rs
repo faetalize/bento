@@ -187,6 +187,9 @@ pub struct SyncInfo {
     /// Whether the focused monitor changed since the layout was last told.
     #[serde(skip)]
     pub focus_changed: bool,
+    /// Whether the layout can take the keyboard, when that changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyboard_available: Option<bool>,
 }
 
 impl SyncInfo {
@@ -199,6 +202,7 @@ impl SyncInfo {
             && self.windows.is_empty()
             && self.groups.is_none()
             && self.options.is_none()
+            && self.keyboard_available.is_none()
             && !self.focus_changed
     }
 
@@ -245,6 +249,22 @@ pub struct Output {
     /// Whether the layout threw while it started.
     #[serde(default, rename = "startFailed")]
     pub start_failed: bool,
+    /// Timers that the layout started.
+    #[serde(default)]
+    pub timers: Vec<TimerStart>,
+    /// Timers that the layout cleared, which it had started in an earlier call.
+    #[serde(default, rename = "clearedTimers")]
+    pub cleared_timers: Vec<u64>,
+    /// Whether the layout holds the keyboard, if it took it or gave it back.
+    #[serde(default)]
+    pub keyboard: Option<bool>,
+}
+
+/// A timer that the layout asked for: the event `timer` with its `id` comes after `ms`.
+#[derive(Debug, Deserialize)]
+pub struct TimerStart {
+    pub id: u64,
+    pub ms: u64,
 }
 
 /// A change to the workspace structure or the groups that the layout asked for.

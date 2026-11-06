@@ -153,6 +153,7 @@ use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
 use crate::layer::MappedLayer;
 use crate::layout::tile::TileRenderElement;
+use crate::layout::tiling::host::{KeyboardOwner, TimerRequest};
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement, NodeHit,
@@ -369,6 +370,16 @@ pub struct Niri {
     pub pending_tablet_release_binds: HashMap<u32, Bind>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
+    /// Scancodes of the keys that went to the layout engine while it held the keyboard, whose
+    /// releases the apps don't get either.
+    pub engine_keys: HashSet<Keycode>,
+    /// Repeats the last key that went to the layout engine.
+    pub engine_key_repeat_timer: Option<RegistrationToken>,
+    /// Whether the apps' keyboard focus is withheld because the layout engine holds the keyboard.
+    pub keyboard_withheld: bool,
+    /// The layout engine's timers on the event loop, by the instance of the engine and the id that
+    /// it knows them by.
+    pub engine_timers: HashMap<(u64, u64), RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
@@ -903,6 +914,9 @@ impl State {
         // Needs to be called after updating the keyboard focus.
         #[cfg(feature = "dbus")]
         self.niri.refresh_a11y();
+
+        // Last, so that it sees the timers that everything above asked for.
+        self.niri.update_engine_timers();
     }
 
     /// Stop sessions whose source is gone and sync buffer constraints. Runs as
@@ -1417,6 +1431,16 @@ impl State {
             KeyboardFocus::Layout { surface: None }
         };
 
+        // The layout engine can only take the keyboard from its own windows, and loses it when the
+        // focus goes elsewhere.
+        self.niri.layout.set_keyboard_owner(match &focus {
+            KeyboardFocus::Layout { .. } => KeyboardOwner::Layout,
+            KeyboardFocus::LockScreen { .. } => KeyboardOwner::LockScreen,
+            _ => KeyboardOwner::Other,
+        });
+        // While it holds the keyboard, the apps have no focus.
+        let withheld = self.niri.layout.keyboard_grabbed();
+
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         if self.niri.keyboard_focus != focus {
             trace!(
@@ -1532,11 +1556,20 @@ impl State {
             }
 
             self.niri.keyboard_focus.clone_from(&focus);
-            keyboard.set_focus(self, focus.into_surface(), SERIAL_COUNTER.next_serial());
+            let surface = if withheld { None } else { focus.into_surface() };
+            keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
 
             // FIXME: can be more granular.
             self.niri.queue_redraw_all();
+        } else if withheld != self.niri.keyboard_withheld {
+            let surface = if withheld {
+                None
+            } else {
+                self.niri.keyboard_focus.surface().cloned()
+            };
+            keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
         }
+        self.niri.keyboard_withheld = withheld;
     }
 
     /// Loads the xkb keymap from a file config setting.
@@ -2865,6 +2898,10 @@ impl Niri {
             pending_tablet_release_binds: HashMap::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
+            engine_keys: HashSet::new(),
+            engine_key_repeat_timer: None,
+            keyboard_withheld: false,
+            engine_timers: HashMap::new(),
             presentation_state,
             security_context_state,
             gamma_control_manager_state,
@@ -6742,9 +6779,50 @@ impl Niri {
         self.pending_mouse_release_binds.clear();
         self.pending_tablet_release_binds.clear();
 
+        self.engine_keys.clear();
+
         // Stop ongoing key repeat if any.
         if let Some(token) = self.bind_repeat_timer.take() {
             self.event_loop.remove(token);
+        }
+        if let Some(token) = self.engine_key_repeat_timer.take() {
+            self.event_loop.remove(token);
+        }
+    }
+
+    /// Starts and cancels the timers that the layout engine asked for on the event loop, and calls
+    /// the layout back when one comes due.
+    pub fn update_engine_timers(&mut self) {
+        for request in self.layout.take_timer_requests() {
+            match request {
+                TimerRequest::Start {
+                    instance,
+                    id,
+                    delay,
+                } => {
+                    let token = self
+                        .event_loop
+                        .insert_source(Timer::from_duration(delay), move |_, _, state| {
+                            state.niri.engine_timers.remove(&(instance, id));
+                            state.niri.layout.fire_engine_timer(instance, id);
+                            // FIXME: granular.
+                            state.niri.queue_redraw_all();
+                            TimeoutAction::Drop
+                        })
+                        .unwrap();
+                    self.engine_timers.insert((instance, id), token);
+                }
+                TimerRequest::Cancel { instance, id } => {
+                    if let Some(token) = self.engine_timers.remove(&(instance, id)) {
+                        self.event_loop.remove(token);
+                    }
+                }
+                TimerRequest::CancelAll => {
+                    for (_, token) in self.engine_timers.drain() {
+                        self.event_loop.remove(token);
+                    }
+                }
+            }
         }
     }
 
