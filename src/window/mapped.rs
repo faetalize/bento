@@ -740,6 +740,7 @@ impl LayoutElement for Mapped {
                 popup_rules.geometry_corner_radius.unwrap_or_default(),
                 effect,
                 false,
+                None,
                 xray_pos,
                 &mut |elem| push(elem.into()),
             );
@@ -754,6 +755,7 @@ impl LayoutElement for Mapped {
         clip_to_geometry: bool,
         surface_anim_scale: Scale<f64>,
         radius: CornerRadius,
+        clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
         xray_pos: XrayPos,
         push: &mut dyn FnMut(BackgroundEffectElement),
     ) {
@@ -771,6 +773,7 @@ impl LayoutElement for Mapped {
             radius,
             self.rules.background_effect,
             should_block_out,
+            clip,
             xray_pos,
             push,
         );

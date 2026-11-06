@@ -200,7 +200,8 @@ pub trait LayoutElement {
         let _ = (ctx, location, scale, alpha, xray_pos, push);
     }
 
-    /// Renders the background effect behind the main surface of the element.
+    /// Renders the background effect behind the main surface of the element, also cut to `clip`
+    /// if it's given, a rounded rectangle in the same space as `geometry`.
     #[allow(clippy::too_many_arguments)]
     fn render_background_effect(
         &self,
@@ -210,6 +211,7 @@ pub trait LayoutElement {
         _clip_to_geometry: bool,
         _surface_anim_scale: Scale<f64>,
         _radius: CornerRadius,
+        _clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
         _xray_pos: XrayPos,
         _push: &mut dyn FnMut(BackgroundEffectElement),
     ) {

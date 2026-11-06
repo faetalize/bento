@@ -9,6 +9,7 @@ use wayland_server::protocol::wl_surface::WlSurface;
 use crate::handlers::background_effect::get_cached_blur_region;
 use crate::niri_render_elements;
 use crate::render_helpers::blur::BlurOptions;
+use crate::render_helpers::clipped_surface::rounded_overlap;
 use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
 use crate::render_helpers::xray::{XrayElement, XrayPos};
@@ -148,11 +149,14 @@ impl BackgroundEffect {
         self.options.is_visible()
     }
 
+    /// Renders the effect, cut to `outer_clip` too if it's given, like a window's is to the clip
+    /// that a layout engine draws it in.
     pub fn render(
         &self,
         ctx: RenderCtx<GlesRenderer>,
         ns: Option<usize>,
         mut params: RenderParams,
+        outer_clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
         xray_pos: XrayPos,
         push: &mut dyn FnMut(BackgroundEffectElement),
     ) {
@@ -164,6 +168,16 @@ impl BackgroundEffect {
             clip.1 = self.corner_radius;
         }
         params.fit_clip_radius();
+
+        if let Some(outer) = outer_clip {
+            let own = params
+                .clip
+                .unwrap_or((params.geometry, CornerRadius::default()));
+            let Some(clip) = rounded_overlap(own, outer) else {
+                return;
+            };
+            params.clip = Some(clip);
+        }
 
         let damage = self.damage.render(params.geometry);
 
@@ -294,6 +308,7 @@ pub fn render_for_tile(
     radius: CornerRadius,
     effect: niri_config::BackgroundEffect,
     should_block_out: bool,
+    outer_clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
     xray_pos: XrayPos,
     push: &mut dyn FnMut(BackgroundEffectElement),
 ) {
@@ -327,6 +342,6 @@ pub fn render_for_tile(
         };
 
         let xray_pos = xray_pos.offset(params.geometry.loc - geometry.loc);
-        background_effect.render(ctx, ns, params, xray_pos, push);
+        background_effect.render(ctx, ns, params, outer_clip, xray_pos, push);
     });
 }

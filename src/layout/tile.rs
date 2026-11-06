@@ -1128,6 +1128,7 @@ impl<W: LayoutElement> Tile<W> {
     }
 
     /// Renders the tile, with the window's popups if `popups`.
+    #[allow(clippy::too_many_arguments)]
     fn render_inner<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
@@ -1135,6 +1136,7 @@ impl<W: LayoutElement> Tile<W> {
         mut xray_pos: XrayPos,
         focus_ring: bool,
         popups: bool,
+        clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
@@ -1411,6 +1413,7 @@ impl<W: LayoutElement> Tile<W> {
             clip_to_geometry,
             surface_anim_scale,
             radius,
+            clip.map(|(rect, radius)| (Rectangle::new(rect.loc + location, rect.size), radius)),
             xray_pos,
             &mut |elem| push(elem.into()),
         );
@@ -1424,7 +1427,7 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
-        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., true, push);
+        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., true, None, push);
     }
 
     /// Renders only the window's popups, as [`Tile::render_with_opacity`] does with the whole
@@ -1460,7 +1463,9 @@ impl<W: LayoutElement> Tile<W> {
 
     /// Renders the tile as translucent as `opacity` says, on top of its own opacity animation.
     /// The whole tile is drawn into one buffer first, so what overlaps in it doesn't show
-    /// through. The window's popups are left out unless `popups`.
+    /// through. The window's popups are left out unless `popups`. `clip`, relative to
+    /// `location`, is a rounded rectangle that the caller cuts the tile to, which the window's
+    /// background effect is cut to as well, since the caller can only cut it to a rectangle.
     #[allow(clippy::too_many_arguments)]
     pub fn render_with_opacity<R: NiriRenderer>(
         &self,
@@ -1470,6 +1475,7 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         opacity: f32,
         popups: bool,
+        clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render");
@@ -1494,6 +1500,7 @@ impl<W: LayoutElement> Tile<W> {
                 xray_pos,
                 focus_ring,
                 popups,
+                clip,
                 &mut |elem| elements.push(elem),
             );
             match open.render(
@@ -1526,6 +1533,7 @@ impl<W: LayoutElement> Tile<W> {
                 xray_pos,
                 focus_ring,
                 popups,
+                clip,
                 &mut |elem| elements.push(elem),
             );
             match offscreen.render(ctx.renderer, scale, &elements) {
@@ -1544,9 +1552,15 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         if !pushed {
-            self.render_inner(ctx, location, xray_pos, focus_ring, popups, &mut |elem| {
-                push(elem)
-            });
+            self.render_inner(
+                ctx,
+                location,
+                xray_pos,
+                focus_ring,
+                popups,
+                clip,
+                &mut |elem| push(elem),
+            );
         }
     }
 
