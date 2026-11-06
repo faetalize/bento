@@ -82,6 +82,7 @@ pub mod focus_ring;
 pub mod groups;
 pub mod monitor;
 pub mod opening_window;
+pub mod search;
 pub mod shadow;
 pub mod surfaces;
 pub mod tile;
@@ -385,6 +386,8 @@ pub struct Layout<W: LayoutElement> {
     options: Rc<Options>,
     /// Windows grouped together.
     groups: Groups,
+    /// The running search of windows, which has the keyboard.
+    search: Option<search::Search>,
     /// The tiling layout engine's view of the session.
     host: Host,
 }
@@ -770,6 +773,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_progress: None,
             options: Rc::new(options),
             groups: Groups::default(),
+            search: None,
             host: Host::default(),
         };
         // The layout engine sees the session from the start, so that it can answer queries.
@@ -801,6 +805,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_progress: None,
             options: opts,
             groups: Groups::default(),
+            search: None,
             host: Host::default(),
         };
         tiling::engine::ensure_loaded(&layout.options.tiling);
@@ -2344,6 +2349,13 @@ impl<W: LayoutElement> Layout<W> {
             );
             for window in &group.windows {
                 assert!(grouped.insert(*window), "a window is in one group at most");
+            }
+        }
+
+        if let Some(search) = &self.search {
+            let mut matched = HashSet::new();
+            for hit in search.hits() {
+                assert!(matched.insert(hit.window), "a window matches a search once");
             }
         }
     }

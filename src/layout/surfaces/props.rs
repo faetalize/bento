@@ -118,6 +118,7 @@ pub struct Update {
     pub font: Option<String>,
     pub color: Option<Color>,
     pub image: Option<String>,
+    pub placeholder: Option<String>,
     pub interactive: Option<bool>,
     pub transitions: Option<Transitions>,
 }
@@ -207,6 +208,7 @@ struct RawProps {
     font: Option<String>,
     color: Option<String>,
     image: Option<String>,
+    placeholder: Option<String>,
     interactive: Option<bool>,
     transitions: Option<HashMap<String, RawTransition>>,
 }
@@ -390,6 +392,7 @@ impl TryFrom<RawProps> for Update {
                 .map(|color| Color::from_hex(color).map_err(|err| format!("`color`: {err}")))
                 .transpose()?,
             image: raw.image,
+            placeholder: raw.placeholder,
             interactive: raw.interactive,
             transitions: raw.transitions.map(Transitions::from_raw).transpose()?,
         })
@@ -418,6 +421,7 @@ mod tests {
             "background": "#000",
             "border": { "width": 2, "color": "#fff" },
             "interactive": true,
+            "placeholder": "Search",
         }))
         .unwrap();
 
@@ -450,6 +454,7 @@ mod tests {
             Paint::Color(Color::from_rgba8_unpremul(255, 255, 255, 255))
         );
         assert_eq!(update.interactive, Some(true));
+        assert_eq!(update.placeholder.as_deref(), Some("Search"));
     }
 
     #[test]

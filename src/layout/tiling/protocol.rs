@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::layout::search::Scope;
+
 /// Largest coordinate or size bento accepts from a layout, to keep arithmetic sane.
 const MAX_COORD: f64 = 1e7;
 
@@ -166,6 +168,14 @@ pub struct GroupInfo {
     pub active: u64,
 }
 
+/// What bento tells the layout about the running search.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SearchInfo {
+    pub query: String,
+    /// The windows that match the query, with how well: `(window, rank)`, the greater the better.
+    pub hits: Vec<(u64, u8)>,
+}
+
 /// What changed about the session since the layout was last told, which the prelude applies
 /// before it handles an event.
 #[derive(Debug, Default, Serialize)]
@@ -179,6 +189,9 @@ pub struct SyncInfo {
     /// Every group, when they changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<GroupInfo>>,
+    /// The running search, when its query or matches changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchInfo>,
     /// Name of the monitor with keyboard focus.
     pub focused_monitor: Option<String>,
     /// The layout's options, when they changed.
@@ -198,6 +211,7 @@ impl SyncInfo {
             && self.removed_workspaces.is_empty()
             && self.windows.is_empty()
             && self.groups.is_none()
+            && self.search.is_none()
             && self.options.is_none()
             && !self.focus_changed
     }
@@ -288,6 +302,11 @@ pub enum Op {
     DissolveGroup {
         group: u64,
     },
+    Search {
+        scope: Scope,
+    },
+    /// The layout ended its search, which it was told about already.
+    EndSearch,
 }
 
 /// A change to a workspace's tree of drawn nodes, see `prelude/nodes.js`.

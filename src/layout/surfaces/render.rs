@@ -11,7 +11,8 @@ use smithay::backend::renderer::gles::GlesTexture;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 
 use super::props::Paint;
-use super::{icons, Drawn, Node, NodeKind, WindowSlot};
+use super::{icons, search_field, Drawn, Node, NodeKind, WindowSlot};
+use crate::layout::search::Field;
 use crate::niri_render_elements;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::memory::MemoryBuffer;
@@ -52,6 +53,8 @@ pub(super) struct Target<'a> {
     /// `location`.
     pub view: Rectangle<f64, Logical>,
     pub icon_theme: &'a str,
+    /// What the nodes of the running search draw.
+    pub search: Option<&'a Field>,
     pub has_border_shader: bool,
 }
 
@@ -65,6 +68,7 @@ pub(super) struct Visuals {
     ring_shader: BorderRenderElement,
     text: Option<CachedText>,
     image: Option<CachedImage>,
+    search: search_field::Cache,
 }
 
 #[derive(Debug, PartialEq)]
@@ -109,7 +113,7 @@ impl CachedText {
     }
 }
 
-fn emit<E>(
+pub(super) fn emit<E>(
     elem: E,
     crop: Option<Rectangle<i32, Physical>>,
     scale: f64,
@@ -128,7 +132,7 @@ fn emit<E>(
     }
 }
 
-/// Draws a box, text or image node. Window nodes only get a slot, from the caller.
+/// Draws a box, text, image or search node. Window nodes only get a slot, from the caller.
 pub(super) fn draw<R: NiriRenderer>(
     renderer: &mut R,
     node: &Node,
@@ -136,7 +140,10 @@ pub(super) fn draw<R: NiriRenderer>(
     target: &Target,
     push: &mut dyn FnMut(RenderItem),
 ) {
-    if !matches!(node.kind, NodeKind::Box | NodeKind::Text | NodeKind::Image) {
+    if !matches!(
+        node.kind,
+        NodeKind::Box | NodeKind::Text | NodeKind::Image | NodeKind::Search
+    ) {
         return;
     }
 
@@ -189,6 +196,15 @@ pub(super) fn draw<R: NiriRenderer>(
     match node.kind {
         NodeKind::Text => draw_text(renderer, node, &mut visuals, drawn, target, crop, push),
         NodeKind::Image => draw_image(renderer, node, &mut visuals, drawn, target, crop, push),
+        NodeKind::Search => search_field::draw(
+            renderer,
+            node,
+            &mut visuals.search,
+            drawn,
+            target,
+            crop,
+            push,
+        ),
         _ => (),
     }
 
