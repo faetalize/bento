@@ -436,3 +436,47 @@ impl ActionHandler for Handler {
         let _ = self.tx.send(Msg::Action(request));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::search::Edit;
+
+    fn field(text: &str) -> Field {
+        let mut field = Field::default();
+        field.apply(&Edit::Insert(text.to_owned()));
+        field
+    }
+
+    #[test]
+    fn characters_are_counted_in_bytes() {
+        assert_eq!(character_lengths(&field("a\u{e9}🇫🇷")), [1, 2, 8]);
+    }
+
+    #[test]
+    fn a_character_too_long_for_a_byte_is_split() {
+        // A letter with 150 combining accents is one character of 301 bytes.
+        let text = format!("a{}", "\u{301}".repeat(150));
+        let lengths = character_lengths(&field(&text));
+        assert_eq!(lengths, [255, 46]);
+        assert_eq!(
+            lengths.iter().map(|len| usize::from(*len)).sum::<usize>(),
+            301
+        );
+    }
+
+    #[test]
+    fn the_selection_is_in_characters_not_bytes() {
+        let mut field = field("a\u{e9}b");
+        field.apply(&Edit::Left { select: true });
+
+        let [(id, input), (run_id, run)] = search_nodes(Some(&field));
+        assert_eq!((id, run_id), (ID_SEARCH, ID_SEARCH_TEXT));
+        assert_eq!(input.value(), Some("a\u{e9}b"));
+        assert_eq!(run.value(), Some("a\u{e9}b"));
+        let selection = input.text_selection().unwrap();
+        assert_eq!(selection.anchor.character_index, 3);
+        assert_eq!(selection.focus.character_index, 2);
+        assert_eq!(selection.focus.node, ID_SEARCH_TEXT);
+    }
+}

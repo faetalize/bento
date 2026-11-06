@@ -363,3 +363,52 @@ pub struct Verdict {
     #[serde(default)]
     pub handled: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn the_layout_starts_and_ends_searches() {
+        let op = |value| serde_json::from_value::<Op>(value).unwrap();
+
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "all" } })),
+            Op::Search { scope: Scope::All }
+        ));
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "workspace", "id": 4 } })),
+            Op::Search {
+                scope: Scope::Workspace { id: 4 }
+            }
+        ));
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "group", "id": 3 } })),
+            Op::Search {
+                scope: Scope::Group { id: 3 }
+            }
+        ));
+        assert!(matches!(op(json!({ "op": "endSearch" })), Op::EndSearch));
+    }
+
+    #[test]
+    fn the_layout_is_told_the_query_and_how_well_windows_match() {
+        let sync = SyncInfo {
+            search: Some(SearchInfo {
+                query: String::from("fire"),
+                hits: vec![(3, 4), (1, 3)],
+            }),
+            ..SyncInfo::default()
+        };
+        assert!(!sync.is_empty());
+        assert_eq!(
+            serde_json::to_value(&sync).unwrap()["search"],
+            json!({ "query": "fire", "hits": [[3, 4], [1, 3]] })
+        );
+
+        // A sync without one leaves it out.
+        assert!(serde_json::to_value(SyncInfo::default()).unwrap()["search"].is_null());
+    }
+}
