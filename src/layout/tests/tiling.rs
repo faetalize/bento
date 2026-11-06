@@ -147,10 +147,10 @@ fn layout_action_binds_are_checked_against_declared_args() {
         r#"
         binds {
             Mod+A { set-width "+10%"; }
-            Mod+B { set-group true; }
+            Mod+B { focus-in-stack 1; }
             Mod+C { focus-index 2; }
             Mod+D { set-width true; }
-            Mod+E { set-group "sideways"; }
+            Mod+E { focus-index "second"; }
             Mod+F { focus-index; }
             Mod+G { swap 1; }
             Mod+H { nope; }
@@ -166,7 +166,7 @@ fn layout_action_binds_are_checked_against_declared_args() {
         problems,
         [
             r#"the "change" argument of action "set-width" must be a size, like "50%" or "+10%""#,
-            r#"the "grouped" argument of action "set-group" must be true or false"#,
+            r#"the "index" argument of action "focus-index" must be a number"#,
             r#"action "focus-index" needs its "index" argument"#,
             r#"action "swap" takes no arguments, not 1"#,
             r#"the bento layout engine has no action called "nope""#,
@@ -2679,4 +2679,62 @@ fn a_search_knows_where_its_field_is() {
     // The camera is at the canvas' origin, so the field is where it's placed.
     assert!(layout.is_on_search_field(&output, Point::from((150., 110.))));
     assert!(!layout.is_on_search_field(&output, Point::from((50., 110.))));
+}
+
+/// An engine that places windows side by side and logs the drags over its workspaces, with the
+/// pointer's x for moves.
+const DRAGS: &str = r#"
+export const meta = { api: 2, name: "drags", floating: false };
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => ({ log }));
+    bento.addEventListener("windowadd", (e) => {
+        const placed = bento.windows.length - 1;
+        e.window.place({ x: placed * 400, y: 0, w: 400, h: 400 });
+    });
+    const watch = (ws) => {
+        ws.addEventListener("dragenter", () => log.push(["dragenter"]));
+        ws.addEventListener("dragmove", (d) => log.push(["dragmove", Math.round(d.pointer.x)]));
+        ws.addEventListener("dragleave", () => log.push(["dragleave"]));
+    };
+    for (const monitor of bento.monitors) monitor.workspaces.forEach(watch);
+    bento.addEventListener("workspaceadd", (e) => watch(e.workspace));
+}
+"#;
+
+#[test]
+fn a_drag_moves_over_the_engine_once_a_frame_with_the_latest_pointer() {
+    let moved = |px: f64, dx: f64| Op::InteractiveMoveUpdate {
+        window: 2,
+        dx,
+        dy: 0.,
+        output_idx: 1,
+        px,
+        py: 100.,
+    };
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::InteractiveMoveBegin {
+            window: 2,
+            output_idx: 1,
+            px: 450.,
+            py: 100.,
+        },
+        // The window starts moving once the pointer is 256 px away.
+        moved(500., 300.),
+        moved(550., 50.),
+        moved(600., 50.),
+    ];
+    let mut layout = check_ops_with_options(options_for_source("drags", DRAGS), ops);
+
+    // The moves wait for the next frame, and then only the latest goes.
+    layout.flush_engine();
+    let log = || crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone();
+    assert_eq!(log(), serde_json::json!([["dragenter"]]));
+    layout.send_drag_move();
+    assert_eq!(log(), serde_json::json!([["dragenter"], ["dragmove", 600]]));
+    layout.send_drag_move();
+    assert_eq!(log(), serde_json::json!([["dragenter"], ["dragmove", 600]]));
 }

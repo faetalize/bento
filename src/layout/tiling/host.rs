@@ -158,6 +158,8 @@ pub enum NodeGrab<Id> {
 struct Drag {
     workspace: u64,
     last: Value,
+    /// The move to tell the layout about with the next frame, see [`Layout::send_drag_move`].
+    pending: Option<Value>,
 }
 
 /// What bento's event loop is to do about the layout's timers, in order.
@@ -1581,6 +1583,17 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
+    /// Tells the layout where a dragged window moved to since the last frame, if it did. The
+    /// pointer can move many times a frame, and only where it is when the frame is drawn shows,
+    /// so the layout hears about it once a frame rather than with every motion.
+    pub fn send_drag_move(&mut self) {
+        let Some(event) = self.host.drag.as_mut().and_then(|drag| drag.pending.take()) else {
+            return;
+        };
+        queue(event);
+        self.flush_engine();
+    }
+
     /// Tells the layout where an interactively moved window is over a workspace, or that it left.
     pub(in crate::layout) fn update_drag(&mut self) {
         let target = self.drag_target();
@@ -1588,24 +1601,29 @@ impl<W: LayoutElement> Layout<W> {
 
         match (previous, target) {
             (Some(previous), Some((workspace, window, pointer_rect))) => {
+                let mut pending = None;
                 if previous.workspace == workspace {
+                    pending = previous.pending;
                     if previous.last != pointer_rect {
-                        host_queue_drag("dragmove", workspace, &window, &pointer_rect);
+                        // It waits for the next frame, see `send_drag_move`.
+                        pending = Some(drag_event("dragmove", workspace, &window, &pointer_rect));
                     }
                 } else {
                     queue(json!({ "type": "dragleave", "workspace": previous.workspace }));
-                    host_queue_drag("dragenter", workspace, &window, &pointer_rect);
+                    queue(drag_event("dragenter", workspace, &window, &pointer_rect));
                 }
                 self.host.drag = Some(Drag {
                     workspace,
                     last: pointer_rect,
+                    pending,
                 });
             }
             (None, Some((workspace, window, pointer_rect))) => {
-                host_queue_drag("dragenter", workspace, &window, &pointer_rect);
+                queue(drag_event("dragenter", workspace, &window, &pointer_rect));
                 self.host.drag = Some(Drag {
                     workspace,
                     last: pointer_rect,
+                    pending: None,
                 });
             }
             (Some(previous), None) => {
@@ -1649,12 +1667,12 @@ impl<W: LayoutElement> Layout<W> {
     }
 }
 
-fn host_queue_drag(kind: &str, workspace: u64, window: &Value, pointer_rect: &Value) {
-    queue(json!({
+fn drag_event(kind: &str, workspace: u64, window: &Value, pointer_rect: &Value) -> Value {
+    json!({
         "type": kind,
         "workspace": workspace,
         "window": window,
         "pointer": pointer_rect["pointer"],
         "rect": pointer_rect["rect"],
-    }));
+    })
 }

@@ -1262,7 +1262,10 @@ function createSpace(bento, ws) {
     let dropNode = null;
     /** The targets drawn for stuffing or a drag, by key, see `drawTargets`. */
     const targetNodes = new Map();
-    /** The targets for the window being dragged over the workspace, and the one it's over. */
+    /**
+     * The window being dragged over the workspace, by id, with what `dragOver` works out once
+     * for it, the targets it shows and the one it's on.
+     */
     let dragging = null;
     /** Windows picked for grouping, see `pickToGroup`, and the nodes that highlight them. */
     let groupPicks = [];
@@ -2084,7 +2087,11 @@ function createSpace(bento, ws) {
         }
         syncGroups();
 
-        // What's drawn above the windows follows them.
+        // What's drawn above the windows follows them. A drag works out its targets again on its
+        // next move, since the layout may have changed.
+        if (dragging !== null) {
+            dragging.all = null;
+        }
         const stuffing = picking?.action === "stuff" ? picking : null;
         drawTargets(
             dragging?.targets ?? (stuffing === null ? [] : stuffTargets(stuffing.first)),
@@ -3549,28 +3556,39 @@ function createSpace(bento, ws) {
     }
 
     /**
-     * Targets on `g` for a window dragged with the pointer at `pointer`: those of the windows
-     * under it or close by, and the seams around them.
+     * Every target on `g` for a dragged window, by the windows they're for: `{ items, seams }`,
+     * with `items` each window's rect and own targets, and `seams` the pills with the two windows
+     * they're between. A drag works them out once, see `dragOver`.
      */
-    function dragTargets(g, pointer) {
-        const near = g.items
-            .filter(({ key, area }) => {
-                const r = areaRect(area);
-                const reach = TARGET_REACH;
-                return (
-                    modeOf(key) === "normal" &&
-                    r.x - reach <= pointer.x &&
-                    pointer.x < r.x + r.w + reach &&
-                    r.y - reach <= pointer.y &&
-                    pointer.y < r.y + r.h + reach
-                );
-            })
-            .map(({ key }) => key);
-        const seams = seamsOn(g, null).filter(({ a, b }) => near.includes(a) || near.includes(b));
+    function dragTargetsOn(g) {
+        const items = g.items
+            .filter(({ key }) => modeOf(key) === "normal")
+            .map(({ key, area }) => ({
+                key,
+                rect: areaRect(area),
+                targets: [...splitTargets(g, key), ...memberTargets(key)],
+            }));
+        const seams = seamsOn(g, null).map((seam) => ({ ...seam, target: seamTarget(g, seam) }));
+        return { items, seams };
+    }
+
+    /**
+     * The targets among `all` for a window dragged with the pointer at `pointer`: those of the
+     * windows under it or close by, and the seams around them.
+     */
+    function targetsNear(all, pointer) {
+        const reach = TARGET_REACH;
+        const near = all.items.filter(
+            ({ rect: r }) =>
+                r.x - reach <= pointer.x &&
+                pointer.x < r.x + r.w + reach &&
+                r.y - reach <= pointer.y &&
+                pointer.y < r.y + r.h + reach,
+        );
+        const keys = new Set(near.map(({ key }) => key));
         return [
-            ...near.flatMap((item) => splitTargets(g, item)),
-            ...near.flatMap(memberTargets),
-            ...seams.map((seam) => seamTarget(g, seam)),
+            ...near.flatMap(({ targets }) => targets),
+            ...all.seams.filter(({ a, b }) => keys.has(a) || keys.has(b)).map(({ target }) => target),
         ];
     }
 
@@ -4101,22 +4119,28 @@ function createSpace(bento, ws) {
             const [dropped, kept] = splitAreas(g.area(target.item), target.dir);
             return { area: dropped, split: [target.item, kept] };
         }
+        return { area: landingOn(g, freeArea(rect)), split: null };
+    }
 
+    /** The cells nearest to a window dropped at `rect` away from targets, at its size. */
+    function freeArea(rect) {
         const m = metrics;
         const cols = clamp(round((rect.w + m.gap) / (m.cellW + m.gap)), 1, MAX_COLS);
         const rows = clamp(round((rect.h + m.gap) / (m.cellH + m.gap)), 1, m.rows);
-        const area = areaAt(rect.x, rect.y, cols, rows);
+        return areaAt(rect.x, rect.y, cols, rows);
+    }
 
-        // Where it lands after pushing and gravity.
+    /** Where a window put at `area` on `g` lands, after pushing and gravity. */
+    function landingOn(g, area) {
         const preview = g.clone();
         const probe = {};
         preview.insert(probe, area);
-        return { area: preview.area(probe), split: null };
+        return preview.area(probe);
     }
 
     /** The target that a window dragged with the pointer at `pointer` is on, on `g`, or `null`. */
     function dropTargetAt(g, pointer) {
-        return pointer ? targetAt(dragTargets(g, pointer), pointer) : null;
+        return pointer ? targetAt(targetsNear(dragTargetsOn(g), pointer), pointer) : null;
     }
 
     /**
@@ -4163,14 +4187,22 @@ function createSpace(bento, ws) {
     /**
      * Shows where a window dragged to `rect` with the pointer at `pointer` can go: the targets
      * around the pointer, the one it's on stood out, and when it's on none, the cells it lands on.
+     *
+     * A drag moves often, so what doesn't depend on the pointer is worked out once and kept in
+     * `dragging` until the layout changes, see `flush`: the grid without the dragged window, its
+     * targets, and the cells a window lands on from each place it can be put.
      */
     function dragOver(win, pointer, rect) {
-        const g = gridWithout(win);
-        const targets = pointer ? dragTargets(g, pointer) : [];
+        if (dragging?.win !== win.id || dragging.all === null) {
+            const g = gridWithout(win);
+            dragging = { win: win.id, g, all: dragTargetsOn(g), landings: new Map() };
+        }
+        const targets = pointer ? targetsNear(dragging.all, pointer) : [];
         const current = pointer ? targetAt(targets, pointer) : null;
-        dragging = { targets, current };
+        dragging.targets = targets;
+        dragging.current = current;
         drawTargets(targets, current);
-        showHint("drop", current === null ? landing(win, pointer, rect) : null);
+        showHint("drop", current === null ? landing(rect) : null);
     }
 
     function dragLeave() {
@@ -4179,15 +4211,17 @@ function createSpace(bento, ws) {
         showHint("drop", null);
     }
 
-    /** The cells a dragged window would land on, to highlight them. */
-    function landing(win, pointer, rect) {
-        const g = gridWithout(win);
-        const plan = dropPlan(g, pointer, rect);
-        const probe = {};
-        g.place([[probe, plan.area], ...(plan.split ? [plan.split] : [])]);
-        const cells = areaRect(g.area(probe));
-
-        if (g.length > 1) {
+    /** The cells a window dragged to `rect` away from targets would land on, to highlight them. */
+    function landing(rect) {
+        const { g, landings } = dragging;
+        const area = freeArea(rect);
+        const key = `${area.col},${area.row},${area.cols},${area.rows}`;
+        let cells = landings.get(key);
+        if (cells === undefined) {
+            cells = areaRect(landingOn(g, area));
+            landings.set(key, cells);
+        }
+        if (g.length > 0) {
             return cells;
         }
 
