@@ -1407,6 +1407,34 @@ describe("layout API", () => {
         assert.equal(tabNodes(off).length, 0);
     });
 
+    test("a workspace's tab bar follows the options of its monitor", async () => {
+        const host = await setup({
+            monitors: [{ name: "DP-1" }, { name: "DP-2" }],
+            outputOptions: { "DP-2": { "tab-bar-width": 9, "tab-bar-active-color": "#abcdef" } },
+        });
+        const [dp1, dp2] = [host.workspace(0, "DP-1").id, host.workspace(0, "DP-2").id];
+        for (const workspace of [dp1, dp2]) {
+            host.showWorkspace(workspace);
+            const [first] = [host.open(), host.open()];
+            host.activate(first);
+            host.action("toggle-tabs");
+            host.action("stack-from-right");
+        }
+        assert.deepEqual(
+            [dp1, dp2].map((workspace) => tabNodes(host, workspace).map((tab) => [tab.rect.w, tab.background])),
+            [
+                [
+                    [4, "#7fc8ff"],
+                    [4, "#505050"],
+                ],
+                [
+                    [9, "#abcdef"],
+                    [9, "#505050"],
+                ],
+            ],
+        );
+    });
+
     test("new windows are asked to open at the size of their cells", async () => {
         const host = await setup();
         const { w, h } = cellRect(0, 0, 2, 12);
