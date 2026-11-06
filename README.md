@@ -124,7 +124,8 @@ bento migrate-from-niri
 It reads `~/.config/niri/config.kdl`, or the path you give it, and writes `~/.config/bento/config.kdl` and `engines/niri.kdl`, with `tiling { layout "niri" }` set.
 Files that already exist are kept next to the new ones, with `.before-migration` added to their names.
 Everything else in your config stays as you wrote it, comments included.
-What can't be converted is dropped and listed when it finishes: gradients on the tab indicator and the insert hint, per-output and per-workspace values of the options that moved, window rules with `is-active-in-column` (no engine has it), and binds to actions bento doesn't have.
+The `layout {}` of an `output` or a `workspace` moves too, to an `output` or `workspace` block of the engine's file, and so do gradients and a window rule's `tab-indicator`.
+What can't be converted is dropped and listed when it finishes: window rules with `is-active-in-column` (no engine has it), and binds to actions bento doesn't have.
 It doesn't follow `include`s, so move those by hand.
 Run `bento validate` after it.
 
@@ -263,12 +264,41 @@ An option is its name followed by its values, and the engine declares the type o
 - a string;
 - a choice, one of the strings the engine lists;
 - a size, written like `"50%"` for a proportion of the working area or `"800"` for logical pixels;
-- or a list of any of those, written as several values: `preset-column-widths "33%" "50%" "67%"`.
+- a color, written `"#rrggbb"` or `"#rrggbbaa"`, or `"#rgb"`;
+- a gradient, written with properties instead of values, like niri's: `from` and `to` colors, and optionally an `angle` in degrees (0 goes up, 90 to the right, and 180, top to bottom, by default), `relative-to` (`"node"`, the default, or `"view"` for the whole view of the workspace) and `in`, the color space to mix in (`"srgb"`, `"srgb-linear"`, `"oklab"`, or `"oklch"` with `"shorter hue"`, `"longer hue"`, `"increasing hue"` or `"decreasing hue"`): `active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view" in="oklch shorter hue"`;
+- or a list of any of those but a gradient, written as several values: `preset-column-widths "33%" "50%" "67%"`.
 
 A size written with no value, like `default-column-width` alone on its line, leaves it to the window.
+So does a gradient: written alone, it takes the gradient away.
 `bento validate` checks the options against what the engine declares, and so does bento when it loads the config.
 `bento msg engine` lists the running engine's options with their types and current values, and its actions and window rules, and `bento msg -j engine` gives the same as JSON for tools like settings screens.
 bento Settings shows the running engine's options on its Engine page, with a field for each type.
+
+Options can differ per output and per named workspace, like the settings of `layout {}`.
+An `output` or `workspace` block in the engine's file holds the options that change there:
+
+```kdl
+// ~/.config/bento/engines/niri.kdl
+options {
+    default-column-width "50%"
+}
+
+output "DP-2" {
+    options {
+        default-column-width "33.333%"
+    }
+}
+
+workspace "web" {
+    options {
+        default-column-width "100%"
+    }
+}
+```
+
+A workspace has the options of `options {}`, then those of its output, then its own by name, and each replaces the one before it option by option.
+Outputs are matched like they are in the main config, by connector, or by make, model and serial; workspaces by their name, ignoring case.
+Engines read a workspace's options from the workspace, and `bento.options` stays the top-level ones.
 
 What works under every engine is bento's and stays in the main config.
 Engines get its values, such as `gaps` and `struts`, and decide what they mean.
@@ -407,7 +437,10 @@ A size is written like `"50%"`, `"+10%"` or `"800"` and reaches the engine as `{
 A workspace is written as an index on the focused monitor, counting from 1, or a name, and a monitor as a connector name like `"DP-2"`; the engine gets the object, or `null` when there isn't one.
 Arguments with a `default` can be left out, and an action without `args` takes none.
 
-An engine can declare window rules too, in `meta.windowRules`, which are written in its file and reach the engine as each window's `rules`, and options and rules of type `size` reach it as `{ proportion }` or `{ fixed }`.
+An engine can declare window rules too, in `meta.windowRules`, which are written in its file and reach the engine as each window's `rules`.
+Options and rules of type `size` reach it as `{ proportion }` or `{ fixed }`, those of type `color` as the `"#rrggbb"` string, and those of type `gradient` as `{ from, to, angle, relativeTo, in }` with what was written, or `null`.
+A color or a gradient goes straight into a node's `background`, or the `color` of its `border`.
+An engine reads its options from `bento.options`, or for a workspace from `workspace.options`, which has what the engine's file sets for the workspace's output and for the workspace by name on top.
 
 For a complete engine to start from, copy [`examples/template.js`](resources/layouts/examples/template.js): under 250 lines, comments included, that put one main window on the left and stack the others on the right, with a line drawn between them, comments on every event, what bento does when an engine leaves one out, and tests next to it.
 
@@ -536,9 +569,14 @@ niri's layout actions, bound in `engines/niri.kdl`, the column options in its `o
 It differs in these ways:
 
 - **Its settings are in its file.**
-  `engines/niri.kdl` has `options {}` for `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights`, `default-column-display`, `tab-indicator` and its `tab-indicator-position`, `-width`, `-gap`, `-length`, `-corner-radius`, `-place-within-column`, `-hide-when-single-tab` and `-active-color`, `-inactive-color`, `-urgent-color`, and `insert-hint` with `insert-hint-color`.
-  Its window rules set `default-column-width`, `default-window-height`, `default-column-display` and `open-maximized`.
-  Colors are strings, so the tab indicator and the insert hint have no gradients.
+  `engines/niri.kdl` has `options {}` for `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights`, `default-column-display`, `tab-indicator` and its `tab-indicator-position`, `-width`, `-gap`, `-gaps-between-tabs`, `-length`, `-corner-radius`, `-place-within-column`, `-hide-when-single-tab`, the colors `-active-color`, `-inactive-color` and `-urgent-color`, and the gradients `-active-gradient`, `-inactive-gradient` and `-urgent-gradient`, and `insert-hint` with the color `insert-hint-color` and the gradient `insert-hint-gradient`.
+  A gradient wins over the color next to it, as in niri, and none is set by default.
+  A gradient's `relative-to` is `"node"`, the tab or the hint, or `"view"`, where niri says `"window"` or `"workspace-view"`.
+  Its window rules set `default-column-width`, `default-window-height`, `default-column-display` and `open-maximized`, and the colors and gradients of the window's tab, as niri's `tab-indicator` rule does: `tab-indicator-active-color`, `-inactive-color`, `-urgent-color`, `tab-indicator-active-gradient`, `-inactive-gradient` and `-urgent-gradient`.
+  A window's rule comes before the options, and in each a gradient before the color.
+- **Its options can differ per output and workspace.**
+  Like niri's `layout {}` in an `output` or a `workspace`, the file's `output "DP-2" { options { … } }` and `workspace "web" { options { … } }` set the options for one output or named workspace, see [Options](#options).
+  Every option of the engine can differ there, and each workspace has its own strip, so they apply where the workspace is.
 - **Animations are bento's.**
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
 - **Actions that cross an edge take the whole column.**
