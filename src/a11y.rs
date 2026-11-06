@@ -3,12 +3,13 @@ use std::thread;
 
 use accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Live, Node, NodeId, Role,
-    TreeId, TreeInfo, TreeUpdate,
+    TextPosition, TextSelection, TreeId, TreeInfo, TreeUpdate,
 };
 use accesskit_unix::Adapter;
 use calloop::LoopHandle;
 use niri_config::MruScope;
 
+use crate::layout::search::Field;
 use crate::layout::workspace::WorkspaceId;
 use crate::niri::{KeyboardFocus, Niri, State};
 use crate::utils::with_toplevel_role;
@@ -20,6 +21,8 @@ const ID_SCREENSHOT_UI: NodeId = NodeId(2);
 const ID_EXIT_CONFIRM_DIALOG: NodeId = NodeId(3);
 const ID_OVERVIEW: NodeId = NodeId(4);
 const ID_MRU: NodeId = NodeId(5);
+const ID_SEARCH: NodeId = NodeId(6);
+const ID_SEARCH_TEXT: NodeId = NodeId(7);
 
 pub struct A11y {
     event_loop: LoopHandle<'static, State>,
@@ -28,6 +31,8 @@ pub struct A11y {
     mru_selection: Option<MappedId>,
     mru_scope: Option<MruScope>,
     last_mru_title: String,
+    /// The text, caret and selection's other end of the search field, as last sent.
+    search: Option<(String, usize, usize)>,
     last_announcement: String,
     to_accesskit: Option<mpsc::SyncSender<TreeUpdate>>,
 }
@@ -47,6 +52,7 @@ impl A11y {
             mru_selection: None,
             mru_scope: None,
             last_mru_title: String::new(),
+            search: None,
             last_announcement: String::new(),
             to_accesskit: None,
         }
@@ -159,9 +165,16 @@ impl Niri {
             self.a11y.mru_selection = None;
         }
 
+        let search = self
+            .layout
+            .search_field()
+            .map(|field| (field.text().to_owned(), field.caret(), field.anchor()));
+        let update_search = focus == ID_SEARCH && self.a11y.search != search;
+        self.a11y.search = search;
+
         let update_focus = self.a11y.focus != focus;
 
-        if !(announcement.is_some() || update_focus || update_mru_selection) {
+        if !(announcement.is_some() || update_focus || update_mru_selection || update_search) {
             return;
         }
 
@@ -215,6 +228,10 @@ impl Niri {
                     nodes.push((ID_MRU, mru));
                 }
             }
+        }
+
+        if update_search {
+            nodes.extend(search_nodes(self.layout.search_field()));
         }
 
         let update = TreeUpdate {
@@ -271,6 +288,11 @@ impl Niri {
     }
 
     fn a11y_focus(&self) -> NodeId {
+        // The search has the keyboard, whatever has the keyboard focus.
+        if self.search_takes_keys() {
+            return ID_SEARCH;
+        }
+
         match self.keyboard_focus {
             KeyboardFocus::ScreenshotUi => ID_SCREENSHOT_UI,
             KeyboardFocus::ExitConfirmDialog => ID_EXIT_CONFIRM_DIALOG,
@@ -318,6 +340,7 @@ impl Niri {
             ID_EXIT_CONFIRM_DIALOG,
             ID_OVERVIEW,
             ID_MRU,
+            ID_SEARCH,
         ]);
 
         let tree = TreeInfo {
@@ -339,12 +362,55 @@ impl Niri {
                 (ID_EXIT_CONFIRM_DIALOG, exit_confirm_dialog),
                 (ID_OVERVIEW, overview),
                 (ID_MRU, mru),
-            ],
+            ]
+            .into_iter()
+            .chain(search_nodes(self.layout.search_field()))
+            .collect(),
             tree: Some(tree),
             tree_id: TreeId::ROOT,
             focus,
         }
     }
+}
+
+/// How many bytes each character of a text takes, in the chunks that AccessKit counts in.
+fn character_lengths(field: &Field) -> Vec<u8> {
+    field
+        .cluster_lengths()
+        .into_iter()
+        .flat_map(|len| {
+            let max = usize::from(u8::MAX);
+            let full = std::iter::repeat_n(u8::MAX, len / max);
+            full.chain(std::iter::once((len % max) as u8).filter(|rest| *rest > 0))
+        })
+        .collect()
+}
+
+/// The search field as a text input with its text, caret and selection, and the text run that
+/// AccessKit puts the caret and the selection in. An empty field when no search runs.
+fn search_nodes(field: Option<&Field>) -> [(NodeId, Node); 2] {
+    let empty = Field::default();
+    let field = field.unwrap_or(&empty);
+
+    let mut run = Node::new(Role::TextRun);
+    run.set_value(field.text());
+    run.set_character_lengths(character_lengths(field));
+
+    let position = |offset| TextPosition {
+        node: ID_SEARCH_TEXT,
+        character_index: field.cluster_index(offset),
+    };
+
+    let mut input = Node::new(Role::SearchInput);
+    input.set_label("Search windows");
+    input.set_value(field.text());
+    input.set_children(vec![ID_SEARCH_TEXT]);
+    input.set_text_selection(TextSelection {
+        anchor: position(field.anchor()),
+        focus: position(field.caret()),
+    });
+
+    [(ID_SEARCH, input), (ID_SEARCH_TEXT, run)]
 }
 
 #[derive(Clone)]
