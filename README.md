@@ -515,7 +515,8 @@ Window sizes snap to whole cells.
 
 Its actions are named for what they do on the grid, and `bento msg engine` lists them all with what each does.
 `focus-left`, `focus-right`, `focus-up` and `focus-down` go to the nearest window that way, even diagonally, and `move-left` and the rest move the focused window one cell, swapping with a window in the way.
-A window's stack is the windows covering the same column of cells: `stack-left` and `stack-right` stack a window under its neighbour or take it out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-tabs` shows it as tabs.
+In a group, `focus-left` and `focus-right` first go through its windows, and `move-left` and `move-right` reorder them.
+A window's stack is the windows covering the same column of cells: `stack-left` and `stack-right` stack a window under its neighbour or take it out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-group` makes it a group.
 `set-width`, `set-height`, `cycle-width` and `cycle-height` size the focused window in whole cells.
 Actions like `focus-index N` count the places where windows start, from left to right starting at 1.
 
@@ -533,12 +534,14 @@ The grid also has no left edge then, so windows can be pushed or moved further l
 
 The engine's other options are in its file too, written at their defaults.
 `center-focused-window` and `always-center-single-window` say when the view centers the focused window, `default-width` is the width new windows open with, and `preset-widths` and `preset-heights` are what `cycle-width` and `cycle-height` go through.
-`default-tabs` opens new windows as tabs, and `tab-bar` with its `-width`, `-gap` and `-active-color`, `-inactive-color` and `-urgent-color` styles the tab bar.
+`default-group` opens new windows as a group of their own, which windows stacked into it join.
 `hint-color` is the color of the hints.
-Its window rules set `default-width`, `default-height`, `default-tabs` and `open-full-width`.
+Its window rules set `default-width`, `default-height`, `default-group` and `open-full-width`.
 
-Tabs are groups.
-`toggle-tabs` makes the windows of an area one bento group, drawn as a tab bar of clickable segments along the area, and a group made by bento's own group actions shows as tabs in the area of its active window.
+`toggle-group` makes the windows of a stack one bento group, which shares their area as a carousel: the active window takes most of it, and the others show as slits of their middle beside it, in order, half of the gaps apart.
+Every window of a group is as large as the active one, so that activating one only moves it.
+Pointing at a slit widens it, and clicking it activates its window.
+A group made by bento's own group actions shows as a carousel in the area of its active window, and while a group is fullscreen or maximized, only its active window shows.
 Dragging a window shows where it would land, and double-clicking the left or right edge of a window toggles its full width, and the top or bottom edge its full height.
 Swiping sideways scrolls the view, and snaps it to window edges when the fingers lift.
 
@@ -562,10 +565,10 @@ Where the grid ends, actions go on to the monitor or workspace beside it:
 
 - `focus-left-or-monitor` and `focus-right-or-monitor` focus the monitor to the left or right, and `focus-up-or-workspace` and `focus-down-or-workspace` the workspace above or below, when there is no window that way.
 - `move-left-or-to-monitor` moves a window to the monitor to the left once it can't move left, and `move-up-or-to-workspace` and `move-down-or-to-workspace` to the workspace above or below once it can't move up or down. The grid has no end to the right, so there is no such action for that side.
-- `move-to-workspace N` and `move-to-monitor "DP-2"` move the focused window, with its tabs, to a workspace of the focused monitor or the active workspace of a monitor.
+- `move-to-workspace N` and `move-to-monitor "DP-2"` move the focused window, with its group, to a workspace of the focused monitor or the active workspace of a monitor.
 
 Focus goes along with what moves.
-bento's own `move-window-to-workspace` actions move one window and leave its tabs.
+bento's own `move-window-to-workspace` actions move one window and leave its group.
 The engine's file binds the moves on `Mod+Ctrl+Shift`, which the main config leaves free, and has the focus actions as examples to bind on your focus keys.
 
 ## The niri engine

@@ -147,10 +147,10 @@ fn layout_action_binds_are_checked_against_declared_args() {
         r#"
         binds {
             Mod+A { set-width "+10%"; }
-            Mod+B { set-tabs true; }
+            Mod+B { set-group true; }
             Mod+C { focus-index 2; }
             Mod+D { set-width true; }
-            Mod+E { set-tabs "sideways"; }
+            Mod+E { set-group "sideways"; }
             Mod+F { focus-index; }
             Mod+G { swap 1; }
             Mod+H { nope; }
@@ -166,7 +166,7 @@ fn layout_action_binds_are_checked_against_declared_args() {
         problems,
         [
             r#"the "change" argument of action "set-width" must be a size, like "50%" or "+10%""#,
-            r#"the "tabbed" argument of action "set-tabs" must be true or false"#,
+            r#"the "grouped" argument of action "set-group" must be true or false"#,
             r#"action "focus-index" needs its "index" argument"#,
             r#"action "swap" takes no arguments, not 1"#,
             r#"the bento layout engine has no action called "nope""#,

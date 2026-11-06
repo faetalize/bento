@@ -126,8 +126,14 @@ function drawn(host, workspace = host.activeWorkspace().id) {
         .map((id) => ({ id, ...tree.node(id).props }));
 }
 
-/** The tab bars' tabs, which are the interactive boxes. */
-const tabNodes = (host, workspace) => drawn(host, workspace).filter((node) => node.interactive);
+/** The boxes that clip the windows of groups, active or not. */
+const clips = (host, workspace) => drawn(host, workspace).filter((node) => node.clip);
+
+/** The slits of groups' windows that aren't active, which are the clips that take the pointer. */
+const slits = (host, workspace) => clips(host, workspace).filter((node) => node.interactive);
+
+/** The node that a window's node is in. */
+const parentOf = (host, id, workspace) => host.tree(workspace).node(`w${id}`).parent;
 
 /** The highlight of a picked window or a drop target, if one is shown. */
 const hint = (host, workspace) =>
@@ -140,15 +146,15 @@ function exposed(host) {
     return host.exposedState().workspaces.find((ws) => ws.id === id);
 }
 
-/** The windows of each tabbed area. */
-const tabbedAreas = (host) =>
+/** The windows of each group. */
+const groupedAreas = (host) =>
     exposed(host)
-        .items.filter((item) => item.tabbed)
+        .items.filter((item) => item.grouped)
         .map((item) => item.windows);
 
 /**
  * Each window's column and place in its stack, counting from 1: the grid's columns are where
- * windows start, and a window's stack is the windows and tabs covering the column of cells it
+ * windows start, and a window's stack is the windows and groups covering the column of cells it
  * starts in. Sorted by window.
  */
 function ipc(host) {
@@ -755,42 +761,46 @@ describe("grid layout", () => {
         assert.deepEqual(cells(host), ["2 × 12 at 2, 0", "2 × 12 at 0, 0"]);
     });
 
-    test("tabbing gathers the stack and untabbing splits it", async () => {
+    test("grouping gathers the stack and ungrouping splits it", async () => {
         const host = await setUpStackOfTwo();
         host.activate(1);
-        host.action("toggle-tabs");
+        host.action("toggle-group");
 
-        // Windows 1 and 2 are tabs in the area they shared, with window 1 in front.
+        // Windows 1 and 2 are a group in the area they shared, with window 1 active.
         assert.equal(host.focused(), 1);
-        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
+        assert.deepEqual(exposed(host).items.map((item) => item.area), [at(0, 0, 2, 12), at(2, 0, 2, 12)]);
+        assert.deepEqual(groupedAreas(host), [[1, 2]]);
         assert.equal(host.isVisible(1), true);
-        assert.equal(host.isVisible(2), false);
-
-        // Focusing down goes to the next tab.
-        host.action("focus-down");
-        assert.equal(host.focused(), 2);
-        assert.equal(host.isVisible(1), false);
         assert.equal(host.isVisible(2), true);
 
-        host.action("toggle-tabs");
+        // Focusing right goes to the next window of the group, then on to the grid.
+        host.action("focus-right");
+        assert.equal(host.focused(), 2);
+        host.action("focus-right");
+        assert.equal(host.focused(), 3);
+        host.action("focus-left");
+        assert.equal(host.focused(), 2);
+
+        host.action("toggle-group");
         assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6", "2 × 12 at 2, 0"]);
         assert.equal(host.isVisible(1), true);
-        assert.equal(tabNodes(host).length, 0);
+        assert.equal(clips(host).length, 0);
     });
 
-    test("consuming into tabs adds a tab and expelling takes it out", async () => {
+    test("consuming into a group adds a window and expelling takes it out", async () => {
         const host = await setup();
         host.open();
         host.open();
         host.activate(1);
-        host.action("toggle-tabs");
+        host.action("toggle-group");
         host.activate(2);
         host.action("stack-left");
 
-        // Window 2 is a second tab in window 1's area.
+        // Window 2 is a second window in window 1's group.
         assert.equal(host.focused(), 2);
-        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 0, 0"]);
+        assert.deepEqual(exposed(host).items.map((item) => item.area), [at(0, 0, 2, 12)]);
+        assert.deepEqual(groupedAreas(host), [[1, 2]]);
         assert.deepEqual(
             ipc(host),
             [
@@ -863,17 +873,17 @@ describe("window rules", () => {
         assert.deepEqual(cells(host, [2]), ["2 × 12 at 0, 0"]);
     });
 
-    test("default-tabs can make a new window tabbed", async () => {
+    test("default-group can open a new window as a group", async () => {
         const host = await setup();
         host.open();
-        host.open({ rules: { "default-tabs": true } });
-        assert.deepEqual(tabbedAreas(host), [[2]]);
+        host.open({ rules: { "default-group": true } });
+        assert.deepEqual(groupedAreas(host), [[2]]);
     });
 
-    test("default-tabs is also an option", async () => {
-        const host = await setup({ options: { "default-tabs": true } });
+    test("default-group is also an option", async () => {
+        const host = await setup({ options: { "default-group": true } });
         host.open();
-        assert.deepEqual(tabbedAreas(host), [[1]]);
+        assert.deepEqual(groupedAreas(host), [[1]]);
     });
 });
 
@@ -1197,13 +1207,7 @@ describe("layout API", () => {
                 ["default-width", "50%"],
                 ["preset-widths", ["33.333%", "50%", "66.667%"]],
                 ["preset-heights", ["33.333%", "50%", "66.667%"]],
-                ["default-tabs", false],
-                ["tab-bar", true],
-                ["tab-bar-width", 4],
-                ["tab-bar-gap", 5],
-                ["tab-bar-active-color", "#7fc8ff"],
-                ["tab-bar-inactive-color", "#505050"],
-                ["tab-bar-urgent-color", "#9b0000"],
+                ["default-group", false],
                 ["hint-color", "#7fc8ff80"],
             ],
         );
@@ -1212,7 +1216,7 @@ describe("layout API", () => {
             [
                 ["default-width", "size"],
                 ["default-height", "size"],
-                ["default-tabs", "boolean"],
+                ["default-group", "boolean"],
                 ["open-full-width", "boolean"],
             ],
         );
@@ -1333,104 +1337,100 @@ describe("layout API", () => {
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0"]);
     });
 
-    test("tabbed areas get a tab bar, which switches tabs", async () => {
-        const host = await setUpStackOfTwo();
-        host.activate(1);
-        host.action("toggle-tabs");
+    test("a group shows as a carousel, whose slits activate their windows", async () => {
+        const host = await setup({ options: { "default-width": "50%" } });
+        host.open();
+        host.open();
+        host.groupWindows([1, 2], 1);
 
-        // A segment for each tab along the left of the area, the shown tab's in the active color.
-        const area = cellRect(0, 0, 2, 12);
-        const step = area.h / 2;
-        const tabs = tabNodes(host);
-        assert.deepEqual(
-            tabs.map((tab) => [tab.rect, tab.background]),
-            [
-                [{ x: -9, y: area.y, w: 4, h: step - 2 }, "#7fc8ff"],
-                [{ x: -9, y: area.y + step, w: 4, h: step - 2 }, "#505050"],
-            ],
-        );
-        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
-
-        host.pointer(tabs[1].id, "click");
-        assert.equal(host.focused(), 2);
-        assert.deepEqual(
-            tabNodes(host).map((tab) => tab.background),
-            ["#505050", "#7fc8ff"],
-        );
+        // The area is 616 px wide. Window 1, active, takes what window 2's slit of 40 px and half
+        // of the 16 px gaps leave, and window 2, as wide, shows its middle in its slit.
+        assert.deepEqual(host.rect(1), { x: 0, y: 16, w: 568, h: 688 });
+        assert.deepEqual(host.rect(2), { x: 312, y: 16, w: 568, h: 688 });
         assert.equal(host.isVisible(2), true);
-        assert.equal(host.isVisible(1), false);
-
-        // No tab bar while the area covers the view.
-        host.requestMode(2, "fullscreen");
-        assert.equal(tabNodes(host).length, 0);
-        host.requestMode(2, "normal");
-        assert.equal(tabNodes(host).length, 2);
-
-        // Moving tabs reorders them.
-        host.action("move-up");
-        assert.deepEqual(tabbedAreas(host), [[2, 1]]);
-
-        // Closing a tab keeps the area's cells.
-        host.close(2);
-        assert.deepEqual(cells(host, [1, 3]), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
-        assert.equal(host.focused(), 1);
-    });
-
-    test("the tab bar follows its options", async () => {
-        const host = await setup({
-            options: {
-                "tab-bar-width": 6,
-                "tab-bar-gap": 2,
-                "tab-bar-active-color": "#112233",
-                "tab-bar-inactive-color": "#445566",
-                "tab-bar-urgent-color": "#778899",
-            },
-        });
-        host.open();
-        host.open();
-        host.activate(1);
-        host.action("toggle-tabs");
-        host.action("stack-from-right");
-        host.windows.get(2).urgent = true;
-        host.flush();
         assert.deepEqual(
-            tabNodes(host).map((tab) => [tab.rect.x, tab.rect.w, tab.background]),
+            clips(host).map(({ rect, cornerRadius }) => [rect, cornerRadius]),
             [
-                [-8, 6, "#112233"],
-                [-8, 6, "#778899"],
+                // Past the active window, so that its border and shadow aren't cut.
+                [{ x: -64, y: -48, w: 696, h: 816 }, 0],
+                [{ x: 576, y: 16, w: 40, h: 688 }, 12],
+            ],
+        );
+        assert.deepEqual(
+            [1, 2].map((id) => [parentOf(host, id), host.tree().node(`w${id}`).props.input]),
+            [
+                [clips(host)[0].id, "app"],
+                [clips(host)[1].id, "engine"],
             ],
         );
 
-        const off = await setup({ options: { "tab-bar": false } });
-        off.open();
-        off.action("toggle-tabs");
-        assert.equal(tabNodes(off).length, 0);
+        // The pointer over a slit widens it towards the active window.
+        const [slit] = slits(host);
+        host.pointer(slit.id, "pointerenter");
+        assert.deepEqual(slits(host)[0].rect, { x: 560, y: 16, w: 56, h: 688 });
+        host.pointer(slit.id, "pointerleave");
+        assert.deepEqual(slits(host)[0].rect, { x: 576, y: 16, w: 40, h: 688 });
+
+        // Clicking a slit's window activates it, and window 1 becomes a slit.
+        host.pointer("w2", "click");
+        assert.equal(host.focused(), 2);
+        assert.equal(host.groupOf(1).active, 2);
+        assert.deepEqual(host.rect(1), { x: -264, y: 16, w: 568, h: 688 });
+        assert.deepEqual(host.rect(2), { x: 48, y: 16, w: 568, h: 688 });
+        assert.deepEqual(slits(host).map((node) => node.rect), [{ x: 0, y: 16, w: 40, h: 688 }]);
+        assert.equal(host.tree().node("w1").props.input, "engine");
+        assert.equal(host.tree().node("w2").props.input, "app");
+
+        // Only the active window shows while the group covers the view.
+        host.requestMode(2, "fullscreen");
+        assert.equal(slits(host).length, 0);
+        assert.equal(host.isVisible(1), false);
+        host.requestMode(2, "normal");
+        assert.equal(slits(host).length, 1);
+
+        // Moving a window reorders the group.
+        host.action("move-left");
+        assert.deepEqual(groupedAreas(host), [[2, 1]]);
+
+        // Closing a window of the group keeps the area's cells, and puts window 1 back with the
+        // other windows.
+        host.close(2);
+        assert.deepEqual(exposed(host).items.map((item) => item.area), [at(0, 0, 12, 12)]);
+        assert.equal(host.focused(), 1);
+        assert.equal(parentOf(host, 1), host.tree().rootId);
+        assert.equal(host.tree().node("w1").props.input, "app");
+        assert.equal(clips(host).length, 0);
     });
 
-    test("a workspace's tab bar follows the options of its monitor", async () => {
-        const host = await setup({
-            monitors: [{ name: "DP-1" }, { name: "DP-2" }],
-            outputOptions: { "DP-2": { "tab-bar-width": 9, "tab-bar-active-color": "#abcdef" } },
-        });
-        const [dp1, dp2] = [host.workspace(0, "DP-1").id, host.workspace(0, "DP-2").id];
-        for (const workspace of [dp1, dp2]) {
-            host.showWorkspace(workspace);
-            const [first] = [host.open(), host.open()];
-            host.activate(first);
-            host.action("toggle-tabs");
-            host.action("stack-from-right");
-        }
+    test("a slit's window that bento moves away takes the pointer again", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        host.groupWindows([1, 2], 1);
+        assert.equal(host.tree().node("w2").props.input, "engine");
+
+        const to = host.workspace(1).id;
+        host.move(2, to);
+        assert.equal(host.tree(to).node("w2").props.input, "app");
+        assert.equal(parentOf(host, 2, to), host.tree(to).rootId);
+        assert.equal(clips(host).length, 0);
+        assert.equal(parentOf(host, 1), host.tree().rootId);
+    });
+
+    test("slits leave half of the gaps between them, and at most half of the area", async () => {
+        const host = await setup();
+        for (let i = 0; i < 3; i++) host.open();
+        host.groupWindows([1, 2, 3], 2);
+        assert.deepEqual(groupedAreas(host), [[2, 1, 3]]);
+
+        // The area is 89 px wide: the slits of windows 1 and 3, 14 px each, and their gaps of
+        // 8 px take half of it, and active window 2 the rest.
         assert.deepEqual(
-            [dp1, dp2].map((workspace) => tabNodes(host, workspace).map((tab) => [tab.rect.w, tab.background])),
+            [2, 1, 3].map((id) => clips(host).find((node) => node.id === parentOf(host, id)).rect),
             [
-                [
-                    [4, "#7fc8ff"],
-                    [4, "#505050"],
-                ],
-                [
-                    [9, "#abcdef"],
-                    [9, "#505050"],
-                ],
+                { x: -64, y: 16 - 64, w: 45 + 128, h: 688 + 128 },
+                { x: 53, y: 16, w: 14, h: 688 },
+                { x: 75, y: 16, w: 14, h: 688 },
             ],
         );
     });
@@ -1464,22 +1464,22 @@ describe("layout API", () => {
         host.activate(2);
         host.open();
         host.action("stack-left");
-        host.action("toggle-tabs");
+        host.action("toggle-group");
         const before = {
             tiles: tiles(host),
             focused: host.focused(),
             ipc: ipc(host),
-            tabbed: tabbedAreas(host),
+            grouped: groupedAreas(host),
         };
-        assert.equal(before.tabbed.length, 1);
+        assert.equal(before.grouped.length, 1);
 
         host.reload();
         assert.deepEqual(host.errors, []);
         assert.deepEqual(tiles(host), before.tiles);
         assert.equal(host.focused(), before.focused);
         assert.deepEqual(ipc(host), before.ipc);
-        assert.deepEqual(tabbedAreas(host), before.tabbed);
-        assert.equal(tabNodes(host).length, before.tabbed.flat().length);
+        assert.deepEqual(groupedAreas(host), before.grouped);
+        assert.equal(clips(host).length, before.grouped.flat().length);
 
         // Closing the window opened last still goes back to where it was opened from.
         host.close(4);
@@ -1632,31 +1632,34 @@ describe("workspaces and monitors", () => {
         assert.equal(host.focused(), 1);
     });
 
-    test("move-to-workspace and move-to-monitor take the tabs along", async () => {
+    test("move-to-workspace and move-to-monitor take the group along", async () => {
         const host = await setup({ monitors: [{ name: "DP-1" }, { name: "DP-2" }] });
         const w1 = host.workspace(1).id;
         host.open();
         host.open();
         host.open();
         host.activate(1);
-        host.action("toggle-tabs");
+        host.action("toggle-group");
         host.action("stack-from-right");
-        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
+        assert.deepEqual(groupedAreas(host), [[1, 2]]);
 
         host.action("move-to-workspace", w1);
         assert.equal(host.windows.get(1).workspace, w1);
         assert.equal(host.windows.get(2).workspace, w1);
         assert.equal(host.windows.get(3).workspace, host.workspace(0).id);
         assert.equal(host.activeWorkspace().id, w1);
-        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
+        assert.deepEqual(groupedAreas(host), [[1, 2]]);
         assert.equal(host.focused(), 1);
 
         host.action("move-to-monitor", "DP-2");
         assert.equal(host.windows.get(1).workspace, host.activeWorkspace("DP-2").id);
         assert.equal(host.windows.get(2).workspace, host.activeWorkspace("DP-2").id);
         assert.equal(host.focusedMonitor, "DP-2");
-        assert.deepEqual(tabbedAreas(host), [[1, 2]]);
-        assert.equal(tabNodes(host).length, 2);
+        assert.deepEqual(groupedAreas(host), [[1, 2]]);
+        assert.equal(slits(host).length, 1);
+        // The workspaces it left keep nothing of its carousel.
+        assert.equal(clips(host, w1).length, 0);
+        assert.equal(clips(host, host.workspace(0, "DP-1").id).length, 0);
     });
 
     test("focus goes on to the monitor or workspace beside", async () => {
@@ -1738,17 +1741,17 @@ describe("what the engine exposes and draws", () => {
         assert.equal(state.rows, 12);
         assert.equal(state.colsPerView, METRICS.colsPerView);
         assert.deepEqual(
-            state.items.map(({ windows, active, area, tabbed, mode }) => ({
+            state.items.map(({ windows, active, area, grouped, mode }) => ({
                 windows,
                 active,
                 area,
-                tabbed,
+                grouped,
                 mode,
             })),
             [
-                { windows: [1], active: 1, area: at(0, 0, 2, 6), tabbed: false, mode: "normal" },
-                { windows: [2], active: 2, area: at(0, 6, 2, 6), tabbed: false, mode: "normal" },
-                { windows: [3], active: 3, area: at(2, 0, 2, 12), tabbed: false, mode: "normal" },
+                { windows: [1], active: 1, area: at(0, 0, 2, 6), grouped: false, mode: "normal" },
+                { windows: [2], active: 2, area: at(0, 6, 2, 6), grouped: false, mode: "normal" },
+                { windows: [3], active: 3, area: at(2, 0, 2, 12), grouped: false, mode: "normal" },
             ],
         );
 
@@ -1790,38 +1793,43 @@ describe("what the engine exposes and draws", () => {
 // Groups are bento's, and the host keeps them like bento does: `groupWindows` is bento's own
 // action that groups windows, and `groupOf` the group a window is in.
 describe("groups", () => {
-    test("tabs are a group, and stacking them again dissolves it", async () => {
+    test("grouping makes a group, and stacking the windows again dissolves it", async () => {
         const host = await setUpStackOfTwo();
         host.activate(1);
         assert.equal(host.groupOf(1), null);
-        host.action("toggle-tabs");
+        host.action("toggle-group");
         assert.deepEqual(host.groupOf(1).windows, [1, 2]);
         assert.equal(host.groupOf(1).active, 1);
-        host.action("focus-down");
+        host.action("focus-right");
         assert.equal(host.groupOf(1).active, 2);
-        host.action("toggle-tabs");
+        host.action("toggle-group");
         assert.equal(host.groupOf(1), null);
         assert.equal(host.groupOf(2), null);
     });
 
-    test("a group made elsewhere shows as tabs in the area of its active window", async () => {
+    test("a group made elsewhere shows as a carousel in the area of its active window", async () => {
         const host = await setup();
         host.open();
         host.open();
         host.open();
         host.groupWindows([1, 3], 3);
-        assert.deepEqual(tabbedAreas(host), [[3, 1]]);
+        assert.deepEqual(groupedAreas(host), [[3, 1]]);
         assert.equal(host.isVisible(3), true);
-        assert.equal(host.isVisible(1), false);
-        assert.deepEqual(host.rect(3), host.rect(1));
-        assert.equal(tabNodes(host).length, 2);
-        assert.deepEqual(cells(host, [2, 3]), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
+        assert.equal(host.isVisible(1), true);
+        assert.equal(slits(host).length, 1);
+        assert.deepEqual(
+            exposed(host).items.map((item) => [item.windows, item.area]),
+            [
+                [[2], at(0, 0, 2, 12)],
+                [[3, 1], at(2, 0, 2, 12)],
+            ],
+        );
     });
 
-    test("a tab that leaves its area leaves the group", async () => {
+    test("a window that leaves its group's area leaves the group", async () => {
         const host = await setUpStackOfTwo();
         host.activate(1);
-        host.action("toggle-tabs");
+        host.action("toggle-group");
         host.action("unstack");
         assert.equal(host.groupOf(1), null);
         assert.equal(host.groupOf(2), null);

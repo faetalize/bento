@@ -1,0 +1,10 @@
+---
+source: src/tests/window_opening.rs
+description: "want fullscreen: BN\nconfig:\nwindow-rule {\n    open-fullscreen false\n    border { on; }\n}\nengine:\nwindow-rule {\n    default-width\n    default-height\n    default-group true\n}"
+expression: snapshot
+---
+initial configure:
+size: 0 × 680, bounds: 1240 × 680, states: []
+
+post-map configures:
+size: 29 × 680, bounds: 1240 × 680, states: [Activated]
