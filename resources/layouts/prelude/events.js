@@ -101,6 +101,15 @@ export class EventTarget {
     }
 }
 
+/** Runs `fn`, sending what it throws to the error sink, like an error thrown by a listener. */
+export function guarded(fn) {
+    try {
+        fn();
+    } catch (e) {
+        errorSink(e);
+    }
+}
+
 /** Number of listeners `target` has for events of `type`. */
 export function listenerCount(target, type) {
     return listeners.get(target)?.get(type)?.length ?? 0;

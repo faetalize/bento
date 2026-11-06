@@ -22,7 +22,7 @@ use niri_config::{
     WorkspaceReference, Xkb,
 };
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::input::{InputTime, Keycode};
+use smithay::backend::input::{InputTime, Keycode, TouchSlot};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
@@ -132,6 +132,8 @@ use crate::dbus::freedesktop_locale1::Locale1ToNiri;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_login1::Login1ToNiri;
 #[cfg(feature = "dbus")]
+use crate::dbus::freedesktop_portal_settings::PortalSettingsToNiri;
+#[cfg(feature = "dbus")]
 use crate::dbus::gnome_shell_introspect::{self, IntrospectToNiri, NiriToIntrospect};
 #[cfg(feature = "dbus")]
 use crate::dbus::gnome_shell_screenshot::{NiriToScreenshot, ScreenshotToNiri};
@@ -153,6 +155,7 @@ use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
 use crate::layer::MappedLayer;
 use crate::layout::tile::TileRenderElement;
+use crate::layout::tiling::host::{KeyboardOwner, TimerRequest};
 use crate::layout::workspace::{Workspace, WorkspaceId};
 use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement, NodeHit,
@@ -184,6 +187,7 @@ use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
+use crate::utils::icon_theme::IconTheme;
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
 use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
 use crate::utils::vblank_throttle::VBlankThrottle;
@@ -369,6 +373,16 @@ pub struct Niri {
     pub pending_tablet_release_binds: HashMap<u32, Bind>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
+    /// Scancodes of the keys that went to the layout engine while it held the keyboard, whose
+    /// releases the apps don't get either.
+    pub engine_keys: HashSet<Keycode>,
+    /// Repeats the last key that went to the layout engine.
+    pub engine_key_repeat_timer: Option<RegistrationToken>,
+    /// Whether the apps' keyboard focus is withheld because the layout engine holds the keyboard.
+    pub keyboard_withheld: bool,
+    /// The layout engine's timers on the event loop, by the instance of the engine and the id that
+    /// it knows them by.
+    pub engine_timers: HashMap<(u64, u64), RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
@@ -377,6 +391,9 @@ pub struct Niri {
 
     /// Most recent XKB settings from org.freedesktop.locale1.
     pub xkb_from_locale1: Option<Xkb>,
+
+    /// The icon theme that apps use, which engines' image nodes look icons up in.
+    pub icon_theme: IconTheme,
 
     /// Virtual keyboard for which the keymap is currently active on the seat,
     /// if any.
@@ -411,8 +428,13 @@ pub struct Niri {
     /// taking grabs into account is expected, because we pass the information to pointer.motion()
     /// which passes it down through grabs, which decide what to do with it as they see fit.
     pub pointer_contents: PointContents,
-    /// The button press that a node drawn by the tiling layout took, until the button is released.
-    pub node_press: Option<NodePress>,
+    /// The mouse button press that a node drawn by the tiling layout took, with the button's code,
+    /// until the button is released.
+    pub node_press: Option<(u32, NodePress)>,
+    /// The tablet tool's tip press that a node took, until the tip is lifted.
+    pub tablet_node_press: Option<NodePress>,
+    /// The touches that a node took, with where each last was, until they end.
+    pub touch_node_presses: HashMap<TouchSlot, (NodePress, Point<f64, Logical>)>,
     pub pointer_visibility: PointerVisibility,
     pub pointer_inactivity_timer: Option<RegistrationToken>,
     /// Whether the pointer inactivity timer got reset this event loop iteration.
@@ -611,10 +633,10 @@ pub struct PointContents {
     pub node: Option<NodeHit>,
 }
 
-/// A button press on a node that the tiling layout draws.
+/// A press on a node that the tiling layout draws, by a mouse button, a touch or a tablet tool's
+/// tip.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodePress {
-    pub button_code: u32,
     /// Id of the workspace that the node is drawn on.
     pub workspace: u64,
     /// Id of the node that got the press.
@@ -903,6 +925,9 @@ impl State {
         // Needs to be called after updating the keyboard focus.
         #[cfg(feature = "dbus")]
         self.niri.refresh_a11y();
+
+        // Last, so that it sees the timers that everything above asked for.
+        self.niri.update_engine_timers();
     }
 
     /// Stop sessions whose source is gone and sync buffer constraints. Runs as
@@ -1417,6 +1442,16 @@ impl State {
             KeyboardFocus::Layout { surface: None }
         };
 
+        // The layout engine can only take the keyboard from its own windows, and loses it when the
+        // focus goes elsewhere.
+        self.niri.layout.set_keyboard_owner(match &focus {
+            KeyboardFocus::Layout { .. } => KeyboardOwner::Layout,
+            KeyboardFocus::LockScreen { .. } => KeyboardOwner::LockScreen,
+            _ => KeyboardOwner::Other,
+        });
+        // While it holds the keyboard, the apps have no focus.
+        let withheld = self.niri.layout.keyboard_grabbed();
+
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         if self.niri.keyboard_focus != focus {
             trace!(
@@ -1532,11 +1567,20 @@ impl State {
             }
 
             self.niri.keyboard_focus.clone_from(&focus);
-            keyboard.set_focus(self, focus.into_surface(), SERIAL_COUNTER.next_serial());
+            let surface = if withheld { None } else { focus.into_surface() };
+            keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
 
             // FIXME: can be more granular.
             self.niri.queue_redraw_all();
+        } else if withheld != self.niri.keyboard_withheld {
+            let surface = if withheld {
+                None
+            } else {
+                self.niri.keyboard_focus.surface().cloned()
+            };
+            keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
         }
+        self.niri.keyboard_withheld = withheld;
     }
 
     /// Loads the xkb keymap from a file config setting.
@@ -2485,6 +2529,22 @@ impl State {
     }
 
     #[cfg(feature = "dbus")]
+    pub fn on_portal_settings_msg(&mut self, msg: PortalSettingsToNiri) {
+        let PortalSettingsToNiri::IconTheme(theme) = msg;
+
+        trace!("portal icon theme: {theme:?}");
+        self.niri.icon_theme.set_portal(theme);
+        self.apply_icon_theme();
+    }
+
+    /// Gives the layout the icon theme that applies now, so that the engines' images follow it.
+    fn apply_icon_theme(&mut self) {
+        if self.niri.layout.set_icon_theme(self.niri.icon_theme.name()) {
+            self.niri.queue_redraw_all();
+        }
+    }
+
+    #[cfg(feature = "dbus")]
     pub fn on_locale1_msg(&mut self, msg: Locale1ToNiri) {
         let Locale1ToNiri::XkbChanged(xkb) = msg;
 
@@ -2529,7 +2589,9 @@ impl Niri {
         animation_clock.set_rate(rate);
         animation_clock.set_complete_instantly(config_.animations.off);
 
-        let layout = Layout::new(animation_clock.clone(), &config_);
+        let icon_theme = IconTheme::new();
+        let mut layout = Layout::new(animation_clock.clone(), &config_);
+        layout.set_icon_theme(icon_theme.name());
         if let Err(problems) = crate::layout::tiling::engine::check(&config_) {
             for problem in problems {
                 warn!("{problem}");
@@ -2733,6 +2795,18 @@ impl Niri {
             )
             .unwrap();
 
+        // The GTK settings file has no change notification here, unlike the portal.
+        event_loop
+            .insert_source(
+                Timer::from_duration(Duration::from_secs(2)),
+                |_, _, state| {
+                    state.niri.icon_theme.poll();
+                    state.apply_icon_theme();
+                    TimeoutAction::ToDuration(Duration::from_secs(2))
+                },
+            )
+            .unwrap();
+
         let socket_name = create_wayland_socket.then(|| {
             let socket_source = ListeningSocketSource::new_auto().unwrap();
             let socket_name = socket_source.socket_name().to_os_string();
@@ -2865,6 +2939,10 @@ impl Niri {
             pending_tablet_release_binds: HashMap::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
+            engine_keys: HashSet::new(),
+            engine_key_repeat_timer: None,
+            keyboard_withheld: false,
+            engine_timers: HashMap::new(),
             presentation_state,
             security_context_state,
             gamma_control_manager_state,
@@ -2880,6 +2958,7 @@ impl Niri {
             is_fdo_idle_inhibited: Arc::new(AtomicBool::new(false)),
             keyboard_shortcuts_inhibiting_surfaces: HashMap::new(),
             xkb_from_locale1: None,
+            icon_theme,
             virtual_keyboard_keymap: None,
             configured_keymap: None,
             cursor_manager,
@@ -2888,6 +2967,8 @@ impl Niri {
             dnd_icon: None,
             pointer_contents: PointContents::default(),
             node_press: None,
+            tablet_node_press: None,
+            touch_node_presses: HashMap::new(),
             pointer_visibility: PointerVisibility::Visible,
             pointer_inactivity_timer: None,
             pointer_inactivity_timer_got_reset: false,
@@ -3818,21 +3899,10 @@ impl Niri {
         }
     }
 
-    /// Sends a button press to the node that the tiling layout draws under the pointer, if there's
-    /// one. `button` is 1, 2 or 3 for the left, middle and right button. Returns whether a node
-    /// took the press.
-    pub fn node_button_pressed(&mut self, button: u8, button_code: u32) -> bool {
-        let pos = self.seat.get_pointer().unwrap().current_location();
-        let Some(hit) = self.contents_under(pos).node else {
-            return false;
-        };
-
-        self.node_press = Some(NodePress {
-            button_code,
-            workspace: hit.workspace,
-            node: hit.node.clone(),
-            pos: hit.pos,
-        });
+    /// Sends a press of `button` to the node `hit`, which gets `pointerdown`, and returns what to
+    /// keep until the press ends. `button` is 1, 2 or 3 for the left, middle and right button; a
+    /// touch or a tablet tool's tip presses the left one.
+    pub fn node_pressed(&mut self, hit: &NodeHit, button: u8) -> NodePress {
         let modifiers = self.node_modifiers();
         self.layout.node_pointer_event(
             &hit.node,
@@ -3842,13 +3912,30 @@ impl Niri {
             modifiers,
             Point::from((0., 0.)),
         );
+        NodePress {
+            workspace: hit.workspace,
+            node: hit.node.clone(),
+            pos: hit.pos,
+        }
+    }
+
+    /// Sends a mouse button press to the node that the tiling layout draws under the pointer, if
+    /// there's one. `button` is 1, 2 or 3 for the left, middle and right button. Returns whether a
+    /// node took the press.
+    pub fn node_button_pressed(&mut self, button: u8, button_code: u32) -> bool {
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        let Some(hit) = self.contents_under(pos).node else {
+            return false;
+        };
+
+        let press = self.node_pressed(&hit, button);
+        self.node_press = Some((button_code, press));
         true
     }
 
-    /// Sends the release of a button that a node took the press of to that node, and a click if
-    /// the pointer is still on it.
-    pub fn node_button_released(&mut self, press: NodePress, button: u8) {
-        let pos = self.seat.get_pointer().unwrap().current_location();
+    /// Sends the end of a press that a node took to that node, with the pointer, touch or tool
+    /// at `pos`: `pointerup`, and a click if it's still on the node.
+    pub fn node_released(&mut self, press: NodePress, pos: Point<f64, Logical>, button: u8) {
         let under = self.contents_under(pos).node;
         let modifiers = self.node_modifiers();
 
@@ -3874,6 +3961,73 @@ impl Niri {
                 Point::from((0., 0.)),
             );
         }
+    }
+
+    /// Sends the release of a mouse button that a node took the press of to that node, and a click
+    /// if the pointer is still on it.
+    pub fn node_button_released(&mut self, press: NodePress, button: u8) {
+        let pos = self.seat.get_pointer().unwrap().current_location();
+        self.node_released(press, pos, button);
+    }
+
+    /// Sends a touch that begins at `pos`, where `under` is, to the node that the tiling layout
+    /// draws there, if there's one. Returns whether a node took it.
+    pub fn node_touch_began(
+        &mut self,
+        slot: TouchSlot,
+        under: &PointContents,
+        pos: Point<f64, Logical>,
+    ) -> bool {
+        let Some(hit) = &under.node else {
+            return false;
+        };
+
+        self.update_node_hover(under, false);
+        let press = self.node_pressed(hit, 1);
+        self.touch_node_presses.insert(slot, (press, pos));
+        true
+    }
+
+    /// Tells the node that took a touch that it moved to `pos`, where `under` is.
+    pub fn node_touch_moved(
+        &mut self,
+        slot: TouchSlot,
+        under: &PointContents,
+        pos: Point<f64, Logical>,
+    ) {
+        let Some((_, last)) = self.touch_node_presses.get_mut(&slot) else {
+            return;
+        };
+
+        *last = pos;
+        self.update_node_hover(under, true);
+    }
+
+    /// Sends the end of a touch to the node that took it, with a click if it's still on it.
+    pub fn node_touch_ended(&mut self, slot: TouchSlot) {
+        let Some((press, pos)) = self.touch_node_presses.remove(&slot) else {
+            return;
+        };
+
+        self.node_released(press, pos, 1);
+        self.restore_mouse_hover();
+    }
+
+    /// Hovers what the mouse is on again, once a touch that hovered nodes is gone.
+    fn restore_mouse_hover(&mut self) {
+        let modifiers = self.node_modifiers();
+        let hit = self.pointer_contents.node.clone();
+        self.layout.node_hover(hit.as_ref(), modifiers);
+    }
+
+    /// Forgets the touches that nodes took, which were cancelled.
+    pub fn node_touches_cancelled(&mut self) {
+        if self.touch_node_presses.is_empty() {
+            return;
+        }
+
+        self.touch_node_presses.clear();
+        self.restore_mouse_hover();
     }
 
     /// Sends scrolling to the node that the tiling layout draws under the pointer, if there's one.
@@ -6742,9 +6896,50 @@ impl Niri {
         self.pending_mouse_release_binds.clear();
         self.pending_tablet_release_binds.clear();
 
+        self.engine_keys.clear();
+
         // Stop ongoing key repeat if any.
         if let Some(token) = self.bind_repeat_timer.take() {
             self.event_loop.remove(token);
+        }
+        if let Some(token) = self.engine_key_repeat_timer.take() {
+            self.event_loop.remove(token);
+        }
+    }
+
+    /// Starts and cancels the timers that the layout engine asked for on the event loop, and calls
+    /// the layout back when one comes due.
+    pub fn update_engine_timers(&mut self) {
+        for request in self.layout.take_timer_requests() {
+            match request {
+                TimerRequest::Start {
+                    instance,
+                    id,
+                    delay,
+                } => {
+                    let token = self
+                        .event_loop
+                        .insert_source(Timer::from_duration(delay), move |_, _, state| {
+                            state.niri.engine_timers.remove(&(instance, id));
+                            state.niri.layout.fire_engine_timer(instance, id);
+                            // FIXME: granular.
+                            state.niri.queue_redraw_all();
+                            TimeoutAction::Drop
+                        })
+                        .unwrap();
+                    self.engine_timers.insert((instance, id), token);
+                }
+                TimerRequest::Cancel { instance, id } => {
+                    if let Some(token) = self.engine_timers.remove(&(instance, id)) {
+                        self.event_loop.remove(token);
+                    }
+                }
+                TimerRequest::CancelAll => {
+                    for (_, token) in self.engine_timers.drain() {
+                        self.event_loop.remove(token);
+                    }
+                }
+            }
         }
     }
 
@@ -6785,6 +6980,9 @@ impl Niri {
         }
 
         info!("locking session");
+
+        // The lock screen has the keyboard, not a search of windows.
+        self.layout.search_cancel();
 
         // If we have outputs, we need to redraw them before locking. But before we do that,
         // let's wait for the lock surfaces.

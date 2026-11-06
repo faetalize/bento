@@ -305,6 +305,27 @@ export interface UnloadEvent extends BentoEvent {
     saveState(state: unknown): void;
 }
 
+/** Modifiers held. */
+export interface Modifiers {
+    shift: boolean;
+    ctrl: boolean;
+    alt: boolean;
+    super: boolean;
+}
+
+export interface KeyEvent extends BentoEvent {
+    /** The key's xkb name with the held modifiers applied, like `"a"`, `"A"`, `"Return"`, `"Left"`. */
+    readonly key: string;
+    /**
+     * What the key types with the keyboard layout, like `"a"` or `" "`, or `""` for keys that
+     * type nothing printable, like arrows, Return, and keys with Ctrl held.
+     */
+    readonly text: string;
+    readonly modifiers: Modifiers;
+    /** Whether the key is held down and repeating. */
+    readonly repeat: boolean;
+}
+
 export interface BentoEvents {
     windowadd: WindowAddEvent;
     monitoradd: BentoEvent & { readonly monitor: Monitor };
@@ -322,6 +343,15 @@ export interface BentoEvents {
     configchange: BentoEvent;
     newwindowsize: NewWindowSizeQuery;
     unload: UnloadEvent;
+    /** A key, while the engine holds the keyboard, see `Bento.grabKeyboard`. */
+    keydown: KeyEvent;
+    keyup: KeyEvent;
+    /** The keyboard went back to the apps, see `Bento.grabKeyboard`. */
+    keyboardrelease: BentoEvent & {
+        readonly reason: "engine" | "escape" | "click" | "lock" | "focus";
+    };
+    /** The modifiers held changed, whether or not the engine holds the keyboard. */
+    modifierschange: BentoEvent & { readonly modifiers: Modifiers };
 }
 
 export interface MonitorEvents {
@@ -437,6 +467,43 @@ export interface Bento extends EventTarget<BentoEvents> {
     /** Creates a node to draw, see `Node`. It shows once it's added to a workspace's tree. */
     createNode(kind: "box" | "text" | "image", props?: NodeProps): Node;
 
+    /**
+     * Calls `callback` once, after `ms` milliseconds, between events like an event of its own.
+     * Returns an id for `clearTimeout`. Timers end when the engine is unloaded or reloaded. A
+     * delay can't be longer than an hour, and at most 128 timers can be waiting: `setTimeout`
+     * throws beyond that. Negative delays count as 0.
+     */
+    setTimeout(callback: () => void, ms: number): number;
+    clearTimeout(id: number): void;
+
+    /**
+     * Takes the keyboard for a short interaction the person started, like picking a window by a
+     * letter shown on it. While the engine holds it, keys go to `keydown`/`keyup` and apps get
+     * none. Escape ends it unless a `keydown` listener prevents its default, and so do a click
+     * outside what the engine draws, the lock screen, keyboard focus moving to something that
+     * isn't the engine's, a search starting (with `"focus"`), and the engine failing;
+     * `keyboardrelease` says which. bento's binds that can't be inhibited keep working. It can only
+     * be taken while handling something the person did: an `action`, a `keydown`, or a
+     * `pointerdown` or `click` on a node. Returns false otherwise, and when the keyboard can't be
+     * taken, like on the lock screen or while a search runs.
+     */
+    grabKeyboard(): boolean;
+    /** Gives the keyboard back to the apps. */
+    releaseKeyboard(): void;
+    /** Whether the engine holds the keyboard. */
+    readonly keyboardGrabbed: boolean;
+    /** The modifiers held right now. */
+    readonly modifiers: Modifiers;
+
+    /**
+     * Starts searching windows: a group's, a workspace's, or every window with `null`. bento owns
+     * the query, typing and matching; the engine places and draws the field, `Search.field`, and
+     * shows the results. Returns null if a search is already running.
+     */
+    search(scope: Group | Workspace | null): Search | null;
+    /** The running search, or null. */
+    readonly searching: Search | null;
+
     log(...args: unknown[]): void;
 }
 
@@ -542,18 +609,83 @@ export interface Window extends EventTarget<WindowEvents> {
     /** Shows or hides it, like the inactive windows of a group shown as tabs. */
     setVisible(visible: boolean): boolean;
     setData(data: unknown): void;
+    /**
+     * Starts moving it with the pointer, like dragging a title bar the engine draws. Only from a
+     * `pointerdown` listener, with the button still held; bento runs the move as when it starts
+     * one, and the window leaves the engine with reason `"drag"` and comes back with `"drop"`.
+     * The press belongs to the move from then on: the node gets no `pointerup` or `click` for it.
+     * Returns false outside a press, and when the press began a move or resize already.
+     */
+    beginMove(): boolean;
+    /**
+     * Starts resizing it from `edges` with the pointer, like `beginMove`; `resizebegin` follows,
+     * and bento refuses the resize like any other if no listener takes it. Returns false for no
+     * edge at all.
+     */
+    beginResize(edges: Edges): boolean;
+    /**
+     * Turns bento's border, focus ring and shadow around it on or off; all on by default. Without
+     * the border the window takes the whole of its rect, and `borders` is 0. They come back on
+     * when the window leaves the engine, and when a new instance of the engine starts, since what
+     * the engine drew in their place is gone too.
+     */
+    setDecorations(decorations: { border?: boolean; focusRing?: boolean; shadow?: boolean }): void;
+    readonly decorations: { readonly border: boolean; readonly focusRing: boolean; readonly shadow: boolean };
 }
 
 export interface Camera {
-    /** Where it's going, if it's moving, or where it is. */
+    /** Where it's going, if it's moving, or where it is: the canvas point at the view's top left. */
     readonly x: number;
     readonly y: number;
+    /**
+     * How large the canvas is drawn: 1 at its size, 0.5 shows twice as much of it. `x` and `y`
+     * stay the canvas point at the view's top left, and windows aren't told a new size. Pointer
+     * input lands where things are drawn at any zoom. bento keeps it between 0.01 and 100.
+     */
+    readonly zoom: number;
 
     /**
-     * Moves it. Coordinates left out stay as they are. `velocity` continues a swipe's speed into
-     * the animation, in px/s.
+     * Moves it, animating `x`, `y` and `zoom` the same way. Values left out stay as they are. A
+     * `zoom` that isn't above 0 throws. `velocity` continues a swipe's speed into the animation,
+     * in px/s.
      */
-    move(to: Partial<Point>, opts?: { animate?: boolean; velocity?: number }): boolean;
+    move(to: Partial<Point & { zoom: number }>, opts?: { animate?: boolean; velocity?: number }): boolean;
+}
+
+/**
+ * A search of windows, see `Bento.search`. bento owns the query, the typing (with input methods
+ * and screen readers) and the matching on titles and app ids.
+ */
+export interface Search extends EventTarget<SearchEvents> {
+    readonly scope: Group | Workspace | null;
+    readonly query: string;
+    /**
+     * The windows in scope that match the query, best match first; all of them for no query.
+     * Windows that match equally well are in the engine's order: that of `Group.windows`,
+     * `Workspace.windows` or `Bento.windows`.
+     */
+    readonly matches: readonly Window[];
+    /**
+     * The field people type in, a node of kind `"search"` that bento draws: the query, its caret
+     * and selection, and a placeholder. The engine adds it to a tree and sets its `rect`, `font`,
+     * `color`, `background`, `border`, `cornerRadius` and the like. The text is left-aligned,
+     * inset from the node's edge by half a line, and scrolls to keep the caret in view; the
+     * caret and the selection take `color`, and the placeholder takes it dimmed. bento takes the
+     * field out of its tree when the search ends.
+     */
+    readonly field: Node;
+    /** Ends it without picking a window, as a click anywhere but on the field does. */
+    cancel(): void;
+}
+
+export interface SearchEvents {
+    /** The query or the matching windows changed. */
+    change: BentoEvent;
+    /**
+     * It ended. With Enter, `picked` is the best match, and an `activaterequest` for it follows;
+     * with Escape or `cancel`, it's null.
+     */
+    end: BentoEvent & { readonly picked: Window | null };
 }
 
 /**
@@ -610,11 +742,18 @@ export interface NodeProps {
      * `Window.place`.
      */
     rect?: Rect;
-    /** From 0 to 1. It applies to each node on its own, so overlapping children show through. */
+    /**
+     * From 0 to 1. It applies to the node and its children together, as one picture, so that
+     * overlapping children don't show through each other. A window is drawn on its own, so it gets
+     * the opacity of the nodes above it but isn't part of their picture.
+     */
     opacity?: number;
     /** Scales and moves it, and its children, around the centre of its rect. */
     transform?: { scale?: number; x?: number; y?: number };
-    /** Whether its children are clipped to its rect, with its corner radius. */
+    /**
+     * Whether its children, of every kind, are clipped to its rect, with its corner radius. Clips
+     * of nested nodes cut one inside the other.
+     */
     clip?: boolean;
     cornerRadius?: number;
     /** Fill, for every node but a window's. */
@@ -629,15 +768,43 @@ export interface NodeProps {
     color?: Color;
     /**
      * `"image"`: an icon name from the icon theme, or an absolute path, drawn as large as fits
-     * its rect, centred. Raster images only: icons are found as PNGs, and a path can be a PNG,
-     * JPEG or WebP.
+     * its rect, centred. The icon theme is the one apps on the session use, from GNOME's
+     * interface settings or `gtk-icon-theme-name` in `~/.config/gtk-4.0/settings.ini`, with the
+     * themes it inherits from and `hicolor`. Icons are PNGs or SVGs, and a path can be a PNG,
+     * JPEG, WebP or SVG. An SVG is drawn at the size of the node, and shows no text or images
+     * that it embeds.
      */
     image?: string;
     /** Whether it gets pointer events. Nodes without listeners can leave it off. */
     interactive?: boolean;
-    /** How each property animates when it changes; properties left out change at once. */
-    transitions?: Partial<Record<"rect" | "opacity" | "transform" | "cornerRadius" | "background", Transition>>;
+    /**
+     * A window's node: where pointer input on it goes. `"app"`, the default, gives it to the app
+     * where the window is drawn, through its transform and the camera's zoom; `"engine"` gives it
+     * to the engine as the node's pointer events, the app getting none; `"none"` lets it through
+     * to what's below.
+     */
+    input?: "app" | "engine" | "none";
+    /** `"search"`: what the field shows while the query is empty. */
+    placeholder?: string;
+    /**
+     * How each property animates when it changes; properties left out change at once. A window's
+     * node animates the window's movement with its `rect` transition, instead of bento's
+     * `"window-movement"`; its size still animates as bento's `"window-resize"` says.
+     */
+    transitions?: Partial<Record<Transitioned, Transition>>;
+    /**
+     * The values of some properties that the node starts from when it enters a tree, which it
+     * then goes from to its own values with its `transitions`, like CSS's `@starting-style`: a
+     * tab indicator that grows in has an `enter` rect that is zero wide. Properties without a
+     * transition don't start anywhere else. It's for before the node is added to a tree, and
+     * `set` throws if it changes it for a node that is in one. A node that's taken out of a tree
+     * and added to one again enters again.
+     */
+    enter?: Partial<Pick<NodeProps, Transitioned>>;
 }
+
+/** The properties that can have a transition, and an `enter` value. */
+export type Transitioned = "rect" | "opacity" | "transform" | "cornerRadius" | "background";
 
 /**
  * Something drawn on a workspace: a box, text, an image, or a window. Nodes form a tree per
@@ -645,7 +812,7 @@ export interface NodeProps {
  * earlier ones. bento draws the tree and runs its transitions, so no engine code runs per frame.
  */
 export interface Node extends EventTarget<NodeEvents> {
-    readonly kind: "root" | "box" | "text" | "image" | "window";
+    readonly kind: "root" | "box" | "text" | "image" | "window" | "search";
     /** The window, for a window's node. */
     readonly window: Window | null;
     readonly parent: Node | null;

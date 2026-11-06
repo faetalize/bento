@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use anyhow::Context as _;
 use smithay::backend::allocator::Fourcc;
@@ -7,7 +8,9 @@ use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement
 use smithay::backend::renderer::element::{
     Element, Id, Kind, RenderElement, RenderElementStates, UnderlyingStorage,
 };
-use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture};
+use smithay::backend::renderer::gles::{
+    GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
+};
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::utils::{
     CommitCounter, DamageBag, DamageSet, DamageSnapshot, OpaqueRegions,
@@ -57,6 +60,9 @@ pub struct OffscreenRenderElement {
     offset: Point<f64, Logical>,
     src_size: Size<i32, Buffer>,
     alpha: f32,
+    /// A program to draw the texture with, like one that cuts it to rounded corners.
+    program: Option<GlesTexProgram>,
+    uniforms: Rc<[Uniform<'static>]>,
     kind: Kind,
 }
 
@@ -189,6 +195,8 @@ impl OffscreenBuffer {
             offset,
             src_size,
             alpha: 1.,
+            program: None,
+            uniforms: Rc::new([]),
             kind: Kind::Unspecified,
         };
 
@@ -198,6 +206,18 @@ impl OffscreenBuffer {
         };
 
         Ok((elem, res.sync, data))
+    }
+}
+
+impl OffscreenBuffer {
+    /// Marks the whole texture as changed, for a change in how the element is drawn that isn't
+    /// in the texture, like `OffscreenRenderElement::with_program` with other uniforms. Takes
+    /// effect from the next `render`.
+    pub fn damage_all(&self) {
+        if let Some(inner) = self.inner.borrow_mut().as_mut() {
+            let size = inner.texture.size();
+            inner.outer_damage.add([Rectangle::from_size(size)]);
+        }
     }
 }
 
@@ -226,6 +246,17 @@ impl OffscreenRenderElement {
 
     pub fn with_offset(mut self, offset: Point<f64, Logical>) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// Draws the texture with `program` and its uniforms.
+    pub fn with_program(
+        mut self,
+        program: GlesTexProgram,
+        uniforms: Rc<[Uniform<'static>]>,
+    ) -> Self {
+        self.program = Some(program);
+        self.uniforms = uniforms;
         self
     }
 
@@ -322,8 +353,8 @@ impl RenderElement<GlesRenderer> for OffscreenRenderElement {
             opaque_regions,
             Transform::Normal,
             self.alpha,
-            None,
-            &[],
+            self.program.as_ref(),
+            &self.uniforms,
         )
     }
 

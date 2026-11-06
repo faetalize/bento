@@ -51,6 +51,19 @@ impl<T: Lerp + Clone + PartialEq> Animated<T> {
         self.target = value;
     }
 
+    /// Starts from `value` and animates to the current target, if `animation` says how. Without
+    /// one, the value stays at the target.
+    pub fn start_from(&mut self, value: T, animation: Option<(&Clock, niri_config::Animation)>) {
+        if value == self.target {
+            return;
+        }
+
+        if let Some((clock, config)) = animation.filter(|(_, config)| !config.off) {
+            self.from = value;
+            self.anim = Some(Animation::new(clock.clone(), 0., 1., 0., config));
+        }
+    }
+
     pub fn advance(&mut self) {
         if self.anim.as_ref().is_some_and(|anim| anim.is_done()) {
             self.anim = None;
@@ -319,6 +332,41 @@ mod tests {
         clock.set_unadjusted(Duration::from_millis(150));
         assert_eq!(value.current(), 0.);
         value.advance();
+        assert!(!value.is_animating());
+    }
+
+    #[test]
+    fn starting_from_a_value_animates_to_the_target() {
+        let mut clock = Clock::with_time(Duration::ZERO);
+        let mut value = Animated::new(10.);
+
+        value.start_from(0., Some((&clock, linear(100))));
+        assert!(value.is_animating());
+        assert_eq!(value.current(), 0.);
+
+        clock.set_unadjusted(Duration::from_millis(50));
+        assert_eq!(value.current(), 5.);
+        clock.set_unadjusted(Duration::from_millis(100));
+        assert_eq!(value.current(), 10.);
+    }
+
+    #[test]
+    fn starting_from_a_value_without_a_transition_stays_at_the_target() {
+        let clock = Clock::with_time(Duration::ZERO);
+        let mut value = Animated::new(10.);
+
+        value.start_from(0., None);
+        assert_eq!(value.current(), 10.);
+        assert!(!value.is_animating());
+
+        let mut off = linear(100);
+        off.off = true;
+        value.start_from(0., Some((&clock, off)));
+        assert_eq!(value.current(), 10.);
+        assert!(!value.is_animating());
+
+        // Starting where it is changes nothing.
+        value.start_from(10., Some((&clock, linear(100))));
         assert!(!value.is_animating());
     }
 

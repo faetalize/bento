@@ -12,6 +12,7 @@
 // given, within their size limits. Like bento, the host carries out what the engine answers.
 
 import * as prelude from "../prelude/index.js";
+import { SearchField, rank } from "./search.js";
 
 const DEFAULT_MONITOR = { size: { w: 1280, h: 720 }, scale: 1, workspaces: 2 };
 
@@ -31,6 +32,23 @@ function setScoped(by, name, options) {
     }
 }
 const MAX_ROUNDS = 8;
+/** Longest wait that bento schedules a timer for, and most timers `advanceTime` fires in one go. */
+const MAX_TIMER_DELAY = 3_600_000;
+const MAX_TIMERS_FIRED = 10_000;
+
+/** The modifier that each modifier key holds. */
+const MODIFIER_KEYS = {
+    Shift_L: "shift",
+    Shift_R: "shift",
+    Control_L: "ctrl",
+    Control_R: "ctrl",
+    Alt_L: "alt",
+    Alt_R: "alt",
+    Super_L: "super",
+    Super_R: "super",
+};
+
+const ALL_DECORATIONS = { border: true, focusRing: true, shadow: true };
 
 export class TestHost {
     /**
@@ -72,6 +90,14 @@ export class TestHost {
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
         this.toldOptions = null;
+        /**
+         * The running search, which bento owns: `{ scope, field }`, with the scope as the engine
+         * asked for it, `{ kind: "all" }`, `{ kind: "workspace", id }` or `{ kind: "group", id }`.
+         */
+        this.search = null;
+        this.toldSearch = null;
+        /** bento's clipboard, for copying and pasting in the search field. */
+        this.clipboard = "";
         this.trees = new Map();
         this.logs = [];
         this.errors = [];
@@ -80,6 +106,28 @@ export class TestHost {
         this.verdicts = [];
         /** Ops that bento refuses, like a move when the target can't take the window. */
         this.refused = new Set();
+        /** The pointer move or resize that the engine began in the last press, until it's taken. */
+        this.grab = null;
+        /** The clock that timers run by, in milliseconds, and the timers waiting: id to due time. */
+        this.now = 0;
+        this.timers = new Map();
+        /**
+         * The keyboard: whether the engine holds it, and who has the focus that it could take,
+         * `"layout"`, `"lock"` or `"other"`, like a layer surface.
+         */
+        this.keyboard = { grabbed: false, owner: "layout" };
+        this.toldKeyboardAvailable = null;
+        /** Modifiers held, and as the engine was last told. */
+        this.modifiers = { shift: false, ctrl: false, alt: false, super: false };
+        this.toldModifiers = JSON.stringify(this.modifiers);
+        /** Keys pressed while the engine held the keyboard, which the apps never saw pressed, with their text. */
+        this.engineKeys = new Map();
+        /** bento's own binds by key, `{ allowInhibiting }`, and the keys that ran them or reached apps. */
+        this.binds = new Map();
+        this.ranBinds = [];
+        this.appKeys = [];
+        /** Events bento queued for the engine, which it gets when bento flushes. */
+        this.queued = [];
 
         let x = 0;
         for (const given of opts.monitors ?? [{ name: "DP-1" }]) {
@@ -124,7 +172,7 @@ export class TestHost {
             name,
             monitor,
             index: stack.length,
-            camera: { x: 0, y: 0 },
+            camera: { x: 0, y: 0, zoom: 1 },
             focused: null,
         };
         this.workspaces.set(ws.id, ws);
@@ -215,7 +263,9 @@ export class TestHost {
             size: win.size,
             minSize: win.minSize,
             maxSize: win.maxSize,
-            borders: win.borders,
+            // The border isn't there for a window that bento draws none around.
+            borders: win.decorations.border ? win.borders : { w: 0, h: 0 },
+            decorations: win.decorations,
             mode: win.mode,
             urgent: win.urgent,
             rules: win.rules,
@@ -268,7 +318,18 @@ export class TestHost {
             sync.groups = groups;
             this.toldGroups = groups;
         }
+        const search = this.searchInfo();
+        if (JSON.stringify(this.toldSearch) !== JSON.stringify(search)) {
+            if (search !== null) sync.search = search;
+            this.toldSearch = search;
+        }
         sync.focusedMonitor = this.focusedMonitor;
+        // Like bento, the keyboard has one owner: a search that has the keys keeps them.
+        const available = this.keyboard.owner === "layout" && this.search === null;
+        if (this.toldKeyboardAvailable !== available) {
+            sync.keyboardAvailable = available;
+            this.toldKeyboardAvailable = available;
+        }
         const options = this.engineOptions();
         if (JSON.stringify(this.toldOptions) !== JSON.stringify(options)) {
             sync.options = options;
@@ -285,7 +346,9 @@ export class TestHost {
             sync.removedWorkspaces.length === 0 &&
             sync.windows.length === 0 &&
             sync.groups === undefined &&
+            sync.search === undefined &&
             sync.options === undefined &&
+            sync.keyboardAvailable === undefined &&
             sync.focusedMonitor === this.toldFocusedMonitor
         );
     }
@@ -298,7 +361,17 @@ export class TestHost {
             this.told.windows.set(win.id, this.windowInfo(this.windows.get(win.id)));
         }
         this.call(
-            { sync, event: { type: "create", options: this.engineOptions(), savedState: state, windows, focused: this.focused() } },
+            {
+                sync,
+                event: {
+                    type: "create",
+                    options: this.engineOptions(),
+                    savedState: state,
+                    windows,
+                    focused: this.focused(),
+                    modifiers: { ...this.modifiers },
+                },
+            },
             true,
         );
         this.flush();
@@ -339,14 +412,20 @@ export class TestHost {
 
     /** Tells the engine about what changed because of what it did, until it settles. */
     flush() {
+        while (this.queued.length > 0) {
+            this.sendNow(this.queued.shift());
+        }
         for (let round = 0; round < MAX_ROUNDS; round++) {
             this.settleSizes();
+            const searchEnded = this.refreshSearch();
             const sync = this.sync();
-            if (this.isEmptySync(sync)) {
+            if (!searchEnded && this.isEmptySync(sync)) {
                 return;
             }
             this.toldFocusedMonitor = this.focusedMonitor;
-            this.call({ sync, event: { type: "sync" } });
+            // Like bento, a search that lost its scope ends with the sync that follows.
+            const event = searchEnded ? { type: "searchend", pick: false } : { type: "sync" };
+            this.call({ sync, event });
         }
     }
 
@@ -404,9 +483,26 @@ export class TestHost {
                 case "dissolveGroup":
                     this.groups = this.groups.filter((group) => group.id !== op.group);
                     break;
+                case "search":
+                    // The search takes the keys, so the engine stops holding the keyboard.
+                    if (this.keyboard.grabbed) {
+                        this.keyboard.grabbed = false;
+                        this.queued.push({ type: "keyboardrelease", reason: "focus" });
+                    }
+                    this.search = { scope: op.scope, field: new SearchField() };
+                    break;
+                case "endSearch":
+                    this.search = null;
+                    break;
                 default:
                     throw new Error(`unknown op: ${op.op}`);
             }
+        }
+        for (const [id, decorations] of out.decorations ?? []) {
+            this.windows.get(id).decorations = { ...decorations };
+        }
+        if (out.grab !== undefined) {
+            this.grab = out.grab;
         }
         for (const change of out.windows ?? []) {
             const win = this.windows.get(change.id);
@@ -426,7 +522,7 @@ export class TestHost {
             this.workspaces.get(id).focused = focused;
         }
         for (const camera of out.cameras ?? []) {
-            this.workspaces.get(camera.workspace).camera = { x: camera.x, y: camera.y };
+            this.workspaces.get(camera.workspace).camera = { x: camera.x, y: camera.y, zoom: camera.zoom };
             this.lastCamera = camera;
         }
         if (out.monitorFocus !== undefined) {
@@ -435,6 +531,179 @@ export class TestHost {
         if (out.stateChanged) {
             this.stateChanges = (this.stateChanges ?? 0) + 1;
         }
+        for (const timer of out.timers ?? []) {
+            this.timers.set(timer.id, this.now + Math.min(timer.ms, MAX_TIMER_DELAY));
+        }
+        for (const id of out.clearedTimers ?? []) {
+            this.timers.delete(id);
+        }
+        if (out.keyboard === true) {
+            if (this.keyboard.owner === "layout" && this.search === null) {
+                this.keyboard.grabbed = true;
+            } else {
+                // It can't be taken after all, which the engine hears like a release.
+                this.queued.push({ type: "keyboardrelease", reason: this.keyboard.owner === "lock" ? "lock" : "focus" });
+            }
+        } else if (out.keyboard === false) {
+            this.keyboard.grabbed = false;
+        }
+    }
+
+    // The keyboard.
+
+    /** Takes the keyboard from the engine, which hears why. Returns whether it held it. */
+    releaseKeyboard(reason) {
+        if (!this.keyboard.grabbed) return false;
+        this.keyboard.grabbed = false;
+        this.queued.push({ type: "keyboardrelease", reason });
+        return true;
+    }
+
+    /** Moves the keyboard focus to `owner`: the layout, the `"lock"` screen, or `"other"`. */
+    focusKeyboard(owner) {
+        this.keyboard.owner = owner;
+        if (owner === "lock") this.releaseKeyboard("lock");
+        else if (owner === "other") this.releaseKeyboard("focus");
+        this.flush();
+    }
+
+    /** The session locks, or unlocks. */
+    lock(locked = true) {
+        this.focusKeyboard(locked ? "lock" : "layout");
+    }
+
+    /**
+     * One of bento's own binds on `key`. Like binds that apps can inhibit, it doesn't run while
+     * the engine holds the keyboard, unless `allowInhibiting` is false.
+     */
+    bind(key, { allowInhibiting = true } = {}) {
+        this.binds.set(key, { allowInhibiting });
+    }
+
+    /**
+     * Presses a key, with `opts.text` it types (by default the key itself if it's one character,
+     * else nothing) and `opts.repeat`. A modifier key changes the modifiers held. Returns where
+     * the key went: `"bind"`, `"engine"` or `"app"`.
+     */
+    keyDown(key, opts = {}) {
+        const modifier = MODIFIER_KEYS[key];
+        const changes = modifier !== undefined && !this.modifiers[modifier];
+        if (changes) this.modifiers[modifier] = true;
+        const bind = this.binds.get(key);
+        // Like bento, a search or the engine's hold on the keyboard inhibits the binds that can be.
+        const inhibiting = this.keyboard.grabbed || this.search !== null;
+        let went;
+        if (bind !== undefined && !(inhibiting && bind.allowInhibiting)) {
+            this.ranBinds.push(key);
+            went = "bind";
+        } else if (this.search !== null) {
+            went = "search";
+            this.searchKey(key, opts);
+        } else if (this.keyboard.grabbed) {
+            went = "engine";
+            const text = opts.text ?? (key.length === 1 ? key : "");
+            this.engineKeys.set(key, text);
+            const verdict = this.send({
+                type: "keydown",
+                key,
+                text,
+                modifiers: { ...this.modifiers },
+                repeat: opts.repeat ?? false,
+            });
+            if (key === "Escape" && !verdict.prevented) {
+                this.releaseKeyboard("escape");
+                this.flush();
+            }
+        } else {
+            this.appKeys.push(["down", key]);
+            went = "app";
+        }
+        if (changes) this.sendModifiers();
+        return went;
+    }
+
+    /**
+     * Releases a key. A key that the engine got the press of is released to it while it still
+     * holds the keyboard (`"engine"`, else `"none"`), and one pressed before that goes to the apps.
+     */
+    keyUp(key) {
+        const modifier = MODIFIER_KEYS[key];
+        const changes = modifier !== undefined && this.modifiers[modifier];
+        if (changes) this.modifiers[modifier] = false;
+        let went;
+        const text = this.engineKeys.get(key);
+        if (this.engineKeys.delete(key)) {
+            // The apps never saw the press, so they don't get the release either.
+            went = this.keyboard.grabbed ? "engine" : "none";
+            if (this.keyboard.grabbed) {
+                this.send({
+                    type: "keyup",
+                    key,
+                    text,
+                    modifiers: { ...this.modifiers },
+                    repeat: false,
+                });
+            }
+        } else if (this.binds.has(key) && this.ranBinds.includes(key)) {
+            went = "bind";
+        } else {
+            this.appKeys.push(["up", key]);
+            went = "app";
+        }
+        if (changes) this.sendModifiers();
+        return went;
+    }
+
+    /** Presses and releases a key, and returns where the press went. */
+    key(key, opts = {}) {
+        const went = this.keyDown(key, opts);
+        this.keyUp(key);
+        return went;
+    }
+
+    /** Tells the engine the modifiers held if they changed since it was last told. */
+    sendModifiers() {
+        const now = JSON.stringify(this.modifiers);
+        if (now !== this.toldModifiers) {
+            this.toldModifiers = now;
+            this.send({ type: "modifierschange", modifiers: { ...this.modifiers } });
+        }
+    }
+
+    /** Holds exactly these modifiers, like keys that aren't shown here. Missing ones are released. */
+    setModifiers(held) {
+        this.modifiers = { shift: false, ctrl: false, alt: false, super: false, ...held };
+        this.sendModifiers();
+    }
+
+    /** A pointer press that no node of the engine's takes. It ends the engine's hold on the keyboard. */
+    pressOutsideNodes() {
+        this.releaseKeyboard("click");
+        // Like bento, a press anywhere but on the search's field ends the search.
+        this.endSearch(false);
+        this.flush();
+    }
+
+    /**
+     * Lets `ms` milliseconds pass, sending the engine a `timer` event for each timer that comes
+     * due, earliest first, each between other events like in bento.
+     */
+    advanceTime(ms) {
+        const until = this.now + ms;
+        for (let fired = 0; ; fired++) {
+            const next = [...this.timers].filter(([, due]) => due <= until).sort((a, b) => a[1] - b[1] || a[0] - b[0])[0];
+            if (next === undefined) {
+                break;
+            }
+            if (fired >= MAX_TIMERS_FIRED) {
+                throw new Error(`more than ${MAX_TIMERS_FIRED} timers fired in ${ms} ms`);
+            }
+            const [id, due] = next;
+            this.now = Math.max(this.now, due);
+            this.timers.delete(id);
+            this.send({ type: "timer", id });
+        }
+        this.now = until;
     }
 
     moveWorkspace(id, monitor, index) {
@@ -581,6 +850,127 @@ export class TestHost {
         this.flush();
     }
 
+    // Search.
+
+    /** The windows a search over `scope` covers, or null if there's no such group or workspace. */
+    searchWindows(scope) {
+        switch (scope.kind) {
+            case "workspace":
+                if (!this.workspaces.has(scope.id)) return null;
+                return [...this.windows.values()].filter((win) => win.workspace === scope.id);
+            case "group": {
+                const group = this.groups.find((other) => other.id === scope.id);
+                return group === undefined ? null : group.windows.map((id) => this.windows.get(id));
+            }
+            default:
+                return [...this.windows.values()];
+        }
+    }
+
+    /** What the engine is told about the search: the query and the windows that match it. */
+    searchInfo() {
+        const windows = this.search === null ? null : this.searchWindows(this.search.scope);
+        if (windows === null) return null;
+        const query = this.search.field.text;
+        const hits = windows
+            .map((win) => [win.id, rank(query, win.title, win.appId)])
+            .filter(([, matched]) => matched !== null);
+        return { query, hits };
+    }
+
+    /** Ends a search whose scope is gone, and returns whether there was one. */
+    refreshSearch() {
+        if (this.search === null || this.searchWindows(this.search.scope) !== null) {
+            return false;
+        }
+        this.search = null;
+        return true;
+    }
+
+    /** Types text in the search's field, a character at a time. */
+    type(text) {
+        for (const c of text) {
+            this.editSearch((field) => field.insert(c));
+        }
+    }
+
+    /**
+     * Presses a key while the search runs: `"Return"` picks the best match and `"Escape"` cancels,
+     * `"BackSpace"`, `"Delete"`, `"Left"`, `"Right"`, `"Home"` and `"End"` edit and move, with
+     * `shift` selecting; with `ctrl`, `"a"` selects all and `"c"`, `"x"` and `"v"` use the
+     * clipboard.
+     */
+    searchKey(name, { shift = false, ctrl = false } = {}) {
+        if (ctrl) {
+            const field = this.search.field;
+            switch (name) {
+                case "a":
+                    return this.editSearch((f) => f.selectAll());
+                case "c":
+                    this.clipboard = field.selected ?? this.clipboard;
+                    return;
+                case "x":
+                    if (field.selected !== null) {
+                        this.clipboard = field.selected;
+                        this.editSearch((f) => f.backspace());
+                    }
+                    return;
+                case "v":
+                    return this.editSearch((f) => f.insert(this.clipboard));
+                default:
+                    return;
+            }
+        }
+        switch (name) {
+            case "Return":
+                return this.endSearch(true);
+            case "Escape":
+                return this.endSearch(false);
+            case "BackSpace":
+                return this.editSearch((f) => f.backspace());
+            case "Delete":
+                return this.editSearch((f) => f.delete());
+            case "Left":
+                return this.editSearch((f) => f.left(shift));
+            case "Right":
+                return this.editSearch((f) => f.right(shift));
+            case "Home":
+                return this.editSearch((f) => f.home(shift));
+            case "End":
+                return this.editSearch((f) => f.end(shift));
+            default:
+                // Like bento, a key that types nothing and edits nothing does nothing.
+                if (name.length === 1) {
+                    return this.editSearch((f) => f.insert(name));
+                }
+                return;
+        }
+    }
+
+    editSearch(edit) {
+        if (this.search === null) return;
+        edit(this.search.field);
+        this.flush();
+    }
+
+    /**
+     * Ends the search like bento does for Enter, with `pick`, and Escape: the engine hears the
+     * latest matches and then that it ended, and bento activates the window it picked.
+     */
+    endSearch(pick) {
+        const ending = this.search;
+        if (ending === null) return;
+        const result = this.send({ type: "searchend", pick });
+        // Like bento, a search the engine started as this one ended stays.
+        if (this.search === ending) {
+            this.search = null;
+        }
+        if (pick && result.picked !== null) {
+            this.activate(result.picked);
+        }
+        this.flush();
+    }
+
     // Windows.
 
     /** The window that has keyboard focus. */
@@ -606,6 +996,7 @@ export class TestHost {
             minSize: opts.minSize ?? { w: 0, h: 0 },
             maxSize: opts.maxSize ?? { w: 0, h: 0 },
             borders: opts.borders ?? { w: 0, h: 0 },
+            decorations: { ...ALL_DECORATIONS },
             mode: opts.mode ?? "normal",
             urgent: false,
             rules: opts.rules ?? {},
@@ -644,6 +1035,8 @@ export class TestHost {
     close(id, reason = "close") {
         this.flush();
         const win = this.windows.get(id);
+        // What the engine turned off around a window that leaves it comes back on.
+        win.decorations = { ...ALL_DECORATIONS };
         this.leaveGroup(id);
         this.windows.delete(id);
         this.told.windows.delete(id);
@@ -802,10 +1195,10 @@ export class TestHost {
     /** Drags a window over a workspace: `positions` are where its pointer goes, then drops it. */
     drag(id, workspace, positions, drop = true) {
         const win = this.windows.get(id);
-        const info = this.windowInfo(win);
         const from = win.workspace;
         const rect = (pointer) => ({ x: pointer.x - 10, y: pointer.y - 10, w: 20, h: 20 });
         this.close(id, "drag");
+        const info = this.windowInfo(win);
         this.windows.set(id, win);
         positions.forEach((pointer, i) => {
             this.send({
@@ -873,6 +1266,7 @@ export class TestHost {
 
     /** Sends a pointer event to a node, like a click on what the engine drew. */
     pointer(node, event = "click", init = {}) {
+        if (event === "pointerdown") this.grab = null;
         this.send({
             type: "pointer",
             node,
@@ -885,14 +1279,36 @@ export class TestHost {
     }
 
     /**
+     * The pointer move or resize that the engine began in the last press, as `{ kind: "move",
+     * window }` or `{ kind: "resize", window, edges }`, or null. Taking it is what the input code
+     * does to start the grab.
+     */
+    takeGrab() {
+        const grab = this.grab;
+        this.grab = null;
+        return grab;
+    }
+
+    /**
      * Saves the engine's state and creates the engine again, like reloading its file. With
      * `{ state: false }` the engine starts without saved state, like a different engine took over.
      */
     reload({ state: keep = true } = {}) {
         const state = keep ? JSON.parse(prelude.saveAll()) : null;
+        // What the old instance turned off around windows comes back on, since what it drew is gone.
+        for (const win of this.windows.values()) win.decorations = { ...ALL_DECORATIONS };
+        this.grab = null;
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
         this.toldOptions = null;
+        this.timers.clear();
+        // The engine that held the keyboard is gone, so nobody is told.
+        this.keyboard.grabbed = false;
+        this.queued = [];
+        this.toldKeyboardAvailable = null;
+        // The new instance has no search.
+        this.search = null;
+        this.toldSearch = null;
         for (const [id, tree] of this.trees) {
             tree.reset([...this.windows.values()].filter((win) => win.workspace === id).map((win) => win.id));
         }

@@ -3,6 +3,10 @@
 use serde::{Deserialize, Serialize};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::layout::search::Scope;
+use crate::layout::tile::Decorations;
+use crate::utils::ResizeEdge;
+
 /// Largest coordinate or size bento accepts from a layout, to keep arithmetic sane.
 const MAX_COORD: f64 = 1e7;
 
@@ -86,6 +90,8 @@ pub struct WindowInfo {
     pub min_size: Wh,
     pub max_size: Wh,
     pub borders: Wh,
+    /// Which of bento's border, focus ring and shadow the layout left on.
+    pub decorations: Decorations,
     pub mode: Mode,
     pub urgent: bool,
     /// The layout's window rules that match the window, resolved.
@@ -137,6 +143,14 @@ pub struct Struts {
     pub bottom: f64,
 }
 
+/// Where a workspace's camera is going, if it's moving, or where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct CameraInfo {
+    pub x: f64,
+    pub y: f64,
+    pub zoom: f64,
+}
+
 /// What bento tells the layout about a workspace.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,8 +162,7 @@ pub struct WorkspaceInfo {
     /// Place in the monitor's stack, from the top.
     pub index: usize,
     pub view: ViewInfo,
-    /// Where the camera is going, if it's moving.
-    pub camera: Xy,
+    pub camera: CameraInfo,
     pub config: ConfigInfo,
     /// The engine's options for the workspace: the top-level ones with its output's and its own on
     /// top.
@@ -166,6 +179,14 @@ pub struct GroupInfo {
     pub active: u64,
 }
 
+/// What bento tells the layout about the running search.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SearchInfo {
+    pub query: String,
+    /// The windows that match the query, with how well: `(window, rank)`, the greater the better.
+    pub hits: Vec<(u64, u8)>,
+}
+
 /// What changed about the session since the layout was last told, which the prelude applies
 /// before it handles an event.
 #[derive(Debug, Default, Serialize)]
@@ -179,6 +200,9 @@ pub struct SyncInfo {
     /// Every group, when they changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<GroupInfo>>,
+    /// The running search, when its query or matches changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchInfo>,
     /// Name of the monitor with keyboard focus.
     pub focused_monitor: Option<String>,
     /// The layout's options, when they changed.
@@ -187,6 +211,9 @@ pub struct SyncInfo {
     /// Whether the focused monitor changed since the layout was last told.
     #[serde(skip)]
     pub focus_changed: bool,
+    /// Whether the layout can take the keyboard, when that changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyboard_available: Option<bool>,
 }
 
 impl SyncInfo {
@@ -198,7 +225,9 @@ impl SyncInfo {
             && self.removed_workspaces.is_empty()
             && self.windows.is_empty()
             && self.groups.is_none()
+            && self.search.is_none()
             && self.options.is_none()
+            && self.keyboard_available.is_none()
             && !self.focus_changed
     }
 
@@ -234,6 +263,12 @@ pub struct Output {
     pub focus: Vec<(u64, Option<u64>)>,
     #[serde(default)]
     pub cameras: Vec<CameraChange>,
+    /// What the layout turned on or off around windows.
+    #[serde(default)]
+    pub decorations: Vec<(u64, Decorations)>,
+    /// The pointer move or resize that the layout began, while handling a press.
+    #[serde(default)]
+    pub grab: Option<Grab>,
     /// The monitor that has keyboard focus.
     #[serde(default, rename = "monitorFocus")]
     pub monitor_focus: Option<String>,
@@ -245,6 +280,22 @@ pub struct Output {
     /// Whether the layout threw while it started.
     #[serde(default, rename = "startFailed")]
     pub start_failed: bool,
+    /// Timers that the layout started.
+    #[serde(default)]
+    pub timers: Vec<TimerStart>,
+    /// Timers that the layout cleared, which it had started in an earlier call.
+    #[serde(default, rename = "clearedTimers")]
+    pub cleared_timers: Vec<u64>,
+    /// Whether the layout holds the keyboard, if it took it or gave it back.
+    #[serde(default)]
+    pub keyboard: Option<bool>,
+}
+
+/// A timer that the layout asked for: the event `timer` with its `id` comes after `ms`.
+#[derive(Debug, Deserialize)]
+pub struct TimerStart {
+    pub id: u64,
+    pub ms: u64,
 }
 
 /// A change to the workspace structure or the groups that the layout asked for.
@@ -288,6 +339,38 @@ pub enum Op {
     DissolveGroup {
         group: u64,
     },
+    Search {
+        scope: Scope,
+    },
+    /// The layout ended its search, which it was told about already.
+    EndSearch,
+}
+
+/// A move or resize with the pointer that the layout asks for, from a press on one of its nodes.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Grab {
+    Move { window: u64 },
+    Resize { window: u64, edges: Edges },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Edges {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+
+impl Edges {
+    pub fn to_resize_edge(self) -> ResizeEdge {
+        let mut edges = ResizeEdge::empty();
+        edges.set(ResizeEdge::LEFT, self.left);
+        edges.set(ResizeEdge::RIGHT, self.right);
+        edges.set(ResizeEdge::TOP, self.top);
+        edges.set(ResizeEdge::BOTTOM, self.bottom);
+        edges
+    }
 }
 
 /// A change to a workspace's tree of drawn nodes, see `prelude/nodes.js`.
@@ -328,6 +411,7 @@ pub struct CameraChange {
     pub workspace: u64,
     pub x: f64,
     pub y: f64,
+    pub zoom: f64,
     pub animate: bool,
     /// Initial velocity of the animation, after a swipe.
     #[serde(default)]
@@ -343,4 +427,53 @@ pub struct Verdict {
     /// Whether any listener took the event on, for events that are refused otherwise.
     #[serde(default)]
     pub handled: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn the_layout_starts_and_ends_searches() {
+        let op = |value| serde_json::from_value::<Op>(value).unwrap();
+
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "all" } })),
+            Op::Search { scope: Scope::All }
+        ));
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "workspace", "id": 4 } })),
+            Op::Search {
+                scope: Scope::Workspace { id: 4 }
+            }
+        ));
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "group", "id": 3 } })),
+            Op::Search {
+                scope: Scope::Group { id: 3 }
+            }
+        ));
+        assert!(matches!(op(json!({ "op": "endSearch" })), Op::EndSearch));
+    }
+
+    #[test]
+    fn the_layout_is_told_the_query_and_how_well_windows_match() {
+        let sync = SyncInfo {
+            search: Some(SearchInfo {
+                query: String::from("fire"),
+                hits: vec![(3, 4), (1, 3)],
+            }),
+            ..SyncInfo::default()
+        };
+        assert!(!sync.is_empty());
+        assert_eq!(
+            serde_json::to_value(&sync).unwrap()["search"],
+            json!({ "query": "fire", "hits": [[3, 4], [1, 3]] })
+        );
+
+        // A sync without one leaves it out.
+        assert!(serde_json::to_value(SyncInfo::default()).unwrap()["search"].is_null());
+    }
 }

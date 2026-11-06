@@ -22,14 +22,16 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexProgram};
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Serial, Size};
 
 use self::protocol::{
-    CameraChange, ConfigInfo, Mode, Rect, Struts as StrutsInfo, ViewInfo, Wh, WindowChange,
-    WindowInfo, WorkspaceInfo, Xy,
+    CameraChange, CameraInfo, ConfigInfo, Mode, Rect, Struts as StrutsInfo, ViewInfo, Wh,
+    WindowChange, WindowInfo, WorkspaceInfo, Xy,
 };
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
-use super::surfaces::{Drawn, NodeTransform, RenderItem, SurfaceRenderElement, Tree, WindowSlot};
-use super::tile::{PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
-use super::workspace::InteractiveResize;
+use super::surfaces::{
+    Drawn, Input, RenderItem, SurfaceRenderElement, Tree, WindowHit, WindowSlot,
+};
+use super::tile::{Decorations, PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
+use super::workspace::{resize_edges_in_tile, InteractiveResize};
 use super::{
     ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, LayoutElementRenderElement,
     Options, RemovedTile,
@@ -52,6 +54,10 @@ mod protocol;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
+
+/// Smallest and largest zoom that bento keeps a camera at, to keep arithmetic sane.
+const MIN_ZOOM: f64 = 0.01;
+const MAX_ZOOM: f64 = 100.;
 
 /// Space where the tiling layout places windows.
 #[derive(Debug)]
@@ -114,7 +120,7 @@ pub struct TilingSpace<W: LayoutElement> {
 niri_render_elements! {
     TilingSpaceRenderElement<R> => {
         Tile = TileRenderElement<R>,
-        // A tile that the tree scales or moves.
+        // A tile that the tree scales or moves, or that the camera's zoom does.
         Transformed = RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
         // A tile that the tree cuts off.
         Clipped = CropRenderElement<
@@ -122,7 +128,11 @@ niri_render_elements! {
         >,
         // What the layout draws besides windows.
         Surface = SurfaceRenderElement,
+        // What the layout draws besides windows, seen through the camera's zoom.
+        ZoomedSurface = RescaleRenderElement<SurfaceRenderElement>,
         ClosingWindow = ClosingWindowRenderElement,
+        // A closing window, seen through the camera's zoom.
+        ZoomedClosingWindow = RescaleRenderElement<ClosingWindowRenderElement>,
     }
 }
 
@@ -142,11 +152,12 @@ struct TileData {
     maximized_under_fullscreen: bool,
 }
 
-/// Position of the view on the canvas.
+/// Position of the view on the canvas, and how large the canvas is drawn.
 #[derive(Debug)]
 struct Camera {
     x: Axis,
     y: Axis,
+    zoom: Axis,
     /// Drag-and-drop scrolling moving the camera horizontally.
     gesture: Option<CameraGesture>,
 }
@@ -243,6 +254,7 @@ impl Camera {
         self.gesture.is_none()
             && matches!(self.x, Axis::Static(_))
             && matches!(self.y, Axis::Static(_))
+            && matches!(self.zoom, Axis::Static(_))
     }
 }
 
@@ -257,6 +269,9 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
+        let mut tree = Tree::new(id, clock.clone(), options.animations.clone());
+        tree.set_icon_theme(&options.icon_theme);
+
         Self {
             tiles: Vec::new(),
             data: Vec::new(),
@@ -264,9 +279,10 @@ impl<W: LayoutElement> TilingSpace<W> {
             camera: Camera {
                 x: Axis::Static(0.),
                 y: Axis::Static(0.),
+                zoom: Axis::Static(1.),
                 gesture: None,
             },
-            tree: Tree::new(id, clock.clone(), options.animations.clone()),
+            tree,
             pointer: Point::from((0., 0.)),
             swipe: None,
             drop: None,
@@ -297,6 +313,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
 
         self.tree.set_animations(options.animations.clone());
+        self.tree.set_icon_theme(&options.icon_theme);
 
         self.view_size = view_size;
         self.working_area = working_area;
@@ -314,6 +331,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn advance_animations(&mut self) {
         self.camera.x.advance();
         self.camera.y.advance();
+        self.camera.zoom.advance();
 
         for tile in &mut self.tiles {
             tile.advance_animations();
@@ -342,7 +360,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
-        let view_rect = Rectangle::from_size(self.view_size);
+        // The view shows `view_size / zoom` of the canvas.
+        let view_rect = Rectangle::from_size(self.view_size.downscale(self.camera.zoom.current()));
         let active = self.active;
         let camera = self.camera.current();
         for (tile, data) in zip(&mut self.tiles, &self.data) {
@@ -560,6 +579,16 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.camera.target()
     }
 
+    /// How large the canvas is drawn: the camera's zoom as it is now.
+    pub fn camera_zoom(&self) -> f64 {
+        self.camera.zoom.current()
+    }
+
+    /// The point of the canvas that is at `pos`, relative to the view.
+    pub fn canvas_pos(&self, pos: Point<f64, Logical>) -> Point<f64, Logical> {
+        pos.downscale(self.camera_zoom()) + self.camera.current()
+    }
+
     /// What bento tells the layout about the workspace.
     pub(super) fn workspace_info(
         &self,
@@ -584,7 +613,14 @@ impl<W: LayoutElement> TilingSpace<W> {
                 working_area: Rect::from_rect(self.parent_area),
                 scale: self.scale,
             },
-            camera: Xy::from_point(self.camera.target()),
+            camera: {
+                let target = self.camera.target();
+                CameraInfo {
+                    x: target.x,
+                    y: target.y,
+                    zoom: self.camera.zoom.target(),
+                }
+            },
             config: ConfigInfo {
                 gaps: self.options.layout.gaps,
                 struts: StrutsInfo {
@@ -620,6 +656,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 w: borders,
                 h: tile.tile_height_for_window_height(0.),
             },
+            decorations: tile.decorations,
             mode: mode_of(win.pending_sizing_mode()),
             urgent: win.is_urgent(),
             rules: engine::rules_json(&win.rules().engine),
@@ -706,8 +743,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         let to = |v: f64| v.clamp(-1e7, 1e7);
         let x = animate(config, apply.camera_velocity);
         let y = animate(config, 0.);
+        let zoom = animate(config, 0.);
         self.camera.x.move_to(to(camera.x), x);
         self.camera.y.move_to(to(camera.y), y);
+        self.camera
+            .zoom
+            .move_to(camera.zoom.clamp(MIN_ZOOM, MAX_ZOOM), zoom);
     }
 
     /// Focuses a window, as the layout says.
@@ -719,6 +760,33 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub(super) fn set_window_data(&mut self, id: u64, value: Value, layout_name: &str) {
         if let Some(idx) = self.idx_of_layout_id(id) {
             self.tiles[idx].layout_data = Some((layout_name.to_owned(), value));
+        }
+    }
+
+    /// Turns the border, focus ring and shadow around a window on or off, as the layout says.
+    pub(super) fn set_decorations(&mut self, id: u64, decorations: Decorations) {
+        let Some(idx) = self.idx_of_layout_id(id) else {
+            return;
+        };
+
+        let tile = &mut self.tiles[idx];
+        if !tile.set_decorations(decorations) {
+            return;
+        }
+
+        // The border is part of the size that the window is asked for, so with it gone or back
+        // the window is asked again, even if the layout places it where it already is.
+        let data = &self.data[idx];
+        if let (Some(rect), Mode::Normal) = (data.rect, data.mode) {
+            tile.request_tile_size(rect.size, true, None);
+        }
+    }
+
+    /// Turns bento's border, focus ring and shadow back on around every window.
+    pub(super) fn reset_decorations(&mut self) {
+        let ids: Vec<u64> = self.data.iter().map(|data| data.id).collect();
+        for id in ids {
+            self.set_decorations(id, Decorations::default());
         }
     }
 
@@ -773,10 +841,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         let tile = &mut self.tiles[idx];
         let data = &mut self.data[idx];
 
+        // A window whose node has a `rect` transition moves as that says, instead of with the
+        // configured window movement.
+        let transition = self.tree.window_rect_transition(data.id);
+
         if let Some(prev) = data.rect {
             if animate && prev.loc != rect.loc {
-                let config = apply
-                    .anim
+                let config = transition
+                    .or(apply.anim)
                     .unwrap_or(self.options.animations.window_movement.0);
                 tile.animate_move_from_with_config(prev.loc - rect.loc, config);
             }
@@ -798,6 +870,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             let pos = rect.loc - camera + tile.render_offset();
             let config = moved
                 .config
+                .or(transition)
                 .unwrap_or(self.options.animations.window_movement.0);
             tile.animate_move_from_with_config(moved.from - pos, config);
             if moved.between_workspaces {
@@ -882,7 +955,13 @@ impl<W: LayoutElement> TilingSpace<W> {
         activate: bool,
         rect: Rectangle<f64, Logical>,
     ) {
-        let rect = Rectangle::new(rect.loc + self.camera.target(), rect.size);
+        // The floating window was on the view as it is, so on the canvas it's as large as the
+        // camera's zoom makes it.
+        let zoom = self.camera.zoom.target();
+        let rect = Rectangle::new(
+            rect.loc.downscale(zoom) + self.camera.target(),
+            rect.size.downscale(zoom),
+        );
         self.add_tile_with(tile, activate, None, None, Some(("tile", rect)));
     }
 
@@ -1017,6 +1096,9 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             self.tree.remove_window(data.id);
             tile.engine_workspace = None;
+            // What the layout turned off around the window is its own drawing's business, which
+            // the window leaves.
+            tile.set_decorations(Decorations::default());
             host::queue_with_transaction(
                 json!({ "type": "windowremove", "id": data.id, "reason": reason }),
                 transaction,
@@ -1205,32 +1287,45 @@ impl<W: LayoutElement> TilingSpace<W> {
         push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
     ) {
         let scale = Scale::from(self.scale);
+        let zoom = self.camera.zoom.current();
 
         // Draw the closing windows on top of the other windows.
         if layer.is_normal() {
             let view_rect = Rectangle::from_size(self.view_size);
             for closing in self.closing_windows.iter().rev() {
                 let elem = closing.render(ctx.as_gles(), view_rect, scale);
-                push(elem.into());
+                if zoom == 1. {
+                    push(elem.into());
+                } else {
+                    // They're in view coordinates, which the zoom scales around the view's origin.
+                    let origin = Point::<i32, Physical>::from((0, 0));
+                    push(RescaleRenderElement::from_element(elem, origin, zoom).into());
+                }
             }
         }
 
         // The tree has the nodes from the bottom to the top, and elements go from the top.
         let camera = self.camera.current();
         let mut items = Vec::new();
+        // The tree draws the canvas as it is, and the zoom scales that around the view's origin,
+        // so the tree draws as much of the canvas as the zoomed view shows.
         self.tree.render_elements(
             ctx.renderer,
             Point::from((-camera.x, -camera.y)),
             self.scale,
-            self.view_size,
+            self.view_size.downscale(zoom),
             &mut |item| items.push(item),
         );
 
+        let origin = Point::<i32, Physical>::from((0, 0));
         for item in items.into_iter().rev() {
             match item {
                 RenderItem::Element(elem) => {
-                    if layer.is_normal() {
+                    if !layer.is_normal() {
+                    } else if zoom == 1. {
                         push(elem.into());
+                    } else {
+                        push(RescaleRenderElement::from_element(elem, origin, zoom).into());
                     }
                 }
                 RenderItem::Window(slot) => {
@@ -1275,23 +1370,37 @@ impl<W: LayoutElement> TilingSpace<W> {
 
         // The tree scales a window around the centre of where the layout placed it.
         let rect = data.rect.unwrap_or_default();
-        let transform = drawn.transform_around(rect);
-        if transform.scale <= 0. {
+        let map = TileMap::new(drawn, rect, tile_pos, camera, self.camera.zoom.current());
+        if map.scale <= 0. {
             return;
         }
-        if transform == NodeTransform::IDENTITY && drawn.clip.is_none() {
+        if map.is_identity() {
             tile.render_with_opacity(
                 ctx.r(),
                 tile_pos,
                 xray_pos,
                 focus_ring,
                 opacity,
+                true,
                 &mut |elem| push(elem.into()),
             );
             return;
         }
 
-        let placement = Placement::new(drawn, rect, transform, tile_pos, camera, self.scale);
+        let placement = Placement::new(&map, self.scale);
+
+        // Popups belong above the window, so a clip that cuts the window doesn't cut them. They
+        // still go where the window goes.
+        let clipped = drawn.clip.is_some();
+        if clipped {
+            let uncut = placement.uncropped();
+            tile.render_popups(ctx.r(), tile_pos, xray_pos, opacity, &mut |elem| {
+                if let Some(elem) = uncut.place(elem) {
+                    push(elem);
+                }
+            });
+        }
+
         let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
         tile.render_with_opacity(
             ctx.r(),
@@ -1299,6 +1408,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             xray_pos,
             focus_ring,
             opacity,
+            !clipped,
             &mut |elem| {
                 let elem = placement.round_corners(elem, clip_shader.as_ref());
                 if let Some(elem) = placement.place(elem) {
@@ -1308,26 +1418,153 @@ impl<W: LayoutElement> TilingSpace<W> {
         );
     }
 
+    /// What's under the pointer at `pos`, relative to the view, among the windows that the layout
+    /// draws: the topmost window that takes the pointer from the app, or one that the engine took
+    /// it for.
+    fn under(&self, pos: Point<f64, Logical>) -> Under<'_, W> {
+        let camera = self.camera.current();
+        for (idx, (tile, data)) in zip(&self.tiles, &self.data).enumerate() {
+            if !data.visible {
+                continue;
+            }
+            match self.tree.window_input(data.id) {
+                Input::None => (),
+                Input::Engine => {
+                    if self.tile_map(idx, camera).is_some_and(|map| {
+                        map.contains(
+                            pos,
+                            Rectangle::new(self.tile_pos(idx, camera), tile.tile_size()),
+                        )
+                    }) {
+                        return Under::Engine;
+                    }
+                }
+                Input::App => {
+                    if let Some((hit, local)) = self.hit_tile(idx, camera, pos) {
+                        return Under::Window(tile, hit, local);
+                    }
+                }
+            }
+        }
+        Under::Nothing
+    }
+
+    /// Where a tile is relative to the view, not counting what the layout does to it.
+    fn tile_pos(&self, idx: usize, camera: Point<f64, Logical>) -> Point<f64, Logical> {
+        render_pos(&self.tiles[idx], &self.data[idx], camera, self.scale)
+    }
+
+    /// How the tile at `idx` is put on the view.
+    fn tile_map(&self, idx: usize, camera: Point<f64, Logical>) -> Option<TileMap> {
+        let data = &self.data[idx];
+        let drawn = self.tree.window_drawn(data.id)?;
+        Some(TileMap::new(
+            &drawn,
+            data.rect.unwrap_or_default(),
+            self.tile_pos(idx, camera),
+            camera,
+            self.camera.zoom.current(),
+        ))
+    }
+
+    /// Whether the pointer at `pos`, relative to the view, is on the tile at `idx` where it's
+    /// drawn, for the app. Returns the hit, which says where the window's buffer is so that `pos`
+    /// is the pointer's place in it, and the pointer's place in the tile before the layout moves
+    /// it.
+    fn hit_tile(
+        &self,
+        idx: usize,
+        camera: Point<f64, Logical>,
+        pos: Point<f64, Logical>,
+    ) -> Option<(HitType, Point<f64, Logical>)> {
+        let tile = &self.tiles[idx];
+        let tile_pos = self.tile_pos(idx, camera);
+        let map = self.tile_map(idx, camera)?;
+        if map.is_identity() {
+            let (_, hit) = HitType::hit_tile(tile, tile_pos, pos)?;
+            return Some((hit, pos - tile_pos));
+        }
+
+        if !map.clip_contains(pos) {
+            return None;
+        }
+        let local = map.to_tile(pos)?;
+        let (_, hit) = HitType::hit_tile(tile, tile_pos, local)?;
+        let hit = match hit {
+            HitType::Input { win_pos } => HitType::Input {
+                win_pos: pos - (local - win_pos),
+            },
+            HitType::Activate => HitType::Activate,
+        };
+        Some((hit, local - tile_pos))
+    }
+
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
-        self.tiles_with_render_positions()
-            .filter(|(_, _, visible)| *visible)
-            .find_map(|(tile, tile_pos, _)| HitType::hit_tile(tile, tile_pos, pos))
+        match self.under(pos) {
+            Under::Window(tile, hit, _) => Some((tile.window(), hit)),
+            Under::Engine | Under::Nothing => None,
+        }
+    }
+
+    /// Where `pos`, relative to the view, is in a window's tile, if the layout draws the tile
+    /// somewhere else than where it placed it: moved, scaled or zoomed.
+    pub fn pos_within_tile(
+        &self,
+        id: &W::Id,
+        pos: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        let idx = self.idx_of(id)?;
+        let camera = self.camera.current();
+        let map = self.tile_map(idx, camera)?;
+        if map.is_identity() {
+            return None;
+        }
+        Some(map.to_tile(pos)? - self.tile_pos(idx, camera))
+    }
+
+    /// The edges of the window under `pos`, relative to the view, that a pointer there would
+    /// resize from.
+    pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
+        match self.under(pos) {
+            Under::Window(tile, _, local) => Some(resize_edges_in_tile(tile.tile_size(), local)),
+            Under::Engine | Under::Nothing => None,
+        }
     }
 
     /// The interactive node that the layout drew under `pos`, relative to the view, with the
-    /// pointer's position on the canvas. A window that's above a node takes the pointer from it.
+    /// pointer's position on the canvas. A window that takes the pointer from the app and is above
+    /// a node takes it from the node, and a window whose input goes to the engine is a node.
+    /// Whether the search's field is drawn at `pos`, a point on the view.
+    pub fn is_on_search_field(&self, pos: Point<f64, Logical>) -> bool {
+        self.tree.search_field_contains(self.canvas_pos(pos))
+    }
+
     pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
         let camera = self.camera.current();
-        let covers = |window: u64| {
+        let window = |window: u64| {
             let Some(idx) = self.idx_of_layout_id(window) else {
-                return false;
+                return WindowHit::Through;
             };
-            let tile_pos = render_pos(&self.tiles[idx], &self.data[idx], camera, self.scale);
-            self.data[idx].visible && HitType::hit_tile(&self.tiles[idx], tile_pos, pos).is_some()
+            if !self.data[idx].visible {
+                return WindowHit::Through;
+            }
+            match self.tree.window_input(window) {
+                Input::None => WindowHit::Through,
+                Input::Engine => {
+                    let area =
+                        Rectangle::new(self.tile_pos(idx, camera), self.tiles[idx].tile_size());
+                    match self.tile_map(idx, camera) {
+                        Some(map) if map.contains(pos, area) => WindowHit::Node,
+                        _ => WindowHit::Through,
+                    }
+                }
+                Input::App if self.hit_tile(idx, camera, pos).is_some() => WindowHit::Covers,
+                Input::App => WindowHit::Through,
+            }
         };
 
-        let canvas = pos + camera;
-        let node = self.tree.hit_with(canvas, &covers)?;
+        let canvas = self.canvas_pos(pos);
+        let node = self.tree.hit_with(canvas, &window)?;
         Some((node, canvas))
     }
 
@@ -1357,10 +1594,11 @@ impl<W: LayoutElement> TilingSpace<W> {
         tile: &Tile<W>,
         tile_pos: Point<f64, Logical>,
     ) -> TiledDrop {
-        let camera = self.camera.current();
+        // The dragged tile is drawn at its size on the view, which shows the canvas zoomed.
+        let zoom = self.camera.zoom.current();
         TiledDrop {
-            pointer: pos + camera,
-            rect: Rectangle::new(tile_pos + camera, tile.tile_size()),
+            pointer: self.canvas_pos(pos),
+            rect: Rectangle::new(self.canvas_pos(tile_pos), tile.tile_size().downscale(zoom)),
         }
     }
 
@@ -1637,6 +1875,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
         let active = self.active;
         for (tile, data) in zip(&mut self.tiles, &self.data) {
+            let decorations = tile.decorations;
             let win = tile.window_mut();
 
             win.set_floating(false);
@@ -1654,7 +1893,8 @@ impl<W: LayoutElement> TilingSpace<W> {
                 .map(|resize| resize.data);
             win.set_interactive_resize(resize_data);
 
-            let border = self.options.layout.border.merged_with(&win.rules().border);
+            let mut border = self.options.layout.border.merged_with(&win.rules().border);
+            border.off |= !decorations.border;
             let gaps = self.options.layout.gaps;
             win.set_bounds(toplevel_bounds(border, self.working_area.size, gaps));
 
@@ -1777,11 +2017,85 @@ fn render_pos<W: LayoutElement>(
     pos.to_physical_precise_round(scale).to_logical(scale)
 }
 
-/// How the tree puts a tile on the view: the physical pixels that its elements are scaled around,
-/// moved and cut by.
+/// Where a tile ends up on the view, with everything that's done to it: the tree's transform and
+/// clip, and the camera's zoom. Coordinates are relative to the view, in logical pixels.
+struct TileMap {
+    /// The centre of the tile's rect, which the tree scales it around, before the zoom.
+    pivot: Point<f64, Logical>,
+    /// The tree's scale times the zoom.
+    scale: f64,
+    /// How far the tile moves after it's scaled around the pivot: the tree's move, scaled by the
+    /// zoom, and the zoom moving the pivot itself.
+    offset: Point<f64, Logical>,
+    /// What cuts the tile off, where it ends up, and its corner radius.
+    clip: Option<(Rectangle<f64, Logical>, f64)>,
+}
+
+impl TileMap {
+    /// The tile is at `tile_pos` before the tree and the zoom move it, and its rect on the canvas
+    /// is `rect`. The camera is at `camera` on the canvas.
+    fn new(
+        drawn: &Drawn,
+        rect: Rectangle<f64, Logical>,
+        tile_pos: Point<f64, Logical>,
+        camera: Point<f64, Logical>,
+        zoom: f64,
+    ) -> Self {
+        // The tree scales a window around the centre of where the layout placed it.
+        let transform = drawn.transform_around(rect);
+        let pivot = tile_pos + rect.size.downscale(2.).to_point();
+        let moved = Point::from((transform.x, transform.y));
+
+        // The zoom scales the view around its origin: `zoom * (pivot + scale * (p - pivot) +
+        // moved)` is a scale around the pivot, then a move.
+        Self {
+            pivot,
+            scale: transform.scale * zoom,
+            offset: pivot.upscale(zoom - 1.) + moved.upscale(zoom),
+            clip: drawn.clip.map(|clip| {
+                (
+                    Rectangle::new(
+                        (clip.rect.loc - camera).upscale(zoom),
+                        clip.rect.size.upscale(zoom),
+                    ),
+                    clip.radius * zoom,
+                )
+            }),
+        }
+    }
+
+    /// Whether the tile is where it was placed, at its size, and nothing cuts it.
+    fn is_identity(&self) -> bool {
+        self.scale == 1. && self.offset == Point::from((0., 0.)) && self.clip.is_none()
+    }
+
+    /// Whether `point` isn't cut off by the clip.
+    fn clip_contains(&self, point: Point<f64, Logical>) -> bool {
+        self.clip.is_none_or(|(clip, _)| clip.contains(point))
+    }
+
+    /// Where `point` is on the tile, as it is before the tree and the zoom move it, or `None` if
+    /// it's scaled to nothing.
+    fn to_tile(&self, point: Point<f64, Logical>) -> Option<Point<f64, Logical>> {
+        (self.scale > 0.)
+            .then(|| self.pivot + (point - self.offset - self.pivot).downscale(self.scale))
+    }
+
+    /// Whether `point` is on `area`, a rect of the tile before it's moved, and not cut off.
+    fn contains(&self, point: Point<f64, Logical>, area: Rectangle<f64, Logical>) -> bool {
+        self.clip_contains(point)
+            && self
+                .to_tile(point)
+                .is_some_and(|local| area.contains(local))
+    }
+}
+
+/// How a tile is put on the view: the physical pixels that its elements are scaled around, moved
+/// and cut by.
+#[derive(Clone, Copy)]
 struct Placement {
     output_scale: f64,
-    /// The centre of the tile's rect, which the tree scales it around.
+    /// The centre of the tile's rect, which the tile is scaled around.
     pivot: Point<i32, Physical>,
     scale: f64,
     offset: Point<i32, Physical>,
@@ -1793,39 +2107,26 @@ struct Placement {
 }
 
 impl Placement {
-    fn new(
-        drawn: &Drawn,
-        rect: Rectangle<f64, Logical>,
-        transform: NodeTransform,
-        tile_pos: Point<f64, Logical>,
-        camera: Point<f64, Logical>,
-        output_scale: f64,
-    ) -> Self {
-        let pivot = tile_pos + rect.size.downscale(2.).to_point();
-        let offset = Point::from((transform.x, transform.y));
-
-        let clip = drawn.clip.map(|clip| {
-            (
-                Rectangle::new(clip.rect.loc - camera, clip.rect.size),
-                clip.radius,
-            )
-        });
-        let corners = clip
+    fn new(map: &TileMap, output_scale: f64) -> Self {
+        let corners = map
+            .clip
             .filter(|(_, radius)| *radius > 0.)
             .map(|(clip, radius)| {
-                let loc = pivot + (clip.loc - offset - pivot).downscale(transform.scale);
-                let area = Rectangle::new(loc, clip.size.downscale(transform.scale));
-                let radius = CornerRadius::from((radius / transform.scale) as f32)
+                let loc = map.pivot + (clip.loc - map.offset - map.pivot).downscale(map.scale);
+                let area = Rectangle::new(loc, clip.size.downscale(map.scale));
+                let radius = CornerRadius::from((radius / map.scale) as f32)
                     .fit_to(area.size.w as f32, area.size.h as f32);
                 (area, radius)
             });
 
         Self {
             output_scale,
-            pivot: pivot.to_physical_precise_round(output_scale),
-            scale: transform.scale,
-            offset: offset.to_physical_precise_round(output_scale),
-            crop: clip.map(|(clip, _)| clip.to_physical_precise_round(output_scale)),
+            pivot: map.pivot.to_physical_precise_round(output_scale),
+            scale: map.scale,
+            offset: map.offset.to_physical_precise_round(output_scale),
+            crop: map
+                .clip
+                .map(|(clip, _)| clip.to_physical_precise_round(output_scale)),
             corners,
         }
     }
@@ -1853,6 +2154,15 @@ impl Placement {
         }
     }
 
+    /// The same placement without the clip.
+    fn uncropped(self) -> Self {
+        Self {
+            crop: None,
+            corners: None,
+            ..self
+        }
+    }
+
     fn place<R: NiriRenderer>(
         &self,
         elem: TileRenderElement<R>,
@@ -1865,6 +2175,16 @@ impl Placement {
             None => Some(TilingSpaceRenderElement::from(elem)),
         }
     }
+}
+
+/// What the pointer is on, among the windows that the layout draws.
+enum Under<'a, W: LayoutElement> {
+    /// A window that the app gets the pointer for: its tile, where the window's buffer is so that
+    /// the pointer's place in it is known, and where the pointer is in the tile.
+    Window(&'a Tile<W>, HitType, Point<f64, Logical>),
+    /// A window whose input goes to the engine.
+    Engine,
+    Nothing,
 }
 
 fn mode_of(mode: SizingMode) -> Mode {
@@ -1926,4 +2246,166 @@ fn toplevel_bounds(
         f64::max(working_area.h - gaps * 2. - border, 1.),
     ))
     .to_i32_floor()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::surfaces::{Clip, NodeTransform};
+
+    fn point(x: f64, y: f64) -> Point<f64, Logical> {
+        Point::from((x, y))
+    }
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> Rectangle<f64, Logical> {
+        Rectangle::new(point(x, y), Size::from((w, h)))
+    }
+
+    fn drawn(rect: Rectangle<f64, Logical>, transform: NodeTransform, clip: Option<Clip>) -> Drawn {
+        Drawn {
+            rect,
+            opacity: 1.,
+            local_opacity: 1.,
+            transform,
+            clip,
+        }
+    }
+
+    fn assert_close(a: Point<f64, Logical>, b: Point<f64, Logical>) {
+        assert!(
+            (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9,
+            "{a:?} isn't {b:?}"
+        );
+    }
+
+    #[test]
+    fn a_tile_that_is_where_it_was_placed_is_not_moved() {
+        let placed = rect(120., 60., 200., 100.);
+        let plain = drawn(placed, NodeTransform::IDENTITY, None);
+        let map = TileMap::new(&plain, placed, point(100., 50.), point(20., 10.), 1.);
+        assert!(map.is_identity());
+        assert_close(map.to_tile(point(150., 75.)).unwrap(), point(150., 75.));
+
+        // Zoomed, scaled, moved or clipped, it isn't.
+        let zoomed = TileMap::new(&plain, placed, point(100., 50.), point(20., 10.), 0.5);
+        assert!(!zoomed.is_identity());
+        let transform = NodeTransform {
+            scale: 1.,
+            x: 1.,
+            y: 0.,
+        };
+        let moved = drawn(placed, transform, None);
+        assert!(!TileMap::new(&moved, placed, point(100., 50.), point(20., 10.), 1.).is_identity());
+        let clip = Clip {
+            rect: placed,
+            radius: 0.,
+        };
+        let clipped = drawn(placed, NodeTransform::IDENTITY, Some(clip));
+        assert!(
+            !TileMap::new(&clipped, placed, point(100., 50.), point(20., 10.), 1.).is_identity()
+        );
+    }
+
+    #[test]
+    fn the_zoom_scales_the_view_around_its_top_left() {
+        let placed = rect(120., 60., 200., 100.);
+        let plain = drawn(placed, NodeTransform::IDENTITY, None);
+        let map = TileMap::new(&plain, placed, point(100., 50.), point(20., 10.), 0.5);
+
+        // A point of the tile is shown at half its distance from the view's top left, and the
+        // pointer there is where it is in the tile.
+        for p in [point(100., 50.), point(150., 75.), point(300., 150.)] {
+            assert_close(map.to_tile(point(p.x * 0.5, p.y * 0.5)).unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn a_scaled_and_zoomed_tile_maps_points_back() {
+        let placed = rect(120., 60., 200., 100.);
+        // Scaled around its middle, then moved, as the tree does.
+        let transform = NodeTransform {
+            scale: 2.,
+            x: 10.,
+            y: -5.,
+        };
+        let tree = drawn(placed, transform, None);
+        let tile_pos = point(100., 50.);
+        let zoom = 0.5;
+        let map = TileMap::new(&tree, placed, tile_pos, point(20., 10.), zoom);
+
+        let middle = point(tile_pos.x + 100., tile_pos.y + 50.);
+        for p in [point(100., 50.), point(150., 75.), point(300., 150.)] {
+            let scaled = middle + (p - middle).upscale(2.) + point(10., -5.);
+            let shown = scaled.upscale(zoom);
+            assert_close(map.to_tile(shown).unwrap(), p);
+        }
+
+        // The tile as drawn is where its corners go, and not outside them.
+        let corner = |p: Point<f64, Logical>| {
+            (middle + (p - middle).upscale(2.) + point(10., -5.)).upscale(zoom)
+        };
+        let area = rect(tile_pos.x, tile_pos.y, 200., 100.);
+        let (top_left, bottom_right) = (corner(point(100., 50.)), corner(point(300., 150.)));
+        assert!(map.contains(point(top_left.x + 0.1, top_left.y + 0.1), area));
+        assert!(map.contains(point(bottom_right.x - 0.1, bottom_right.y - 0.1), area));
+        assert!(!map.contains(point(top_left.x - 0.1, top_left.y + 0.1), area));
+        assert!(!map.contains(point(bottom_right.x + 0.1, bottom_right.y), area));
+    }
+
+    #[test]
+    fn a_clip_is_where_it_ends_up_on_the_zoomed_view() {
+        let placed = rect(120., 60., 200., 100.);
+        let clip = Clip {
+            rect: rect(100., 50., 200., 100.),
+            radius: 8.,
+        };
+        let tree = drawn(placed, NodeTransform::IDENTITY, Some(clip));
+        let map = TileMap::new(&tree, placed, point(100., 50.), point(20., 10.), 0.5);
+
+        // The clip starts 80, 40 from the camera on the canvas, and is as large as the view shows
+        // it.
+        assert_eq!(map.clip, Some((rect(40., 20., 100., 50.), 4.)));
+        assert!(map.clip_contains(point(41., 21.)));
+        assert!(!map.clip_contains(point(39., 21.)));
+        assert!(!map.clip_contains(point(141., 21.)));
+    }
+
+    #[test]
+    fn a_tile_scaled_to_nothing_has_no_points() {
+        let placed = rect(0., 0., 10., 10.);
+        let transform = NodeTransform {
+            scale: 0.,
+            x: 0.,
+            y: 0.,
+        };
+        let tree = drawn(placed, transform, None);
+        let map = TileMap::new(&tree, placed, point(0., 0.), point(0., 0.), 1.);
+        assert_eq!(map.to_tile(point(5., 5.)), None);
+        assert!(!map.contains(point(5., 5.), placed));
+    }
+
+    #[test]
+    fn popups_are_placed_like_the_window_without_its_clip() {
+        let placed = rect(0., 0., 200., 100.);
+        let clip = Clip {
+            rect: rect(10., 10., 50., 50.),
+            radius: 8.,
+        };
+        let transform = NodeTransform {
+            scale: 0.5,
+            x: 20.,
+            y: 0.,
+        };
+        let tree = drawn(placed, transform, Some(clip));
+        let map = TileMap::new(&tree, placed, point(100., 50.), point(0., 0.), 1.);
+        let placement = Placement::new(&map, 1.);
+        assert!(placement.crop.is_some() && placement.corners.is_some());
+
+        let popups = placement.uncropped();
+        assert!(popups.crop.is_none() && popups.corners.is_none());
+        // They still go where the window goes.
+        assert_eq!(popups.pivot, placement.pivot);
+        assert_eq!(popups.scale, placement.scale);
+        assert_eq!(popups.offset, placement.offset);
+    }
 }

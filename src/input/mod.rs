@@ -37,7 +37,7 @@ use smithay::input::{tablet, SeatHandler};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Rectangle, Transform, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Transform, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardDevice;
@@ -52,6 +52,7 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::floating::FloatingSpace;
 use crate::layout::groups::Direction;
+use crate::layout::tiling::host::{KeyboardOwner, KeyboardRelease, NodeGrab};
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, Niri, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -62,12 +63,14 @@ use crate::window::Mapped;
 
 pub mod backend_ext;
 pub mod click_grab;
+mod engine_grab;
 pub mod move_grab;
 pub mod pick_color_grab;
 pub mod pick_window_grab;
 pub mod resize_grab;
 pub mod scroll_swipe_gesture;
 pub mod scroll_tracker;
+mod search_keys;
 pub mod spatial_movement_grab;
 pub mod swipe_tracker;
 pub mod touch_overview_grab;
@@ -472,13 +475,29 @@ impl State {
             if let Some(token) = self.niri.bind_repeat_timer.take() {
                 self.niri.event_loop.remove(token);
             }
+            if let Some(token) = self.niri.engine_key_repeat_timer.take() {
+                self.niri.event_loop.remove(token);
+            }
         }
 
         if pressed {
             self.hide_cursor_if_needed();
         }
 
-        let is_inhibiting_shortcuts = self.is_inhibiting_shortcuts();
+        // While a search runs, the keyboard goes to its field, which inhibits shortcuts.
+        let is_searching = self.niri.search_takes_keys();
+        let is_inhibiting_shortcuts = self.is_inhibiting_shortcuts() || is_searching;
+
+        // While the layout engine holds the keyboard, the filter counts it as inhibiting shortcuts,
+        // see `engine_grab`. The lock screen takes the keyboard from the engine right away.
+        if self.niri.is_locked() {
+            self.niri
+                .layout
+                .set_keyboard_owner(KeyboardOwner::LockScreen);
+        }
+        let engine_grabbed = self.niri.layout.keyboard_grabbed();
+        let mut engine_key = None;
+        let mut search_key = None;
 
         // Accessibility modifier grabs should override XKB state changes (e.g. Caps Lock), so we
         // need to process them before keyboard.input() below.
@@ -686,6 +705,8 @@ impl State {
 
                 let is_locked = this.niri.is_locked();
                 let is_in_screenshot = this.niri.screenshot_ui.is_open();
+                let engine_info =
+                    (engine_grabbed || is_searching).then(|| engine_grab::key_info(&keysym));
                 let res = {
                     let config = this.niri.config.borrow();
                     let bindings = make_binds_iter(
@@ -708,11 +729,35 @@ impl State {
                         pressed,
                         modifiers,
                         this.niri.config.borrow().input.disable_power_key_handling,
-                        is_inhibiting_shortcuts,
+                        is_inhibiting_shortcuts || engine_grabbed,
                         is_locked,
                         is_in_screenshot,
                     )
                 };
+
+                let res = if is_searching {
+                    let text = engine_info.as_ref().map(|(text, _)| text.as_str());
+                    let (res, input) = this.search_intercept_key(
+                        res, key_code, pressed, modified, text, raw, modifiers,
+                    );
+                    search_key = input;
+                    res
+                } else {
+                    res
+                };
+                let (res, to_engine) = engine_grab::route(
+                    res,
+                    engine_grabbed,
+                    pressed,
+                    key_code,
+                    &mut this.niri.engine_keys,
+                    &this.niri.pending_release_binds,
+                );
+                if let (true, Some(key), Some((text, repeats))) = (to_engine, modified, engine_info)
+                {
+                    let key = engine_grab::engine_key(key, text, mods, pressed);
+                    engine_key = Some((key, repeats));
+                }
 
                 if matches!(
                     res,
@@ -728,6 +773,18 @@ impl State {
         ) else {
             return;
         };
+
+        if let Some((key, repeats)) = engine_key {
+            self.send_engine_key(key, repeats);
+        }
+        // The search runs the engine and talks to clients, so not while the keyboard is busy with
+        // the key.
+        if let Some(input) = search_key {
+            self.search_key(input);
+        }
+        if mods_changed {
+            self.update_engine_modifiers();
+        }
 
         // Forward the event to the client, unless the key was intercepted.
         match &result {
@@ -2386,6 +2443,47 @@ impl State {
         find_configured_bind(bindings, mod_key, trigger, mods)
     }
 
+    /// Starts the move or resize that the tiling layout began while it handled a press on one of
+    /// its nodes, like it was a client's request. The press belongs to the grab from then on, so
+    /// the node gets no release or click for it.
+    fn start_node_grab(&mut self, button_code: u32, serial: Serial) {
+        let Some(grab) = self.niri.layout.take_node_grab() else {
+            return;
+        };
+
+        let pointer = self.niri.seat.get_pointer().unwrap();
+        let start_data = AnyStartData::Pointer(PointerGrabStartData {
+            focus: None,
+            button: button_code,
+            location: pointer.current_location(),
+        });
+
+        match grab {
+            NodeGrab::Move(window) => {
+                // The drag only moves the window: it doesn't turn into scrolling the view.
+                let Some(grab) = MoveGrab::new(self, start_data, window, false, None) else {
+                    return;
+                };
+                pointer.set_grab(self, grab, serial, Focus::Clear);
+            }
+            NodeGrab::Resize { window, edges } => {
+                if !self
+                    .niri
+                    .layout
+                    .interactive_resize_begin(window.clone(), edges)
+                {
+                    return;
+                }
+                let grab = ResizeGrab::new(start_data, window);
+                pointer.set_grab(self, grab, serial, Focus::Clear);
+                self.niri
+                    .cursor_manager
+                    .set_cursor_image(CursorImageStatus::Named(edges.cursor_icon()));
+            }
+        }
+        self.niri.node_press = None;
+    }
+
     fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
         let pointer = self.niri.seat.get_pointer().unwrap();
 
@@ -2416,9 +2514,10 @@ impl State {
                 .niri
                 .node_press
                 .as_ref()
-                .is_some_and(|press| press.button_code == button_code)
+                .is_some_and(|(code, _)| *code == button_code)
         {
-            if let (Some(press), Some(number)) = (self.niri.node_press.take(), node_button(button))
+            if let (Some((_, press)), Some(number)) =
+                (self.niri.node_press.take(), node_button(button))
             {
                 self.niri.node_button_released(press, number);
                 self.niri.queue_redraw_all();
@@ -2432,6 +2531,19 @@ impl State {
 
         if ButtonState::Pressed == button_state {
             self.niri.cancel_interrupted_release_binds();
+            self.niri
+                .end_search_unless_on_field(pointer.current_location());
+
+            // A press outside what the layout engine draws takes the keyboard back from it.
+            if self.niri.layout.keyboard_grabbed()
+                && self
+                    .niri
+                    .contents_under(pointer.current_location())
+                    .node
+                    .is_none()
+            {
+                self.niri.layout.release_keyboard(KeyboardRelease::Click);
+            }
 
             let mut is_mru_open = false;
             if let Some(mru_output) = self.niri.window_mru_ui.output() {
@@ -2497,6 +2609,7 @@ impl State {
             if !is_overview_open && !pointer.is_grabbed() {
                 if let Some(number) = node_button(button) {
                     if self.niri.node_button_pressed(number, button_code) {
+                        self.start_node_grab(button_code, serial);
                         self.niri.queue_redraw_all();
                         return;
                     }
@@ -3162,6 +3275,7 @@ impl State {
         }
 
         let under = self.niri.contents_under(pos);
+        self.niri.update_node_hover(&under, true);
 
         let tablet_seat = self.niri.seat.tablet_seat();
         let tool = tablet_seat.get_tool(&event.tool());
@@ -3227,6 +3341,9 @@ impl State {
         match tip_state {
             TabletToolTipState::Down => {
                 self.niri.cancel_interrupted_release_binds();
+                if let Some(pos) = self.niri.tablet_cursor_location {
+                    self.niri.end_search_unless_on_field(pos);
+                }
 
                 if let Some(pos) = self.niri.tablet_cursor_location {
                     let under = self.niri.contents_under(pos);
@@ -3304,6 +3421,12 @@ impl State {
                                 window,
                             );
                             tool.set_grab(self, grab, time, serial, Focus::Clear);
+                        } else if let Some(hit) = &under.node {
+                            // Nodes that the tiling layout draws are on top of windows, so a
+                            // press on one is theirs and doesn't focus or move the windows below.
+                            let press = self.niri.node_pressed(hit, 1);
+                            self.niri.tablet_node_press = Some(press);
+                            self.niri.queue_redraw_all();
                         } else if let Some((window, _)) = under.window {
                             self.niri.layout.activate_window(&window);
 
@@ -3346,6 +3469,16 @@ impl State {
                     if capture {
                         self.confirm_screenshot(true);
                     } else {
+                        self.niri.queue_redraw_all();
+                    }
+                }
+
+                if let Some(press) = self.niri.tablet_node_press.take() {
+                    let pos = self
+                        .compute_tablet_position(&event)
+                        .or(self.niri.tablet_cursor_location);
+                    if let Some(pos) = pos {
+                        self.niri.node_released(press, pos, 1);
                         self.niri.queue_redraw_all();
                     }
                 }
@@ -3868,6 +4001,7 @@ impl State {
         let slot = evt.slot();
 
         self.niri.cancel_interrupted_release_binds();
+        self.niri.end_search_unless_on_field(pos);
 
         let serial = SERIAL_COUNTER.next_serial();
 
@@ -3946,6 +4080,10 @@ impl State {
                     window,
                 );
                 handle.set_grab(self, grab, serial);
+            } else if self.niri.node_touch_began(slot, &under, pos) {
+                // Nodes that the tiling layout draws are on top of windows, so a touch on one is
+                // theirs and doesn't focus or move the windows below.
+                self.niri.queue_redraw_all();
             } else if let Some((window, _)) = under.window {
                 self.niri.layout.activate_window(&window);
 
@@ -4002,6 +4140,11 @@ impl State {
             }
         }
 
+        if self.niri.touch_node_presses.contains_key(&slot) {
+            self.niri.node_touch_ended(slot);
+            self.niri.queue_redraw_all();
+        }
+
         let serial = SERIAL_COUNTER.next_serial();
         handle.up(
             self,
@@ -4032,6 +4175,10 @@ impl State {
         }
 
         let under = self.niri.contents_under(pos);
+        if self.niri.touch_node_presses.contains_key(&slot) {
+            self.niri.node_touch_moved(slot, &under, pos);
+            self.niri.queue_redraw_all();
+        }
         handle.motion(
             self,
             under.surface,
@@ -4063,6 +4210,7 @@ impl State {
         let Some(handle) = self.niri.seat.get_touch() else {
             return;
         };
+        self.niri.node_touches_cancelled();
         handle.cancel(self);
     }
 

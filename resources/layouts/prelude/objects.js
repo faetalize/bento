@@ -5,7 +5,7 @@
 // matches what it just did, and are recorded for bento to carry out. bento answers by reporting
 // what really happened in the next `sync`.
 
-import { BentoEvent, EventTarget, dispatch } from "./events.js";
+import { BentoEvent, EventTarget, dispatch, guarded } from "./events.js";
 import { GroupSet } from "./groups.js";
 import {
     TreeLog,
@@ -17,8 +17,23 @@ import {
     isRect,
     windowsOf,
 } from "./nodes.js";
+import { SearchSlot } from "./search.js";
 
 const SIZING_MODES = ["normal", "fullscreen", "maximized"];
+
+/** Longest delay of a timer, in milliseconds, and most timers an engine can have waiting. */
+const MAX_TIMER_DELAY = 3_600_000;
+const MAX_TIMERS = 128;
+
+const NO_MODIFIERS = Object.freeze({ shift: false, ctrl: false, alt: false, super: false });
+
+/** The modifiers held as engines read them, always with the same properties in the same order. */
+export function heldModifiers(modifiers) {
+    return Object.freeze({ ...NO_MODIFIERS, ...modifiers });
+}
+
+/** Timer ids, which are never reused across instances, so a late timer of an old one can't fire. */
+let nextTimerId = 1;
 
 function copyRect(rect) {
     return { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
@@ -36,6 +51,12 @@ function freezeRect(rect) {
     return Object.freeze(copyRect(rect));
 }
 
+const NO_BORDERS = Object.freeze({ w: 0, h: 0 });
+
+function freezeDecorations(d) {
+    return Object.freeze({ border: d.border, focusRing: d.focusRing, shadow: d.shadow });
+}
+
 function copyJson(value) {
     return value === undefined ? null : JSON.parse(JSON.stringify(value));
 }
@@ -50,11 +71,20 @@ class Recorder {
         /** Windows whose rect, visibility or mode changed, with whether to animate. */
         this.placed = new Map();
         this.data = new Set();
+        /** Windows whose decorations changed. */
+        this.decorations = new Set();
+        /** The pointer move or resize that the engine began, which bento starts. */
+        this.grab = null;
         /** Workspace id to the id of the window that has its focus. */
         this.focus = new Map();
         this.cameras = new Map();
         this.monitorFocus = undefined;
         this.stateChanged = false;
+        /** Timers the engine started, `{ id, ms }`, and ids of earlier ones it cleared. */
+        this.timers = [];
+        this.clearedTimers = [];
+        /** Whether the engine holds the keyboard, if it took or gave it back. */
+        this.keyboard = undefined;
     }
 }
 
@@ -110,20 +140,29 @@ export class Camera {
         return this.#d.camera.y;
     }
 
+    get zoom() {
+        return this.#d.camera.zoom;
+    }
+
     move(to, opts = {}) {
         const x = to.x ?? this.#d.camera.x;
         const y = to.y ?? this.#d.camera.y;
+        const zoom = to.zoom ?? this.#d.camera.zoom;
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
             throw new Error(`invalid camera position: ${JSON.stringify(to)}`);
+        }
+        if (!Number.isFinite(zoom) || zoom <= 0) {
+            throw new Error(`invalid camera zoom: ${JSON.stringify(to)}`);
         }
         if (this.#s.querying) {
             return true;
         }
-        this.#d.camera = { x, y };
+        this.#d.camera = { x, y, zoom };
         this.#s.rec.cameras.set(this.#d.id, {
             workspace: this.#d.id,
             x,
             y,
+            zoom,
             animate: opts.animate ?? true,
             velocity: Number.isFinite(opts.velocity) ? opts.velocity : 0,
         });
@@ -379,6 +418,10 @@ export class Window extends EventTarget {
         return this.#d.data;
     }
 
+    get decorations() {
+        return this.#d.decorations;
+    }
+
     /** Throws if the window is gone from the engine, or was never in it. */
     #check() {
         if (this.#s.windows.get(this.#d.id) !== this.#d) {
@@ -471,6 +514,48 @@ export class Window extends EventTarget {
         this.#d.data = copy;
         this.#s.rec.data.add(this.#d.id);
     }
+
+    beginMove() {
+        this.#check();
+        return this.#s.beginGrab({ kind: "move", window: this.#d.id });
+    }
+
+    beginResize(edges) {
+        this.#check();
+        if (edges === null || typeof edges !== "object") {
+            throw new TypeError("the edges to resize from must be an object");
+        }
+        const picked = { left: !!edges.left, right: !!edges.right, top: !!edges.top, bottom: !!edges.bottom };
+        if (!Object.values(picked).some(Boolean)) {
+            return false;
+        }
+        return this.#s.beginGrab({ kind: "resize", window: this.#d.id, edges: picked });
+    }
+
+    setDecorations(decorations) {
+        this.#check();
+        if (decorations === null || typeof decorations !== "object") {
+            throw new TypeError("decorations must be an object");
+        }
+        const d = this.#d;
+        const next = { ...d.decorations };
+        for (const name of ["border", "focusRing", "shadow"]) {
+            if (decorations[name] === undefined) {
+                continue;
+            }
+            if (typeof decorations[name] !== "boolean") {
+                throw new TypeError(`\`${name}\` must be a boolean`);
+            }
+            next[name] = decorations[name];
+        }
+        if (this.#s.querying || JSON.stringify(next) === JSON.stringify(d.decorations)) {
+            return;
+        }
+        d.decorations = freezeDecorations(next);
+        // The border is part of the window's rect, so its size is what changes with it.
+        d.borders = next.border ? d.borderSize : NO_BORDERS;
+        this.#s.rec.decorations.add(d.id);
+    }
 }
 
 /** What `create(bento)` receives. */
@@ -526,6 +611,14 @@ export class Bento extends EventTarget {
         return this.#s.groups.create(windows, active);
     }
 
+    search(scope) {
+        return this.#s.search.start(scope);
+    }
+
+    get searching() {
+        return this.#s.search.facade;
+    }
+
     exposeState(provider) {
         if (typeof provider !== "function") {
             throw new TypeError("the state provider must be a function");
@@ -541,6 +634,77 @@ export class Bento extends EventTarget {
 
     createNode(kind, props) {
         return createNode(this.#s.log, kind, props);
+    }
+
+    setTimeout(callback, ms) {
+        if (typeof callback !== "function") {
+            throw new TypeError("a timer's callback must be a function");
+        }
+        const asked = Number(ms ?? 0);
+        const delay = Number.isNaN(asked) ? 0 : Math.max(0, asked);
+        if (delay > MAX_TIMER_DELAY) {
+            throw new RangeError(`a timer can wait at most ${MAX_TIMER_DELAY} ms, not ${ms}`);
+        }
+        const s = this.#s;
+        if (s.querying) {
+            return 0;
+        }
+        if (s.timers.size >= MAX_TIMERS) {
+            throw new Error(`there are already ${MAX_TIMERS} timers waiting`);
+        }
+        const id = nextTimerId++;
+        s.timers.set(id, callback);
+        s.rec.timers.push({ id, ms: Math.round(delay) });
+        return id;
+    }
+
+    clearTimeout(id) {
+        const s = this.#s;
+        if (s.querying || !s.timers.delete(id)) {
+            return;
+        }
+        // A timer that started in this call never reaches bento.
+        const starting = s.rec.timers.findIndex((timer) => timer.id === id);
+        if (starting === -1) {
+            s.rec.clearedTimers.push(id);
+        } else {
+            s.rec.timers.splice(starting, 1);
+        }
+    }
+
+    grabKeyboard() {
+        const s = this.#s;
+        // bento says whether the keyboard can be taken: not on the lock screen, nor while it's
+        // with something that isn't the layout's.
+        // And only while handling something the person did, so it can't hold on to it on its own.
+        if (s.querying || !s.keyboardAvailable || !s.personStarted) {
+            return false;
+        }
+        if (!s.keyboardGrabbed) {
+            s.keyboardGrabbed = true;
+            s.rec.keyboard = true;
+        }
+        // Taken back in the same call, it never left.
+        s.releasedByEngine = false;
+        return true;
+    }
+
+    releaseKeyboard() {
+        const s = this.#s;
+        if (s.querying || !s.keyboardGrabbed) {
+            return;
+        }
+        s.keyboardGrabbed = false;
+        s.rec.keyboard = false;
+        s.releasedByEngine = true;
+    }
+
+    get keyboardGrabbed() {
+        return this.#s.keyboardGrabbed;
+    }
+
+    get modifiers() {
+        return this.#s.modifiers;
     }
 
     log(...args) {
@@ -560,15 +724,59 @@ export class Session {
         this.workspaces = new Map();
         this.windows = new Map();
         this.groups = new GroupSet(this);
+        this.search = new SearchSlot(this);
         this.focusedMonitor = null;
+        /** Whether a pointer press is being delivered, which is when a move or resize can begin. */
+        this.pressing = false;
         this.stateProvider = null;
         this.savedState = savedState ?? null;
+        /** Timers waiting, by id, with their callbacks. */
+        this.timers = new Map();
+        /** Whether the engine can take the keyboard, and whether it holds it. */
+        this.keyboardAvailable = false;
+        this.keyboardGrabbed = false;
+        /** Whether the engine gave the keyboard back, and hasn't been told yet. */
+        this.releasedByEngine = false;
+        /** Whether the event being handled is something the person did, see `grabKeyboard`. */
+        this.personStarted = false;
+        this.modifiers = NO_MODIFIERS;
         this.setOptions(given);
         this.bento = new Bento(this);
     }
 
     get querying() {
         return this.log.querying;
+    }
+
+    /** Calls the callback of a timer that bento says is due, unless it was cleared. */
+    fireTimer(id) {
+        const callback = this.timers.get(id);
+        if (callback !== undefined) {
+            this.timers.delete(id);
+            guarded(() => callback());
+        }
+    }
+
+    setModifiers(modifiers) {
+        this.modifiers = heldModifiers(modifiers);
+    }
+
+    /**
+     * Takes the keyboard back from the engine, for a reason that comes from bento. Returns
+     * whether the engine held it.
+     */
+    endGrab() {
+        const held = this.keyboardGrabbed;
+        this.keyboardGrabbed = false;
+        return held;
+    }
+
+    /** Tells the engine that it gave the keyboard back, after the call it did that in. */
+    fireKeyboardRelease() {
+        if (this.releasedByEngine) {
+            this.releasedByEngine = false;
+            dispatch(this.bento, new BentoEvent("keyboardrelease", this.bento, { reason: "engine" }));
+        }
     }
 
     /** Sets the engine's options, and returns whether they changed. */
@@ -639,12 +847,33 @@ export class Session {
         }
     }
 
+    /** Fires `change` for the search when its query or matches changed since listeners were told. */
+    fireSearchChanges() {
+        // Bounded, so listeners that keep changing the matches can't hang the call.
+        for (let i = 0; i < 8; i++) {
+            const fire = this.search.announce();
+            if (fire === null) {
+                return;
+            }
+            fire();
+        }
+    }
+
     markPlaced(win, animate) {
         if (animate !== undefined) {
             this.rec.placed.set(win.id, animate);
         } else if (!this.rec.placed.has(win.id)) {
             this.rec.placed.set(win.id, true);
         }
+    }
+
+    /** Records a pointer move or resize for bento to start. Only a press being delivered can begin one. */
+    beginGrab(grab) {
+        if (!this.pressing || this.querying || this.rec.grab !== null) {
+            return false;
+        }
+        this.rec.grab = grab;
+        return true;
     }
 
     focusWindow(ws, id) {
@@ -701,6 +930,9 @@ export class Session {
         d.minSize = freezeSize(info.minSize);
         d.maxSize = freezeSize(info.maxSize);
         d.borders = freezeSize(info.borders);
+        d.decorations = freezeDecorations(info.decorations);
+        // The border's size while it's on, to give `borders` back when the engine turns it on.
+        d.borderSize = d.decorations.border ? d.borders : (d.borderSize ?? NO_BORDERS);
         d.mode = info.mode;
         d.urgent = info.urgent;
         d.rules = Object.freeze({ ...info.rules });
@@ -764,7 +996,7 @@ export class Session {
                 workingArea: freezeRect(info.view.workingArea),
                 scale: info.view.scale,
             };
-            d.camera = { x: info.camera.x, y: info.camera.y };
+            d.camera = { x: info.camera.x, y: info.camera.y, zoom: info.camera.zoom };
             d.config = Object.freeze({
                 gaps: info.config.gaps,
                 struts: Object.freeze({ ...info.config.struts }),
@@ -791,11 +1023,17 @@ export class Session {
         if (sync.groups !== undefined) {
             this.groups.apply(sync.groups);
         }
+        if (sync.search !== undefined) {
+            this.search.apply(sync.search);
+        }
 
         if ("focusedMonitor" in sync) {
             this.focusedMonitor = sync.focusedMonitor;
         }
         const optionsChanged = "options" in sync && this.setOptions(sync.options);
+        if ("keyboardAvailable" in sync) {
+            this.keyboardAvailable = sync.keyboardAvailable;
+        }
 
         const removedMonitors = (sync.removedMonitors ?? [])
             .map((name) => this.monitors.get(name))
@@ -904,6 +1142,7 @@ export class Session {
         detachNode(d.node);
         this.rec.placed.delete(d.id);
         this.rec.data.delete(d.id);
+        this.rec.decorations.delete(d.id);
     }
 
     /** What the engine did since the last call, as bento reads it. */
@@ -928,6 +1167,13 @@ export class Session {
         if (data.length > 0) {
             out.data = data.map((id) => [id, this.windows.get(id).data]);
         }
+        const decorations = [...rec.decorations].filter((id) => this.windows.has(id));
+        if (decorations.length > 0) {
+            out.decorations = decorations.map((id) => [id, this.windows.get(id).decorations]);
+        }
+        if (rec.grab !== null) {
+            out.grab = rec.grab;
+        }
         if (rec.focus.size > 0) {
             out.focus = [...rec.focus];
         }
@@ -943,6 +1189,15 @@ export class Session {
         }
         if (rec.stateChanged) {
             out.stateChanged = true;
+        }
+        if (rec.keyboard !== undefined) {
+            out.keyboard = rec.keyboard;
+        }
+        if (rec.timers.length > 0) {
+            out.timers = rec.timers;
+        }
+        if (rec.clearedTimers.length > 0) {
+            out.clearedTimers = rec.clearedTimers;
         }
         return out;
     }

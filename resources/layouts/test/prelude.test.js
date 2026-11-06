@@ -327,7 +327,7 @@ test("queries get the first answer and change nothing", () => {
     assert.deepEqual(h.newWindowSize(), { w: 640, h: 100 });
     assert.deepEqual(h.rect(a), { x: 0, y: 0, w: 10, h: 10 });
     assert.equal(h.focused(), a);
-    assert.deepEqual(h.camera(), { x: 0, y: 0 });
+    assert.deepEqual(h.camera(), { x: 0, y: 0, zoom: 1 });
 });
 
 test("a query without an answer says 0 × 0", () => {
@@ -714,7 +714,7 @@ test("the camera moves with the options the engine gives", () => {
     );
     h.open();
     h.action("go");
-    assert.deepEqual(h.camera(), { x: 100, y: 5 });
+    assert.deepEqual(h.camera(), { x: 100, y: 5, zoom: 1 });
     assert.equal(h.lastCamera.velocity, 300);
     assert.equal(h.lastCamera.animate, true);
 });
@@ -729,7 +729,7 @@ test("horizontal swipes are reported, and the engine moves the camera", () => {
         }
     });
     h.swipe(h.workspace(0).id, [30, 40], 500);
-    assert.deepEqual(h.camera(), { x: -100, y: 0 });
+    assert.deepEqual(h.camera(), { x: -100, y: 0, zoom: 1 });
     assert.equal(h.lastCamera.velocity, 500);
 });
 
@@ -858,6 +858,39 @@ test("a removed node is dropped, and created again when it comes back", () => {
     h.action("color");
     h.action("draw");
     assert.equal(h.tree().node(nodes.box.id).props.background, "#000");
+});
+
+test("a node's enter props reach bento with its creation, and again when it comes back", () => {
+    const enter = { opacity: 0, transform: { scale: 0.5 } };
+    const { h, nodes } = drawing((_bento, nodes) => {
+        nodes.box.set({ enter, transitions: { opacity: "window-open" } });
+    });
+    h.action("draw");
+    assert.deepEqual(h.tree().node(nodes.box.id).props.enter, enter);
+
+    h.action("hide");
+    h.action("draw");
+    assert.deepEqual(h.tree().node(nodes.box.id).props.enter, enter);
+});
+
+test("enter can change until the node is in a tree, and can be set again as it is", () => {
+    const { h, nodes } = drawing();
+    nodes.box.set({ enter: { opacity: 0 } });
+    nodes.box.set({ enter: { opacity: 0.25 } });
+    h.action("draw");
+
+    // The same value is no change, like when an engine sets everything it read back.
+    nodes.box.set({ ...nodes.box.props });
+    assert.throws(() => nodes.box.set({ enter: { opacity: 0.5 } }), /before a node is added to a tree/);
+    assert.deepEqual(h.tree().node(nodes.box.id).props.enter, { opacity: 0.25 });
+});
+
+test("enter takes only the properties that can transition", () => {
+    const { nodes } = drawing();
+    assert.throws(() => nodes.box.set({ enter: { clip: true } }), /takes only/);
+    assert.throws(() => nodes.box.set({ enter: { enter: {} } }), /can't have an `enter`/);
+    assert.throws(() => nodes.box.set({ enter: { opacity: "no" } }), /invalid opacity/);
+    assert.throws(() => nodes.box.set({ enter: 5 }), /must be an object/);
 });
 
 test("a node can go before another", () => {
@@ -1003,6 +1036,403 @@ test("pointerenter and pointerleave go to the node they're for and don't bubble"
     log.length = 0;
     h.pointer(nodes.inner.id, "pointermove");
     assert.deepEqual(log, [["pointermove", "inner"], ["pointermove", "outer"]]);
+});
+
+test("a window's node says where pointer input on it goes", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => e.window.node.set({ input: e.args[0] }));
+        },
+        {},
+        { actions: { go: { args: [{ name: "input", type: "choice", choices: ["app", "engine", "none"] }] } } },
+    );
+    const a = h.open();
+    const props = () => h.tree().node(`w${a}`).props;
+
+    // A window's input is for the app unless the engine says.
+    assert.equal(props().input, undefined);
+    h.action("go", "engine");
+    assert.equal(props().input, "engine");
+    h.action("go", "none");
+    assert.equal(props().input, "none");
+    h.action("go", "app");
+    assert.equal(props().input, "app");
+});
+
+test("input is only for windows' nodes, and has three values", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                const only = /`input` is only for window nodes/;
+                assert.throws(() => bento.createNode("box").set({ input: "none" }), only);
+                assert.throws(() => bento.createNode("box", { input: "none" }), only);
+                assert.throws(() => e.window.node.set({ input: "touch" }), /invalid input: "touch"/);
+                assert.throws(() => e.window.node.set({ input: true }), /invalid input: true/);
+            });
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    const a = h.open();
+    h.action("go");
+    assert.equal(h.tree().node(`w${a}`).props.input, undefined);
+});
+
+test("pointer events for a window's node reach the engine and bubble", () => {
+    const log = [];
+    const h = host((bento) => {
+        placing(bento);
+        bento.addEventListener("windowadd", (e) => {
+            const frame = bento.createNode("box", { interactive: true });
+            e.window.workspace.tree.append(frame);
+            frame.append(e.window.node);
+            frame.addEventListener("click", (c) => log.push(["frame", c.target === e.window.node]));
+            e.window.node.addEventListener("click", (c) => log.push(["window", c.target.window.id === e.window.id, c.button]));
+        });
+    });
+    const a = h.open();
+    h.pointer(`w${a}`, "click", { button: 1 });
+    assert.deepEqual(log, [["window", true, 1], ["frame", true]]);
+});
+
+test("the camera zooms, and what the engine reads is where it's going", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                const camera = e.window.workspace.camera;
+                assert.equal(camera.zoom, 1);
+                assert.equal(camera.move({ zoom: 0.5 }, { animate: false }), true);
+                // The camera's position stays what it was.
+                assert.deepEqual([camera.x, camera.y, camera.zoom], [0, 0, 0.5]);
+                camera.move({ x: 100 });
+                assert.deepEqual([camera.x, camera.y, camera.zoom], [100, 0, 0.5]);
+            });
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    h.open();
+    h.action("go");
+    assert.deepEqual(h.camera(), { x: 100, y: 0, zoom: 0.5 });
+    // The last move said where the camera stays zoomed, and animated.
+    assert.equal(h.lastCamera.zoom, 0.5);
+    assert.equal(h.lastCamera.animate, true);
+});
+
+test("a zoom move animates unless the engine says not to", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                e.window.workspace.camera.move({ zoom: 2 }, { animate: e.args[0] });
+            });
+        },
+        {},
+        { actions: { go: { args: [{ name: "animate", type: "boolean" }] } } },
+    );
+    h.open();
+    h.action("go", false);
+    assert.equal(h.lastCamera.animate, false);
+    assert.equal(h.lastCamera.zoom, 2);
+});
+
+test("bento tells the engine the camera's zoom", () => {
+    const seen = [];
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => seen.push(e.window.workspace.camera.zoom));
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    h.open();
+    h.workspace(0).camera = { x: 5, y: 6, zoom: 2 };
+    h.action("go");
+    assert.deepEqual(seen, [2]);
+});
+
+test("a camera can't zoom to nothing", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                for (const zoom of [0, -1, Infinity, NaN]) {
+                    assert.throws(() => e.window.workspace.camera.move({ zoom }), /invalid camera zoom/);
+                }
+            });
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    h.open();
+    h.action("go");
+    assert.deepEqual(h.camera(), { x: 0, y: 0, zoom: 1 });
+    assert.equal(h.lastCamera, undefined);
+});
+
+// Moving, resizing and decorating windows.
+
+/**
+ * An engine that draws a title bar node for each window it places, the first being n1, and calls
+ * `onPress` from its pointerdown. `extra` can do more with each window and its bar.
+ */
+function titleBars(onPress, extra = () => {}) {
+    return (bento) => {
+        bento.addEventListener("windowadd", (e) => {
+            const win = e.window;
+            win.place({ x: 0, y: 0, w: 100, h: 100 });
+            win.focus();
+            const bar = bento.createNode("box", { rect: { x: 0, y: 0, w: 100, h: 20 }, interactive: true });
+            win.workspace.tree.append(bar);
+            bar.addEventListener("pointerdown", (p) => onPress(win, p));
+            extra(win, bar, e);
+        });
+    };
+}
+
+/** An engine that places windows, and runs `shared.todo(win)` for the action "go". */
+function goes(shared) {
+    return (bento) => {
+        placing(bento);
+        bento.addEventListener("action", (e) => shared.todo(e.window));
+    };
+}
+
+const GO = { actions: { go: {} } };
+const ALL_ON = { border: true, focusRing: true, shadow: true };
+
+test("a pointerdown listener can begin a move", () => {
+    const results = [];
+    const h = host(titleBars((win) => results.push(win.beginMove())));
+    const a = h.open();
+    assert.equal(h.takeGrab(), null);
+
+    h.pointer("n1", "pointerdown");
+    assert.deepEqual(results, [true]);
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
+    // bento takes it once.
+    assert.equal(h.takeGrab(), null);
+});
+
+test("a pointerdown listener can begin a resize from the edges it names", () => {
+    const results = [];
+    const h = host(
+        titleBars((win, p) => {
+            results.push(win.beginResize(p.button === 1 ? { right: true, bottom: true } : {}));
+        }),
+    );
+    const a = h.open();
+
+    h.pointer("n1", "pointerdown", { button: 1 });
+    assert.deepEqual(h.takeGrab(), {
+        kind: "resize",
+        window: a,
+        edges: { left: false, right: true, top: false, bottom: true },
+    });
+
+    // No edge is nothing to resize from.
+    h.pointer("n1", "pointerdown", { button: 3 });
+    assert.deepEqual(results, [true, false]);
+    assert.equal(h.takeGrab(), null);
+});
+
+test("a move or resize can't begin outside a press", () => {
+    const results = [];
+    let win;
+    const h = host(
+        titleBars(
+            () => {},
+            (w, bar) => {
+                win = w;
+                for (const type of ["pointerup", "click", "pointermove", "pointerenter"]) {
+                    bar.addEventListener(type, () => results.push([type, w.beginMove(), w.beginResize({ left: true })]));
+                }
+            },
+        ),
+    );
+    h.open();
+    for (const type of ["pointerup", "click", "pointermove", "pointerenter"]) {
+        h.pointer("n1", type);
+    }
+    assert.deepEqual(results, [
+        ["pointerup", false, false],
+        ["click", false, false],
+        ["pointermove", false, false],
+        ["pointerenter", false, false],
+    ]);
+
+    // Nor later than the press it began in.
+    assert.equal(win.beginMove(), false);
+    assert.equal(h.takeGrab(), null);
+});
+
+test("a press can begin only one move or resize", () => {
+    const results = [];
+    const h = host(titleBars((win) => results.push(win.beginMove(), win.beginResize({ left: true }))));
+    const a = h.open();
+    h.pointer("n1", "pointerdown");
+    assert.deepEqual(results, [true, false]);
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
+
+    // A new press can begin another.
+    h.pointer("n1", "pointerdown");
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
+});
+
+test("beginResize needs edges, and a window that's in the engine", () => {
+    let win;
+    const h = host(titleBars(() => {}, (w) => (win = w)));
+    h.open();
+    assert.throws(() => win.beginResize(null), /edges/);
+    h.close(win.id);
+    assert.throws(() => win.beginMove(), /not in the layout engine/);
+});
+
+test("a move with the pointer takes the window out and puts it back, like bento's own", () => {
+    const log = [];
+    const h = host(
+        titleBars(
+            (win) => win.beginMove(),
+            (win, bar, e) => {
+                log.push(["add", e.reason]);
+                win.addEventListener("remove", (r) => log.push(["remove", r.reason]));
+            },
+        ),
+    );
+    const a = h.open();
+    h.pointer("n1", "pointerdown");
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
+
+    h.drag(a, h.workspace(0).id, [{ x: 30, y: 30 }]);
+    assert.deepEqual(log, [["add", "open"], ["remove", "drag"], ["add", "drop"]]);
+});
+
+test("a resize with the pointer sends the same events as bento's own", () => {
+    const log = [];
+    const h = host(
+        titleBars(
+            (win) => win.beginResize({ right: true }),
+            (win) => {
+                for (const type of ["resizebegin", "resizeupdate", "resizeend"]) {
+                    win.addEventListener(type, (r) => log.push([type, r.edges?.right, r.delta?.x]));
+                }
+            },
+        ),
+    );
+    const a = h.open();
+    h.pointer("n1", "pointerdown");
+    const grab = h.takeGrab();
+    assert.deepEqual(grab, { kind: "resize", window: a, edges: { left: false, right: true, top: false, bottom: false } });
+
+    assert.equal(h.resize(a, grab.edges, { x: 12, y: 0 }), true);
+    assert.deepEqual(log, [
+        ["resizebegin", true, 0],
+        ["resizeupdate", true, 12],
+        ["resizeend", undefined, undefined],
+    ]);
+});
+
+test("decorations are all on, and the engine can turn each off", () => {
+    const shared = {};
+    const h = host(goes(shared), {}, GO);
+    const a = h.open({ borders: { w: 8, h: 8 } });
+    const win = h.windows.get(a);
+
+    const state = [];
+    shared.todo = (w) => {
+        state.push({ ...w.decorations }, { ...w.borders });
+        w.setDecorations({ shadow: false });
+        state.push({ ...w.decorations }, { ...w.borders });
+        w.setDecorations({ focusRing: false });
+        state.push({ ...w.decorations });
+        // Without a border, there's none in the window's rect.
+        w.setDecorations({ border: false });
+        state.push({ ...w.decorations }, { ...w.borders });
+        w.setDecorations({ border: true, focusRing: true, shadow: true });
+        state.push({ ...w.decorations }, { ...w.borders });
+    };
+    h.action("go");
+    assert.deepEqual(state, [
+        ALL_ON,
+        { w: 8, h: 8 },
+        { ...ALL_ON, shadow: false },
+        { w: 8, h: 8 },
+        { ...ALL_ON, shadow: false, focusRing: false },
+        { border: false, focusRing: false, shadow: false },
+        { w: 0, h: 0 },
+        ALL_ON,
+        { w: 8, h: 8 },
+    ]);
+    assert.deepEqual(win.decorations, ALL_ON);
+});
+
+test("bento is told the decorations that ended up, and the border's size follows", () => {
+    const shared = {};
+    const h = host(goes(shared), {}, GO);
+    const a = h.open({ borders: { w: 8, h: 8 } });
+    const event = (name) => ({ type: "action", name, args: [], window: a });
+
+    // Turning on what's on tells nothing.
+    shared.todo = (w) => w.setDecorations({ border: true });
+    assert.equal(h.call({ sync: h.sync(), event: event("go") }).decorations, undefined);
+
+    shared.todo = (w) => w.setDecorations({ border: false, shadow: false });
+    const out = h.call({ sync: h.sync(), event: event("go") });
+    assert.deepEqual(out.decorations, [[a, { border: false, focusRing: true, shadow: false }]]);
+    assert.deepEqual(h.windowInfo(h.windows.get(a)).borders, { w: 0, h: 0 });
+
+    // bento reports the borders it has, which are none while the border is off.
+    let seen;
+    shared.todo = (w) => {
+        seen = [{ ...w.borders }, { ...w.decorations }];
+        w.setDecorations({ border: true });
+        seen.push({ ...w.borders });
+    };
+    h.action("go");
+    assert.deepEqual(seen, [{ w: 0, h: 0 }, { border: false, focusRing: true, shadow: false }, { w: 8, h: 8 }]);
+});
+
+test("decorations only take booleans", () => {
+    const shared = {};
+    const h = host(goes(shared), {}, GO);
+    h.open();
+    shared.todo = (w) => {
+        assert.throws(() => w.setDecorations({ border: "no" }), /border/);
+        assert.throws(() => w.setDecorations({ focusRing: 0 }), /focusRing/);
+        assert.throws(() => w.setDecorations(null), /object/);
+        assert.deepEqual(w.decorations, ALL_ON);
+    };
+    h.action("go");
+});
+
+test("decorations come back when a window leaves the engine and when the engine starts over", () => {
+    const seen = [];
+    const h = host(
+        titleBars(
+            () => {},
+            (win, bar, e) => {
+                seen.push([e.reason, { ...win.decorations }]);
+                win.setDecorations({ border: false, shadow: false });
+            },
+        ),
+    );
+    const a = h.open();
+    const off = { border: false, focusRing: true, shadow: false };
+    assert.deepEqual(h.windows.get(a).decorations, off);
+
+    // A drag takes the window out, and it comes back as bento draws it.
+    h.drag(a, h.workspace(0).id, [{ x: 30, y: 30 }]);
+    assert.deepEqual(seen.map(([reason]) => reason), ["open", "drop"]);
+    assert.deepEqual(seen[1][1], ALL_ON);
+
+    // A new instance of the engine finds them on, and turns them off again if it wants.
+    h.reload();
+    assert.deepEqual(seen.at(-1), ["adopt", ALL_ON]);
+    assert.deepEqual(h.windows.get(a).decorations, off);
 });
 
 // The API 1 adapter.
@@ -1165,7 +1595,7 @@ test("swipes move the camera for an API 1 engine, which gets gestureEnd", () => 
         },
     }));
     h.swipe(h.workspace(0).id, [10, 20], 100);
-    assert.deepEqual(h.camera(), { x: 30, y: 0 });
+    assert.deepEqual(h.camera(), { x: 30, y: 0, zoom: 1 });
     assert.deepEqual(seen, ["begin", [100, true]]);
 });
 

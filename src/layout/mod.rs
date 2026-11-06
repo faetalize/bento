@@ -82,6 +82,7 @@ pub mod focus_ring;
 pub mod groups;
 pub mod monitor;
 pub mod opening_window;
+pub mod search;
 pub mod shadow;
 pub mod surfaces;
 pub mod tile;
@@ -385,6 +386,8 @@ pub struct Layout<W: LayoutElement> {
     options: Rc<Options>,
     /// Windows grouped together.
     groups: Groups,
+    /// The running search of windows, which has the keyboard.
+    search: Option<search::Search>,
     /// The tiling layout engine's view of the session.
     host: Host,
 }
@@ -415,6 +418,8 @@ pub struct Options {
     pub gestures: niri_config::Gestures,
     pub overview: niri_config::Overview,
     pub blur: niri_config::Blur,
+    /// The icon theme that image nodes look icons up in.
+    pub icon_theme: String,
     // Debug flags.
     pub disable_resize_throttling: bool,
     pub disable_transactions: bool,
@@ -693,6 +698,7 @@ impl Default for Options {
             gestures: Default::default(),
             overview: Default::default(),
             blur: Default::default(),
+            icon_theme: crate::utils::icon_theme::DEFAULT.to_owned(),
             disable_resize_throttling: false,
             disable_transactions: false,
             deactivate_unfocused_windows: false,
@@ -709,6 +715,7 @@ impl Options {
             gestures: config.gestures,
             overview: config.overview,
             blur: config.blur,
+            icon_theme: crate::utils::icon_theme::DEFAULT.to_owned(),
             disable_resize_throttling: config.debug.disable_resize_throttling,
             disable_transactions: config.debug.disable_transactions,
             deactivate_unfocused_windows: config.debug.deactivate_unfocused_windows,
@@ -770,6 +777,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_progress: None,
             options: Rc::new(options),
             groups: Groups::default(),
+            search: None,
             host: Host::default(),
         };
         // The layout engine sees the session from the start, so that it can answer queries.
@@ -801,6 +809,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_progress: None,
             options: opts,
             groups: Groups::default(),
+            search: None,
             host: Host::default(),
         };
         tiling::engine::ensure_loaded(&layout.options.tiling);
@@ -2090,6 +2099,18 @@ impl<W: LayoutElement> Layout<W> {
         mon.node_under(pos_within_output)
     }
 
+    /// Whether the running search's field is drawn at the point, wherever the engine put it.
+    pub fn is_on_search_field(
+        &self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        self.search_active()
+            && self
+                .monitor_for_output(output)
+                .is_some_and(|mon| mon.is_on_search_field(pos_within_output))
+    }
+
     /// Returns the window under the cursor and the hit type.
     pub fn window_under(
         &self,
@@ -2344,6 +2365,13 @@ impl<W: LayoutElement> Layout<W> {
             );
             for window in &group.windows {
                 assert!(grouped.insert(*window), "a window is in one group at most");
+            }
+        }
+
+        if let Some(search) = &self.search {
+            let mut matched = HashSet::new();
+            for hit in search.hits() {
+                assert!(matched.insert(hit.window), "a window matches a search once");
             }
         }
     }
@@ -2662,7 +2690,27 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        self.update_options(Options::from_config(config));
+        // The icon theme isn't in the config.
+        let icon_theme = self.options.icon_theme.clone();
+        self.update_options(Options {
+            icon_theme,
+            ..Options::from_config(config)
+        });
+    }
+
+    /// Sets the icon theme that image nodes look icons up in. Returns whether it changed.
+    pub fn set_icon_theme(&mut self, theme: &str) -> bool {
+        if self.options.icon_theme == theme {
+            return false;
+        }
+
+        let options = Options {
+            icon_theme: theme.to_owned(),
+            ..Options::clone(&self.options)
+        };
+        self.update_options(options);
+        self.flush_engine();
+        true
     }
 
     fn update_options(&mut self, options: Options) {
@@ -3491,8 +3539,13 @@ impl<W: LayoutElement> Layout<W> {
 
         let tile_pos = ws_geo.loc + tile_offset.upscale(zoom);
 
+        // A tile that the layout draws moved, scaled or zoomed is grabbed where it's drawn.
+        let pos_within_workspace = (start_pos_within_output - ws_geo.loc).downscale(zoom);
         let pointer_offset_within_window =
-            start_pos_within_output - tile_pos - window_offset.upscale(zoom);
+            match ws.pos_within_tile(&window_id, pos_within_workspace) {
+                Some(pos_within_tile) => (pos_within_tile - window_offset).upscale(zoom),
+                None => start_pos_within_output - tile_pos - window_offset.upscale(zoom),
+            };
         let window_size = tile.window_size().upscale(zoom);
         let pointer_ratio_within_window = (
             f64::clamp(pointer_offset_within_window.x / window_size.w, 0., 1.),

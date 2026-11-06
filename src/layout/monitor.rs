@@ -1305,6 +1305,14 @@ impl<W: LayoutElement> Monitor<W> {
         })
     }
 
+    pub fn is_on_search_field(&self, pos_within_output: Point<f64, Logical>) -> bool {
+        if self.overview_progress.is_some() {
+            return false;
+        }
+        self.workspace_under(pos_within_output)
+            .is_some_and(|(ws, geo)| ws.is_on_search_field(pos_within_output - geo.loc))
+    }
+
     pub fn resize_edges_under(&self, pos_within_output: Point<f64, Logical>) -> Option<ResizeEdge> {
         if self.overview_progress.is_some() {
             return None;

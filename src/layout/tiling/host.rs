@@ -12,6 +12,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use niri_config::{OutputName, TilingOption, WorkspaceReference};
@@ -20,8 +21,8 @@ use serde_json::{json, Value};
 use smithay::utils::{Logical, Point, Rectangle};
 
 use super::protocol::{
-    CameraChange, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SyncInfo, TreeOp,
-    Verdict, Wh, WindowChange, Xy,
+    CameraChange, Grab, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SearchInfo,
+    SyncInfo, TimerStart, TreeOp, Verdict, Wh, WindowChange, Xy,
 };
 use super::{engine, TilingSpace};
 use crate::layout::monitor::InsertWorkspace;
@@ -35,6 +36,11 @@ use crate::utils::{output_size, ResizeEdge};
 /// Most rounds of sending events and what changed because of them in one flush, in case the layout
 /// keeps answering what it's told.
 const MAX_ROUNDS: usize = 8;
+
+/// Longest wait, in milliseconds, that bento schedules a timer for, and most timers that can be
+/// waiting at once, whatever the layout asks, so that it can't flood bento's event loop.
+const MAX_TIMER_DELAY_MS: u64 = 3_600_000;
+const MAX_TIMERS: usize = 128;
 
 /// Calls in a row that may run out of time or fail before bento gives up on the engine and runs
 /// the fallback one, so that an engine that keeps failing can't stall every frame.
@@ -87,6 +93,18 @@ pub fn queue_with_transaction(event: Value, transaction: Option<Transaction>) {
     }
 }
 
+/// Queues an event even while what the layout asked for is carried out, for events that aren't
+/// about what the layout did, like the keyboard going back to the apps.
+fn queue_unsilenced(event: Value) {
+    QUEUE.with_borrow_mut(|queue| {
+        queue.push(Queued {
+            event,
+            anim: None,
+            transaction: None,
+        })
+    });
+}
+
 /// Runs something that carries out what the layout asked for, which the layout isn't told
 /// about: events it causes aren't queued.
 fn silenced<R>(f: impl FnOnce() -> R) -> R {
@@ -127,11 +145,82 @@ pub fn query(event: Value) -> Option<Value> {
     }
 }
 
+/// A move or resize with the pointer that the layout asked for while handling a press on one of
+/// its nodes, for the input code that delivered the press to start.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeGrab<Id> {
+    Move(Id),
+    Resize { window: Id, edges: ResizeEdge },
+}
+
 /// A drag over a workspace's canvas, as the layout last heard.
 #[derive(Debug)]
 struct Drag {
     workspace: u64,
     last: Value,
+}
+
+/// What bento's event loop is to do about the layout's timers, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerRequest {
+    /// Call [`Layout::fire_engine_timer`] with the same `instance` and `id` after `delay`.
+    Start {
+        instance: u64,
+        id: u64,
+        delay: Duration,
+    },
+    /// Forget a timer that was started.
+    Cancel { instance: u64, id: u64 },
+    /// Forget every timer that was started: the instance they belong to is gone.
+    CancelAll,
+}
+
+/// Who has the keyboard focus, which decides whether the layout can take the keyboard.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardOwner {
+    /// The layout's windows, or nothing on its workspaces.
+    #[default]
+    Layout,
+    LockScreen,
+    /// Anything else, like a layer surface or the overview.
+    Other,
+}
+
+/// Why the keyboard went back to the apps, when it wasn't the layout that gave it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardRelease {
+    Escape,
+    Click,
+    Lock,
+    Focus,
+}
+
+impl KeyboardRelease {
+    fn reason(self) -> &'static str {
+        match self {
+            KeyboardRelease::Escape => "escape",
+            KeyboardRelease::Click => "click",
+            KeyboardRelease::Lock => "lock",
+            KeyboardRelease::Focus => "focus",
+        }
+    }
+}
+
+/// A key that the layout gets while it holds the keyboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineKey {
+    /// The key's xkb name with the modifiers applied, like `A` or `Return`.
+    pub name: String,
+    /// What the key types, or nothing.
+    pub text: String,
+    /// Shift, Ctrl, Alt and Super.
+    pub modifiers: [bool; 4],
+    pub pressed: bool,
+    pub repeat: bool,
+}
+
+fn modifiers_json([shift, ctrl, alt, logo]: [bool; 4]) -> Value {
+    json!({ "shift": shift, "ctrl": ctrl, "alt": alt, "super": logo })
 }
 
 /// What the layout engine was told about the session, and what it asked bento to do that needs
@@ -152,6 +241,8 @@ pub struct Host {
     /// Every group, as the layout was last told. It hears about all of them at once, since there
     /// are few.
     groups: Option<Vec<GroupInfo>>,
+    /// The search, as the layout was last told: it only hears about what changed.
+    search: Option<SearchInfo>,
     focused_monitor: Option<String>,
     options: Option<Value>,
     /// What to tell the layout about again, because it changed it and bento may not agree.
@@ -161,9 +252,26 @@ pub struct Host {
     /// Whether the layout's exposed state changed since it was last asked for.
     state_changed: bool,
     drag: Option<Drag>,
+    /// What the layout asked to start with the pointer, until the input code takes it.
+    grab: Option<Grab>,
     /// Whether events are being sent, which carrying out what the layout answers doesn't start
     /// again.
     flushing: bool,
+    /// Increases with every new instance of the layout, so that what belongs to an older one, like
+    /// a timer that comes due, can tell.
+    instance: u64,
+    /// Ids of the timers that this instance has waiting.
+    timers: HashSet<u64>,
+    /// What the event loop is to do about timers, until it asks.
+    timer_requests: Vec<TimerRequest>,
+    /// Whether the layout holds the keyboard.
+    keyboard_grabbed: bool,
+    keyboard_owner: KeyboardOwner,
+    /// Whether the layout was last told that it can take the keyboard.
+    keyboard_told: Option<bool>,
+    /// The modifiers held (shift, ctrl, alt, super), and as the layout was last told.
+    modifiers: [bool; 4],
+    modifiers_told: [bool; 4],
 }
 
 impl Host {
@@ -173,12 +281,22 @@ impl Host {
         self.workspaces.clear();
         self.windows.clear();
         self.groups = None;
+        self.search = None;
         self.focused_monitor = None;
         self.options = None;
         self.resend_all = false;
         self.resend_workspaces.clear();
         self.resend_windows.clear();
         self.drag = None;
+        self.grab = None;
+        self.instance += 1;
+        // The layout that held the keyboard and waited for timers is gone, and isn't told.
+        self.keyboard_grabbed = false;
+        self.keyboard_told = None;
+        if !self.timers.is_empty() {
+            self.timers.clear();
+            self.timer_requests.push(TimerRequest::CancelAll);
+        }
     }
 }
 
@@ -360,10 +478,39 @@ impl<W: LayoutElement> Layout<W> {
             .collect()
     }
 
+    /// What the layout is told about the running search.
+    fn search_info(&self) -> Option<SearchInfo> {
+        let search = self.search.as_ref()?;
+        Some(SearchInfo {
+            query: search.field().text().to_owned(),
+            hits: search
+                .hits()
+                .iter()
+                .map(|hit| (hit.window, hit.rank as u8))
+                .collect(),
+        })
+    }
+
+    /// Ends the running search, telling the layout, which answers with the window it picked when
+    /// asked to. The layout hears the latest matches before the search ends, since Enter picks
+    /// from them.
+    pub(in crate::layout) fn end_search(&mut self, pick: bool) -> Option<W::Id> {
+        let id = self.search.as_ref()?.id();
+        let result = self.engine_event(json!({ "type": "searchend", "pick": pick }));
+        // The layout may have started another search as this one ended, which stays.
+        if self.search.as_ref().is_some_and(|search| search.id() == id) {
+            self.search = None;
+        }
+        let picked = result?["picked"].as_u64()?;
+        self.window_by_engine_id(picked)
+    }
+
     /// What changed since the layout was last told, for the events that are about to go to it.
     fn build_sync(&mut self, queued: &[Queued]) -> SyncInfo {
         let snapshot = self.snapshot(false);
         let groups = self.group_infos();
+        let search = self.search_info();
+        let keyboard_available = self.keyboard_available();
         let host = &mut self.host;
         let mut sync = SyncInfo::default();
         let resend_all = std::mem::take(&mut host.resend_all);
@@ -458,6 +605,11 @@ impl<W: LayoutElement> Layout<W> {
             sync.groups = Some(groups);
         }
 
+        if host.search != search {
+            sync.search = search.clone();
+            host.search = search;
+        }
+
         sync.focus_changed = host.focused_monitor != snapshot.focused_monitor;
         host.focused_monitor = snapshot.focused_monitor.clone();
         sync.focused_monitor = snapshot.focused_monitor;
@@ -466,6 +618,11 @@ impl<W: LayoutElement> Layout<W> {
         if host.options.as_ref() != Some(&options) {
             host.options = Some(options.clone());
             sync.options = Some(options);
+        }
+
+        if host.keyboard_told != Some(keyboard_available) {
+            host.keyboard_told = Some(keyboard_available);
+            sync.keyboard_available = Some(keyboard_available);
         }
 
         sync
@@ -485,10 +642,17 @@ impl<W: LayoutElement> Layout<W> {
             return false;
         }
 
-        // The new instance starts from the session as it is.
+        // The new instance starts from the session as it is, with no search.
         take_queue();
         self.host.reset();
+        self.forget_search();
         self.host.generation = generation;
+
+        // What the previous instance turned off around windows comes back on, since what it drew
+        // in its place is gone too.
+        for ws in self.workspaces_mut() {
+            ws.scrolling_mut().reset_decorations();
+        }
 
         let snapshot = self.snapshot(true);
         let windows = snapshot.windows.clone();
@@ -526,6 +690,10 @@ impl<W: LayoutElement> Layout<W> {
         sync.workspaces = snapshot.workspaces;
         sync.groups = Some(groups);
         sync.focused_monitor = snapshot.focused_monitor;
+        let available = self.keyboard_available();
+        self.host.keyboard_told = Some(available);
+        sync.keyboard_available = Some(available);
+        self.host.modifiers_told = self.host.modifiers;
 
         for ws in self.workspaces_mut() {
             ws.scrolling_mut().reset_tree();
@@ -537,6 +705,7 @@ impl<W: LayoutElement> Layout<W> {
             "savedState": engine::take_state(),
             "windows": windows,
             "focused": focused,
+            "modifiers": modifiers_json(self.host.modifiers),
         });
         if self.send_engine(event, Some(sync), None, None).is_none() {
             self.host.generation = 0;
@@ -565,6 +734,7 @@ impl<W: LayoutElement> Layout<W> {
     fn flush_rounds(&mut self) {
         for _ in 0..MAX_ROUNDS {
             self.prune_groups();
+            self.refresh_search();
             if !self.ensure_engine() {
                 take_queue();
                 break;
@@ -599,6 +769,7 @@ impl<W: LayoutElement> Layout<W> {
             ws.scrolling_mut().place_unplaced();
             ws.scrolling_mut().stack_by_tree();
         }
+        self.sync_search_field();
     }
 
     /// Sends an event to the layout, with what changed before it, and carries out the answer.
@@ -690,6 +861,21 @@ impl<W: LayoutElement> Layout<W> {
             self.apply_op(op);
         }
 
+        // What's drawn goes first: windows move as the transitions of their nodes say, and as
+        // the decorations around them leave room.
+        let mut stacked = self.apply_tree_ops(out.tree);
+        for (id, decorations) in out.decorations {
+            if let Some(ws) = self
+                .workspace_of_window(id)
+                .and_then(|ws| self.workspace_mut(ws))
+            {
+                ws.scrolling_mut().set_decorations(id, decorations);
+            }
+        }
+        if out.grab.is_some() {
+            self.host.grab = out.grab;
+        }
+
         // Group what concerns each workspace.
         let mut changes: HashMap<u64, Vec<WindowChange>> = HashMap::new();
         for change in out.windows {
@@ -721,7 +907,13 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let mut stacked = self.apply_tree_ops(out.tree);
+        self.apply_timers(out.timers, out.cleared_timers);
+        match out.keyboard {
+            Some(true) => self.take_keyboard(),
+            Some(false) => self.host.keyboard_grabbed = false,
+            None => (),
+        }
+
         for (ws_id, window) in out.focus {
             self.host.resend_workspaces.insert(ws_id);
             if let Some(ws) = self.workspace_mut(ws_id) {
@@ -790,6 +982,8 @@ impl<W: LayoutElement> Layout<W> {
                 self.groups.activate(group, window);
             }
             Op::DissolveGroup { group } => self.groups.dissolve(group),
+            Op::Search { scope } => self.start_search(scope),
+            Op::EndSearch => self.forget_search(),
         }
     }
 
@@ -985,6 +1179,138 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
         touched
+    }
+
+    /// Starts and cancels the timers that the layout asked for. Beyond the limit, timers aren't
+    /// started, whatever the layout asks.
+    fn apply_timers(&mut self, started: Vec<TimerStart>, cleared: Vec<u64>) {
+        let instance = self.host.instance;
+        for id in cleared {
+            if self.host.timers.remove(&id) {
+                self.host
+                    .timer_requests
+                    .push(TimerRequest::Cancel { instance, id });
+            }
+        }
+        for timer in started {
+            if self.host.timers.len() >= MAX_TIMERS {
+                warn!("the layout engine has {MAX_TIMERS} timers waiting, ignoring more");
+                break;
+            }
+            if self.host.timers.insert(timer.id) {
+                self.host.timer_requests.push(TimerRequest::Start {
+                    instance,
+                    id: timer.id,
+                    delay: Duration::from_millis(timer.ms.min(MAX_TIMER_DELAY_MS)),
+                });
+            }
+        }
+    }
+
+    /// What bento's event loop is to do about the layout's timers since it last asked.
+    pub fn take_timer_requests(&mut self) -> Vec<TimerRequest> {
+        std::mem::take(&mut self.host.timer_requests)
+    }
+
+    /// Tells the layout that a timer came due. Nothing happens if it was cleared, or the instance
+    /// of the layout that started it is gone.
+    pub fn fire_engine_timer(&mut self, instance: u64, id: u64) {
+        let current = self.host.generation != 0 && self.host.generation == engine::generation();
+        if instance != self.host.instance || !current || !self.host.timers.remove(&id) {
+            return;
+        }
+        queue(json!({ "type": "timer", "id": id }));
+        self.flush_engine();
+    }
+
+    /// Whether the layout holds the keyboard: keys go to it and not to the apps.
+    pub fn keyboard_grabbed(&self) -> bool {
+        self.host.keyboard_grabbed && self.host.generation == engine::generation()
+    }
+
+    /// Tells the layout who has the keyboard focus. It can't take the keyboard from anyone but the
+    /// layout's own windows, and loses it when the focus goes elsewhere.
+    pub fn set_keyboard_owner(&mut self, owner: KeyboardOwner) {
+        if self.host.keyboard_owner == owner {
+            return;
+        }
+        self.host.keyboard_owner = owner;
+        match owner {
+            KeyboardOwner::Layout => (),
+            KeyboardOwner::LockScreen => self.release_keyboard(KeyboardRelease::Lock),
+            KeyboardOwner::Other => self.release_keyboard(KeyboardRelease::Focus),
+        }
+        // It's told that it can or can't take the keyboard.
+        self.flush_engine();
+    }
+
+    /// Whether the layout can take the keyboard: its windows have the focus, and no search has
+    /// the keys, since the keyboard has one owner at a time.
+    fn keyboard_available(&self) -> bool {
+        self.host.keyboard_owner == KeyboardOwner::Layout && !self.search_active()
+    }
+
+    /// The layout takes the keyboard, if the layout's windows have the focus.
+    fn take_keyboard(&mut self) {
+        if self.host.keyboard_grabbed {
+            return;
+        }
+        // A search that has the keys keeps them.
+        if self.search_active() {
+            self.queue_keyboard_release(KeyboardRelease::Focus);
+            return;
+        }
+        match self.host.keyboard_owner {
+            KeyboardOwner::Layout => self.host.keyboard_grabbed = true,
+            // It took the keyboard after being told it can, and bento's focus moved since.
+            KeyboardOwner::LockScreen => self.queue_keyboard_release(KeyboardRelease::Lock),
+            KeyboardOwner::Other => self.queue_keyboard_release(KeyboardRelease::Focus),
+        }
+    }
+
+    pub(in crate::layout) fn queue_keyboard_release(&mut self, why: KeyboardRelease) {
+        self.host.keyboard_grabbed = false;
+        queue_unsilenced(json!({ "type": "keyboardrelease", "reason": why.reason() }));
+    }
+
+    /// Takes the keyboard back from the layout, which is told why. Does nothing if it doesn't hold
+    /// it.
+    pub fn release_keyboard(&mut self, why: KeyboardRelease) {
+        if self.keyboard_grabbed() {
+            self.queue_keyboard_release(why);
+            self.flush_engine();
+        }
+    }
+
+    /// Gives a key to the layout, which holds the keyboard. Escape that it doesn't handle gives the
+    /// keyboard back to the apps.
+    pub fn engine_key(&mut self, key: EngineKey) {
+        if !self.keyboard_grabbed() {
+            return;
+        }
+        let kind = if key.pressed { "keydown" } else { "keyup" };
+        let event = json!({
+            "type": kind,
+            "key": key.name,
+            "text": key.text,
+            "modifiers": modifiers_json(key.modifiers),
+            "repeat": key.repeat,
+        });
+        let verdict = self.engine_verdict(event).unwrap_or_default();
+        if key.pressed && key.name == "Escape" && !verdict.prevented {
+            self.release_keyboard(KeyboardRelease::Escape);
+        }
+    }
+
+    /// Tells the layout the modifiers held (shift, ctrl, alt, super) if they changed.
+    pub fn set_modifiers(&mut self, modifiers: [bool; 4]) {
+        self.host.modifiers = modifiers;
+        if self.host.modifiers_told == modifiers {
+            return;
+        }
+        self.host.modifiers_told = modifiers;
+        queue(json!({ "type": "modifierschange", "modifiers": modifiers_json(modifiers) }));
+        self.flush_engine();
     }
 
     /// Whether the layout's exposed state changed since this was last called.
@@ -1183,6 +1509,9 @@ impl<W: LayoutElement> Layout<W> {
     /// Delivers a pointer event to a node that the layout draws, which bubbles to its parents.
     /// `pointer` is on the workspace's canvas, `button` is 1, 2 or 3 for the left, middle and right
     /// button, and 0 for events that aren't about one.
+    ///
+    /// A press can make the layout begin a move or resize, which the caller takes afterwards with
+    /// [`Layout::take_node_grab`].
     #[allow(clippy::too_many_arguments)]
     pub fn node_pointer_event(
         &mut self,
@@ -1193,16 +1522,31 @@ impl<W: LayoutElement> Layout<W> {
         modifiers: [bool; 4],
         delta: Point<f64, Logical>,
     ) {
-        let [shift, ctrl, alt, logo] = modifiers;
+        if event == "pointerdown" {
+            self.host.grab = None;
+        }
         self.engine_event(json!({
             "type": "pointer",
             "node": node,
             "event": event,
             "pointer": Xy::from_point(pointer),
             "button": button,
-            "modifiers": { "shift": shift, "ctrl": ctrl, "alt": alt, "super": logo },
+            "modifiers": modifiers_json(modifiers),
             "delta": Xy::from_point(delta),
         }));
+    }
+
+    /// The move or resize that the layout began while it handled the last press on one of its
+    /// nodes, if it did. The input code starts the same grab as for a client's request, and the
+    /// layout hears about it as for any move or resize with the pointer.
+    pub fn take_node_grab(&mut self) -> Option<NodeGrab<W::Id>> {
+        match self.host.grab.take()? {
+            Grab::Move { window } => Some(NodeGrab::Move(self.window_by_engine_id(window)?)),
+            Grab::Resize { window, edges } => Some(NodeGrab::Resize {
+                window: self.window_by_engine_id(window)?,
+                edges: edges.to_resize_edge(),
+            }),
+        }
     }
 
     /// Tells the layout that the pointer is on the node `hit`, or on none, so that the nodes it

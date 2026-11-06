@@ -1148,6 +1148,8 @@ fn starting_over_keeps_only_the_windows_given() {
     assert!(tree.pointer_left().is_empty());
 }
 
+// Zoom.
+
 // Hit testing with windows.
 
 #[test]
@@ -1170,11 +1172,18 @@ fn a_window_over_a_node_takes_the_pointer_from_it() {
     // The window doesn't cover anything unless the caller says so.
     assert_eq!(tree.hit(point(50., 50.)).as_deref(), Some("n1"));
     assert_eq!(
-        tree.hit_with(point(50., 50.), &|_| false).as_deref(),
+        tree.hit_with(point(50., 50.), &|_| WindowHit::Through)
+            .as_deref(),
         Some("n1")
     );
 
-    let covers = |window: u64| window == 7;
+    let covers = |window: u64| {
+        if window == 7 {
+            WindowHit::Covers
+        } else {
+            WindowHit::Through
+        }
+    };
     assert_eq!(tree.hit_with(point(50., 50.), &covers), None);
     // What's drawn on the window is above it.
     assert_eq!(
@@ -1194,10 +1203,80 @@ fn a_window_under_a_node_does_not_take_the_pointer_from_it() {
         json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
     );
     assert_eq!(
-        tree.hit_with(point(50., 50.), &|window| window == 7)
+        tree.hit_with(point(50., 50.), &|_| WindowHit::Covers)
             .as_deref(),
         Some("n1")
     );
+}
+
+#[test]
+fn a_window_whose_input_goes_to_the_engine_is_hit_like_a_node() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+    tree.add_window(8);
+
+    let node = |window: u64| {
+        if window == 8 {
+            WindowHit::Node
+        } else {
+            WindowHit::Through
+        }
+    };
+    // The window is above the node, and the caller says where the window is.
+    assert_eq!(tree.hit_with(point(50., 50.), &node).as_deref(), Some("w8"));
+
+    // A window that isn't hit leaves what's below it.
+    assert_eq!(
+        tree.hit_with(point(50., 50.), &|_| WindowHit::Through)
+            .as_deref(),
+        Some("n1")
+    );
+
+    // The pointer can be on it: it's in the path of events, with the nodes it's in.
+    set(&mut tree, "w8", json!({ "input": "engine" }));
+    assert_eq!(
+        tree.pointer_over(Some("w8")),
+        [("w8".to_owned(), "pointerenter")]
+    );
+}
+
+#[test]
+fn only_a_window_node_has_input() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(&mut tree, "n1", "r1", json!({}));
+
+    assert_eq!(tree.window_input(7), Input::App);
+    set(&mut tree, "w7", json!({ "input": "none" }));
+    assert_eq!(tree.window_input(7), Input::None);
+    set(&mut tree, "w7", json!({ "input": "engine" }));
+    assert_eq!(tree.window_input(7), Input::Engine);
+    set(&mut tree, "w7", json!({ "input": "app" }));
+    assert_eq!(tree.window_input(7), Input::App);
+
+    assert_eq!(
+        error(
+            &mut tree,
+            json!({ "op": "set", "id": "n1", "props": { "input": "none" } })
+        ),
+        "op 0: `input` is only for window nodes"
+    );
+    assert_eq!(
+        error(
+            &mut tree,
+            json!({ "op": "create", "id": "n2", "kind": "box", "props": { "input": "none" } })
+        ),
+        "op 0: `input` is only for window nodes"
+    );
+    // A window that's gone has the default.
+    tree.remove_window(7);
+    assert_eq!(tree.window_input(7), Input::App);
 }
 
 #[test]
@@ -1266,4 +1345,533 @@ fn a_transform_is_the_same_move_around_another_rect() {
         moved(other, around, p)
     );
     assert_eq!(around.scale, 2.);
+}
+
+// Rounded clips.
+
+#[test]
+fn a_clip_with_a_radius_cuts_off_its_corners() {
+    let clip = Clip {
+        rect: rect(0., 0., 100., 50.),
+        radius: 20.,
+    };
+
+    assert!(clip.contains(point(50., 25.)));
+    // On the straight parts of the edge.
+    assert!(clip.contains(point(0., 25.)));
+    assert!(clip.contains(point(50., 0.)));
+    // Inside the corner's circle, which has its centre at (20, 20).
+    assert!(clip.contains(point(8., 8.)));
+    assert!(clip.contains(point(99., 25.)));
+    // In the square that the circle is cut from.
+    assert!(!clip.contains(point(1., 1.)));
+    assert!(!clip.contains(point(99., 1.)));
+    assert!(!clip.contains(point(1., 49.)));
+    assert!(!clip.contains(point(99., 49.)));
+    // Outside the rect.
+    assert!(!clip.contains(point(-1., 25.)));
+    assert!(!clip.contains(point(100., 25.)));
+}
+
+#[test]
+fn a_radius_larger_than_half_the_clip_makes_it_a_pill() {
+    let clip = Clip {
+        rect: rect(0., 0., 100., 20.),
+        radius: 500.,
+    };
+
+    // The ends are half circles of radius 10.
+    assert!(clip.contains(point(50., 10.)));
+    assert!(clip.contains(point(10., 10.)));
+    assert!(clip.contains(point(2., 10.)));
+    assert!(!clip.contains(point(1., 1.)));
+    assert!(!clip.contains(point(99., 19.)));
+}
+
+#[test]
+fn a_clip_without_a_radius_is_its_rect() {
+    let clip = Clip {
+        rect: rect(10., 10., 20., 20.),
+        radius: 0.,
+    };
+
+    assert!(clip.contains(point(10., 10.)));
+    assert!(clip.contains(point(29.9, 29.9)));
+    assert!(!clip.contains(point(30., 20.)));
+    assert!(!clip.contains(point(9.9, 20.)));
+}
+
+#[test]
+fn what_a_rounded_clip_cuts_off_is_not_hit() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "clip": true, "cornerRadius": 20 }),
+    );
+    add(
+        &mut tree,
+        "n2",
+        "n1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+
+    assert_eq!(tree.hit(point(50., 50.)).as_deref(), Some("n2"));
+    assert_eq!(tree.hit(point(10., 10.)).as_deref(), Some("n2"));
+    assert_eq!(tree.hit(point(2., 2.)), None);
+    assert_eq!(tree.hit(point(98., 98.)), None);
+
+    // Without the radius the corners are there.
+    set(&mut tree, "n1", json!({ "cornerRadius": 0 }));
+    assert_eq!(tree.hit(point(2., 2.)).as_deref(), Some("n2"));
+}
+
+#[test]
+fn a_clips_radius_scales_with_its_ancestors() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "transform": { "scale": 0.5 } }),
+    );
+    add(
+        &mut tree,
+        "n2",
+        "n1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "clip": true, "cornerRadius": 8 }),
+    );
+    add(&mut tree, "n3", "n2", json!({}));
+
+    assert_eq!(
+        tree.drawn("n3").unwrap().clip,
+        Some(Clip {
+            rect: rect(25., 25., 50., 50.),
+            radius: 4.
+        })
+    );
+}
+
+// Opacity of a node with its children.
+
+#[test]
+fn a_node_with_children_and_less_opacity_is_drawn_as_a_group() {
+    let (mut tree, _) = tree();
+    add(&mut tree, "n1", "r1", json!({ "opacity": 0.5 }));
+    add(&mut tree, "n2", "n1", json!({ "opacity": 0.5 }));
+    add(&mut tree, "n3", "r1", json!({ "opacity": 0.5 }));
+
+    // The group has the opacity, and what's in it is drawn at the full one.
+    let group = tree.drawn("n1").unwrap();
+    assert_eq!(group.opacity, 0.5);
+    assert_eq!(group.local_opacity, 1.);
+    assert!(tree.nodes["n1"].fades_as_group());
+
+    // A child's own opacity is its own in the group, and the whole of it for the caller.
+    let child = tree.drawn("n2").unwrap();
+    assert_eq!(child.opacity, 0.25);
+    assert_eq!(child.local_opacity, 0.5);
+    assert!(!tree.nodes["n2"].fades_as_group());
+
+    // Without children there's nothing to overlap, so it's drawn as it is.
+    let single = tree.drawn("n3").unwrap();
+    assert_eq!(single.opacity, 0.5);
+    assert_eq!(single.local_opacity, 0.5);
+    assert!(!tree.nodes["n3"].fades_as_group());
+}
+
+#[test]
+fn a_node_at_full_opacity_is_not_a_group() {
+    let (mut tree, _) = tree();
+    add(&mut tree, "n1", "r1", json!({}));
+    add(&mut tree, "n2", "n1", json!({ "opacity": 0.5 }));
+
+    assert!(!tree.nodes["n1"].fades_as_group());
+    assert_eq!(tree.drawn("n1").unwrap().local_opacity, 1.);
+    // The child isn't in a group, so it's drawn with its opacity.
+    assert_eq!(tree.drawn("n2").unwrap().local_opacity, 0.5);
+}
+
+#[test]
+fn groups_nest_and_each_draws_what_is_in_it_at_full_opacity() {
+    let (mut tree, _) = tree();
+    add(&mut tree, "n1", "r1", json!({ "opacity": 0.5 }));
+    add(&mut tree, "n2", "n1", json!({ "opacity": 0.5 }));
+    add(&mut tree, "n3", "n2", json!({}));
+
+    let inner = tree.drawn("n2").unwrap();
+    assert_eq!(inner.opacity, 0.25);
+    assert_eq!(inner.local_opacity, 1.);
+    let leaf = tree.drawn("n3").unwrap();
+    assert_eq!(leaf.opacity, 0.25);
+    assert_eq!(leaf.local_opacity, 1.);
+}
+
+#[test]
+fn a_window_in_a_group_is_drawn_with_the_opacity_of_all_its_ancestors() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(&mut tree, "n1", "r1", json!({ "opacity": 0.5 }));
+    apply(
+        &mut tree,
+        json!([{ "op": "append", "parent": "n1", "child": "w7" }]),
+    );
+
+    // The caller draws windows, so the opacity of the group is theirs.
+    assert_eq!(tree.drawn("w7").unwrap().opacity, 0.5);
+}
+
+#[test]
+fn an_opacity_that_changes_changes_whether_it_is_a_group() {
+    let (mut tree, mut clock) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "transitions": { "opacity": linear(100) } }),
+    );
+    add(&mut tree, "n2", "n1", json!({}));
+    assert!(!tree.nodes["n1"].fades_as_group());
+
+    set(&mut tree, "n1", json!({ "opacity": 0. }));
+    clock.set_unadjusted(Duration::from_millis(50));
+    assert!(tree.nodes["n1"].fades_as_group());
+}
+
+// Nodes entering.
+
+fn enter_box(tree: &mut Tree, id: &str, props: Value) {
+    apply(
+        tree,
+        json!([{ "op": "create", "id": id, "kind": "box", "props": props }]),
+    );
+}
+
+fn append(tree: &mut Tree, parent: &str, child: &str) {
+    apply(
+        tree,
+        json!([{ "op": "append", "parent": parent, "child": child }]),
+    );
+}
+
+#[test]
+fn a_node_enters_from_its_enter_props_with_its_transitions() {
+    let (mut tree, mut clock) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({
+            "rect": props_rect(0., 0., 100., 100.),
+            "transitions": { "opacity": linear(100), "transform": linear(200) },
+            "enter": { "opacity": 0, "transform": { "scale": 0.5, "y": 20 } },
+        }),
+    );
+
+    // It's not drawn yet, so nothing runs.
+    assert!(!tree.are_animations_ongoing());
+
+    append(&mut tree, "r1", "n1");
+    assert!(tree.are_animations_ongoing());
+    let drawn = tree.drawn("n1").unwrap();
+    assert_eq!(drawn.opacity, 0.);
+    assert_eq!(
+        drawn.transform,
+        NodeTransform {
+            scale: 0.5,
+            x: 0.,
+            y: 20.
+        }
+    );
+
+    clock.set_unadjusted(Duration::from_millis(50));
+    let drawn = tree.drawn("n1").unwrap();
+    assert!((drawn.opacity - 0.5).abs() < 1e-9);
+    assert!((drawn.transform.scale - 0.625).abs() < 1e-9);
+    assert!((drawn.transform.y - 15.).abs() < 1e-9);
+
+    clock.set_unadjusted(Duration::from_millis(100));
+    assert_eq!(tree.drawn("n1").unwrap().opacity, 1.);
+    tree.advance_animations();
+    // The transform is slower.
+    assert!(tree.are_animations_ongoing());
+
+    clock.set_unadjusted(Duration::from_millis(200));
+    assert_eq!(tree.drawn("n1").unwrap().transform, NodeTransform::IDENTITY);
+    tree.advance_animations();
+    assert!(!tree.are_animations_ongoing());
+}
+
+#[test]
+fn a_node_enters_from_its_rect_radius_and_background() {
+    let (mut tree, mut clock) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({
+            "rect": props_rect(0., 0., 100., 20.),
+            "cornerRadius": 10,
+            "background": "#ffffff",
+            "transitions": {
+                "rect": linear(100),
+                "cornerRadius": linear(100),
+                "background": linear(100),
+            },
+            "enter": {
+                "rect": props_rect(0., 0., 0., 20.),
+                "cornerRadius": 0,
+                "background": null,
+            },
+        }),
+    );
+    append(&mut tree, "r1", "n1");
+
+    let drawn = tree.drawn("n1").unwrap();
+    assert_eq!(drawn.rect, rect(0., 0., 0., 20.));
+    assert_eq!(tree.nodes["n1"].corner_radius.current(), 0.);
+    assert_eq!(tree.nodes["n1"].background.current().unwrap().solid().a, 0.);
+
+    clock.set_unadjusted(Duration::from_millis(50));
+    assert_eq!(tree.drawn("n1").unwrap().rect, rect(0., 0., 50., 20.));
+    assert_eq!(tree.nodes["n1"].corner_radius.current(), 5.);
+    assert!((tree.nodes["n1"].background.current().unwrap().solid().a - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn a_prop_without_a_transition_does_not_start_from_its_enter_value() {
+    let (mut tree, _) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({ "opacity": 1, "enter": { "opacity": 0 } }),
+    );
+    append(&mut tree, "r1", "n1");
+
+    assert!(!tree.are_animations_ongoing());
+    assert_eq!(tree.drawn("n1").unwrap().opacity, 1.);
+}
+
+#[test]
+fn a_node_that_enters_where_it_already_is_does_not_animate() {
+    let (mut tree, _) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({
+            "opacity": 0.5,
+            "transitions": { "opacity": linear(100) },
+            "enter": { "opacity": 0.5 },
+        }),
+    );
+    append(&mut tree, "r1", "n1");
+
+    assert!(!tree.are_animations_ongoing());
+}
+
+#[test]
+fn changes_before_a_node_is_in_a_tree_do_not_animate() {
+    let (mut tree, _) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({ "opacity": 1, "transitions": { "opacity": linear(100) } }),
+    );
+    set(&mut tree, "n1", json!({ "opacity": 0.5 }));
+    assert!(!tree.are_animations_ongoing());
+
+    append(&mut tree, "r1", "n1");
+    assert!(!tree.are_animations_ongoing());
+    assert_eq!(tree.drawn("n1").unwrap().opacity, 0.5);
+}
+
+#[test]
+fn enter_can_be_set_until_the_node_is_in_a_tree() {
+    let (mut tree, _) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({ "transitions": { "opacity": linear(100) } }),
+    );
+    set(&mut tree, "n1", json!({ "enter": { "opacity": 0 } }));
+    append(&mut tree, "r1", "n1");
+    assert!(tree.are_animations_ongoing());
+    assert_eq!(tree.drawn("n1").unwrap().opacity, 0.);
+
+    let err = error(
+        &mut tree,
+        json!({ "op": "set", "id": "n1", "props": { "enter": { "opacity": 0.5 } } }),
+    );
+    assert!(err.contains("enter") && err.contains("already"), "{err}");
+
+    tree.add_window(7);
+    let err = error(
+        &mut tree,
+        json!({ "op": "set", "id": "w7", "props": { "enter": {} } }),
+    );
+    assert!(err.contains("enter"), "{err}");
+}
+
+#[test]
+fn a_subtree_enters_when_its_top_is_added_to_the_tree() {
+    let (mut tree, mut clock) = tree();
+    let props = json!({
+        "transitions": { "opacity": linear(100) },
+        "enter": { "opacity": 0 },
+    });
+    enter_box(&mut tree, "n1", props.clone());
+    enter_box(&mut tree, "n2", props);
+    append(&mut tree, "n1", "n2");
+
+    // Neither is in a tree yet.
+    assert!(!tree.are_animations_ongoing());
+
+    append(&mut tree, "r1", "n1");
+    assert_eq!(tree.nodes["n1"].opacity.current(), 0.);
+    assert_eq!(tree.nodes["n2"].opacity.current(), 0.);
+
+    clock.set_unadjusted(Duration::from_millis(100));
+    assert_eq!(tree.nodes["n1"].opacity.current(), 1.);
+    assert_eq!(tree.nodes["n2"].opacity.current(), 1.);
+}
+
+#[test]
+fn a_node_that_is_moved_in_the_tree_does_not_enter_again() {
+    let (mut tree, mut clock) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({
+            "transitions": { "opacity": linear(100) },
+            "enter": { "opacity": 0 },
+        }),
+    );
+    add(&mut tree, "n2", "r1", json!({}));
+    append(&mut tree, "r1", "n1");
+
+    clock.set_unadjusted(Duration::from_millis(100));
+    tree.advance_animations();
+    assert!(!tree.are_animations_ongoing());
+
+    append(&mut tree, "n2", "n1");
+    assert!(!tree.are_animations_ongoing());
+    assert_eq!(tree.nodes["n1"].opacity.current(), 1.);
+}
+
+#[test]
+fn a_node_taken_to_another_tree_does_not_enter_again() {
+    let (mut tree, mut clock) = tree();
+    enter_box(
+        &mut tree,
+        "n1",
+        json!({
+            "transitions": { "opacity": linear(100) },
+            "enter": { "opacity": 0 },
+        }),
+    );
+    append(&mut tree, "r1", "n1");
+    clock.set_unadjusted(Duration::from_millis(100));
+    tree.advance_animations();
+
+    let taken = tree.take("n1").unwrap();
+    let mut other = Tree::new(2, clock.clone(), Animations::default());
+    assert!(other.put(taken, "r2", None));
+    assert!(!other.are_animations_ongoing());
+    assert_eq!(other.nodes["n1"].opacity.current(), 1.);
+}
+
+#[test]
+fn an_enter_prop_that_is_not_a_transitioning_one_is_an_error() {
+    let (mut tree, _) = tree();
+    let err = error(
+        &mut tree,
+        json!({ "op": "create", "id": "n1", "kind": "box", "props": { "enter": { "clip": true } } }),
+    );
+    assert!(err.contains("enter"), "{err}");
+    assert!(!tree.contains("n1"));
+}
+
+// Search nodes.
+
+#[test]
+fn a_search_node_takes_its_own_props() {
+    let (mut tree, _) = tree();
+    apply(
+        &mut tree,
+        json!([
+            {
+                "op": "create", "id": "n1", "kind": "search",
+                "props": {
+                    "rect": props_rect(0., 0., 200., 30.),
+                    "font": "sans 14",
+                    "color": "#fff",
+                    "background": "#000",
+                    "border": { "width": 1, "color": "#888" },
+                    "cornerRadius": 6,
+                    "placeholder": "Search windows",
+                },
+            },
+            { "op": "append", "parent": "r1", "child": "n1" },
+        ]),
+    );
+    let node = &tree.nodes["n1"];
+    assert_eq!(node.kind, NodeKind::Search);
+    assert_eq!(node.placeholder, "Search windows");
+    assert_eq!(node.font, "sans 14");
+
+    set(&mut tree, "n1", json!({ "placeholder": "Find" }));
+    assert_eq!(tree.nodes["n1"].placeholder, "Find");
+}
+
+#[test]
+fn a_search_node_has_no_text_of_its_own_and_placeholders_are_for_search_nodes() {
+    let (mut tree, _) = tree();
+    let create = |kind: &str, props: Value| json!({ "op": "create", "id": "n1", "kind": kind, "props": props });
+
+    assert!(error(&mut tree, create("search", json!({ "text": "hi" }))).contains("only for text"));
+    assert!(
+        error(&mut tree, create("search", json!({ "image": "firefox" })))
+            .contains("only for image")
+    );
+    assert!(
+        error(&mut tree, create("box", json!({ "placeholder": "hi" }))).contains("only for search")
+    );
+    assert!(
+        error(&mut tree, create("text", json!({ "placeholder": "hi" })))
+            .contains("only for search")
+    );
+}
+
+#[test]
+fn the_tree_keeps_the_field_that_search_nodes_draw() {
+    let (mut tree, _) = tree();
+    assert!(tree.search.is_none());
+
+    let mut field = Field::default();
+    field.apply(&crate::layout::search::Edit::Insert("fire".into()));
+    tree.set_search_field(Some(&field));
+    assert_eq!(tree.search.as_ref().map(Field::text), Some("fire"));
+
+    // Starting over for a new engine leaves it, since it's bento's.
+    tree.reset([]);
+    assert_eq!(tree.search.as_ref().map(Field::text), Some("fire"));
+
+    tree.set_search_field(None);
+    assert!(tree.search.is_none());
+}
+
+#[test]
+fn search_nodes_take_the_pointer_like_other_nodes_when_interactive() {
+    let (mut tree, _) = tree();
+    apply(
+        &mut tree,
+        json!([
+            {
+                "op": "create", "id": "n1", "kind": "search",
+                "props": { "rect": props_rect(0., 0., 100., 20.), "interactive": true },
+            },
+            { "op": "append", "parent": "r1", "child": "n1" },
+        ]),
+    );
+    assert_eq!(tree.hit(point(10., 10.)).as_deref(), Some("n1"));
+    assert_eq!(tree.hit(point(10., 50.)), None);
 }

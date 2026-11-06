@@ -12,7 +12,7 @@
 import { BentoEvent, QueryEvent, UnloadEvent, dispatch, listenerCount, response, setErrorSink } from "./events.js";
 import { setGroupIdSource } from "./groups.js";
 import { dispatchPointer } from "./nodes.js";
-import { Session } from "./objects.js";
+import { Session, heldModifiers } from "./objects.js";
 import { V1Adapter } from "./v1.js";
 
 export { setGroupIdSource };
@@ -216,13 +216,21 @@ export function handle(callJson) {
             }
             isQuery = call.event.type === "newwindowsize";
             const focus = session.focusKey();
-            result = deliver(call.event);
+            // The engine can take the keyboard only for what the person does.
+            session.personStarted = isPersonStarted(call.event);
+            try {
+                result = deliver(call.event);
+            } finally {
+                session.personStarted = false;
+            }
             if (groupsAfter !== undefined) {
                 session.groups.apply(groupsAfter);
             }
             if (!isQuery) {
                 session.fireFocusChanges(focus);
                 session.fireGroupChanges();
+                session.fireKeyboardRelease();
+                session.fireSearchChanges();
             }
         }
     } catch (e) {
@@ -251,6 +259,7 @@ export function handle(callJson) {
 function create(call) {
     const event = call.event;
     session = new Session(meta, event.options, event.savedState);
+    session.setModifiers(event.modifiers);
     adapter = null;
     // The engine learns about what's there when it looks, not from events. Groups need the windows.
     const { groups, ...sync } = call.sync;
@@ -291,6 +300,7 @@ function create(call) {
     session.fireFocusChanges(focus);
     // Groups that are there are announced after the windows in them.
     session.fireGroupChanges();
+    session.fireKeyboardRelease();
 }
 
 /**
@@ -350,6 +360,19 @@ function actionArgs(name, args) {
 }
 
 /** Turns an event from bento into events on the objects, and returns what bento needs to know. */
+/** Whether an event is something the person did: an action, a key, or a press on a node. */
+function isPersonStarted(event) {
+    switch (event.type) {
+        case "action":
+        case "keydown":
+            return true;
+        case "pointer":
+            return event.event === "pointerdown" || event.event === "click";
+        default:
+            return false;
+    }
+}
+
 function deliver(event) {
     const bento = session.bento;
     switch (event.type) {
@@ -484,6 +507,8 @@ function deliver(event) {
             );
             return null;
         }
+        case "searchend":
+            return { picked: session.search.end(event.pick) };
         case "action": {
             const window = event.window === null || event.window === undefined ? null : mustWindow(event.window);
             dispatch(
@@ -519,10 +544,44 @@ function deliver(event) {
                 return { w: Math.max(0, answer.w), h: Math.max(0, answer.h) };
             });
         }
+        case "timer":
+            session.fireTimer(event.id);
+            return null;
+        case "keydown":
+        case "keyup": {
+            if (!session.keyboardGrabbed) {
+                return { prevented: false };
+            }
+            const e = dispatch(
+                bento,
+                new BentoEvent(event.type, bento, {
+                    key: event.key,
+                    text: event.text,
+                    modifiers: heldModifiers(event.modifiers),
+                    repeat: event.repeat,
+                }),
+            );
+            return { prevented: e.defaultPrevented };
+        }
+        case "keyboardrelease":
+            if (session.endGrab()) {
+                dispatch(bento, new BentoEvent("keyboardrelease", bento, { reason: event.reason }));
+            }
+            return null;
+        case "modifierschange":
+            session.setModifiers(event.modifiers);
+            dispatch(bento, new BentoEvent("modifierschange", bento, { modifiers: session.modifiers }));
+            return null;
         case "pointer": {
             const node = session.log.nodes.get(event.node);
             if (node !== undefined) {
-                dispatchPointer(node, event);
+                // A press is when the engine can begin a move or resize with the pointer.
+                session.pressing = event.event === "pointerdown";
+                try {
+                    dispatchPointer(node, event);
+                } finally {
+                    session.pressing = false;
+                }
             }
             return null;
         }

@@ -9,6 +9,7 @@ use std::fmt::Write as _;
 use insta::assert_snapshot;
 
 use super::*;
+use crate::utils::ResizeEdge;
 
 fn options_for(layout: &str) -> Options {
     Options {
@@ -1222,4 +1223,1460 @@ fn a_float_request_says_the_size_of_the_window() {
     drop(layout);
     let sizes = crate::layout::tiling::engine::exposed_state().unwrap();
     assert_eq!(sizes, serde_json::json!([{ "w": 300, "h": 200 }]));
+}
+
+/// An engine with a big window drawn at half its size, and a second window beside it. The windows
+/// are named by the order they opened.
+const SCALED: &str = r#"
+export const meta = { api: 2, name: "scaled", floating: false };
+export default function create(bento) {
+    let count = 0;
+    bento.addEventListener("windowadd", (e) => {
+        count++;
+        if (count === 1) {
+            // Scaled around its middle, it's drawn at 100, 100 and 200 × 200.
+            e.window.place({ x: 0, y: 0, w: 400, h: 400 });
+            e.window.node.set({ transform: { scale: 0.5 } });
+        } else {
+            e.window.place({ x: 300, y: 0, w: 200, h: 200 });
+        }
+        e.window.focus();
+    });
+}
+"#;
+
+fn scaled_layout() -> Layout<TestWindow> {
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    check_ops_with_options(options_for_source("scaled", SCALED), ops)
+}
+
+/// The id of the window that the app gets the pointer for at a point of the view.
+fn window_under(layout: &Layout<TestWindow>, x: f64, y: f64) -> Option<usize> {
+    let output = layout.active_output().unwrap();
+    layout
+        .window_under(output, Point::from((x, y)))
+        .map(|(win, _)| win.0.id)
+}
+
+#[test]
+fn a_window_takes_the_pointer_where_it_is_drawn() {
+    let layout = scaled_layout();
+
+    // It was placed at 0, 0 and is 400 × 400, but it's drawn smaller.
+    assert_eq!(window_under(&layout, 50., 50.), None);
+    assert_eq!(window_under(&layout, 150., 150.), Some(1));
+    assert_eq!(window_under(&layout, 290., 290.), Some(1));
+    assert_eq!(window_under(&layout, 310., 310.), None);
+    // The other window's place is the one that the first overlaps without being drawn there.
+    assert_eq!(window_under(&layout, 350., 50.), Some(2));
+}
+
+#[test]
+fn a_window_is_resized_from_where_its_edges_are_drawn() {
+    let layout = scaled_layout();
+    let output = layout.active_output().unwrap();
+    let edges = |x, y| layout.resize_edges_under(output, Point::from((x, y)));
+
+    // In the thirds of the window as it's drawn, not as it was placed.
+    assert_eq!(edges(160., 160.), Some(ResizeEdge::TOP | ResizeEdge::LEFT));
+    assert_eq!(
+        edges(280., 280.),
+        Some(ResizeEdge::BOTTOM | ResizeEdge::RIGHT)
+    );
+    assert_eq!(edges(200., 200.), Some(ResizeEdge::empty()));
+    assert_eq!(edges(50., 50.), None);
+}
+
+#[test]
+fn a_clip_cuts_off_what_a_window_takes_the_pointer_for() {
+    let source = r#"
+    export const meta = { api: 2, name: "clipped", floating: false };
+    export default function create(bento) {
+        bento.addEventListener("windowadd", (e) => {
+            e.window.place({ x: 0, y: 0, w: 400, h: 400 });
+            const clip = bento.createNode("box", { rect: { x: 0, y: 0, w: 200, h: 400 }, clip: true });
+            e.window.workspace.tree.append(clip);
+            clip.append(e.window.node);
+            e.window.focus();
+        });
+    }
+    "#;
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("clipped", source), ops);
+
+    assert_eq!(window_under(&layout, 100., 100.), Some(1));
+    assert_eq!(window_under(&layout, 300., 100.), None);
+}
+
+/// An engine with two windows and a button between them, which is larger than the upper window.
+/// The upper window's input goes where `set-input` says. What the engine gets is exposed as `[who,
+/// event, x, y]`.
+const LAYERS: &str = r#"
+export const meta = {
+    api: 2,
+    name: "layers",
+    floating: false,
+    actions: { "set-input": { args: [{ name: "input", type: "choice", choices: ["app", "engine", "none"] }] } },
+};
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => ({ log }));
+    let count = 0;
+    let upper;
+    bento.addEventListener("windowadd", (e) => {
+        count++;
+        if (count === 1) {
+            e.window.place({ x: 0, y: 0, w: 400, h: 400 });
+            const button = bento.createNode("box", { rect: { x: 100, y: 100, w: 250, h: 250 }, interactive: true });
+            button.addEventListener("click", (p) => log.push(["button", "click", p.pointer.x, p.pointer.y]));
+            e.window.workspace.tree.append(button);
+        } else {
+            e.window.place({ x: 100, y: 100, w: 200, h: 200 });
+            upper = e.window;
+            e.window.node.addEventListener("click", (p) => log.push(["window", "click", p.pointer.x, p.pointer.y]));
+        }
+        e.window.focus();
+    });
+    bento.addEventListener("action", (e) => upper.node.set({ input: e.args[0] }));
+}
+"#;
+
+fn set_input(layout: &mut Layout<TestWindow>, input: &str) {
+    let arg = niri_config::TilingOption::String(String::from(input));
+    check_ops_on_layout(layout, [Op::LayoutAction("set-input", vec![arg], None)]);
+}
+
+fn layers_layout() -> Layout<TestWindow> {
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    check_ops_with_options(options_for_source("layers", LAYERS), ops)
+}
+
+#[test]
+fn a_window_with_app_input_takes_the_pointer_from_what_is_below() {
+    let layout = layers_layout();
+
+    // The upper window is above the button, and the button is above the lower window.
+    assert_eq!(window_under(&layout, 150., 150.), Some(2));
+    assert_eq!(node_under(&layout, 150., 150.), None);
+    assert_eq!(node_under(&layout, 320., 320.).as_deref(), Some("n1"));
+    assert_eq!(window_under(&layout, 50., 50.), Some(1));
+}
+
+#[test]
+fn a_window_with_no_input_leaves_the_pointer_to_what_is_below() {
+    let mut layout = layers_layout();
+    set_input(&mut layout, "none");
+
+    // The button is below the window, and gets the pointer.
+    assert_eq!(node_under(&layout, 150., 150.).as_deref(), Some("n1"));
+    // The window below the button is where the window would have been.
+    assert_eq!(window_under(&layout, 150., 150.), Some(1));
+    assert_eq!(window_under(&layout, 50., 50.), Some(1));
+    assert_eq!(node_under(&layout, 50., 50.), None);
+}
+
+#[test]
+fn a_window_with_engine_input_is_a_node_and_the_app_gets_nothing() {
+    let mut layout = layers_layout();
+    set_input(&mut layout, "engine");
+    let upper = layout
+        .active_workspace()
+        .unwrap()
+        .scrolling()
+        .engine_id_of(&2)
+        .unwrap();
+    let upper = format!("w{upper}");
+
+    assert_eq!(
+        node_under(&layout, 150., 150.).as_deref(),
+        Some(upper.as_str())
+    );
+    // Neither it nor the window below it gets the pointer for the app there.
+    assert_eq!(window_under(&layout, 150., 150.), None);
+    // Where it isn't, what's there gets it.
+    assert_eq!(node_under(&layout, 320., 320.).as_deref(), Some("n1"));
+    assert_eq!(window_under(&layout, 50., 50.), Some(1));
+
+    // Its events reach the engine as the window node's own.
+    let none = [false; 4];
+    let output = layout.active_output().unwrap().clone();
+    let hit = layout.node_under(&output, Point::from((150., 150.)));
+    layout.node_pointer_moved(hit.as_ref(), none);
+    let pos = Point::from((150., 150.));
+    layout.node_pointer_event(&upper, "click", pos, 1, none, Point::from((0., 0.)));
+    assert_eq!(
+        node_log(),
+        serde_json::json!([["window", "click", 150, 150]])
+    );
+
+    // The pointer leaving it is told like it is for any node.
+    layout.node_pointer_moved(None, none);
+}
+
+/// An engine with a window and a button, which `zoom` zooms the camera to, with the camera's
+/// position at `x`.
+const ZOOMING: &str = r#"
+export const meta = {
+    api: 2,
+    name: "zooming",
+    floating: false,
+    actions: {
+        zoom: { args: [{ name: "zoom", type: "number" }, { name: "x", type: "number" }, { name: "animate", type: "boolean", default: false }] },
+    },
+};
+export default function create(bento) {
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 200, y: 100, w: 200, h: 200 });
+        const button = bento.createNode("box", { rect: { x: 600, y: 400, w: 100, h: 100 }, interactive: true });
+        e.window.workspace.tree.append(button);
+        e.window.focus();
+    });
+    bento.addEventListener("action", (e) => {
+        const [zoom, x, animate] = e.args;
+        e.window.workspace.camera.move({ zoom, x }, { animate });
+    });
+}
+"#;
+
+fn zoom_to(layout: &mut Layout<TestWindow>, zoom: f64, x: f64, animate: bool) {
+    use niri_config::TilingOption::{Bool, Number};
+    let args = vec![Number(zoom), Number(x), Bool(animate)];
+    check_ops_on_layout(layout, [Op::LayoutAction("zoom", args, None)]);
+}
+
+fn zooming_layout() -> Layout<TestWindow> {
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    check_ops_with_options(options_for_source("zooming", ZOOMING), ops)
+}
+
+#[test]
+fn pointer_input_lands_where_a_zoomed_canvas_is_drawn() {
+    let mut layout = zooming_layout();
+    zoom_to(&mut layout, 0.5, 100., false);
+    let output = layout.active_output().unwrap().clone();
+
+    // The window is at 200, 100 on the canvas, which has the camera at 100, 0 and is drawn half
+    // as large: at 50, 50 and 100 × 100.
+    assert_eq!(window_under(&layout, 100., 100.), Some(1));
+    assert_eq!(window_under(&layout, 60., 60.), Some(1));
+    assert_eq!(window_under(&layout, 160., 100.), None);
+    // Where it is on the canvas when it isn't zoomed.
+    assert_eq!(window_under(&layout, 250., 150.), None);
+
+    // The button is at 600, 400 on the canvas: drawn at 250, 200 and 50 × 50.
+    assert_eq!(node_under(&layout, 260., 210.).as_deref(), Some("n1"));
+    assert_eq!(node_under(&layout, 300., 210.), None);
+    let hit = layout
+        .node_under(&output, Point::from((260., 210.)))
+        .unwrap();
+    // The pointer is at 620, 420 on the canvas.
+    assert_eq!(hit.pos, Point::from((620., 420.)));
+
+    // Resizing, and so everything else that asks which window is there, is where it's drawn.
+    assert_eq!(
+        layout.resize_edges_under(&output, Point::from((60., 60.))),
+        Some(ResizeEdge::TOP | ResizeEdge::LEFT)
+    );
+}
+
+#[test]
+fn zooming_back_puts_pointer_input_where_the_canvas_is() {
+    let mut layout = zooming_layout();
+    zoom_to(&mut layout, 0.5, 100., false);
+    zoom_to(&mut layout, 1., 0., false);
+
+    assert_eq!(window_under(&layout, 250., 150.), Some(1));
+    assert_eq!(window_under(&layout, 60., 60.), None);
+    assert_eq!(node_under(&layout, 650., 450.).as_deref(), Some("n1"));
+}
+
+#[test]
+fn a_zoom_move_animates_like_a_camera_move() {
+    let mut layout = zooming_layout();
+    let output = layout.active_output().unwrap().clone();
+    let zoom =
+        |layout: &Layout<TestWindow>| layout.active_workspace().unwrap().scrolling().camera_zoom();
+    assert_eq!(zoom(&layout), 1.);
+
+    zoom_to(&mut layout, 2., 0., true);
+    // It's on its way: still drawn as it was, and the layout runs animations.
+    assert_eq!(zoom(&layout), 1.);
+    assert!(layout.are_animations_ongoing(Some(&output)));
+
+    check_ops_on_layout(&mut layout, [Op::CompleteAnimations]);
+    assert_eq!(zoom(&layout), 2.);
+    assert!(!layout.are_animations_ongoing(Some(&output)));
+}
+
+#[test]
+fn bento_keeps_the_zoom_in_a_sane_range() {
+    let mut layout = zooming_layout();
+    let zoom =
+        |layout: &Layout<TestWindow>| layout.active_workspace().unwrap().scrolling().camera_zoom();
+
+    zoom_to(&mut layout, 1e-6, 0., false);
+    assert_eq!(zoom(&layout), 0.01);
+    zoom_to(&mut layout, 1e6, 0., false);
+    assert_eq!(zoom(&layout), 100.);
+}
+
+/// An engine that draws a title bar node, n1, on the first window, whose press begins a move with
+/// the left button and a resize from the right edge with the right one. It tells what it sees of
+/// the window, and what its press began.
+const TITLE_BARS: &str = r#"
+export const meta = { api: 2, name: "title-bars", floating: false };
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => log);
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        log.push(["windowadd", e.reason, win.decorations.shadow]);
+        win.place({ x: 0, y: 0, w: 200, h: 100 });
+        win.focus();
+        // Something to tell that it comes back on after the window left the engine.
+        win.setDecorations({ shadow: false });
+        for (const type of ["remove", "resizebegin", "resizeupdate", "resizeend"]) {
+            win.addEventListener(type, (r) => log.push([type, r.reason ?? null]));
+        }
+        const bar = bento.createNode("box", { rect: { x: 0, y: 0, w: 200, h: 20 }, interactive: true });
+        win.workspace.tree.append(bar);
+        bar.addEventListener("pointerdown", (p) => {
+            const began = p.button === 1 ? win.beginMove() : win.beginResize({ right: true });
+            log.push(["pointerdown", p.button, began]);
+        });
+    });
+}
+"#;
+
+fn press(layout: &mut Layout<TestWindow>, button: u8) {
+    layout.node_pointer_event(
+        "n1",
+        "pointerdown",
+        Point::from((10., 10.)),
+        button,
+        [false; 4],
+        Point::from((0., 0.)),
+    );
+}
+
+#[test]
+fn a_press_on_a_node_can_begin_a_move_that_the_engine_sees_like_any() {
+    use crate::layout::tiling::host::NodeGrab;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("title-move", TITLE_BARS), ops);
+
+    press(&mut layout, 1);
+    assert_eq!(layout.take_node_grab(), Some(NodeGrab::Move(1)));
+    // The input code takes it once.
+    assert_eq!(layout.take_node_grab(), None);
+
+    // The input code starts bento's move, which the engine hears about as for any other.
+    let mut ops = vec![
+        Op::InteractiveMoveBegin {
+            window: 1,
+            output_idx: 1,
+            px: 10.,
+            py: 10.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 1,
+            dx: 300.,
+            dy: 0.,
+            output_idx: 1,
+            px: 310.,
+            py: 10.,
+        },
+        Op::InteractiveMoveEnd { window: 1 },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    drop(layout);
+
+    // The window left, and came back as bento draws it: with its shadow, which the engine turned
+    // off for the window it had before.
+    let log = crate::layout::tiling::engine::exposed_state().unwrap();
+    let log = log.as_array().unwrap();
+    assert_eq!(log[0], serde_json::json!(["windowadd", "open", true]));
+    assert_eq!(log[1], serde_json::json!(["pointerdown", 1, true]));
+    assert_eq!(log[2], serde_json::json!(["remove", "drag"]));
+    assert_eq!(log[3], serde_json::json!(["windowadd", "drop", true]));
+}
+
+#[test]
+fn a_press_on_a_node_can_begin_a_resize_that_the_engine_sees_like_any() {
+    use crate::layout::tiling::host::NodeGrab;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("title-resize", TITLE_BARS), ops);
+
+    press(&mut layout, 3);
+    assert_eq!(
+        layout.take_node_grab(),
+        Some(NodeGrab::Resize {
+            window: 1,
+            edges: ResizeEdge::RIGHT
+        })
+    );
+
+    let mut ops = vec![
+        Op::InteractiveResizeBegin {
+            window: 1,
+            edges: ResizeEdge::RIGHT,
+        },
+        Op::InteractiveResizeUpdate {
+            window: 1,
+            dx: 12.,
+            dy: 0.,
+        },
+        Op::InteractiveResizeEnd { window: 1 },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    drop(layout);
+
+    let log = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        log.as_array().unwrap()[1..],
+        [
+            serde_json::json!(["pointerdown", 3, true]),
+            serde_json::json!(["resizebegin", null]),
+            serde_json::json!(["resizeupdate", null]),
+            serde_json::json!(["resizeend", null]),
+        ]
+    );
+}
+
+#[test]
+fn only_a_press_can_begin_a_move_or_resize() {
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("title-other", TITLE_BARS), ops);
+
+    // The engine's listeners only begin one from a press.
+    let at = Point::from((10., 10.));
+    for event in ["pointerup", "click", "pointermove"] {
+        layout.node_pointer_event("n1", event, at, 1, [false; 4], Point::from((0., 0.)));
+        assert_eq!(layout.take_node_grab(), None);
+    }
+
+    // A grab that nobody took isn't left for a later press to find.
+    press(&mut layout, 1);
+    layout.node_pointer_event(
+        "n99",
+        "pointerdown",
+        at,
+        1,
+        [false; 4],
+        Point::from((0., 0.)),
+    );
+    assert_eq!(layout.take_node_grab(), None);
+}
+
+/// An engine that places windows 300 × 200 and has actions that turn decorations off and on.
+const DECORATED: &str = r#"
+export const meta = {
+    api: 2,
+    name: "decorated",
+    floating: false,
+    actions: { plain: {}, dressed: {}, "no-border": {} },
+};
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => log);
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 0, y: 0, w: 300, h: 200 });
+        e.window.focus();
+        log.push(["windowadd", e.window.borders.w]);
+    });
+    bento.addEventListener("action", (e) => {
+        const win = e.window;
+        if (e.name === "plain") win.setDecorations({ focusRing: false, shadow: false });
+        if (e.name === "dressed") win.setDecorations({ border: true, focusRing: true, shadow: true });
+        if (e.name === "no-border") win.setDecorations({ border: false });
+        log.push([e.name, win.borders.w]);
+    });
+}
+"#;
+
+/// The window size and the tile size of the first window, and whether its border, focus ring and
+/// shadow are drawn.
+fn window_and_tile(
+    layout: &Layout<TestWindow>,
+) -> (Size<f64, Logical>, Size<f64, Logical>, [bool; 3]) {
+    let ws = layout.active_workspace().unwrap();
+    let tile = ws.tiles_with_render_positions().next().unwrap().0;
+    let decorations = [
+        !tile.border().is_off(),
+        !tile.focus_ring().is_off(),
+        tile.decorations.shadow,
+    ];
+    (tile.window_size(), tile.tile_size(), decorations)
+}
+
+#[test]
+fn a_window_without_a_border_gets_the_whole_rect() {
+    let mut options = options_for_source("decorated", DECORATED);
+    options.layout.border.off = false;
+    options.layout.border.width = 4.;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options, ops);
+
+    // The border is in the rect that the engine placed, so the window is smaller than it.
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(
+        (window, tile),
+        (Size::from((292., 192.)), Size::from((300., 200.)))
+    );
+    assert_eq!(drawn, [true, true, true]);
+
+    // Without it the window takes the rect, though the engine places nothing again.
+    let mut ops = vec![Op::LayoutAction("no-border", vec![], None)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(
+        (window, tile),
+        (Size::from((300., 200.)), Size::from((300., 200.)))
+    );
+    assert_eq!(drawn, [false, true, true]);
+
+    // And with it back, the window leaves room for it again.
+    let mut ops = vec![Op::LayoutAction("dressed", vec![], None)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(
+        (window, tile),
+        (Size::from((292., 192.)), Size::from((300., 200.)))
+    );
+    assert_eq!(drawn, [true, true, true]);
+    drop(layout);
+
+    // The engine saw the border go and come back.
+    let log = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        log,
+        serde_json::json!([["windowadd", 8], ["no-border", 0], ["dressed", 8]])
+    );
+}
+
+#[test]
+fn the_focus_ring_and_shadow_can_be_turned_off_on_their_own() {
+    let mut options = options_for_source("plain", DECORATED);
+    options.layout.border.off = false;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options, ops);
+    assert_eq!(window_and_tile(&layout).2, [true, true, true]);
+
+    let mut ops = vec![Op::LayoutAction("plain", vec![], None)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    // The border is still there, and so is the window's room for it.
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(drawn, [true, false, false]);
+    assert_eq!(
+        (window, tile),
+        (Size::from((292., 192.)), Size::from((300., 200.)))
+    );
+}
+
+/// An engine that places two windows apart, and moves them 300 px to the right with an action. The
+/// first one's node has a `rect` transition.
+const SLIDERS: &str = r#"
+export const meta = { api: 2, name: "sliders", floating: false, actions: { slide: {} } };
+export default function create(bento) {
+    let count = 0;
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        win.place({ x: count * 400, y: 0, w: 200, h: 100 });
+        win.focus();
+        if (count++ === 0) {
+            win.node.set({ transitions: { rect: { duration: 1000, curve: "linear" } } });
+        }
+    });
+    bento.addEventListener("action", () => {
+        for (const win of bento.windows) {
+            win.place({ ...win.rect, x: win.rect.x + 300 });
+        }
+    });
+}
+"#;
+
+#[test]
+fn a_window_node_with_a_rect_transition_moves_as_it_says() {
+    // Windows would move instantly, if their nodes didn't say otherwise.
+    let mut options = options_for_source("sliders", SLIDERS);
+    options.animations.window_movement.0.off = true;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options, ops);
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::LayoutAction("slide", vec![], None),
+            Op::AdvanceAnimations { msec_delta: 500 },
+        ],
+    );
+
+    let ws = layout.active_workspace().unwrap();
+    let offset = |id: usize| {
+        ws.tiles_with_render_positions()
+            .map(|(tile, _, _)| tile)
+            .find(|tile| tile.window().0.id == id)
+            .unwrap()
+            .render_offset()
+    };
+    // Half a second into the first window's second, it's halfway from where it was. The second
+    // window's node says nothing, so it moved as the configuration says, at once.
+    assert!((offset(1).x + 150.).abs() < 1e-6, "{:?}", offset(1));
+    assert_eq!(offset(2), Point::from((0., 0.)));
+}
+
+use crate::layout::tiling::host::{EngineKey, KeyboardOwner, KeyboardRelease, TimerRequest};
+
+/// An engine that starts and clears timers, takes and gives back the keyboard, and logs what it
+/// hears of them.
+const KEYBOARD: &str = r#"
+export const meta = {
+    api: 2,
+    name: "keyboard",
+    floating: false,
+    actions: {
+        "take-keys": {},
+        "give-keys": {},
+        "prevent-escape": {},
+        "start-timer": {
+            args: [{ name: "ms", type: "number" }, { name: "label", type: "string" }],
+        },
+        "stop-timer": { args: [{ name: "label", type: "string" }] },
+        "flood-timers": {},
+    },
+};
+export default function create(bento) {
+    const log = [];
+    const timers = new Map();
+    let prevent = false;
+    const held = (mods) => Object.keys(mods).filter((name) => mods[name]).join("+");
+    bento.exposeState(() => ({ log, grabbed: bento.keyboardGrabbed }));
+    bento.addEventListener("action", (e) => {
+        const [first, second] = e.args;
+        switch (e.name) {
+            case "take-keys":
+                log.push(["take", bento.grabKeyboard()]);
+                break;
+            case "give-keys":
+                bento.releaseKeyboard();
+                break;
+            case "prevent-escape":
+                prevent = true;
+                break;
+            case "start-timer":
+                timers.set(second, bento.setTimeout(() => log.push(["timer", second]), first));
+                break;
+            case "stop-timer":
+                bento.clearTimeout(timers.get(first));
+                break;
+            case "flood-timers":
+                for (let i = 0; i < 1000; i++) {
+                    try {
+                        bento.setTimeout(() => {}, 1);
+                    } catch (error) {
+                        break;
+                    }
+                }
+                break;
+        }
+    });
+    for (const type of ["keydown", "keyup"]) {
+        bento.addEventListener(type, (e) => {
+            log.push([type, e.key, e.text, held(e.modifiers), e.repeat]);
+            if (prevent && type === "keydown" && e.key === "Escape") e.preventDefault();
+        });
+    }
+    bento.addEventListener("keyboardrelease", (e) => log.push(["keyboardrelease", e.reason]));
+    bento.addEventListener("modifierschange", (e) =>
+        log.push(["modifierschange", held(e.modifiers), held(bento.modifiers)]),
+    );
+}
+"#;
+
+fn engine_action(name: &'static str, args: Vec<niri_config::TilingOption>) -> Op {
+    Op::LayoutAction(name, args, None)
+}
+
+fn start_timer(ms: f64, label: &str) -> Op {
+    engine_action(
+        "start-timer",
+        vec![
+            niri_config::TilingOption::Number(ms),
+            niri_config::TilingOption::String(label.to_owned()),
+        ],
+    )
+}
+
+fn stop_timer(label: &str) -> Op {
+    engine_action(
+        "stop-timer",
+        vec![niri_config::TilingOption::String(label.to_owned())],
+    )
+}
+
+fn take_keys() -> Op {
+    engine_action("take-keys", vec![])
+}
+
+fn give_keys() -> Op {
+    engine_action("give-keys", vec![])
+}
+
+/// What the keyboard engine heard.
+fn heard() -> serde_json::Value {
+    crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone()
+}
+
+/// A timer request that starts a timer: its instance, id and delay.
+fn started(request: &TimerRequest) -> (u64, u64, Duration) {
+    match *request {
+        TimerRequest::Start {
+            instance,
+            id,
+            delay,
+        } => (instance, id, delay),
+        other => panic!("expected a timer to start, got {other:?}"),
+    }
+}
+
+fn key(name: &str, text: &str, pressed: bool) -> EngineKey {
+    EngineKey {
+        name: name.to_owned(),
+        text: text.to_owned(),
+        modifiers: [false; 4],
+        pressed,
+        repeat: false,
+    }
+}
+
+#[test]
+fn engine_timers_are_scheduled_and_come_back_as_events() {
+    let ops = [
+        Op::AddOutput(1),
+        start_timer(50., "a"),
+        start_timer(20., "b"),
+    ];
+    let mut layout = check_ops_with_options(options_for_source("timers", KEYBOARD), ops);
+
+    let requests = layout.take_timer_requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let (instance, a, delay_a) = started(&requests[0]);
+    let (other_instance, b, delay_b) = started(&requests[1]);
+    assert_eq!(instance, other_instance);
+    assert_eq!(delay_a, Duration::from_millis(50));
+    assert_eq!(delay_b, Duration::from_millis(20));
+    assert!(layout.take_timer_requests().is_empty());
+
+    // Nothing happens until a timer comes due, and each only once.
+    assert_eq!(heard(), serde_json::json!([]));
+    layout.fire_engine_timer(instance, b);
+    assert_eq!(heard(), serde_json::json!([["timer", "b"]]));
+    layout.fire_engine_timer(instance, b);
+    layout.fire_engine_timer(instance, a);
+    assert_eq!(heard(), serde_json::json!([["timer", "b"], ["timer", "a"]]));
+    assert!(layout.take_timer_requests().is_empty());
+}
+
+#[test]
+fn a_cleared_timer_is_cancelled_and_does_nothing_if_it_comes_due_anyway() {
+    let ops = [Op::AddOutput(1), start_timer(50., "a")];
+    let mut layout = check_ops_with_options(options_for_source("cleared", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    let (instance, id, _) = started(&requests[0]);
+
+    check_ops_on_layout(&mut layout, [stop_timer("a")]);
+    assert_eq!(
+        layout.take_timer_requests(),
+        vec![TimerRequest::Cancel { instance, id }]
+    );
+
+    layout.fire_engine_timer(instance, id);
+    assert_eq!(heard(), serde_json::json!([]));
+}
+
+#[test]
+fn a_timer_of_another_instance_does_nothing() {
+    let ops = [Op::AddOutput(1), start_timer(50., "a")];
+    let mut layout = check_ops_with_options(options_for_source("instances", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    let (instance, id, _) = started(&requests[0]);
+
+    layout.fire_engine_timer(instance + 1, id);
+    assert_eq!(heard(), serde_json::json!([]));
+    layout.fire_engine_timer(instance, id);
+    assert_eq!(heard(), serde_json::json!([["timer", "a"]]));
+}
+
+#[test]
+fn timers_end_with_the_engine() {
+    let ops = [Op::AddOutput(1), start_timer(50., "a")];
+    let mut layout = check_ops_with_options(options_for_source("ending", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    let (instance, id, _) = started(&requests[0]);
+
+    // The engine is replaced, like when its file changes or it fails.
+    crate::layout::tiling::engine::fail(String::from("test"));
+    layout.fire_engine_timer(instance, id);
+    layout.flush_engine();
+
+    // The event loop is told to forget what the old engine started.
+    assert_eq!(layout.take_timer_requests(), vec![TimerRequest::CancelAll]);
+    // And a late timer of the old engine does nothing to the new one.
+    layout.fire_engine_timer(instance, id);
+    assert!(layout.take_timer_requests().is_empty());
+}
+
+#[test]
+fn an_engine_cant_flood_the_event_loop_with_timers() {
+    let ops = [Op::AddOutput(1), engine_action("flood-timers", vec![])];
+    let mut layout = check_ops_with_options(options_for_source("flood", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    assert_eq!(requests.len(), 128);
+    assert!(requests
+        .iter()
+        .all(|request| started(request).2 == Duration::from_millis(1)));
+}
+
+#[test]
+fn the_engine_gets_the_keys_it_holds_the_keyboard_for() {
+    let ops = [Op::AddOutput(1)];
+    let mut layout = check_ops_with_options(options_for_source("keys", KEYBOARD), ops);
+
+    // Keys it doesn't hold go nowhere near it.
+    assert!(!layout.keyboard_grabbed());
+    layout.engine_key(key("a", "a", true));
+    assert_eq!(heard(), serde_json::json!([]));
+
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(layout.keyboard_grabbed());
+    layout.engine_key(key("A", "A", true));
+    layout.engine_key(EngineKey {
+        repeat: true,
+        modifiers: [true, false, false, true],
+        ..key("Left", "", true)
+    });
+    layout.engine_key(key("A", "A", false));
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["take", true],
+            ["keydown", "A", "A", "", false],
+            ["keydown", "Left", "", "shift+super", true],
+            ["keyup", "A", "A", "", false],
+        ])
+    );
+
+    check_ops_on_layout(&mut layout, [give_keys()]);
+    assert!(!layout.keyboard_grabbed());
+    layout.engine_key(key("b", "b", true));
+    assert_eq!(
+        heard().as_array().unwrap().last().unwrap(),
+        &serde_json::json!(["keyboardrelease", "engine"])
+    );
+}
+
+#[test]
+fn escape_gives_the_keyboard_back_unless_the_engine_handles_it() {
+    let mut layout = check_ops_with_options(
+        options_for_source("escape", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+    layout.engine_key(key("Escape", "", true));
+    assert!(!layout.keyboard_grabbed());
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["take", true],
+            ["keydown", "Escape", "", "", false],
+            ["keyboardrelease", "escape"],
+        ])
+    );
+
+    // Only the press ends it, and only for an engine that doesn't prevent its default.
+    check_ops_on_layout(
+        &mut layout,
+        [engine_action("prevent-escape", vec![]), take_keys()],
+    );
+    layout.engine_key(key("Escape", "", true));
+    layout.engine_key(key("Escape", "", false));
+    assert!(layout.keyboard_grabbed());
+    assert_eq!(heard().as_array().unwrap().len(), 3 + 3);
+
+    check_ops_on_layout(&mut layout, [give_keys()]);
+    assert!(!layout.keyboard_grabbed());
+}
+
+#[test]
+fn a_press_outside_what_the_engine_draws_takes_the_keyboard_back() {
+    let mut layout = check_ops_with_options(
+        options_for_source("click", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+    layout.release_keyboard(KeyboardRelease::Click);
+    assert!(!layout.keyboard_grabbed());
+    // It isn't told twice.
+    layout.release_keyboard(KeyboardRelease::Click);
+    assert_eq!(
+        heard(),
+        serde_json::json!([["take", true], ["keyboardrelease", "click"]])
+    );
+}
+
+#[test]
+fn the_lock_screen_and_other_focus_take_the_keyboard_back_and_refuse_it() {
+    let mut layout = check_ops_with_options(
+        options_for_source("owners", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+
+    layout.set_keyboard_owner(KeyboardOwner::LockScreen);
+    assert!(!layout.keyboard_grabbed());
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(!layout.keyboard_grabbed());
+
+    layout.set_keyboard_owner(KeyboardOwner::Layout);
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(layout.keyboard_grabbed());
+
+    layout.set_keyboard_owner(KeyboardOwner::Other);
+    assert!(!layout.keyboard_grabbed());
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(!layout.keyboard_grabbed());
+
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["take", true],
+            ["keyboardrelease", "lock"],
+            ["take", false],
+            ["take", true],
+            ["keyboardrelease", "focus"],
+            ["take", false],
+        ])
+    );
+}
+
+#[test]
+fn the_engine_failing_ends_the_grab_without_a_word() {
+    let mut layout = check_ops_with_options(
+        options_for_source("failing", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+    assert!(layout.keyboard_grabbed());
+
+    crate::layout::tiling::engine::fail(String::from("test"));
+    assert!(!layout.keyboard_grabbed());
+    layout.release_keyboard(KeyboardRelease::Click);
+    layout.flush_engine();
+    assert!(!layout.keyboard_grabbed());
+}
+
+#[test]
+fn the_engine_hears_when_the_modifiers_change() {
+    let mut layout = check_ops_with_options(
+        options_for_source("modifiers", KEYBOARD),
+        [Op::AddOutput(1)],
+    );
+    layout.set_modifiers([false, false, false, true]);
+    // The same modifiers aren't told again.
+    layout.set_modifiers([false, false, false, true]);
+    layout.set_modifiers([true, true, false, true]);
+    layout.set_modifiers([false; 4]);
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["modifierschange", "super", "super"],
+            ["modifierschange", "shift+ctrl+super", "shift+ctrl+super"],
+            ["modifierschange", "", ""],
+        ])
+    );
+}
+
+use crate::layout::search::Edit;
+
+/// An engine that places windows side by side, searches on request, and tells what it saw through
+/// `bento.exposeState`. Windows go by the order the engine saw them.
+const SEARCHER: &str = r#"
+export const meta = {
+    api: 2,
+    name: "searcher",
+    actions: {
+        "group-first-three": { description: "Groups the first three windows." },
+        "dissolve": { description: "Dissolves the first group." },
+        "search-group": { description: "Searches the first group." },
+        "search-workspace": { description: "Searches the first monitor's active workspace." },
+        "search-all": { description: "Searches every window." },
+        "cancel-search": { description: "Cancels the search." },
+        "hang": { description: "Never returns." },
+    },
+};
+export default function create(bento) {
+    const log = [];
+    const seen = new Map();
+    const n = (win) => seen.get(win.id);
+    let field = null;
+    bento.exposeState(() => {
+        const search = bento.searching;
+        return {
+            log,
+            searching: search !== null,
+            query: search?.query ?? null,
+            matches: search ? search.matches.map(n) : null,
+            fieldAttached: field !== null && field.parent !== null,
+        };
+    });
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        seen.set(win.id, seen.size + 1);
+        const x = (win.workspace.windows.length - 1) * 110;
+        win.place({ x, y: 0, w: 100, h: 100 });
+        win.focus();
+        win.addEventListener("activaterequest", () => log.push(["activate", n(win)]));
+    });
+    const start = (scope) => {
+        const search = bento.search(scope);
+        if (search === null) {
+            log.push(["refused"]);
+            return;
+        }
+        field = search.field;
+        bento.monitors[0].activeWorkspace.tree.append(field);
+        field.set({ rect: { x: 0, y: 200, w: 300, h: 30 }, placeholder: "Search" });
+        search.addEventListener("change", () => log.push(["change", search.query, search.matches.map(n)]));
+        search.addEventListener("end", (e) => log.push(["end", e.picked ? n(e.picked) : null]));
+    };
+    bento.addEventListener("action", (e) => {
+        if (e.name === "group-first-three") {
+            bento.createGroup(bento.windows.slice(0, 3));
+        } else if (e.name === "dissolve") {
+            bento.groups[0].dissolve();
+        } else if (e.name === "search-group") {
+            start(bento.groups[0]);
+        } else if (e.name === "search-workspace") {
+            start(bento.monitors[0].activeWorkspace);
+        } else if (e.name === "search-all") {
+            start(null);
+        } else if (e.name === "cancel-search") {
+            bento.searching.cancel();
+        } else if (e.name === "hang") {
+            for (;;) {}
+        }
+    });
+}
+"#;
+
+fn titled(id: usize, title: &str) -> Op {
+    Op::AddWindow {
+        params: TestWindowParams {
+            title: Some(title.to_owned()),
+            ..TestWindowParams::new(id)
+        },
+    }
+}
+
+fn typing(text: &str) -> Op {
+    Op::SearchEdit(Edit::Insert(text.to_owned()))
+}
+
+fn action(name: &'static str) -> Op {
+    Op::LayoutAction(name, vec![], None)
+}
+
+/// A group of the first three windows, whose titles are "Firefox", "Terminal" and "Fire fox",
+/// and a fourth window outside it, "Firewall", with a search over the group started.
+fn group_search(name: &str) -> Layout<TestWindow> {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Terminal"),
+        titled(3, "Fire fox"),
+        titled(4, "Firewall"),
+        action("group-first-three"),
+        action("search-group"),
+    ];
+    check_ops_with_options(options_for_source(name, SEARCHER), ops)
+}
+
+fn engine_state() -> serde_json::Value {
+    crate::layout::tiling::engine::exposed_state().unwrap()
+}
+
+fn focused_window(layout: &Layout<TestWindow>) -> Option<usize> {
+    layout.focus().map(|win| win.0.id)
+}
+
+#[test]
+fn a_search_over_a_group_matches_its_windows_best_match_first() {
+    let mut layout = group_search("search-group");
+    assert!(layout.search_active());
+
+    // Nothing is typed, so the group's windows match, in the engine's order: "Firewall" isn't in
+    // the group. The engine isn't told of a change, since it knew that already.
+    let state = engine_state();
+    assert_eq!(state["searching"], true);
+    assert_eq!(state["query"], "");
+    assert_eq!(state["matches"], serde_json::json!([1, 2, 3]));
+    assert_eq!(state["log"], serde_json::json!([]));
+    assert_eq!(state["fieldAttached"], true);
+
+    // "Fire fox" has the whole word, "Firefox" only starts with it, and "Terminal" drops out.
+    check_ops_on_layout(&mut layout, [typing("fire")]);
+    let state = engine_state();
+    assert_eq!(state["query"], "fire");
+    assert_eq!(state["matches"], serde_json::json!([3, 1]));
+
+    // Matches that rank the same stay in the engine's order.
+    check_ops_on_layout(&mut layout, [Op::SearchEdit(Edit::Backspace)]);
+    assert_eq!(engine_state()["matches"], serde_json::json!([1, 3]));
+
+    check_ops_on_layout(&mut layout, [typing("e")]);
+    assert_eq!(engine_state()["matches"], serde_json::json!([3, 1]));
+    assert_eq!(
+        engine_state()["log"],
+        serde_json::json!([
+            ["change", "fire", [3, 1]],
+            ["change", "fir", [1, 3]],
+            ["change", "fire", [3, 1]],
+        ])
+    );
+
+    check_ops_on_layout(&mut layout, [typing("z")]);
+    assert_eq!(engine_state()["matches"], serde_json::json!([]));
+}
+
+#[test]
+fn enter_picks_the_best_match_and_the_engine_is_asked_to_activate_it() {
+    let mut layout = group_search("search-enter");
+    // The last window opened has focus.
+    assert_eq!(focused_window(&layout), Some(4));
+
+    check_ops_on_layout(&mut layout, [typing("fire"), Op::SearchSubmit]);
+
+    assert!(!layout.search_active());
+    assert_eq!(focused_window(&layout), Some(3));
+    let state = engine_state();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["change", "fire", [3, 1]], ["end", 3], ["activate", 3]])
+    );
+    assert_eq!(state["searching"], false);
+    // bento's field doesn't outlive the search.
+    assert_eq!(state["fieldAttached"], false);
+}
+
+#[test]
+fn enter_with_no_match_picks_nothing() {
+    let mut layout = group_search("search-no-match");
+    check_ops_on_layout(&mut layout, [typing("zzz"), Op::SearchSubmit]);
+
+    assert!(!layout.search_active());
+    assert_eq!(focused_window(&layout), Some(4));
+    assert_eq!(
+        engine_state()["log"],
+        serde_json::json!([["change", "zzz", []], ["end", null]])
+    );
+}
+
+#[test]
+fn escape_cancels_the_search_without_picking() {
+    let mut layout = group_search("search-escape");
+    check_ops_on_layout(&mut layout, [typing("fire"), Op::SearchCancel]);
+
+    assert!(!layout.search_active());
+    assert_eq!(focused_window(&layout), Some(4));
+    let state = engine_state();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["change", "fire", [3, 1]], ["end", null]])
+    );
+    assert_eq!(state["searching"], false);
+
+    // Typing goes nowhere once it's over.
+    check_ops_on_layout(&mut layout, [typing("x")]);
+    assert_eq!(engine_state()["log"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn the_engine_can_cancel_its_search_and_start_another() {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Terminal"),
+        action("search-all"),
+        // Another search can't start while one runs.
+        action("search-all"),
+    ];
+    let mut layout = check_ops_with_options(options_for_source("search-cancel", SEARCHER), ops);
+    assert!(layout.search_active());
+    assert_eq!(engine_state()["log"], serde_json::json!([["refused"]]));
+
+    check_ops_on_layout(&mut layout, [typing("term"), action("cancel-search")]);
+    assert!(!layout.search_active());
+    let state = engine_state();
+    assert_eq!(state["searching"], false);
+    assert_eq!(state["fieldAttached"], false);
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["refused"], ["change", "term", [2]], ["end", null]])
+    );
+
+    // A new search starts over: nothing is typed.
+    check_ops_on_layout(&mut layout, [action("search-all")]);
+    assert!(layout.search_active());
+    assert_eq!(engine_state()["query"], "");
+    assert_eq!(engine_state()["matches"], serde_json::json!([1, 2]));
+}
+
+#[test]
+fn matches_follow_windows_that_open_close_and_change_titles() {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Terminal"),
+        action("search-all"),
+        typing("term"),
+        titled(3, "Terminal Two"),
+        // It stops matching.
+        Op::SetWindowTitle(3, "Notes"),
+        Op::Refresh { is_active: true },
+        Op::CloseWindow(2),
+    ];
+    let mut ops = ops.to_vec();
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("search-follow", SEARCHER), ops);
+
+    assert!(layout.search_active());
+    let state = engine_state();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([
+            ["change", "term", [2]],
+            ["change", "term", [2, 3]],
+            ["change", "term", [2]],
+            ["change", "term", []],
+        ])
+    );
+}
+
+#[test]
+fn a_search_over_a_workspace_leaves_out_the_windows_on_others() {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Firefox private"),
+        Op::MoveWindowToWorkspace {
+            window_id: Some(2),
+            workspace_idx: 1,
+        },
+        // Moving the focused window follows it, so go back to the first workspace.
+        Op::FocusWorkspace(0),
+        Op::CompleteAnimations,
+        action("search-workspace"),
+        typing("fire"),
+    ];
+    let layout = check_ops_with_options(options_for_source("search-workspace", SEARCHER), ops);
+    drop(layout);
+
+    assert_eq!(engine_state()["matches"], serde_json::json!([1]));
+}
+
+#[test]
+fn a_search_ends_when_its_group_is_gone() {
+    let mut layout = group_search("search-group-gone");
+    check_ops_on_layout(&mut layout, [action("dissolve")]);
+
+    assert!(!layout.search_active());
+    let state = engine_state();
+    assert_eq!(state["searching"], false);
+    assert_eq!(state["log"], serde_json::json!([["end", null]]));
+}
+
+#[test]
+fn a_search_ends_when_its_workspace_is_gone() {
+    // Window 1 is alone on the first workspace, which is searched. Moving it away empties the
+    // workspace while it isn't shown, and bento removes it.
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        action("search-workspace"),
+        Op::FocusWorkspaceDown,
+        Op::CompleteAnimations,
+        titled(2, "Terminal"),
+    ];
+    let mut layout = check_ops_with_options(options_for_source("search-ws-gone", SEARCHER), ops);
+    assert!(layout.search_active());
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 2,
+        }],
+    );
+
+    assert!(!layout.search_active());
+    // The window leaving the workspace empties the matches before the workspace goes.
+    assert_eq!(
+        engine_state()["log"],
+        serde_json::json!([["change", "", []], ["end", null]])
+    );
+}
+
+#[test]
+fn a_search_ends_when_the_engine_starts_over() {
+    let mut layout = group_search("search-restart");
+    assert!(layout.search_active());
+
+    // An engine that doesn't answer is created again, from where the windows are.
+    check_ops_on_layout(&mut layout, [action("hang")]);
+
+    assert!(!layout.search_active());
+    assert_eq!(engine_state()["searching"], false);
+}
+
+/// An engine that takes the keyboard and searches on request, and logs what happens to its hold.
+const KEYS_AND_SEARCH: &str = r#"
+export const meta = {
+    api: 2,
+    name: "keys-and-search",
+    actions: { "take-keys": {}, "search": {} },
+};
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => log);
+    bento.addEventListener("keyboardrelease", (e) => log.push(["release", e.reason]));
+    bento.addEventListener("action", (e) => {
+        if (e.name === "take-keys") log.push(["take", bento.grabKeyboard()]);
+        if (e.name === "search") log.push(["search", bento.search(null) !== null]);
+    });
+}
+"#;
+
+#[test]
+fn a_search_takes_the_keyboard_from_the_engine() {
+    let ops = [Op::AddOutput(1), action("take-keys"), action("search")];
+    let layout = check_ops_with_options(options_for_source("keys-search", KEYS_AND_SEARCH), ops);
+    assert!(!layout.keyboard_grabbed());
+    drop(layout);
+    assert_eq!(
+        engine_state(),
+        serde_json::json!([["take", true], ["search", true], ["release", "focus"]])
+    );
+}
+
+#[test]
+fn the_engine_cant_take_the_keyboard_while_a_search_runs() {
+    let ops = [Op::AddOutput(1), action("search"), action("take-keys")];
+    let layout = check_ops_with_options(options_for_source("search-keys", KEYS_AND_SEARCH), ops);
+    assert!(!layout.keyboard_grabbed());
+    drop(layout);
+    assert_eq!(
+        engine_state(),
+        serde_json::json!([["search", true], ["take", false]])
+    );
+}
+
+#[test]
+fn a_search_started_as_another_ends_runs() {
+    let source = r#"
+        export const meta = { api: 2, name: "again", actions: { "search": {} } };
+        export default function create(bento) {
+            let starts = 0;
+            const start = () => {
+                starts++;
+                const search = bento.search(null);
+                // The first search starts another when it ends.
+                if (starts === 1) search.addEventListener("end", start);
+            };
+            bento.exposeState(() => ({ starts, searching: bento.searching !== null }));
+            bento.addEventListener("action", (e) => start());
+        }
+    "#;
+    let ops = [Op::AddOutput(1), action("search"), Op::SearchCancel];
+    let layout = check_ops_with_options(options_for_source("again", source), ops);
+    assert!(layout.search_active());
+    drop(layout);
+    assert_eq!(
+        engine_state(),
+        serde_json::json!({ "starts": 2, "searching": true })
+    );
+}
+
+#[test]
+fn the_engine_takes_the_keyboard_only_for_what_the_person_does() {
+    let source = r#"
+        export const meta = { api: 2, name: "eager", actions: { "take-keys": {} } };
+        export default function create(bento) {
+            const log = [];
+            bento.exposeState(() => log);
+            bento.addEventListener("windowadd", (e) => {
+                e.window.place({ x: 0, y: 0, w: 100, h: 100 });
+                log.push(["windowadd", bento.grabKeyboard()]);
+            });
+            bento.addEventListener("action", () => log.push(["action", bento.grabKeyboard()]));
+            bento.addEventListener("keyboardrelease", (e) => {
+                log.push(["release", e.reason, bento.grabKeyboard()]);
+            });
+        }
+    "#;
+    let mut layout = check_ops_with_options(
+        options_for_source("eager", source),
+        [Op::AddOutput(1), add_window(1), action("take-keys")],
+    );
+    assert!(layout.keyboard_grabbed());
+    // A click elsewhere frees the keyboard, and taking it back right away isn't allowed.
+    layout.release_keyboard(KeyboardRelease::Click);
+    assert!(!layout.keyboard_grabbed());
+    drop(layout);
+    assert_eq!(
+        engine_state(),
+        serde_json::json!([
+            ["windowadd", false],
+            ["action", true],
+            ["release", "click", false],
+        ])
+    );
+}
+
+#[test]
+fn a_search_knows_where_its_field_is() {
+    let source = r#"
+        export const meta = { api: 2, name: "field-place", actions: { "search": {} } };
+        export default function create(bento) {
+            bento.addEventListener("action", () => {
+                const search = bento.search(null);
+                const ws = bento.monitors[0].activeWorkspace;
+                search.field.set({ rect: { x: 100, y: 100, w: 200, h: 30 } });
+                ws.tree.append(search.field);
+            });
+        }
+    "#;
+    let layout = check_ops_with_options(
+        options_for_source("field-place", source),
+        [Op::AddOutput(1), action("search")],
+    );
+    let output = layout.active_output().unwrap().clone();
+    // The camera is at the canvas' origin, so the field is where it's placed.
+    assert!(layout.is_on_search_field(&output, Point::from((150., 110.))));
+    assert!(!layout.is_on_search_field(&output, Point::from((50., 110.))));
 }

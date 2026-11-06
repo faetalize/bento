@@ -191,6 +191,26 @@ impl FloatingActive {
     }
 }
 
+/// The edges of a tile that a pointer at `pos_within_tile` resizes from: the outer thirds of its
+/// size.
+pub(super) fn resize_edges_in_tile(
+    size: Size<f64, Logical>,
+    pos_within_tile: Point<f64, Logical>,
+) -> ResizeEdge {
+    let mut edges = ResizeEdge::empty();
+    if pos_within_tile.x < size.w / 3. {
+        edges |= ResizeEdge::LEFT;
+    } else if 2. * size.w / 3. < pos_within_tile.x {
+        edges |= ResizeEdge::RIGHT;
+    }
+    if pos_within_tile.y < size.h / 3. {
+        edges |= ResizeEdge::TOP;
+    } else if 2. * size.h / 3. < pos_within_tile.y {
+        edges |= ResizeEdge::BOTTOM;
+    }
+    edges
+}
+
 impl<W: LayoutElement> Workspace<W> {
     pub fn new(output: Output, clock: Clock, options: Rc<Options>) -> Self {
         Self::new_with_config(output, None, clock, options)
@@ -1338,6 +1358,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// The interactive node that the tiling layout drew under `pos`, with the pointer's position
     /// on the canvas.
+    pub fn is_on_search_field(&self, pos: Point<f64, Logical>) -> bool {
+        self.scrolling.is_on_search_field(pos)
+    }
+
     pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
         // Floating windows are above what the layout draws.
         if self.is_floating_visible()
@@ -1353,35 +1377,32 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
-        self.tiles_with_render_positions()
-            .find_map(|(tile, tile_pos, visible)| {
-                // This logic should be consistent with window_under() in when it returns Some vs.
-                // None.
-                if !visible {
-                    return None;
-                }
+        // This logic should be consistent with window_under() in when it returns Some vs. None.
+        if self.is_floating_visible() {
+            let floating =
+                self.floating
+                    .tiles_with_render_positions()
+                    .find_map(|(tile, tile_pos)| {
+                        let pos_within_tile = pos - tile_pos;
+                        tile.hit(pos_within_tile)
+                            .map(|_| resize_edges_in_tile(tile.tile_size(), pos_within_tile))
+                    });
+            if floating.is_some() {
+                return floating;
+            }
+        }
 
-                let pos_within_tile = pos - tile_pos;
+        self.scrolling.resize_edges_under(pos)
+    }
 
-                if tile.hit(pos_within_tile).is_some() {
-                    let size = tile.tile_size().to_f64();
-
-                    let mut edges = ResizeEdge::empty();
-                    if pos_within_tile.x < size.w / 3. {
-                        edges |= ResizeEdge::LEFT;
-                    } else if 2. * size.w / 3. < pos_within_tile.x {
-                        edges |= ResizeEdge::RIGHT;
-                    }
-                    if pos_within_tile.y < size.h / 3. {
-                        edges |= ResizeEdge::TOP;
-                    } else if 2. * size.h / 3. < pos_within_tile.y {
-                        edges |= ResizeEdge::BOTTOM;
-                    }
-                    return Some(edges);
-                }
-
-                None
-            })
+    /// Where `pos` is in a tiled window's tile, as the tile is before the layout moves it, if the
+    /// layout draws it somewhere else than where it placed it.
+    pub fn pos_within_tile(
+        &self,
+        window: &W::Id,
+        pos: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        self.scrolling.pos_within_tile(window, pos)
     }
 
     pub fn descendants_added(&mut self, id: &W::Id) -> bool {

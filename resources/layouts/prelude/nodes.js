@@ -3,7 +3,7 @@
 // The tree lives here, and bento gets the changes as an ordered list of ops:
 //
 //     { op: "create", id, kind, props }       a node enters a tree for the first time, or again
-//                                             after it was removed
+//                                             after it was removed; its `enter` props start it
 //     { op: "set", id, props }                changed properties
 //     { op: "append", parent, child, before } puts a node last in a parent, or before another child,
 //                                             moving it from wherever it was
@@ -11,8 +11,9 @@
 //
 // Ids are "n<number>" for nodes the engine creates, "w<window id>" for window nodes and
 // "r<workspace id>" for the root of a workspace's tree. bento creates window nodes and roots
-// itself, so the ops never create them. Only nodes that are in a workspace's tree are known to
-// bento, and a node that's taken out of one is forgotten, and created again when it comes back.
+// itself, so the ops never create them. The field of a search is a created node, of kind "search".
+// Only nodes that are in a workspace's tree are known to bento, and a node that's taken out of one
+// is forgotten, and created again when it comes back.
 
 import { BentoEvent, EventTarget, dispatch, isPropagationStopped } from "./events.js";
 
@@ -50,9 +51,19 @@ export class TreeLog {
     }
 }
 
-function checkProps(props) {
+const INPUTS = ["app", "engine", "none"];
+
+function checkProps(props, kind) {
     if (props === null || typeof props !== "object") {
         throw new TypeError("node properties must be an object");
+    }
+    if (props.input !== undefined) {
+        if (kind !== "window") {
+            throw new Error("`input` is only for window nodes");
+        }
+        if (!INPUTS.includes(props.input)) {
+            throw new Error(`invalid input: ${JSON.stringify(props.input)}`);
+        }
     }
     if (props.rect !== undefined && !isRect(props.rect)) {
         throw new Error(`invalid rect: ${JSON.stringify(props.rect)}`);
@@ -62,7 +73,27 @@ function checkProps(props) {
             throw new Error(`invalid ${name}: ${JSON.stringify(props[name])}`);
         }
     }
+    if (props.enter !== undefined) {
+        if (props.enter === null || typeof props.enter !== "object") {
+            throw new TypeError("`enter` must be an object");
+        }
+        const { enter } = props;
+        if ("enter" in enter) {
+            throw new Error("`enter` can't have an `enter`");
+        }
+        const unknown = Object.keys(enter).filter((name) => !ENTER_PROPS.includes(name));
+        if (unknown.length > 0) {
+            throw new Error(`\`enter\` takes only ${ENTER_PROPS.join(", ")}, not ${unknown.join(", ")}`);
+        }
+        checkProps(enter);
+    }
+    if (props.placeholder !== undefined && typeof props.placeholder !== "string") {
+        throw new Error(`invalid placeholder: ${JSON.stringify(props.placeholder)}`);
+    }
 }
+
+/** The properties that `enter` can start from, which are the ones that can have a transition. */
+const ENTER_PROPS = ["rect", "opacity", "transform", "cornerRadius", "background"];
 
 function copyValue(value) {
     return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -72,7 +103,7 @@ function sameValue(a, b) {
     return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Something drawn on a workspace: a box, text, an image, or a window. */
+/** Something drawn on a workspace: a box, text, an image, a window, or a search's field. */
 export class Node extends EventTarget {
     #log;
     #id;
@@ -122,7 +153,10 @@ export class Node extends EventTarget {
 
     /** Changes some properties. Those with a transition animate to their new value. */
     set(props) {
-        checkProps(props);
+        checkProps(props, this.#kind);
+        if (props.enter !== undefined && this.#sent && !sameValue(this.#props.enter, props.enter)) {
+            throw new Error("`enter` is for before a node is added to a tree, and this one was");
+        }
         const changed = {};
         for (const [name, value] of Object.entries(props)) {
             if (value !== undefined && !sameValue(this.#props[name], value)) {
@@ -301,8 +335,13 @@ export function createNode(log, kind, props = {}) {
     if (!["box", "text", "image"].includes(kind)) {
         throw new Error(`unknown node kind: ${kind}`);
     }
-    checkProps(props);
+    checkProps(props, kind);
     return new Node(log, `n${log.nextId++}`, kind, props, false);
+}
+
+/** The field of a search, which bento creates with the search. The engine puts it in a tree. */
+export function createSearchField(log) {
+    return new Node(log, `n${log.nextId++}`, "search", {}, false);
 }
 
 /** The root of a workspace's tree, which bento creates with the workspace. */
