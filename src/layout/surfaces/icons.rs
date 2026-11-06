@@ -1,9 +1,9 @@
 //! Finds icons in the icon themes, as the freedesktop icon theme spec describes.
 //!
-//! Only raster icons (`.png`) are found: bento has no SVG renderer.
+//! Icons are PNGs or SVGs; at one size, a PNG wins over an SVG.
 
 use std::collections::{HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 #[derive(Debug, PartialEq)]
@@ -146,8 +146,19 @@ fn base_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The `.png` of the icon `name` that best fits `size` physical pixels, from `theme` or the
-/// themes it inherits from, with `hicolor` as the last resort.
+/// Extensions of icon files, the preferred first.
+const EXTENSIONS: [&str; 2] = ["png", "svg"];
+
+/// The file of the icon `name` in `dir`.
+fn icon_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    EXTENSIONS
+        .iter()
+        .map(|extension| dir.join(format!("{name}.{extension}")))
+        .find(|file| file.is_file())
+}
+
+/// The file of the icon `name` that best fits `size` physical pixels, from `theme` or the themes
+/// it inherits from, with `hicolor` as the last resort.
 pub fn find(theme: &str, name: &str, size: u32) -> Option<PathBuf> {
     find_in(&base_dirs(), theme, name, size)
 }
@@ -179,12 +190,7 @@ fn find_in(base_dirs: &[PathBuf], theme: &str, name: &str, size: u32) -> Option<
             .filter_map(|dir| {
                 let file = base_dirs
                     .iter()
-                    .map(|base| {
-                        base.join(&theme)
-                            .join(&dir.path)
-                            .join(format!("{name}.png"))
-                    })
-                    .find(|file| file.is_file())?;
+                    .find_map(|base| icon_file(&base.join(&theme).join(&dir.path), name))?;
                 Some((dir.distance(size), file))
             })
             .min_by_key(|(distance, _)| *distance);
@@ -196,10 +202,7 @@ fn find_in(base_dirs: &[PathBuf], theme: &str, name: &str, size: u32) -> Option<
     }
 
     // Icons that aren't in a theme.
-    base_dirs
-        .iter()
-        .map(|base| base.join(format!("{name}.png")))
-        .find(|file| file.is_file())
+    base_dirs.iter().find_map(|base| icon_file(base, name))
 }
 
 #[cfg(test)]
@@ -306,6 +309,7 @@ MaxSize=512
         write("hicolor/index.theme", &index(""));
         write("hicolor/16/fallback.png", "");
         write("loose.png", "");
+        write("loose-vector.svg", "");
 
         let dirs = [root.clone()];
 
@@ -329,11 +333,65 @@ MaxSize=512
             find_in(&dirs, "child", "loose", 16),
             Some(root.join("loose.png"))
         );
+        assert_eq!(
+            find_in(&dirs, "child", "loose-vector", 16),
+            Some(root.join("loose-vector.svg"))
+        );
         assert_eq!(find_in(&dirs, "child", "missing", 16), None);
         // A theme that isn't installed still falls back to hicolor.
         assert_eq!(
             find_in(&dirs, "nope", "fallback", 16),
             Some(root.join("hicolor/16/fallback.png"))
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn scalable_icons_are_svgs_and_a_png_of_the_same_size_wins() {
+        let root = env::temp_dir().join(format!("bento-icons-svg-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        let write = |path: &str| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        };
+        fs::create_dir_all(root.join("theme")).unwrap();
+        fs::write(
+            root.join("theme/index.theme"),
+            "[Icon Theme]\nDirectories=32,scalable\n\
+             [32]\nSize=32\nType=Fixed\n\
+             [scalable]\nSize=64\nType=Scalable\nMinSize=16\nMaxSize=256\n",
+        )
+        .unwrap();
+        write("theme/scalable/vector.svg");
+        write("theme/scalable/both.svg");
+        write("theme/32/both.png");
+        write("theme/scalable/both-in-one.svg");
+        write("theme/scalable/both-in-one.png");
+
+        let dirs = [root.clone()];
+
+        // Only an SVG, for any size in its range.
+        assert_eq!(
+            find_in(&dirs, "theme", "vector", 100),
+            Some(root.join("theme/scalable/vector.svg"))
+        );
+        // Both fit 32 pixels, and the fixed directory comes first.
+        assert_eq!(
+            find_in(&dirs, "theme", "both", 32),
+            Some(root.join("theme/32/both.png"))
+        );
+        // The scalable one fits a size that the fixed one doesn't.
+        assert_eq!(
+            find_in(&dirs, "theme", "both", 128),
+            Some(root.join("theme/scalable/both.svg"))
+        );
+        // In one directory, the PNG is the one.
+        assert_eq!(
+            find_in(&dirs, "theme", "both-in-one", 64),
+            Some(root.join("theme/scalable/both-in-one.png"))
         );
 
         fs::remove_dir_all(&root).unwrap();

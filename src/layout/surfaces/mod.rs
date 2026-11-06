@@ -30,6 +30,7 @@ mod animated;
 mod icons;
 mod props;
 mod render;
+mod svg;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum NodeKind {

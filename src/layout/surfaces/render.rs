@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _};
@@ -11,7 +12,7 @@ use smithay::backend::renderer::gles::GlesTexture;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 
 use super::props::Paint;
-use super::{icons, Drawn, Node, NodeKind, WindowSlot};
+use super::{icons, svg, Drawn, Node, NodeKind, WindowSlot};
 use crate::niri_render_elements;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::memory::MemoryBuffer;
@@ -496,7 +497,11 @@ fn rasterize_text(key: &TextKey, max_width: i32) -> anyhow::Result<RasterizedTex
 /// Largest width and height of an image that a node draws.
 const MAX_IMAGE_SIZE: u32 = 4096;
 
-/// Loads an icon from the icon theme, or an image from an absolute path.
+/// Largest SVG file that a node draws.
+const MAX_SVG_FILE_SIZE: u64 = 16 * 1024 * 1024;
+
+/// Loads an icon from the icon theme, or an image from an absolute path. An SVG is drawn with its
+/// longer side `key.size` pixels long.
 fn load_image(key: &ImageKey) -> anyhow::Result<MemoryBuffer> {
     let _span = tracy_client::span!("surfaces::load_image");
 
@@ -506,6 +511,13 @@ fn load_image(key: &ImageKey) -> anyhow::Result<MemoryBuffer> {
         icons::find(&key.theme, &key.name, key.size)
             .with_context(|| format!("no icon named {:?} in the icon theme", key.name))?
     };
+
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("svg"))
+    {
+        return load_svg(&path, key.size);
+    }
 
     // An engine names any file it likes, so a huge image mustn't take bento's memory.
     let mut limits = image::Limits::default();
@@ -535,6 +547,29 @@ fn load_image(key: &ImageKey) -> anyhow::Result<MemoryBuffer> {
         data,
         Fourcc::Abgr8888,
         (width as i32, height as i32),
+        1.,
+        smithay::utils::Transform::Normal,
+    ))
+}
+
+/// Draws an SVG file, with its longer side `size` pixels long.
+fn load_svg(path: &Path, size: u32) -> anyhow::Result<MemoryBuffer> {
+    let length = fs::metadata(path)
+        .with_context(|| format!("error reading {path:?}"))?
+        .len();
+    if length > MAX_SVG_FILE_SIZE {
+        bail!("{path:?} is larger than {MAX_SVG_FILE_SIZE} bytes");
+    }
+
+    let data = fs::read(path).with_context(|| format!("error reading {path:?}"))?;
+    let raster = svg::rasterize(&data, size, MAX_IMAGE_SIZE)
+        .with_context(|| format!("error drawing {path:?}"))?;
+
+    // The pixels come premultiplied.
+    Ok(MemoryBuffer::new(
+        raster.data,
+        Fourcc::Abgr8888,
+        (raster.width as i32, raster.height as i32),
         1.,
         smithay::utils::Transform::Normal,
     ))
