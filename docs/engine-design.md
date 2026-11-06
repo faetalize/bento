@@ -329,9 +329,13 @@ holds the keyboard, it gets each key: its name, the text it types and the modifi
 get no keys meanwhile.
 
 The keyboard is only the engine's while it visibly holds it, for an interaction that the person
-started. Escape always ends it unless the engine handles Escape itself, and so do a click outside
-what the engine draws, the lock screen, and the engine failing. bento's binds that can't be
-inhibited keep working throughout.
+started: an engine can only take it while handling an action, a key, or a press on what it draws.
+Escape always ends it unless the engine handles Escape itself, and so do a click outside what the
+engine draws, the lock screen, and the engine failing. bento's binds that can't be inhibited keep
+working throughout.
+
+The keyboard has one owner at a time. A search has the keys while it runs, so starting one ends
+the engine's hold on the keyboard, and the engine can't take it during one.
 
 Outside of that, engines are only told when the held modifiers change, like for showing hints
 while Super is held. They never see keys they don't hold.
@@ -360,7 +364,8 @@ change, best match first, and decides how all of it looks: where the field sits 
 drawn, and what results look like, like dimming tabs that don't match.
 
 Enter picks the best match, which reaches the engine as a request to activate that window, and
-Escape cancels. Either way, the engine is told the search ended.
+Escape cancels, as does a click anywhere but on the field, which then does what it normally does.
+Either way, the engine is told the search ended.
 
 ### An engine's state is readable from outside
 

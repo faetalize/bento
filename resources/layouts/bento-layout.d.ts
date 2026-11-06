@@ -481,9 +481,11 @@ export interface Bento extends EventTarget<BentoEvents> {
      * letter shown on it. While the engine holds it, keys go to `keydown`/`keyup` and apps get
      * none. Escape ends it unless a `keydown` listener prevents its default, and so do a click
      * outside what the engine draws, the lock screen, keyboard focus moving to something that
-     * isn't the engine's, and the engine failing; `keyboardrelease` says which. bento's binds that
-     * can't be inhibited keep working. Returns false when the keyboard can't be taken, like on the
-     * lock screen.
+     * isn't the engine's, a search starting (with `"focus"`), and the engine failing;
+     * `keyboardrelease` says which. bento's binds that can't be inhibited keep working. It can only
+     * be taken while handling something the person did: an `action`, a `keydown`, or a
+     * `pointerdown` or `click` on a node. Returns false otherwise, and when the keyboard can't be
+     * taken, like on the lock screen or while a search runs.
      */
     grabKeyboard(): boolean;
     /** Gives the keyboard back to the apps. */
@@ -672,7 +674,7 @@ export interface Search extends EventTarget<SearchEvents> {
      * field out of its tree when the search ends.
      */
     readonly field: Node;
-    /** Ends it without picking a window. */
+    /** Ends it without picking a window, as a click anywhere but on the field does. */
     cancel(): void;
 }
 

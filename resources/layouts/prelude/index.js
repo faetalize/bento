@@ -216,7 +216,13 @@ export function handle(callJson) {
             }
             isQuery = call.event.type === "newwindowsize";
             const focus = session.focusKey();
-            result = deliver(call.event);
+            // The engine can take the keyboard only for what the person does.
+            session.personStarted = isPersonStarted(call.event);
+            try {
+                result = deliver(call.event);
+            } finally {
+                session.personStarted = false;
+            }
             if (groupsAfter !== undefined) {
                 session.groups.apply(groupsAfter);
             }
@@ -354,6 +360,19 @@ function actionArgs(name, args) {
 }
 
 /** Turns an event from bento into events on the objects, and returns what bento needs to know. */
+/** Whether an event is something the person did: an action, a key, or a press on a node. */
+function isPersonStarted(event) {
+    switch (event.type) {
+        case "action":
+        case "keydown":
+            return true;
+        case "pointer":
+            return event.event === "pointerdown" || event.event === "click";
+        default:
+            return false;
+    }
+}
+
 function deliver(event) {
     const bento = session.bento;
     switch (event.type) {

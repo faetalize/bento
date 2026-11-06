@@ -4010,9 +4010,14 @@ impl Niri {
         };
 
         self.node_released(press, pos, 1);
-        // The finger is gone, so it's not on any node.
+        self.restore_mouse_hover();
+    }
+
+    /// Hovers what the mouse is on again, once a touch that hovered nodes is gone.
+    fn restore_mouse_hover(&mut self) {
         let modifiers = self.node_modifiers();
-        self.layout.node_hover(None, modifiers);
+        let hit = self.pointer_contents.node.clone();
+        self.layout.node_hover(hit.as_ref(), modifiers);
     }
 
     /// Forgets the touches that nodes took, which were cancelled.
@@ -4022,8 +4027,7 @@ impl Niri {
         }
 
         self.touch_node_presses.clear();
-        let modifiers = self.node_modifiers();
-        self.layout.node_hover(None, modifiers);
+        self.restore_mouse_hover();
     }
 
     /// Sends scrolling to the node that the tiling layout draws under the pointer, if there's one.

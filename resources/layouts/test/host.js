@@ -590,10 +590,15 @@ export class TestHost {
         const changes = modifier !== undefined && !this.modifiers[modifier];
         if (changes) this.modifiers[modifier] = true;
         const bind = this.binds.get(key);
+        // Like bento, a search or the engine's hold on the keyboard inhibits the binds that can be.
+        const inhibiting = this.keyboard.grabbed || this.search !== null;
         let went;
-        if (bind !== undefined && !(this.keyboard.grabbed && bind.allowInhibiting)) {
+        if (bind !== undefined && !(inhibiting && bind.allowInhibiting)) {
             this.ranBinds.push(key);
             went = "bind";
+        } else if (this.search !== null) {
+            went = "search";
+            this.searchKey(key, opts);
         } else if (this.keyboard.grabbed) {
             went = "engine";
             const text = opts.text ?? (key.length === 1 ? key : "");
@@ -651,10 +656,6 @@ export class TestHost {
 
     /** Presses and releases a key, and returns where the press went. */
     key(key, opts = {}) {
-        // Like bento, a running search takes the keys.
-        if (this.search !== null) {
-            return this.searchKey(key, opts);
-        }
         const went = this.keyDown(key, opts);
         this.keyUp(key);
         return went;
@@ -678,6 +679,8 @@ export class TestHost {
     /** A pointer press that no node of the engine's takes. It ends the engine's hold on the keyboard. */
     pressOutsideNodes() {
         this.releaseKeyboard("click");
+        // Like bento, a press anywhere but on the search's field ends the search.
+        this.endSearch(false);
         this.flush();
     }
 
@@ -936,7 +939,11 @@ export class TestHost {
             case "End":
                 return this.editSearch((f) => f.end(shift));
             default:
-                throw new Error(`unknown key: ${name}`);
+                // Like bento, a key that types nothing and edits nothing does nothing.
+                if (name.length === 1) {
+                    return this.editSearch((f) => f.insert(name));
+                }
+                return;
         }
     }
 
@@ -951,9 +958,13 @@ export class TestHost {
      * latest matches and then that it ended, and bento activates the window it picked.
      */
     endSearch(pick) {
-        if (this.search === null) return;
+        const ending = this.search;
+        if (ending === null) return;
         const result = this.send({ type: "searchend", pick });
-        this.search = null;
+        // Like bento, a search the engine started as this one ended stays.
+        if (this.search === ending) {
+            this.search = null;
+        }
         if (pick && result.picked !== null) {
             this.activate(result.picked);
         }

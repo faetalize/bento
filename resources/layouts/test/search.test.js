@@ -470,3 +470,40 @@ test("copying and pasting use bento's clipboard", () => {
     h.key("c", { ctrl: true });
     assert.equal(h.clipboard, "firefire");
 });
+
+test("a search started as another ends runs", () => {
+    let starts = 0;
+    const h = host((bento) => {
+        const start = () => {
+            starts++;
+            const search = bento.search(null);
+            if (starts === 1) search.addEventListener("end", start);
+        };
+        bento.addEventListener("action", start);
+    });
+    h.action("all");
+    h.key("Escape");
+    assert.equal(starts, 2);
+    assert.notEqual(h.search, null);
+});
+
+test("binds that can't be inhibited run during a search, and the others don't", () => {
+    const h = host(searching([]));
+    h.bind("F1", { allowInhibiting: false });
+    h.bind("F2", { allowInhibiting: true });
+    h.action("all");
+    assert.equal(h.key("F1"), "bind");
+    assert.equal(h.key("F2"), "search");
+    h.type("x");
+    assert.equal(h.search.field.text, "x");
+});
+
+test("a press outside the field ends the search", () => {
+    const log = [];
+    const h = host(searching(log));
+    h.open({ title: "Firefox" });
+    h.action("all");
+    h.pressOutsideNodes();
+    assert.equal(h.search, null);
+    assert.deepEqual(log.at(-1), ["end", null]);
+});

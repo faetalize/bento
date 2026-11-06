@@ -1022,8 +1022,10 @@ impl Tree {
         };
 
         let (drawn, inner) = space.enter(node);
-        // Nothing under a node that isn't seen is.
+        // Nothing under a node that isn't seen is, and its group textures aren't kept meanwhile.
         if drawn.opacity <= 0. {
+            render::release_group(node, GroupKind::Fade);
+            render::release_group(node, GroupKind::Clip);
             return;
         }
 
@@ -1120,6 +1122,18 @@ impl Tree {
             _ => (),
         });
         hit
+    }
+
+    /// Whether a search field in the tree is drawn at `point` on the canvas, whether or not the
+    /// engine made it interactive.
+    pub fn search_field_contains(&self, point: Point<f64, Logical>) -> bool {
+        let mut on = false;
+        self.walk(&mut |_, node, drawn| {
+            if node.kind == NodeKind::Search && drawn.contains(point) {
+                on = true;
+            }
+        });
+        on
     }
 
     /// Where pointer input on a window goes.

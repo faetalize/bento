@@ -676,13 +676,16 @@ export class Bento extends EventTarget {
         const s = this.#s;
         // bento says whether the keyboard can be taken: not on the lock screen, nor while it's
         // with something that isn't the layout's.
-        if (s.querying || !s.keyboardAvailable) {
+        // And only while handling something the person did, so it can't hold on to it on its own.
+        if (s.querying || !s.keyboardAvailable || !s.personStarted) {
             return false;
         }
         if (!s.keyboardGrabbed) {
             s.keyboardGrabbed = true;
             s.rec.keyboard = true;
         }
+        // Taken back in the same call, it never left.
+        s.releasedByEngine = false;
         return true;
     }
 
@@ -734,6 +737,8 @@ export class Session {
         this.keyboardGrabbed = false;
         /** Whether the engine gave the keyboard back, and hasn't been told yet. */
         this.releasedByEngine = false;
+        /** Whether the event being handled is something the person did, see `grabKeyboard`. */
+        this.personStarted = false;
         this.modifiers = NO_MODIFIERS;
         this.setOptions(given);
         this.bento = new Bento(this);

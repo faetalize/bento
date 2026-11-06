@@ -497,6 +497,7 @@ impl State {
         }
         let engine_grabbed = self.niri.layout.keyboard_grabbed();
         let mut engine_key = None;
+        let mut search_key = None;
 
         // Accessibility modifier grabs should override XKB state changes (e.g. Caps Lock), so we
         // need to process them before keyboard.input() below.
@@ -704,7 +705,8 @@ impl State {
 
                 let is_locked = this.niri.is_locked();
                 let is_in_screenshot = this.niri.screenshot_ui.is_open();
-                let engine_info = engine_grabbed.then(|| engine_grab::key_info(&keysym));
+                let engine_info =
+                    (engine_grabbed || is_searching).then(|| engine_grab::key_info(&keysym));
                 let res = {
                     let config = this.niri.config.borrow();
                     let bindings = make_binds_iter(
@@ -734,7 +736,12 @@ impl State {
                 };
 
                 let res = if is_searching {
-                    this.search_intercept_key(res, key_code, pressed, modified, raw, modifiers)
+                    let text = engine_info.as_ref().map(|(text, _)| text.as_str());
+                    let (res, input) = this.search_intercept_key(
+                        res, key_code, pressed, modified, text, raw, modifiers,
+                    );
+                    search_key = input;
+                    res
                 } else {
                     res
                 };
@@ -769,6 +776,11 @@ impl State {
 
         if let Some((key, repeats)) = engine_key {
             self.send_engine_key(key, repeats);
+        }
+        // The search runs the engine and talks to clients, so not while the keyboard is busy with
+        // the key.
+        if let Some(input) = search_key {
+            self.search_key(input);
         }
         if mods_changed {
             self.update_engine_modifiers();
@@ -2519,6 +2531,8 @@ impl State {
 
         if ButtonState::Pressed == button_state {
             self.niri.cancel_interrupted_release_binds();
+            self.niri
+                .end_search_unless_on_field(pointer.current_location());
 
             // A press outside what the layout engine draws takes the keyboard back from it.
             if self.niri.layout.keyboard_grabbed()
@@ -3327,6 +3341,9 @@ impl State {
         match tip_state {
             TabletToolTipState::Down => {
                 self.niri.cancel_interrupted_release_binds();
+                if let Some(pos) = self.niri.tablet_cursor_location {
+                    self.niri.end_search_unless_on_field(pos);
+                }
 
                 if let Some(pos) = self.niri.tablet_cursor_location {
                     let under = self.niri.contents_under(pos);
@@ -3984,6 +4001,7 @@ impl State {
         let slot = evt.slot();
 
         self.niri.cancel_interrupted_release_binds();
+        self.niri.end_search_unless_on_field(pos);
 
         let serial = SERIAL_COUNTER.next_serial();
 

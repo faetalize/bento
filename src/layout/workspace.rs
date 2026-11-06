@@ -1358,6 +1358,10 @@ impl<W: LayoutElement> Workspace<W> {
 
     /// The interactive node that the tiling layout drew under `pos`, with the pointer's position
     /// on the canvas.
+    pub fn is_on_search_field(&self, pos: Point<f64, Logical>) -> bool {
+        self.scrolling.is_on_search_field(pos)
+    }
+
     pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
         // Floating windows are above what the layout draws.
         if self.is_floating_visible()

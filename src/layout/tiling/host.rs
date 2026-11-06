@@ -495,9 +495,12 @@ impl<W: LayoutElement> Layout<W> {
     /// asked to. The layout hears the latest matches before the search ends, since Enter picks
     /// from them.
     pub(in crate::layout) fn end_search(&mut self, pick: bool) -> Option<W::Id> {
-        self.search.as_ref()?;
+        let id = self.search.as_ref()?.id();
         let result = self.engine_event(json!({ "type": "searchend", "pick": pick }));
-        self.search = None;
+        // The layout may have started another search as this one ended, which stays.
+        if self.search.as_ref().is_some_and(|search| search.id() == id) {
+            self.search = None;
+        }
         let picked = result?["picked"].as_u64()?;
         self.window_by_engine_id(picked)
     }

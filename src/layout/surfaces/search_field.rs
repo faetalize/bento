@@ -138,7 +138,8 @@ pub(super) fn draw<R: NiriRenderer>(
     let elem = TextureRenderElement::from_texture_buffer(
         buffer,
         bounds.loc + target.location + offset,
-        drawn.opacity as f32,
+        // The opacity in its group, like the text of text nodes; the group applies the rest.
+        drawn.local_opacity as f32,
         None,
         Some(size),
         Kind::Unspecified,

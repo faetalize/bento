@@ -2595,3 +2595,88 @@ fn the_engine_cant_take_the_keyboard_while_a_search_runs() {
         serde_json::json!([["search", true], ["take", false]])
     );
 }
+
+#[test]
+fn a_search_started_as_another_ends_runs() {
+    let source = r#"
+        export const meta = { api: 2, name: "again", actions: { "search": {} } };
+        export default function create(bento) {
+            let starts = 0;
+            const start = () => {
+                starts++;
+                const search = bento.search(null);
+                // The first search starts another when it ends.
+                if (starts === 1) search.addEventListener("end", start);
+            };
+            bento.exposeState(() => ({ starts, searching: bento.searching !== null }));
+            bento.addEventListener("action", (e) => start());
+        }
+    "#;
+    let ops = [Op::AddOutput(1), action("search"), Op::SearchCancel];
+    let layout = check_ops_with_options(options_for_source("again", source), ops);
+    assert!(layout.search_active());
+    drop(layout);
+    assert_eq!(
+        engine_state(),
+        serde_json::json!({ "starts": 2, "searching": true })
+    );
+}
+
+#[test]
+fn the_engine_takes_the_keyboard_only_for_what_the_person_does() {
+    let source = r#"
+        export const meta = { api: 2, name: "eager", actions: { "take-keys": {} } };
+        export default function create(bento) {
+            const log = [];
+            bento.exposeState(() => log);
+            bento.addEventListener("windowadd", (e) => {
+                e.window.place({ x: 0, y: 0, w: 100, h: 100 });
+                log.push(["windowadd", bento.grabKeyboard()]);
+            });
+            bento.addEventListener("action", () => log.push(["action", bento.grabKeyboard()]));
+            bento.addEventListener("keyboardrelease", (e) => {
+                log.push(["release", e.reason, bento.grabKeyboard()]);
+            });
+        }
+    "#;
+    let mut layout = check_ops_with_options(
+        options_for_source("eager", source),
+        [Op::AddOutput(1), add_window(1), action("take-keys")],
+    );
+    assert!(layout.keyboard_grabbed());
+    // A click elsewhere frees the keyboard, and taking it back right away isn't allowed.
+    layout.release_keyboard(KeyboardRelease::Click);
+    assert!(!layout.keyboard_grabbed());
+    drop(layout);
+    assert_eq!(
+        engine_state(),
+        serde_json::json!([
+            ["windowadd", false],
+            ["action", true],
+            ["release", "click", false],
+        ])
+    );
+}
+
+#[test]
+fn a_search_knows_where_its_field_is() {
+    let source = r#"
+        export const meta = { api: 2, name: "field-place", actions: { "search": {} } };
+        export default function create(bento) {
+            bento.addEventListener("action", () => {
+                const search = bento.search(null);
+                const ws = bento.monitors[0].activeWorkspace;
+                search.field.set({ rect: { x: 100, y: 100, w: 200, h: 30 } });
+                ws.tree.append(search.field);
+            });
+        }
+    "#;
+    let layout = check_ops_with_options(
+        options_for_source("field-place", source),
+        [Op::AddOutput(1), action("search")],
+    );
+    let output = layout.active_output().unwrap().clone();
+    // The camera is at the canvas' origin, so the field is where it's placed.
+    assert!(layout.is_on_search_field(&output, Point::from((150., 110.))));
+    assert!(!layout.is_on_search_field(&output, Point::from((50., 110.))));
+}

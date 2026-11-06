@@ -13,6 +13,7 @@ use serde_json::json;
 
 use super::tiling::host::KeyboardRelease;
 use super::{tiling, Layout, LayoutElement};
+use crate::utils::id::IdCounter;
 
 mod field;
 mod matching;
@@ -46,6 +47,8 @@ pub struct Hit {
 /// The running search.
 #[derive(Debug)]
 pub struct Search {
+    /// Tells this search apart from one that starts while it ends.
+    id: u64,
     scope: Scope,
     field: Field,
     /// The windows in scope that match the field's text, in no particular order: the layout
@@ -63,6 +66,7 @@ struct Windowed {
 impl Search {
     pub fn new(scope: Scope) -> Self {
         Self {
+            id: SEARCH_ID_COUNTER.next(),
             scope,
             field: Field::default(),
             hits: Vec::new(),
@@ -76,12 +80,23 @@ impl Search {
     pub fn hits(&self) -> &[Hit] {
         &self.hits
     }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 }
+
+static SEARCH_ID_COUNTER: IdCounter = IdCounter::new();
 
 impl<W: LayoutElement> Layout<W> {
     /// Whether a search is running, and has the keyboard.
     pub fn search_active(&self) -> bool {
         self.search.is_some()
+    }
+
+    /// Tells the running search apart from others, for what comes back to it later.
+    pub fn search_id(&self) -> Option<u64> {
+        self.search.as_ref().map(Search::id)
     }
 
     /// The running search's field, for drawing and for screen readers.

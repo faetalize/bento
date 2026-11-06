@@ -1534,6 +1534,11 @@ impl<W: LayoutElement> TilingSpace<W> {
     /// The interactive node that the layout drew under `pos`, relative to the view, with the
     /// pointer's position on the canvas. A window that takes the pointer from the app and is above
     /// a node takes it from the node, and a window whose input goes to the engine is a node.
+    /// Whether the search's field is drawn at `pos`, a point on the view.
+    pub fn is_on_search_field(&self, pos: Point<f64, Logical>) -> bool {
+        self.tree.search_field_contains(self.canvas_pos(pos))
+    }
+
     pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
         let camera = self.camera.current();
         let window = |window: u64| {

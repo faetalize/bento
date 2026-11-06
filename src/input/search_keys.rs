@@ -25,6 +25,7 @@ use niri_config::Modifiers;
 use smithay::backend::input::Keycode;
 use smithay::input::keyboard::Keysym;
 use smithay::reexports::rustix::fs::{fcntl_setfl, OFlags};
+use smithay::utils::{Logical, Point};
 use smithay::wayland::selection::data_device::{
     current_data_device_selection_userdata, request_data_device_client_selection,
     set_data_device_selection,
@@ -39,6 +40,9 @@ const TEXT_MIME_TYPES: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "U
 
 /// Most bytes that bento reads when pasting, as many as a field holds.
 const MAX_PASTE: usize = 4096;
+
+/// How long an app has to send the text to paste, after which bento stops waiting for it.
+const PASTE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// What a key does to a search.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +69,7 @@ impl SearchInput {
 /// on this layout and on another one with Latin letters, for shortcuts on any layout.
 pub(super) fn search_input(
     modified: Option<Keysym>,
+    text: Option<&str>,
     raw: &[Keysym],
     mods: Modifiers,
 ) -> Option<SearchInput> {
@@ -100,15 +105,32 @@ pub(super) fn search_input(
         Keysym::Right | Keysym::KP_Right => Edit::Right { select },
         Keysym::Home | Keysym::KP_Home => Edit::Home { select },
         Keysym::End | Keysym::KP_End => Edit::End { select },
-        sym => {
-            let typed = sym.key_char().filter(|c| !c.is_control())?;
-            Edit::Insert(typed.to_string())
-        }
+        // What xkb types, like the engine's keys get: a dead key's or a compose sequence's
+        // result, too.
+        sym => match text.filter(|text| !text.is_empty()) {
+            Some(text) => Edit::Insert(text.to_owned()),
+            None => Edit::Insert(sym.key_char().filter(|c| !c.is_control())?.to_string()),
+        },
     };
     Some(SearchInput::Edit(edit))
 }
 
 impl Niri {
+    /// Ends the running search when a press lands anywhere but on its field, before the press
+    /// does what it normally does.
+    pub fn end_search_unless_on_field(&mut self, location: Point<f64, Logical>) {
+        if !self.layout.search_active() {
+            return;
+        }
+        let on_field = self
+            .output_under(location)
+            .is_some_and(|(output, pos)| self.layout.is_on_search_field(output, pos));
+        if !on_field {
+            self.layout.search_cancel();
+            self.queue_redraw_all();
+        }
+    }
+
     /// Whether the keyboard is the running search's: not while the session is locked, where the
     /// lock screen has it, or while the screenshot UI has it.
     pub fn search_takes_keys(&self) -> bool {
@@ -121,35 +143,40 @@ impl State {
     /// decided for the key with shortcuts inhibited: a key that no bind takes is for the search,
     /// and a bind that can't be inhibited runs without the key reaching apps. Releases are left
     /// as they are, so that apps hear the release of a key that they heard pressed.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn search_intercept_key(
         &mut self,
         result: ShouldInterceptResult,
         key_code: Keycode,
         pressed: bool,
         modified: Option<Keysym>,
+        text: Option<&str>,
         raw: &[Keysym],
         mods: Modifiers,
-    ) -> ShouldInterceptResult {
+    ) -> (ShouldInterceptResult, Option<SearchInput>) {
         if !pressed {
-            return result;
+            return (result, None);
         }
 
         match result {
             ShouldInterceptResult::Forward => {
                 self.niri.suppressed_keys.insert(key_code);
-                if let Some(input) = search_input(modified, raw, mods) {
-                    self.search_apply(input.clone());
-                    if input.repeats() {
-                        self.start_search_repeat(input);
-                    }
-                }
-                ShouldInterceptResult::InterceptOnly
+                let input = search_input(modified, text, raw, mods);
+                (ShouldInterceptResult::InterceptOnly, input)
             }
             ShouldInterceptResult::ForwardAndHandle(bind) => {
                 self.niri.suppressed_keys.insert(key_code);
-                ShouldInterceptResult::InterceptAndHandle(bind)
+                (ShouldInterceptResult::InterceptAndHandle(bind), None)
             }
-            result => result,
+            result => (result, None),
+        }
+    }
+
+    /// Carries out a key that the search took, once the keyboard is done with it.
+    pub(super) fn search_key(&mut self, input: SearchInput) {
+        self.search_apply(input.clone());
+        if input.repeats() {
+            self.start_search_repeat(input);
         }
     }
 
@@ -261,12 +288,19 @@ impl State {
             return;
         }
 
+        // The text is for the search that's running now, not one that starts while it comes.
+        let Some(search) = self.niri.layout.search_id() else {
+            return;
+        };
         let mut text = Vec::new();
         let source = Generic::new(reader, Interest::READ, Mode::Level);
         let res = self
             .niri
             .event_loop
             .insert_source(source, move |_, reader, state| {
+                if state.niri.layout.search_id() != Some(search) {
+                    return Ok(PostAction::Remove);
+                }
                 let mut buf = [0; 1024];
                 loop {
                     match (&**reader).read(&mut buf) {
@@ -295,8 +329,24 @@ impl State {
                     }
                 }
             });
+        let token = match res {
+            Ok(token) => token,
+            Err(err) => {
+                warn!("error waiting for the text to paste into the search: {err:?}");
+                return;
+            }
+        };
+        // An app that never finishes sending doesn't keep the pipe open for the session.
+        let timer = Timer::from_duration(PASTE_TIMEOUT);
+        let res = self
+            .niri
+            .event_loop
+            .insert_source(timer, move |_, _, state| {
+                state.niri.event_loop.remove(token);
+                TimeoutAction::Drop
+            });
         if let Err(err) = res {
-            warn!("error waiting for the text to paste into the search: {err:?}");
+            warn!("error timing the text to paste into the search: {err:?}");
         }
     }
 }
@@ -306,7 +356,7 @@ mod tests {
     use super::*;
 
     fn input(sym: Keysym, mods: Modifiers) -> Option<SearchInput> {
-        search_input(Some(sym), &[], mods)
+        search_input(Some(sym), None, &[], mods)
     }
 
     fn typed(text: &str) -> Option<SearchInput> {
@@ -329,7 +379,7 @@ mod tests {
         assert_eq!(input(Keysym::Tab, Modifiers::empty()), None);
         assert_eq!(input(Keysym::F5, Modifiers::empty()), None);
         assert_eq!(input(Keysym::NoSymbol, Modifiers::empty()), None);
-        assert_eq!(search_input(None, &[], Modifiers::empty()), None);
+        assert_eq!(search_input(None, None, &[], Modifiers::empty()), None);
     }
 
     #[test]
@@ -393,10 +443,13 @@ mod tests {
         // The Cyrillic "с" is on the key that has "c" on a Latin layout.
         let ctrl = Modifiers::CTRL;
         assert_eq!(
-            search_input(Some(Keysym::Cyrillic_es), &[Keysym::c], ctrl),
+            search_input(Some(Keysym::Cyrillic_es), None, &[Keysym::c], ctrl),
             Some(SearchInput::Copy)
         );
-        assert_eq!(search_input(Some(Keysym::Cyrillic_es), &[], ctrl), None);
+        assert_eq!(
+            search_input(Some(Keysym::Cyrillic_es), None, &[], ctrl),
+            None
+        );
     }
 
     #[test]
@@ -412,5 +465,18 @@ mod tests {
         assert!(SearchInput::Edit(Edit::Backspace).repeats());
         assert!(!SearchInput::Submit.repeats());
         assert!(!SearchInput::Paste.repeats());
+    }
+
+    #[test]
+    fn keys_type_what_the_keyboard_layout_types() {
+        // A compose sequence or a dead key ends in a keysym whose text only xkb knows.
+        assert_eq!(
+            search_input(Some(Keysym::dead_acute), Some("é"), &[], Modifiers::empty()),
+            Some(SearchInput::Edit(Edit::Insert(String::from("é"))))
+        );
+        assert_eq!(
+            search_input(Some(Keysym::dead_acute), Some(""), &[], Modifiers::empty()),
+            None
+        );
     }
 }

@@ -555,3 +555,34 @@ test("a search takes the keyboard from the engine, and the engine can't take it 
         ["take", false],
     ]);
 });
+
+test("the engine takes the keyboard only for what the person does, and keeps it if it takes it back", () => {
+    const log = [];
+    const h = new TestHost({
+        meta: { api: 2, name: "eager", actions: { "take-keys": {}, "flip": {} } },
+        default(bento) {
+            bento.addEventListener("windowadd", (e) => {
+                e.window.place({ x: 0, y: 0, w: 10, h: 10 });
+                log.push(["windowadd", bento.grabKeyboard()]);
+            });
+            bento.addEventListener("keyboardrelease", (e) => log.push(["release", e.reason, bento.grabKeyboard()]));
+            bento.addEventListener("action", (e) => {
+                if (e.name === "take-keys") log.push(["action", bento.grabKeyboard()]);
+                if (e.name === "flip") {
+                    bento.releaseKeyboard();
+                    log.push(["flip", bento.grabKeyboard()]);
+                }
+            });
+        },
+    });
+    h.open();
+    h.action("take-keys");
+    h.action("flip");
+    h.pressOutsideNodes();
+    assert.deepEqual(log, [
+        ["windowadd", false],
+        ["action", true],
+        ["flip", true],
+        ["release", "click", false],
+    ]);
+});

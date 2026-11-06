@@ -2099,6 +2099,18 @@ impl<W: LayoutElement> Layout<W> {
         mon.node_under(pos_within_output)
     }
 
+    /// Whether the running search's field is drawn at the point, wherever the engine put it.
+    pub fn is_on_search_field(
+        &self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        self.search_active()
+            && self
+                .monitor_for_output(output)
+                .is_some_and(|mon| mon.is_on_search_field(pos_within_output))
+    }
+
     /// Returns the window under the cursor and the hit type.
     pub fn window_under(
         &self,
