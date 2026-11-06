@@ -2029,6 +2029,8 @@ mod tests {
                     "bento",
                 ),
                 options: [],
+                output_options: [],
+                workspace_options: [],
                 window_rules: [],
             },
             prefer_no_csd: true,

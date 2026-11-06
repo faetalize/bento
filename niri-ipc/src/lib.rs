@@ -1136,10 +1136,11 @@ pub enum LayoutEngineOptionValue {
     Number(f64),
     /// A string value. Choices, sizes and colours are strings too.
     String(String),
+    /// The values of a list option.
+    // Before `Gradient`, since serde reads a struct from an array too.
+    List(Vec<LayoutEngineOptionValue>),
     /// A gradient.
     Gradient(LayoutEngineGradient),
-    /// The values of a list option.
-    List(Vec<LayoutEngineOptionValue>),
 }
 
 /// A linear gradient, as a layout engine option has it and as the layout engine draws it.

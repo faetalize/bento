@@ -593,7 +593,7 @@ fn workspaces_have_the_options_of_their_output_and_their_own() {
 
     let state = engine::exposed_state().unwrap();
     // `Bento.options` stays the top-level ones.
-    assert_eq!(state["top"], serde_json::json!(4.0));
+    assert_eq!(state["top"], serde_json::json!(4));
     let workspaces = state["workspaces"].as_array().unwrap();
     let rows_of = |monitor: &str, name: Option<&str>| {
         let found = workspaces
@@ -601,15 +601,10 @@ fn workspaces_have_the_options_of_their_output_and_their_own() {
             .find(|ws| ws[0] == monitor && ws[1] == serde_json::json!(name));
         found.map(|ws| ws[2].clone())
     };
-    assert_eq!(
-        rows_of("output1", Some("ws1")),
-        Some(serde_json::json!(8.0))
-    );
-    assert_eq!(rows_of("output2", None), Some(serde_json::json!(6.0)));
-    // The empty workspace below it, if it has one, is no one's in particular.
-    if let Some(rows) = rows_of("output1", None) {
-        assert_eq!(rows, serde_json::json!(4.0));
-    }
+    assert_eq!(rows_of("output1", Some("ws1")), Some(serde_json::json!(8)));
+    assert_eq!(rows_of("output2", None), Some(serde_json::json!(6)));
+    // The empty workspace below it is no one's in particular.
+    assert_eq!(rows_of("output1", None), Some(serde_json::json!(4)));
 }
 
 #[test]

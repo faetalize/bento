@@ -6,11 +6,11 @@
 //! What moves to the engine's file takes the comments right above it along.
 //!
 //! - `layout {}` loses the settings that belong to the engine, which become `options {}` of the
-//!   engine's file. The `layout {}` of an `output` or a `workspace` does the same, and its
-//!   settings become the `options {}` of an `output` or `workspace` block of the engine's file.
+//!   engine's file. The `layout {}` of an `output` or a `workspace` does the same, and its settings
+//!   become the `options {}` of an `output` or `workspace` block of the engine's file.
 //! - Window rules lose the properties that belong to the engine, which become `window-rule {}`
-//!   blocks of the engine's file with the same matchers. That includes the colors and gradients
-//!   of a `tab-indicator` rule.
+//!   blocks of the engine's file with the same matchers. That includes the colors and gradients of
+//!   a `tab-indicator` rule.
 //! - Binds to the engine's actions move to the engine's `binds {}`; the rest stay.
 //!
 //! Whatever can't be converted is dropped, and said in [`Conversion::notes`].

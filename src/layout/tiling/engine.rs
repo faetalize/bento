@@ -1034,7 +1034,10 @@ mod tests {
         );
 
         for bad in [string("red"), string("#ff"), TilingOption::Number(1.)] {
-            assert!(color.convert(&[bad.clone()]).is_err(), "{bad:?}");
+            assert!(
+                color.convert(std::slice::from_ref(&bad)).is_err(),
+                "{bad:?}"
+            );
         }
         // A colour is always set.
         assert!(color.convert(&[]).is_err());
@@ -1084,7 +1087,10 @@ mod tests {
             string("#000"),
             TilingOption::Bool(true),
         ] {
-            assert!(option.convert(&[value.clone()]).is_err(), "{value:?}");
+            assert!(
+                option.convert(std::slice::from_ref(&value)).is_err(),
+                "{value:?}"
+            );
         }
     }
 

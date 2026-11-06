@@ -392,8 +392,8 @@ file of their own, and bento loads the one for the running engine. Switching eng
 which file is loaded, so nothing breaks, while validation stays strict against the running
 engine.
 
-An engine's options are booleans, numbers, strings, choices, sizes, colours and gradients, or lists
-of them, as the engine declares. They can differ per monitor and per named workspace, like bento's
+An engine's options are booleans, numbers, strings, choices, sizes, colours or gradients, as the
+engine declares, and all but gradients can be lists. They can differ per monitor and per named workspace, like bento's
 own `layout {}` settings: the engine's file can set options for an `output` or a `workspace`, and
 the engine reads each workspace's options from the workspace.
 
