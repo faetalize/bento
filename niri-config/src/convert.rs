@@ -6,9 +6,11 @@
 //! What moves to the engine's file takes the comments right above it along.
 //!
 //! - `layout {}` loses the settings that belong to the engine, which become `options {}` of the
-//!   engine's file. Per-output and per-workspace values of them can't be expressed there.
+//!   engine's file. The `layout {}` of an `output` or a `workspace` does the same, and its settings
+//!   become the `options {}` of an `output` or `workspace` block of the engine's file.
 //! - Window rules lose the properties that belong to the engine, which become `window-rule {}`
-//!   blocks of the engine's file with the same matchers.
+//!   blocks of the engine's file with the same matchers. That includes the colors and gradients of
+//!   a `tab-indicator` rule.
 //! - Binds to the engine's actions move to the engine's `binds {}`; the rest stay.
 //!
 //! Whatever can't be converted is dropped, and said in [`Conversion::notes`].
@@ -24,7 +26,7 @@ use knuffel::span::Span;
 
 use crate::actions::native_actions;
 use crate::tiling::{engine_config_path, TilingLayout};
-use crate::Color;
+use crate::{Color, GradientInterpolation};
 
 type Node = ast::SpannedNode<Span>;
 
@@ -128,6 +130,7 @@ pub fn convert(niri_config: &str) -> miette::Result<Conversion> {
         edits: Vec::new(),
         notes: Vec::new(),
         options: Vec::new(),
+        scoped: Vec::new(),
         rules: Vec::new(),
         binds: Vec::new(),
         has_tiling: false,
@@ -159,12 +162,21 @@ enum Kind {
     Unknown,
 }
 
+/// The options that an `output` or `workspace` block of the engine's file sets.
+struct Scoped {
+    /// `output` or `workspace`.
+    kind: &'static str,
+    name: String,
+    options: Vec<Moved>,
+}
+
 struct Converter<'a> {
     text: &'a str,
     native: HashSet<String>,
     edits: Vec<Edit>,
     notes: Vec<String>,
     options: Vec<Moved>,
+    scoped: Vec<Scoped>,
     rules: Vec<String>,
     binds: Vec<Moved>,
     has_tiling: bool,
@@ -178,10 +190,14 @@ impl<'a> Converter<'a> {
                 "layout" => self.layout(node, None),
                 // The same section under an output or a workspace.
                 "output" | "workspace" => {
+                    let kind = if &**node.node_name == "output" {
+                        "output"
+                    } else {
+                        "workspace"
+                    };
                     let name = string_arg(node).unwrap_or_default();
                     for layout in node.children().filter(|c| &**c.node_name == "layout") {
-                        let scope = format!("{} {name:?}", &**node.node_name);
-                        self.layout(layout, Some(scope));
+                        self.layout(layout, Some((kind, name.clone())));
                     }
                 }
                 "window-rule" => self.window_rule(node),
@@ -205,9 +221,9 @@ impl<'a> Converter<'a> {
         }
     }
 
-    /// Moves the engine's settings out of a `layout` section.
-    fn layout(&mut self, node: &Node, scope: Option<String>) {
-        let mut dropped = Vec::new();
+    /// Moves the engine's settings out of a `layout` section, which is the top-level one or that
+    /// of an output or a workspace, `scope` being its kind and name.
+    fn layout(&mut self, node: &Node, scope: Option<(&'static str, String)>) {
         for child in node.children() {
             let mut notes = Vec::new();
             let Some(lines) = self.setting(child, &mut notes) else {
@@ -215,21 +231,29 @@ impl<'a> Converter<'a> {
             };
             let comments = self.comments(child);
             self.remove(child);
+            self.notes.extend(notes);
+            let moved = Moved { comments, lines };
             match &scope {
-                None => {
-                    self.notes.extend(notes);
-                    self.options.push(Moved { comments, lines });
+                None => self.options.push(moved),
+                Some((kind, name)) => {
+                    let index = self
+                        .scoped
+                        .iter()
+                        .position(|scoped| scoped.kind == *kind && scoped.name == *name);
+                    let scoped = match index {
+                        Some(index) => &mut self.scoped[index],
+                        None => {
+                            self.scoped.push(Scoped {
+                                kind,
+                                name: name.clone(),
+                                options: Vec::new(),
+                            });
+                            self.scoped.last_mut().unwrap()
+                        }
+                    };
+                    scoped.options.push(moved);
                 }
-                Some(_) => dropped.push(String::from(&**child.node_name)),
             }
-        }
-
-        if let (Some(scope), false) = (scope, dropped.is_empty()) {
-            self.notes.push(format!(
-                "The layout of {scope} sets {}. Options belong to the whole engine, so these \
-                 values were dropped.",
-                dropped.join(", ")
-            ));
         }
     }
 
@@ -278,7 +302,7 @@ impl<'a> Converter<'a> {
                 "hide-when-single-tab" | "place-within-column" => {
                     lines.push(option(&setting, &[flag(child).to_string()]));
                 }
-                "gap" | "width" | "corner-radius" => {
+                "gap" | "width" | "corner-radius" | "gaps-between-tabs" => {
                     lines.extend(self.number(child).map(|n| option(&setting, &[n])));
                 }
                 "position" => {
@@ -303,15 +327,13 @@ impl<'a> Converter<'a> {
                     Some(hex) => lines.push(option(&setting, &[quote(&hex)])),
                     None => notes.push(format!("The tab indicator's {name} couldn't be read.")),
                 },
-                "gaps-between-tabs" => notes.push(String::from(
-                    "niri.js has no gaps between tabs, so the tab indicator's gaps-between-tabs \
-                     was dropped.",
-                )),
                 "active-gradient" | "inactive-gradient" | "urgent-gradient" => {
-                    notes.push(String::from(
-                        "niri.js' tab indicator takes colors, not gradients, so its gradients \
-                         were dropped.",
-                    ));
+                    match gradient_option(&setting, child) {
+                        Some(line) => lines.push(line),
+                        None => {
+                            notes.push(format!("The tab indicator's {name} couldn't be read."));
+                        }
+                    }
                 }
                 _ => (),
             }
@@ -336,10 +358,12 @@ impl<'a> Converter<'a> {
                     Some(hex) => lines.push(option("insert-hint-color", &[quote(&hex)])),
                     None => notes.push(String::from("The insert hint's color couldn't be read.")),
                 },
-                "gradient" => notes.push(String::from(
-                    "niri.js' insert hint takes a color, not a gradient, so its gradient was \
-                     dropped.",
-                )),
+                "gradient" => match gradient_option("insert-hint-gradient", child) {
+                    Some(line) => lines.push(line),
+                    None => {
+                        notes.push(String::from("The insert hint's gradient couldn't be read."))
+                    }
+                },
                 _ => (),
             }
         }
@@ -377,29 +401,27 @@ impl<'a> Converter<'a> {
         let mut properties = Vec::new();
         for child in node.children() {
             let name = &**child.node_name;
-            let lines = match name {
+            let lines: Vec<String> = match name {
                 "default-column-width" | "default-window-height" => match child.children().next() {
-                    Some(first) => preset(first).map(|size| option(name, &[size])),
-                    None => Some(option(name, &[])),
+                    Some(first) => preset(first)
+                        .map(|size| option(name, &[size]))
+                        .into_iter()
+                        .collect(),
+                    None => vec![option(name, &[])],
                 },
-                "default-column-display" => string_arg(child).map(|v| option(name, &[quote(&v)])),
-                "open-maximized" => Some(option(name, &[flag(child).to_string()])),
-                "tab-indicator" => {
-                    self.notes.push(String::from(
-                        "A window rule's tab-indicator colors have no equivalent in niri.js, so \
-                         they were dropped.",
-                    ));
-                    None
-                }
+                "default-column-display" => string_arg(child)
+                    .map(|v| option(name, &[quote(&v)]))
+                    .into_iter()
+                    .collect(),
+                "open-maximized" => vec![option(name, &[flag(child).to_string()])],
+                "tab-indicator" => self.tab_indicator_rule(child),
                 _ => continue,
             };
             moved.push(child);
-            if let Some(line) = lines {
-                properties.push(Moved {
-                    comments: self.comments(child),
-                    lines: vec![line],
-                });
-            }
+            properties.push(Moved {
+                comments: self.comments(child),
+                lines,
+            });
         }
         if moved.is_empty() {
             return;
@@ -421,8 +443,34 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// The colors and gradients that a window rule's `tab-indicator` sets for the window's tab, as
+    /// the engine's window rule properties.
+    fn tab_indicator_rule(&mut self, node: &Node) -> Vec<String> {
+        let mut lines = Vec::new();
+        for child in node.children() {
+            let name = &**child.node_name;
+            let setting = format!("tab-indicator-{name}");
+            let line = match name {
+                "active-color" | "inactive-color" | "urgent-color" => {
+                    color_hex(child).map(|hex| option(&setting, &[quote(&hex)]))
+                }
+                "active-gradient" | "inactive-gradient" | "urgent-gradient" => {
+                    gradient_option(&setting, child)
+                }
+                _ => continue,
+            };
+            match line {
+                Some(line) => lines.push(line),
+                None => self.notes.push(format!(
+                    "A window rule's tab-indicator {name} couldn't be read, and was dropped."
+                )),
+            }
+        }
+        lines
+    }
+
     fn rule_block(&mut self, comments: &[String], matchers: &[&Node], properties: &[Moved]) {
-        if properties.is_empty() {
+        if properties.iter().all(|property| property.lines.is_empty()) {
             return;
         }
         let mut block = String::new();
@@ -542,6 +590,25 @@ impl<'a> Converter<'a> {
         if !self.options.is_empty() {
             let options = render(&self.options);
             let _ = write!(engine, "\noptions {{\n{options}\n}}\n");
+        }
+        for scoped in &self.scoped {
+            let options = render(&scoped.options);
+            if options.is_empty() {
+                continue;
+            }
+            // Two levels down: the block, and its `options`.
+            let nest = |line: &str| match line.is_empty() {
+                true => String::new(),
+                false => format!("    {line}"),
+            };
+            let options: Vec<String> = options.lines().map(nest).collect();
+            let name = quote(&scoped.name);
+            let kind = scoped.kind;
+            let options = options.join("\n");
+            let _ = write!(
+                engine,
+                "\n{kind} {name} {{\n    options {{\n{options}\n    }}\n}}\n"
+            );
         }
         for rule in &self.rules {
             let _ = write!(engine, "\n{rule}\n");
@@ -752,6 +819,62 @@ fn preset(node: &Node) -> Option<String> {
     }
 }
 
+/// A niri gradient node, like `active-gradient from="red" to="#00f" angle=45`, as the engine's
+/// option or window rule property `setting`, with the colors as `#rrggbb` and niri's
+/// `relative-to="workspace-view"` as `"view"`. `None` if it can't be read.
+fn gradient_option(setting: &str, node: &Node) -> Option<String> {
+    let (mut from, mut to, mut angle, mut relative_to, mut space) = (None, None, None, None, None);
+    for (key, value) in &node.properties {
+        match (name_of(key), &*value.literal) {
+            ("from", Literal::String(text)) => from = Color::from_str(text).ok(),
+            ("to", Literal::String(text)) => to = Color::from_str(text).ok(),
+            ("angle", literal) => {
+                angle = Some(number(literal).filter(|angle| angle.fract() == 0.)?);
+            }
+            ("relative-to", Literal::String(text)) => {
+                relative_to = match &**text {
+                    "window" => None,
+                    "workspace-view" => Some("view"),
+                    _ => return None,
+                };
+            }
+            ("in", Literal::String(text)) => {
+                text.parse::<GradientInterpolation>().ok()?;
+                space = Some(text.to_string());
+            }
+            _ => return None,
+        }
+    }
+
+    let mut line = option(setting, &[]);
+    let _ = write!(line, " from={} to={}", quote(&hex(from?)), quote(&hex(to?)));
+    if let Some(angle) = angle {
+        let _ = write!(line, " angle={angle}");
+    }
+    if let Some(relative_to) = relative_to {
+        let _ = write!(line, " relative-to={}", quote(relative_to));
+    }
+    if let Some(space) = space {
+        let _ = write!(line, " in={}", quote(&space));
+    }
+    Some(line)
+}
+
+/// A color as the `#rrggbb` or `#rrggbbaa` the engine's options take.
+fn hex(color: Color) -> String {
+    let byte = |x: f32| (x.clamp(0., 1.) * 255.).round() as u8;
+    let mut hex = format!(
+        "#{:02x}{:02x}{:02x}",
+        byte(color.r),
+        byte(color.g),
+        byte(color.b)
+    );
+    if byte(color.a) != 255 {
+        let _ = write!(hex, "{:02x}", byte(color.a));
+    }
+    hex
+}
+
 /// A niri color node, which is a CSS color string or four 0-255 numbers, as the `#rrggbb` or
 /// `#rrggbbaa` the engine's options take.
 fn color_hex(node: &Node) -> Option<String> {
@@ -768,18 +891,7 @@ fn color_hex(node: &Node) -> Option<String> {
             Color::from_rgba8_unpremul(r, g, b, a)
         }
     };
-
-    let byte = |x: f32| (x.clamp(0., 1.) * 255.).round() as u8;
-    let mut hex = format!(
-        "#{:02x}{:02x}{:02x}",
-        byte(color.r),
-        byte(color.g),
-        byte(color.b)
-    );
-    if byte(color.a) != 255 {
-        let _ = write!(hex, "{:02x}", byte(color.a));
-    }
-    Some(hex)
+    Some(hex(color))
 }
 
 fn line_start(text: &str, pos: usize) -> usize {
@@ -838,6 +950,8 @@ fn backup_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use niri_ipc::LayoutEngineGradient;
+
     use super::*;
     use crate::{Action, Config, Key, TilingOption};
 
@@ -885,10 +999,13 @@ layout {
         active-color 10 20 30 255
         inactive-color "rgb(255, 0, 0)"
         gaps-between-tabs 2
+        active-gradient from="#80c8ff" to="red" angle=45 relative-to="workspace-view" in="oklch shorter hue"
+        urgent-gradient from="#900" to="#f00"
     }
 
     insert-hint {
         color "#ff000080"
+        gradient from="#ff000080" to="#0000ff80" relative-to="window"
     }
 }
 
@@ -912,6 +1029,15 @@ window-rule {
     open-maximized true
     default-window-height { fixed 500; }
     opacity 0.9
+}
+
+// Kitty's tab stands out.
+window-rule {
+    match app-id="kitty"
+    tab-indicator {
+        active-color "#ff0000"
+        inactive-gradient from="#111" to="#222" angle=90
+    }
 }
 
 window-rule {
@@ -949,6 +1075,17 @@ output "eDP-1" {
     layout {
         default-column-width { proportion 0.25; }
         gaps 8
+        tab-indicator {
+            width 3
+            active-gradient from="#000" to="#fff"
+        }
+    }
+}
+
+workspace "web" {
+    layout {
+        // Tabs on this one.
+        default-column-display "tabbed"
     }
 }
 "##;
@@ -1033,6 +1170,40 @@ output "eDP-1" {
             Some(strings(&["#ff0000"]))
         );
         assert_eq!(option("insert-hint-color"), Some(strings(&["#ff000080"])));
+        assert_eq!(
+            option("tab-indicator-gaps-between-tabs"),
+            Some(vec![TilingOption::Number(2.)])
+        );
+
+        // Gradients are written with properties, in the engine's spelling.
+        let gradient = |from: &str, to: &str| LayoutEngineGradient {
+            from: String::from(from),
+            to: String::from(to),
+            angle: None,
+            relative_to: None,
+            color_space: None,
+        };
+        assert_eq!(
+            option("tab-indicator-active-gradient"),
+            Some(vec![TilingOption::Gradient(LayoutEngineGradient {
+                angle: Some(45.),
+                relative_to: Some(String::from("view")),
+                color_space: Some(String::from("oklch shorter hue")),
+                ..gradient("#80c8ff", "#ff0000")
+            })])
+        );
+        assert_eq!(
+            option("tab-indicator-urgent-gradient"),
+            Some(vec![TilingOption::Gradient(gradient("#990000", "#ff0000"))])
+        );
+        // niri's default, `relative-to="window"`, is the engine's too.
+        assert_eq!(
+            option("insert-hint-gradient"),
+            Some(vec![TilingOption::Gradient(gradient(
+                "#ff000080",
+                "#0000ff80"
+            ))])
+        );
 
         // None of it is left in bento's config, but gaps are.
         for name in [
@@ -1062,7 +1233,7 @@ output "eDP-1" {
         assert!(!converted.config.contains("open-maximized"));
 
         let rules = &config.tiling.window_rules;
-        assert_eq!(rules.len(), 2);
+        assert_eq!(rules.len(), 3);
 
         let wezterm = &rules[0];
         assert_eq!(wezterm.matches.len(), 1);
@@ -1080,6 +1251,79 @@ output "eDP-1" {
             mpv.properties.get("default-window-height"),
             Some(&height[..])
         );
+    }
+
+    #[test]
+    fn a_tab_indicator_rule_sets_the_tab_colors_of_its_windows() {
+        let (converted, config) = convert_niri();
+        assert!(!converted.config.contains("kitty"));
+        assert!(!converted.config.contains("Kitty's tab"));
+        assert!(converted.engine.contains("// Kitty's tab stands out."));
+
+        let kitty = &config.tiling.window_rules[2];
+        assert_eq!(kitty.matches.len(), 1);
+        assert_eq!(
+            kitty.properties.get("tab-indicator-active-color"),
+            Some(&strings(&["#ff0000"])[..])
+        );
+        let Some([TilingOption::Gradient(gradient)]) =
+            kitty.properties.get("tab-indicator-inactive-gradient")
+        else {
+            panic!("{:?}", kitty.properties);
+        };
+        assert_eq!(
+            (gradient.from.as_str(), gradient.to.as_str()),
+            ("#111111", "#222222")
+        );
+        assert_eq!(gradient.angle, Some(90.));
+    }
+
+    #[test]
+    fn output_and_workspace_layouts_become_scoped_options() {
+        let (converted, config) = convert_niri();
+        let tiling = &config.tiling;
+
+        assert_eq!(tiling.output_options.len(), 1);
+        let output = &tiling.output_options[0];
+        assert_eq!(output.name, "eDP-1");
+        let names: Vec<_> = output.options.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "default-column-width",
+                "tab-indicator-width",
+                "tab-indicator-active-gradient"
+            ]
+        );
+        assert_eq!(output.options[0].1, strings(&["25%"]));
+
+        assert_eq!(tiling.workspace_options.len(), 1);
+        let workspace = &tiling.workspace_options[0];
+        assert_eq!(workspace.name, "web");
+        assert_eq!(
+            workspace.options,
+            [(String::from("default-column-display"), strings(&["tabbed"]))]
+        );
+        // The comment went along.
+        assert!(converted
+            .engine
+            .contains("        // Tabs on this one.\n        default-column-display"));
+
+        // What isn't the engine's stays where it was.
+        assert!(converted.config.contains("scale 2"));
+        assert!(converted.config.contains("gaps 8"));
+        assert!(!converted.config.contains("0.25"));
+        assert!(!converted.config.contains("tabbed"));
+
+        // The result is a config bento reads, so the options reach the right workspaces.
+        let output_name = crate::OutputName {
+            connector: String::from("edp-1"),
+            make: None,
+            model: None,
+            serial: None,
+        };
+        let layers = tiling.option_layers(Some(&output_name), Some("web"));
+        assert_eq!(layers.len(), 3);
     }
 
     #[test]
@@ -1163,14 +1407,45 @@ output "eDP-1" {
         let has_note = |text: &str| converted.notes.iter().any(|note| note.contains(text));
         assert!(has_note("bento has no toggle-window-urgent action"));
         assert!(has_note("Mod+Shift+U"));
-        assert!(has_note("gaps-between-tabs"));
-        assert!(has_note(
-            r#"The layout of output "eDP-1" sets default-column-width"#
-        ));
+        // Everything of the tab indicator and the insert hint can be converted.
+        assert!(!has_note("tab-indicator"));
+        assert!(!has_note("insert-hint"));
+    }
 
-        // Per-output values of the engine's options are gone, the rest of the output stays.
-        assert!(!converted.config.contains("0.25"));
-        assert!(converted.config.contains("gaps 8"));
+    #[test]
+    fn gradients_that_can_not_be_read_are_dropped_with_a_note() {
+        let niri = r##"
+layout {
+    tab-indicator {
+        active-gradient from="not a color" to="#fff"
+        inactive-gradient from="#000" to="#fff" in="hsl"
+        urgent-gradient from="#000" to="#fff" relative-to="somewhere"
+    }
+    insert-hint {
+        gradient from="#000"
+    }
+}
+window-rule {
+    match app-id="x"
+    tab-indicator {
+        active-gradient from="#000" to="#fff" angle=1.5
+    }
+}
+"##;
+        let converted = convert(niri).unwrap();
+        assert!(
+            !converted.engine.contains("gradient"),
+            "{}",
+            converted.engine
+        );
+        let has_note = |text: &str| converted.notes.iter().any(|note| note.contains(text));
+        assert!(has_note("tab indicator's active-gradient couldn't be read"));
+        assert!(has_note(
+            "tab indicator's inactive-gradient couldn't be read"
+        ));
+        assert!(has_note("tab indicator's urgent-gradient couldn't be read"));
+        assert!(has_note("insert hint's gradient couldn't be read"));
+        assert!(has_note("tab-indicator active-gradient couldn't be read"));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use niri_config::animations::{Curve, EasingParams, Kind, SpringParams};
-use niri_config::{Animations, Color};
+use niri_config::{resolve_gradient, Animations, Color, Gradient};
+use niri_ipc::LayoutEngineGradient;
 use serde::{Deserialize, Deserializer};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
@@ -21,11 +22,58 @@ impl NodeTransform {
     };
 }
 
+/// What a fill or a border is painted with: a colour or a gradient.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Paint {
+    Color(Color),
+    Gradient(Gradient),
+}
+
+impl Paint {
+    /// The gradient it paints: a colour is a gradient of one colour.
+    pub fn gradient(self) -> Gradient {
+        match self {
+            Paint::Color(color) => Gradient::from(color),
+            Paint::Gradient(gradient) => gradient,
+        }
+    }
+
+    /// The colour to paint with where gradients can't be drawn: the colour itself, or the start
+    /// of the gradient.
+    pub fn solid(self) -> Color {
+        match self {
+            Paint::Color(color) => color,
+            Paint::Gradient(gradient) => gradient.from,
+        }
+    }
+
+    /// Whether it paints anything.
+    pub fn is_visible(self) -> bool {
+        match self {
+            Paint::Color(color) => color.a > 0.,
+            Paint::Gradient(gradient) => gradient.from.a > 0. || gradient.to.a > 0.,
+        }
+    }
+
+    /// The same paint, fully transparent.
+    pub fn transparent(self) -> Self {
+        let clear = |color: Color| Color { a: 0., ..color };
+        match self {
+            Paint::Color(color) => Paint::Color(clear(color)),
+            Paint::Gradient(gradient) => Paint::Gradient(Gradient {
+                from: clear(gradient.from),
+                to: clear(gradient.to),
+                ..gradient
+            }),
+        }
+    }
+}
+
 /// A border drawn inside a node's rect.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Border {
     pub width: f64,
-    pub color: Color,
+    pub color: Paint,
 }
 
 /// How a property animates when it changes.
@@ -64,7 +112,7 @@ pub struct Update {
     pub transform: Option<NodeTransform>,
     pub clip: Option<bool>,
     pub corner_radius: Option<f64>,
-    pub background: Option<Option<Color>>,
+    pub background: Option<Option<Paint>>,
     pub border: Option<Option<Border>>,
     pub text: Option<String>,
     pub font: Option<String>,
@@ -92,35 +140,6 @@ pub fn named_animation(animations: &Animations, name: &str) -> Option<niri_confi
     })
 }
 
-/// Parses `#rgb`, `#rrggbb` and `#rrggbbaa`.
-pub fn parse_color(text: &str) -> Result<Color, String> {
-    let invalid = || format!("invalid colour `{text}`: expected #rgb, #rrggbb or #rrggbbaa");
-
-    let digits = text.strip_prefix('#').ok_or_else(invalid)?;
-    let digits = digits
-        .chars()
-        .map(|c| c.to_digit(16).map(|d| d as u8))
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(invalid)?;
-
-    let channels: Vec<u8> = match digits.len() {
-        3 => digits.iter().map(|d| d * 17).collect(),
-        6 | 8 => digits
-            .chunks(2)
-            .map(|pair| pair[0] * 16 + pair[1])
-            .collect(),
-        _ => return Err(invalid()),
-    };
-    let alpha = channels.get(3).copied().unwrap_or(255);
-
-    Ok(Color::from_rgba8_unpremul(
-        channels[0],
-        channels[1],
-        channels[2],
-        alpha,
-    ))
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRect {
@@ -142,7 +161,8 @@ struct RawTransform {
 #[serde(deny_unknown_fields)]
 struct RawBorder {
     width: f64,
-    color: String,
+    /// A colour or a gradient.
+    color: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -178,8 +198,9 @@ struct RawProps {
     transform: Option<RawTransform>,
     clip: Option<bool>,
     corner_radius: Option<f64>,
+    /// A colour or a gradient.
     #[serde(default, deserialize_with = "nullable")]
-    background: Option<Option<String>>,
+    background: Option<Option<serde_json::Value>>,
     #[serde(default, deserialize_with = "nullable")]
     border: Option<Option<RawBorder>>,
     text: Option<String>,
@@ -197,6 +218,22 @@ where
     D: Deserializer<'de>,
 {
     Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// Reads a colour, written `"#rrggbb"`, or a gradient, written as an object, for property `name`.
+fn paint(name: &str, value: serde_json::Value) -> Result<Paint, String> {
+    let named = |err: String| format!("`{name}`: {err}");
+    match value {
+        serde_json::Value::String(text) => Color::from_hex(&text).map(Paint::Color).map_err(named),
+        serde_json::Value::Object(_) => {
+            let gradient =
+                LayoutEngineGradient::deserialize(value).map_err(|e| named(e.to_string()))?;
+            resolve_gradient(&gradient)
+                .map(Paint::Gradient)
+                .map_err(named)
+        }
+        _ => Err(format!("`{name}` must be a colour or a gradient")),
+    }
 }
 
 fn non_negative(name: &str, value: f64) -> Result<f64, String> {
@@ -314,7 +351,7 @@ impl TryFrom<RawProps> for Update {
 
         let background = raw
             .background
-            .map(|color| color.as_deref().map(parse_color).transpose())
+            .map(|value| value.map(|value| paint("background", value)).transpose())
             .transpose()?;
 
         let border = raw
@@ -324,7 +361,7 @@ impl TryFrom<RawProps> for Update {
                     .map(|border| {
                         Ok::<_, String>(Border {
                             width: non_negative("border.width", border.width)?,
-                            color: parse_color(&border.color)?,
+                            color: paint("border.color", border.color)?,
                         })
                     })
                     .transpose()
@@ -347,7 +384,11 @@ impl TryFrom<RawProps> for Update {
             border,
             text: raw.text,
             font: raw.font,
-            color: raw.color.as_deref().map(parse_color).transpose()?,
+            color: raw
+                .color
+                .as_deref()
+                .map(|color| Color::from_hex(color).map_err(|err| format!("`color`: {err}")))
+                .transpose()?,
             image: raw.image,
             interactive: raw.interactive,
             transitions: raw.transitions.map(Transitions::from_raw).transpose()?,
@@ -357,37 +398,13 @@ impl TryFrom<RawProps> for Update {
 
 #[cfg(test)]
 mod tests {
+    use niri_config::{GradientInterpolation, GradientRelativeTo};
     use serde_json::json;
 
     use super::*;
 
     fn parse(value: serde_json::Value) -> Result<Update, String> {
         Update::deserialize(&value).map_err(|err| err.to_string())
-    }
-
-    #[test]
-    fn colors_parse_in_all_three_spellings() {
-        assert_eq!(
-            parse_color("#fa0").unwrap(),
-            Color::from_rgba8_unpremul(255, 170, 0, 255)
-        );
-        assert_eq!(
-            parse_color("#1a2b3c").unwrap(),
-            Color::from_rgba8_unpremul(0x1a, 0x2b, 0x3c, 255)
-        );
-        assert_eq!(
-            parse_color("#1A2B3C80").unwrap(),
-            Color::from_rgba8_unpremul(0x1a, 0x2b, 0x3c, 0x80)
-        );
-    }
-
-    #[test]
-    fn colors_reject_everything_else() {
-        for bad in [
-            "", "#", "fff", "#ff", "#ffff", "#fffff", "#ggg", "#+12", "#ééé", "red",
-        ] {
-            assert!(parse_color(bad).is_err(), "{bad:?} should be invalid");
-        }
     }
 
     #[test]
@@ -424,10 +441,79 @@ mod tests {
         assert_eq!(update.corner_radius, Some(8.));
         assert_eq!(
             update.background,
-            Some(Some(Color::from_rgba8_unpremul(0, 0, 0, 255)))
+            Some(Some(Paint::Color(Color::from_rgba8_unpremul(0, 0, 0, 255))))
         );
-        assert_eq!(update.border.unwrap().unwrap().width, 2.);
+        let border = update.border.unwrap().unwrap();
+        assert_eq!(border.width, 2.);
+        assert_eq!(
+            border.color,
+            Paint::Color(Color::from_rgba8_unpremul(255, 255, 255, 255))
+        );
         assert_eq!(update.interactive, Some(true));
+    }
+
+    #[test]
+    fn fills_and_borders_take_gradients() {
+        let update = parse(json!({
+            "background": { "from": "#80c8ff", "to": "#c7ff7f80", "angle": 45, "relativeTo": "view", "in": "oklch longer hue" },
+            "border": { "width": 3, "color": { "from": "#000", "to": "#fff" } },
+        }))
+        .unwrap();
+
+        let Some(Some(Paint::Gradient(background))) = update.background else {
+            panic!("{:?}", update.background);
+        };
+        assert_eq!(
+            background.from,
+            Color::from_rgba8_unpremul(0x80, 0xc8, 0xff, 255)
+        );
+        assert_eq!(
+            background.to,
+            Color::from_rgba8_unpremul(0xc7, 0xff, 0x7f, 0x80)
+        );
+        assert_eq!(background.angle, 45);
+        assert_eq!(background.relative_to, GradientRelativeTo::WorkspaceView);
+        assert_eq!(
+            background.in_,
+            "oklch longer hue".parse::<GradientInterpolation>().unwrap()
+        );
+
+        // What's left out is niri's: top to bottom, over the node, in sRGB.
+        let border = update.border.unwrap().unwrap();
+        let Paint::Gradient(border) = border.color else {
+            panic!("{border:?}");
+        };
+        assert_eq!(border.angle, 180);
+        assert_eq!(border.relative_to, GradientRelativeTo::Window);
+        assert_eq!(border.in_, GradientInterpolation::default());
+    }
+
+    #[test]
+    fn a_paint_is_a_colour_or_a_gradient_and_a_colour_is_a_flat_gradient() {
+        let red = Color::from_rgba8_unpremul(255, 0, 0, 255);
+        let blue = Color::from_rgba8_unpremul(0, 0, 255, 255);
+        let color = Paint::Color(red);
+        let gradient = Paint::Gradient(Gradient {
+            from: red,
+            to: blue,
+            ..Gradient::from(red)
+        });
+
+        assert_eq!(color.solid(), red);
+        assert_eq!(gradient.solid(), red);
+        assert_eq!(color.gradient().from, color.gradient().to);
+        assert_eq!(gradient.gradient().to, blue);
+
+        assert!(color.is_visible() && gradient.is_visible());
+        assert!(!color.transparent().is_visible());
+        assert!(!gradient.transparent().is_visible());
+        // Only the ends are clear.
+        assert_eq!(color.transparent().solid(), Color { a: 0., ..red });
+        let half_clear = Paint::Gradient(Gradient {
+            from: Color { a: 0., ..red },
+            ..gradient.gradient()
+        });
+        assert!(half_clear.is_visible());
     }
 
     #[test]
@@ -458,8 +544,18 @@ mod tests {
             json!({ "transform": { "rotate": 1 } }),
             json!({ "cornerRadius": -2 }),
             json!({ "background": "blue" }),
+            json!({ "background": 5 }),
+            json!({ "background": { "from": "#000" } }),
+            json!({ "background": { "from": "#000", "to": "#fff", "angle": "up" } }),
+            json!({ "background": { "from": "#000", "to": "#fff", "relativeTo": "window" } }),
+            json!({ "background": { "from": "#000", "to": "#fff", "in": "hsl" } }),
+            json!({ "background": { "from": "#000", "to": "red" } }),
+            json!({ "background": { "from": "#000", "to": "#fff", "bogus": 1 } }),
             json!({ "border": { "width": -1, "color": "#fff" } }),
+            json!({ "border": { "width": 1, "color": { "from": "#000" } } }),
             json!({ "color": "#12" }),
+            // Text has a colour, not a gradient.
+            json!({ "color": { "from": "#000", "to": "#fff" } }),
         ] {
             assert!(parse(bad.clone()).is_err(), "{bad} should be invalid");
         }

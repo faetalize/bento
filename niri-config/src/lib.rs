@@ -61,8 +61,9 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
-    default_engine_config, engine_config_path, engine_config_path_in, EngineRules,
-    EngineWindowRule, Tiling, TilingLayout, TilingOption,
+    default_engine_config, engine_config_path, engine_config_path_in, resolve_gradient,
+    EngineOptions, EngineRules, EngineWindowRule, ScopedOptions, Tiling, TilingLayout,
+    TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
@@ -2028,6 +2029,8 @@ mod tests {
                     "bento",
                 ),
                 options: [],
+                output_options: [],
+                workspace_options: [],
                 window_rules: [],
             },
             prefer_no_csd: true,

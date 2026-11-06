@@ -14,7 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context as _;
-use niri_config::{TilingOption, WorkspaceReference};
+use niri_config::{OutputName, TilingOption, WorkspaceReference};
 use niri_ipc::{LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOptionValue};
 use serde_json::{json, Value};
 use smithay::utils::{Logical, Point, Rectangle};
@@ -252,6 +252,7 @@ fn option_json(arg: &TilingOption) -> Value {
         TilingOption::Bool(value) => json!(value),
         TilingOption::Number(value) => json!(value),
         TilingOption::String(value) => json!(value),
+        TilingOption::Gradient(value) => json!(value),
     }
 }
 
@@ -310,11 +311,18 @@ impl<W: LayoutElement> Layout<W> {
                         up,
                         down,
                     }));
+                    let output_name = mon.output().user_data().get::<OutputName>();
                     for (ws_idx, ws) in mon.workspaces.iter().enumerate() {
+                        let options = engine::workspace_options_json(
+                            &self.options.tiling,
+                            output_name,
+                            ws.name().map(String::as_str),
+                        );
                         let info = ws.scrolling().workspace_info(
                             ws.name(),
                             Some(names[idx].clone()),
                             ws_idx,
+                            options,
                         );
                         workspaces.push(to_value(&info));
                         add_windows(ws);
@@ -326,7 +334,12 @@ impl<W: LayoutElement> Layout<W> {
             }
             MonitorSet::NoOutputs { workspaces } => {
                 for (idx, ws) in workspaces.iter().enumerate() {
-                    let info = ws.scrolling().workspace_info(ws.name(), None, idx);
+                    let options = engine::workspace_options_json(
+                        &self.options.tiling,
+                        None,
+                        ws.name().map(String::as_str),
+                    );
+                    let info = ws.scrolling().workspace_info(ws.name(), None, idx, options);
                     snapshot.workspaces.push(to_value(&info));
                     add_windows(ws);
                 }
@@ -1038,8 +1051,8 @@ impl<W: LayoutElement> Layout<W> {
                 LayoutEngineOptionValue::Boolean(value) => TilingOption::Bool(*value),
                 LayoutEngineOptionValue::Number(value) => TilingOption::Number(*value),
                 LayoutEngineOptionValue::String(value) => TilingOption::String(value.clone()),
-                // Action arguments are single values; only options are lists.
-                LayoutEngineOptionValue::List(_) => break,
+                // Action arguments are single values; only options are lists or gradients.
+                LayoutEngineOptionValue::Gradient(_) | LayoutEngineOptionValue::List(_) => break,
             };
             values.push(convert(i, &default));
         }
@@ -1059,7 +1072,7 @@ impl<W: LayoutElement> Layout<W> {
             TilingOption::String(name) => self
                 .find_workspace_by_name(name)
                 .map(|(_, ws)| ws.id().get()),
-            TilingOption::Bool(_) => None,
+            TilingOption::Bool(_) | TilingOption::Gradient(_) => None,
         }
     }
 

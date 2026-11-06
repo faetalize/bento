@@ -14,6 +14,22 @@
 import * as prelude from "../prelude/index.js";
 
 const DEFAULT_MONITOR = { size: { w: 1280, h: 720 }, scale: 1, workspaces: 2 };
+
+/** The options written for `name` in `by`, which match names the way bento does: ignoring case. */
+function scopedOptions(by, name) {
+    if (name === null) return {};
+    const key = Object.keys(by).find((other) => other.toLowerCase() === name.toLowerCase());
+    return key === undefined ? {} : by[key];
+}
+
+function setScoped(by, name, options) {
+    const key = Object.keys(by).find((other) => other.toLowerCase() === name.toLowerCase()) ?? name;
+    if (options === null) {
+        delete by[key];
+    } else {
+        by[key] = options;
+    }
+}
 const MAX_ROUNDS = 8;
 
 export class TestHost {
@@ -22,8 +38,10 @@ export class TestHost {
      *
      * `opts.monitors` lists the monitors, each `{ name, size, scale, workingArea, workspaces,
      * position }`; by default there's one, `"DP-1"`, 1280 × 720 with two workspaces. `opts.config`
-     * overrides parts of the workspaces' config, `opts.options` are the engine's options and
-     * `opts.state` the state the previous instance of the engine saved.
+     * overrides parts of the workspaces' config, `opts.options` are the engine's options,
+     * `opts.outputOptions` and `opts.workspaceOptions` the options that differ per monitor name
+     * and per workspace name, and `opts.state` the state the previous instance of the engine
+     * saved.
      */
     static async load(path, opts = {}) {
         const url = new URL(path, import.meta.url);
@@ -34,6 +52,8 @@ export class TestHost {
     constructor(module, opts = {}) {
         this.meta = JSON.parse(prelude.load(module));
         this.options = opts.options ?? {};
+        this.outputOptions = opts.outputOptions ?? {};
+        this.workspaceOptions = opts.workspaceOptions ?? {};
         this.config = {
             gaps: 16,
             struts: { left: 0, right: 0, top: 0, bottom: 0 },
@@ -181,6 +201,7 @@ export class TestHost {
             view: { size: monitor.size, workingArea: monitor.workingArea, scale: monitor.scale },
             camera: ws.camera,
             config: this.config,
+            options: this.engineOptions(ws.monitor, ws.name),
             focused: ws.focused,
         };
     }
@@ -719,20 +740,39 @@ export class TestHost {
         this.flush();
     }
 
+    /** Sets the options of the workspaces on a monitor, or with `null` takes them away. */
+    setOutputOptions(monitor, options) {
+        setScoped(this.outputOptions, monitor, options);
+        this.flush();
+    }
+
+    /** Sets the options of the workspaces with a name, or with `null` takes them away. */
+    setWorkspaceOptions(name, options) {
+        setScoped(this.workspaceOptions, name, options);
+        this.flush();
+    }
+
     /**
-     * The engine's options as bento sends them: `this.options`, written as in the .kdl file, with
-     * defaults filled in and sizes turned into presets.
+     * The engine's options as bento sends them, written as in the .kdl file, with defaults filled
+     * in and sizes turned into presets. Without arguments they are the top-level options. For a
+     * workspace they are those, then its monitor's `outputOptions` and then its own
+     * `workspaceOptions` by name, a later one replacing an earlier one option by option.
      */
-    engineOptions() {
+    engineOptions(monitor = null, workspace = null) {
         const preset = (value) => {
             if (typeof value !== "string") return value;
             return value.endsWith("%")
                 ? { proportion: Number(value.slice(0, -1)) / 100 }
                 : { fixed: Number(value) };
         };
+        const written = {
+            ...this.options,
+            ...scopedOptions(this.outputOptions, monitor),
+            ...scopedOptions(this.workspaceOptions, workspace),
+        };
         const options = {};
         for (const spec of this.meta.options) {
-            let value = spec.name in this.options ? this.options[spec.name] : spec.default;
+            let value = spec.name in written ? written[spec.name] : spec.default;
             if (spec.type === "size") {
                 value = spec.list ? value.map(preset) : preset(value);
             }

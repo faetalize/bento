@@ -1,7 +1,7 @@
-use niri_config::Color;
+use niri_config::{Color, Gradient};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
-use super::props::NodeTransform;
+use super::props::{NodeTransform, Paint};
 use crate::animation::{Animation, Clock};
 
 /// A value that can be interpolated between two states.
@@ -102,14 +102,49 @@ fn mix_colors(from: Color, to: Color, t: f64) -> Color {
     Color::from_array_premul([mix(0), mix(1), mix(2), mix(3)])
 }
 
-impl Lerp for Option<Color> {
+/// Mixes two paints. A colour mixes with a gradient as a gradient of that one colour, which takes
+/// the other's direction, so that only the colours change. Gradients mix their colours and angle,
+/// and the second one's area and colour space apply.
+fn mix_paints(from: Paint, to: Paint, t: f64) -> Paint {
+    let (a, b) = match (from, to) {
+        (Paint::Color(from), Paint::Color(to)) => return Paint::Color(mix_colors(from, to, t)),
+        (Paint::Gradient(a), Paint::Gradient(b)) => (a, b),
+        (Paint::Color(color), Paint::Gradient(b)) => (
+            Gradient {
+                from: color,
+                to: color,
+                ..b
+            },
+            b,
+        ),
+        (Paint::Gradient(a), Paint::Color(color)) => (
+            a,
+            Gradient {
+                from: color,
+                to: color,
+                ..a
+            },
+        ),
+    };
+
+    let angle = f64::lerp(&f64::from(a.angle), &f64::from(b.angle), t).round();
+    Paint::Gradient(Gradient {
+        from: mix_colors(a.from, b.from, t),
+        to: mix_colors(a.to, b.to, t),
+        angle: angle.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16,
+        relative_to: b.relative_to,
+        in_: b.in_,
+    })
+}
+
+impl Lerp for Option<Paint> {
     fn lerp(from: &Self, to: &Self, t: f64) -> Self {
         match (*from, *to) {
             (None, None) => None,
-            (Some(from), Some(to)) => Some(mix_colors(from, to, t)),
-            // No colour is the other colour, fully transparent.
-            (Some(from), None) => Some(mix_colors(from, Color { a: 0., ..from }, t)),
-            (None, Some(to)) => Some(mix_colors(Color { a: 0., ..to }, to, t)),
+            (Some(from), Some(to)) => Some(mix_paints(from, to, t)),
+            // No paint is the other paint, fully transparent.
+            (Some(from), None) => Some(mix_paints(from, from.transparent(), t)),
+            (None, Some(to)) => Some(mix_paints(to.transparent(), to, t)),
         }
     }
 }
@@ -184,16 +219,75 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_color_is_transparent() {
+    fn a_missing_paint_is_transparent() {
         let red = Color::from_rgba8_unpremul(255, 0, 0, 255);
-        assert_eq!(Option::<Color>::lerp(&None, &None, 0.5), None);
+        let paint = Some(Paint::Color(red));
+        assert_eq!(Option::<Paint>::lerp(&None, &None, 0.5), None);
 
-        let half = Option::<Color>::lerp(&None, &Some(red), 0.5).unwrap();
+        let Some(Paint::Color(half)) = Option::<Paint>::lerp(&None, &paint, 0.5) else {
+            panic!();
+        };
         assert!((half.a - 0.5).abs() < 1e-6);
         assert!((half.r - 1.).abs() < 1e-6);
 
-        let gone = Option::<Color>::lerp(&Some(red), &None, 1.).unwrap();
+        let Some(Paint::Color(gone)) = Option::<Paint>::lerp(&paint, &None, 1.) else {
+            panic!();
+        };
         assert_eq!(gone.a, 0.);
+    }
+
+    fn gradient(from: Color, to: Color, angle: i16) -> Gradient {
+        Gradient {
+            from,
+            to,
+            angle,
+            ..Gradient::from(from)
+        }
+    }
+
+    #[test]
+    fn gradients_mix_their_colors_and_angle() {
+        let black = Color::from_rgba8_unpremul(0, 0, 0, 255);
+        let white = Color::from_rgba8_unpremul(255, 255, 255, 255);
+        let from = Paint::Gradient(gradient(black, black, 0));
+        let to = Paint::Gradient(gradient(white, white, 90));
+
+        let Paint::Gradient(mid) = mix_paints(from, to, 0.5) else {
+            panic!();
+        };
+        assert!((mid.from.r - 0.5).abs() < 1e-6 && (mid.to.r - 0.5).abs() < 1e-6);
+        assert_eq!(mid.angle, 45);
+    }
+
+    #[test]
+    fn a_colour_mixes_with_a_gradient_as_a_flat_gradient_of_its_direction() {
+        let black = Color::from_rgba8_unpremul(0, 0, 0, 255);
+        let white = Color::from_rgba8_unpremul(255, 255, 255, 255);
+        let red = Color::from_rgba8_unpremul(255, 0, 0, 255);
+        let target = gradient(white, red, 270);
+
+        // The direction is the gradient's from the start, so only the colours move.
+        let Paint::Gradient(start) = mix_paints(Paint::Color(black), Paint::Gradient(target), 0.)
+        else {
+            panic!();
+        };
+        assert_eq!(start.from, black);
+        assert_eq!(start.to, black);
+        assert_eq!(start.angle, 270);
+
+        let Paint::Gradient(end) = mix_paints(Paint::Gradient(target), Paint::Color(black), 1.)
+        else {
+            panic!();
+        };
+        assert_eq!(end.from, black);
+        assert_eq!(end.to, black);
+        assert_eq!(end.angle, 270);
+
+        // Two colours stay a colour.
+        assert!(matches!(
+            mix_paints(Paint::Color(black), Paint::Color(white), 0.5),
+            Paint::Color(_)
+        ));
     }
 
     #[test]

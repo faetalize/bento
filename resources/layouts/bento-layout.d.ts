@@ -66,7 +66,7 @@ export type SizingMode = "normal" | "fullscreen" | "maximized";
 
 // Declarations.
 
-export type ValueType = "boolean" | "number" | "string" | "choice" | "size";
+export type ValueType = "boolean" | "number" | "string" | "choice" | "size" | "color" | "gradient";
 
 /**
  * An option, or a property an engine's window rules can set. Values are written in the engine's
@@ -76,14 +76,21 @@ export interface OptionSpec {
     /**
      * `"size"` values reach the engine as a `Preset`. A size written with no value, like
      * `default-column-width` alone on its line, reaches it as `null`: the window decides.
+     * `"color"` values are written `"#rrggbb"` or `"#rrggbbaa"` and reach the engine as a
+     * `Color`. `"gradient"` values are written with properties, like
+     * `active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view"`, and reach the
+     * engine as a `Gradient`, or `null` when left out.
      */
     type: ValueType;
-    /** Whether the value is a list, written as several arguments. */
+    /**
+     * Whether the value is a list, written as several arguments. A gradient is written with the
+     * properties of its node, so it can't be a list.
+     */
     list?: boolean;
     /**
      * Written the way the .kdl file writes it: `"50%"`, or `["33%", "50%"]` for a list; `null` for
-     * a size left to the window. A window rule property that no rule sets is left out of
-     * `Window.rules`, so its default is only for settings screens to show.
+     * a size left to the window, or for no gradient. A window rule property that no rule sets is
+     * left out of `Window.rules`, so its default is only for settings screens to show.
      */
     default: unknown;
     /** The values a `"choice"` accepts. */
@@ -98,6 +105,9 @@ export interface OptionSpec {
 export interface ArgSpec {
     name: string;
     /**
+     * Binds write an action's arguments as plain values, so there are no `"color"` or
+     * `"gradient"` arguments.
+     *
      * - `"size"`: written like `"50%"`, `"+10%"`, `"800"` or `"-100"`; the engine gets a
      *   `SizeChange`.
      * - `"workspace"`: written as an index on the focused monitor, counting from 1, or a
@@ -105,7 +115,7 @@ export interface ArgSpec {
      * - `"monitor"`: written as a connector name like `"DP-2"`; the engine gets a `Monitor`, or
      *   `null`.
      */
-    type: ValueType | "workspace" | "monitor";
+    type: Exclude<ValueType, "color" | "gradient"> | "workspace" | "monitor";
     /** Value when the argument is left out. Arguments without one must be given. */
     default?: boolean | number | string;
     choices?: string[];
@@ -400,7 +410,10 @@ export interface Bento extends EventTarget<BentoEvents> {
     /** Every window the engine places, on every workspace. Floating windows aren't the engine's. */
     readonly windows: readonly Window[];
     readonly groups: readonly Group[];
-    /** The engine's options, from its .kdl file, with defaults filled in. */
+    /**
+     * The engine's options, from its .kdl file, with defaults filled in. A workspace's own options,
+     * which can differ per monitor and per named workspace, are `Workspace.options`.
+     */
     readonly options: Readonly<Record<string, unknown>>;
     /** State the previous instance of this engine saved in `unload`, or `null`. */
     readonly savedState: unknown;
@@ -465,6 +478,12 @@ export interface Workspace extends EventTarget<WorkspaceEvents> {
     readonly camera: Camera;
     /** bento's settings for this workspace, which can differ per monitor or workspace. */
     readonly config: Config;
+    /**
+     * The engine's options for this workspace: `Bento.options`, with what the engine's file sets
+     * for this workspace's monitor (`output "DP-2" { options {} }`) and then for this workspace by
+     * name (`workspace "web" { options {} }`) on top. `configchange` tells when they change.
+     */
+    readonly options: Readonly<Record<string, unknown>>;
     /** The monitor's working area minus the config's struts, starting at a physical pixel. */
     readonly tilingArea: Rect;
     /** The root of what's drawn on this workspace: window nodes and the engine's own nodes. */
@@ -568,6 +587,23 @@ export type Transition =
 /** A colour, written `"#rgb"`, `"#rrggbb"` or `"#rrggbbaa"`. */
 export type Color = string;
 
+/**
+ * A linear gradient from `from` to `to`, at `angle` degrees (0 goes up, 90 to the right),
+ * interpolated in the colour space `in`, like niri's: `"srgb"`, `"srgb-linear"`, `"oklab"`, or
+ * `"oklch"` followed by `"shorter hue"`, `"longer hue"`, `"increasing hue"` or `"decreasing
+ * hue"`. It spans the node's rect, or with `relativeTo: "view"` the whole view of the workspace,
+ * so that neighbouring nodes share one gradient. Left out, `angle` is 180, from top to bottom,
+ * `relativeTo` is `"node"` and `in` is `"srgb"`, like niri's. Angles are whole degrees: bento
+ * rounds them.
+ */
+export interface Gradient {
+    from: Color;
+    to: Color;
+    angle?: number;
+    relativeTo?: "node" | "view";
+    in?: string;
+}
+
 export interface NodeProps {
     /**
      * Where it's drawn, on the workspace's canvas. For a window's node this is its place, set by
@@ -582,9 +618,9 @@ export interface NodeProps {
     clip?: boolean;
     cornerRadius?: number;
     /** Fill, for every node but a window's. */
-    background?: Color | null;
+    background?: Color | Gradient | null;
     /** A border drawn inside its rect, for every node but a window's. */
-    border?: { width: number; color: Color } | null;
+    border?: { width: number; color: Color | Gradient } | null;
     /** `"text"`: what it says, centred in its rect and cut with an ellipsis where it's too wide. */
     text?: string;
     /** `"text"`: a Pango font description, like `"sans 11"`, with its size in logical pixels. */

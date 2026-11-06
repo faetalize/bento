@@ -309,20 +309,40 @@ export const meta = {
             default: false,
             description: "Leave out the tab indicator while a column has one tab.",
         },
+        "tab-indicator-gaps-between-tabs": {
+            type: "number",
+            default: 0,
+            description: "The space between the tabs of the indicator.",
+        },
         "tab-indicator-active-color": {
-            type: "string",
+            type: "color",
             default: "#7fc8ff",
             description: "The color of the active tab.",
         },
         "tab-indicator-inactive-color": {
-            type: "string",
+            type: "color",
             default: "#505050",
             description: "The color of the other tabs.",
         },
         "tab-indicator-urgent-color": {
-            type: "string",
+            type: "color",
             default: "#9b0000",
             description: "The color of a tab whose window is urgent.",
+        },
+        "tab-indicator-active-gradient": {
+            type: "gradient",
+            default: null,
+            description: "A gradient for the active tab, which wins over its color.",
+        },
+        "tab-indicator-inactive-gradient": {
+            type: "gradient",
+            default: null,
+            description: "A gradient for the other tabs, which wins over their color.",
+        },
+        "tab-indicator-urgent-gradient": {
+            type: "gradient",
+            default: null,
+            description: "A gradient for a tab whose window is urgent, which wins over its color.",
         },
         "insert-hint": {
             type: "boolean",
@@ -330,9 +350,14 @@ export const meta = {
             description: "Show where a dragged window would land.",
         },
         "insert-hint-color": {
-            type: "string",
+            type: "color",
             default: "#7fc8ff80",
             description: "The color of the insert hint.",
+        },
+        "insert-hint-gradient": {
+            type: "gradient",
+            default: null,
+            description: "A gradient for the insert hint, which wins over its color.",
         },
     },
     windowRules: {
@@ -357,11 +382,33 @@ export const meta = {
             default: false,
             description: "Open the window as a column as wide as the view.",
         },
+        "tab-indicator-active-color": {
+            type: "color",
+            description: "The color of the window's tab when it is the active one.",
+        },
+        "tab-indicator-inactive-color": {
+            type: "color",
+            description: "The color of the window's tab when it isn't the active one.",
+        },
+        "tab-indicator-urgent-color": {
+            type: "color",
+            description: "The color of the window's tab when the window is urgent.",
+        },
+        "tab-indicator-active-gradient": {
+            type: "gradient",
+            description: "A gradient for the window's tab when it is the active one, which wins over its color.",
+        },
+        "tab-indicator-inactive-gradient": {
+            type: "gradient",
+            description: "A gradient for the window's tab when it isn't the active one, which wins over its color.",
+        },
+        "tab-indicator-urgent-gradient": {
+            type: "gradient",
+            description: "A gradient for the window's tab when the window is urgent, which wins over its color.",
+        },
     },
 };
 
-/** Space between the tabs of a tab indicator, in logical pixels. */
-const TAB_SPACING = 2;
 /** Corner radius of the insert hint. */
 const HINT_CORNER_RADIUS = 8;
 /** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
@@ -460,7 +507,7 @@ function createStrip(bento, ws) {
     let interactiveResize = null;
     /** The column width of the window being dragged, to give back when it's dropped. */
     let dragged = null;
-    let lastOptions = bento.options;
+    let lastOptions = ws.options;
     /** What `ws.focused` was at the end of the last call. */
     let lastFocused = null;
     let nextColumnId = 1;
@@ -482,7 +529,8 @@ function createStrip(bento, ws) {
 
     // Geometry.
 
-    const options = (name) => bento.options[name];
+    // The workspace's options: the engine's, with what its monitor and its name set on top.
+    const options = (name) => ws.options[name];
     const gaps = () => ws.config.gaps;
     const viewSize = () => ws.monitor.size;
     const round = (value) => ws.monitor.round(value);
@@ -2303,13 +2351,15 @@ function createStrip(bento, ws) {
         const position = options("tab-indicator-position");
         const width = options("tab-indicator-width");
         const gap = options("tab-indicator-gap");
+        const between = Math.max(0, round(options("tab-indicator-gaps-between-tabs")));
         const horizontal = position === "top" || position === "bottom";
-        // The indicator spans a proportion of the side it's on, centered.
+        // The indicator spans a proportion of the side it's on, centered, with the tabs and the
+        // space between them filling it.
         const side = horizontal ? area.w : area.h;
         const total = side * clamp(options("tab-indicator-length"), 0, 1);
         const start = (horizontal ? area.x : area.y) + (side - total) / 2;
-        const step = total / count;
-        const length = count > 1 ? Math.max(0, step - TAB_SPACING) : step;
+        const step = (total + between) / count;
+        const length = Math.max(0, step - between);
         const across = {
             left: area.x - gap - width,
             right: area.x + area.w + gap,
@@ -2322,6 +2372,20 @@ function createStrip(bento, ws) {
                 ? { x: round(from), y: round(across), w: length, h: width }
                 : { x: round(across), y: round(from), w: width, h: length };
         });
+    }
+
+    /**
+     * What a tab is painted with, for `state` "active", "inactive" or "urgent", like niri: the
+     * window's rules first, then the options, and in each a gradient wins over the color.
+     */
+    function tabPaint(win, state) {
+        const rules = win.rules;
+        return (
+            rules[`tab-indicator-${state}-gradient`] ??
+            rules[`tab-indicator-${state}-color`] ??
+            options(`tab-indicator-${state}-gradient`) ??
+            options(`tab-indicator-${state}-color`)
+        );
     }
 
     /**
@@ -2349,14 +2413,10 @@ function createStrip(bento, ws) {
             }
             const rects = tabRects(bar.area, count);
             bar.tiles.forEach((tile, idx) => {
-                const color = tile.win.urgent
-                    ? options("tab-indicator-urgent-color")
-                    : idx === bar.active
-                      ? options("tab-indicator-active-color")
-                      : options("tab-indicator-inactive-color");
+                const state = tile.win.urgent ? "urgent" : idx === bar.active ? "active" : "inactive";
                 nodes[idx].set({
                     rect: rects[idx],
-                    background: color,
+                    background: tabPaint(tile.win, state),
                     cornerRadius: options("tab-indicator-corner-radius"),
                 });
             });
@@ -2483,7 +2543,7 @@ function createStrip(bento, ws) {
         });
         hintNode.set({
             rect: insertHintArea(insertPosition(pointer)),
-            background: options("insert-hint-color"),
+            background: options("insert-hint-gradient") ?? options("insert-hint-color"),
         });
         // Last, so it's above the windows.
         ws.tree.append(hintNode);
@@ -2915,7 +2975,7 @@ function createStrip(bento, ws) {
 
         configChanged() {
             mutate(() => {
-                const now = bento.options;
+                const now = ws.options;
                 if (!samePresets(now["preset-column-widths"], lastOptions["preset-column-widths"])) {
                     for (const col of columns) col.presetWidthIdx = null;
                 }

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _};
-use niri_config::{Color, CornerRadius, GradientInterpolation};
+use niri_config::{Color, CornerRadius, Gradient, GradientRelativeTo};
 use pangocairo::cairo::{self, ImageSurface};
 use pangocairo::pango::{EllipsizeMode, FontDescription};
 use smithay::backend::allocator::Fourcc;
@@ -10,6 +10,7 @@ use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesTexture;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 
+use super::props::Paint;
 use super::{icons, Drawn, Node, NodeKind, WindowSlot};
 use crate::niri_render_elements;
 use crate::render_helpers::border::BorderRenderElement;
@@ -47,6 +48,9 @@ pub(super) struct Target<'a> {
     pub location: Point<f64, Logical>,
     /// The output's scale.
     pub scale: f64,
+    /// The workspace's view, which gradients that span it cover, in the same coordinates as
+    /// `location`.
+    pub view: Rectangle<f64, Logical>,
     pub icon_theme: &'a str,
     pub has_border_shader: bool,
 }
@@ -152,29 +156,30 @@ pub(super) fn draw<R: NiriRenderer>(
 
     let radius = CornerRadius::from((node.corner_radius.current() * drawn.transform.scale) as f32)
         .fit_to(size.w as f32, size.h as f32);
-    let rounded = radius != CornerRadius::default() && target.has_border_shader;
+    // Rounded corners and gradients need the shader. Without it a paint is a flat colour.
+    let shaded = |paint: Paint| {
+        target.has_border_shader
+            && (radius != CornerRadius::default() || matches!(paint, Paint::Gradient(_)))
+    };
 
     let mut visuals = node.visuals.borrow_mut();
 
-    if let Some(color) = node.background.current().filter(|color| color.a > 0.) {
-        if rounded {
-            visuals.fill_shader.update(
+    if let Some(paint) = node.background.current().filter(|paint| paint.is_visible()) {
+        if shaded(paint) {
+            update_shader(
+                &mut visuals.fill_shader,
+                paint.gradient(),
                 size,
-                Rectangle::from_size(size),
-                GradientInterpolation::default(),
-                color,
-                color,
-                0.,
-                Rectangle::from_size(size),
+                loc,
+                target,
                 0.,
                 radius,
-                scale as f32,
                 alpha,
             );
             let elem = visuals.fill_shader.clone().with_location(loc);
             emit(elem, crop, scale, push);
         } else {
-            visuals.fill.update(size, color);
+            visuals.fill.update(size, paint.solid());
             let elem =
                 SolidColorRenderElement::from_buffer(&visuals.fill, loc, alpha, Kind::Unspecified);
             emit(elem, crop, scale, push);
@@ -192,22 +197,19 @@ pub(super) fn draw<R: NiriRenderer>(
         let width = (border.width * drawn.transform.scale)
             .min(size.w / 2.)
             .min(size.h / 2.);
-        if width <= 0. || border.color.a <= 0. {
+        if width <= 0. || !border.color.is_visible() {
             return;
         }
 
-        if rounded {
-            visuals.ring_shader.update(
+        if shaded(border.color) {
+            update_shader(
+                &mut visuals.ring_shader,
+                border.color.gradient(),
                 size,
-                Rectangle::from_size(size),
-                GradientInterpolation::default(),
-                border.color,
-                border.color,
-                0.,
-                Rectangle::from_size(size),
+                loc,
+                target,
                 width as f32,
                 radius,
-                scale as f32,
                 alpha,
             );
             let elem = visuals.ring_shader.clone().with_location(loc);
@@ -225,7 +227,7 @@ pub(super) fn draw<R: NiriRenderer>(
                 (Point::from((size.w - width, width)), side),
             ];
             for (buffer, (offset, size)) in visuals.edges.iter_mut().zip(edges) {
-                buffer.update(size, border.color);
+                buffer.update(size, border.color.solid());
                 let elem = SolidColorRenderElement::from_buffer(
                     buffer,
                     loc + offset,
@@ -236,6 +238,49 @@ pub(super) fn draw<R: NiriRenderer>(
             }
         }
     }
+}
+
+/// Where a gradient is spread, for an element at `loc` that is `size` large, relative to the
+/// element: the element itself, or the whole view of the workspace.
+fn gradient_area(
+    gradient: &Gradient,
+    size: Size<f64, Logical>,
+    loc: Point<f64, Logical>,
+    view: Rectangle<f64, Logical>,
+) -> Rectangle<f64, Logical> {
+    match gradient.relative_to {
+        GradientRelativeTo::Window => Rectangle::from_size(size),
+        GradientRelativeTo::WorkspaceView => Rectangle::new(view.loc - loc, view.size),
+    }
+}
+
+/// Sets what a border shader element draws: a node's fill when `border_width` is 0, or its
+/// border.
+#[allow(clippy::too_many_arguments)]
+fn update_shader(
+    shader: &mut BorderRenderElement,
+    gradient: Gradient,
+    size: Size<f64, Logical>,
+    loc: Point<f64, Logical>,
+    target: &Target,
+    border_width: f32,
+    radius: CornerRadius,
+    alpha: f32,
+) {
+    shader.update(
+        size,
+        gradient_area(&gradient, size, loc, target.view),
+        gradient.in_,
+        gradient.from,
+        gradient.to,
+        // The shader's angle is from the x axis, niri's from the top.
+        (f32::from(gradient.angle) - 90.).to_radians(),
+        Rectangle::from_size(size),
+        border_width,
+        radius,
+        target.scale as f32,
+        alpha,
+    );
 }
 
 /// Draws a text node's text, centred in its rect, cut with an ellipsis where it's too wide.
@@ -498,6 +543,29 @@ fn load_image(key: &ImageKey) -> anyhow::Result<MemoryBuffer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gradient_spans_its_node_or_the_view() {
+        let gradient = Gradient::from(Color::from_rgba8_unpremul(0, 0, 0, 255));
+        let size = Size::from((100., 50.));
+        let loc = Point::from((30., 20.));
+        let view = Rectangle::from_size(Size::from((1280., 720.)));
+
+        assert_eq!(
+            gradient_area(&gradient, size, loc, view),
+            Rectangle::from_size(size)
+        );
+
+        let spanning_view = Gradient {
+            relative_to: GradientRelativeTo::WorkspaceView,
+            ..gradient
+        };
+        // The view starts where the output does, which is -30, -20 from the node.
+        assert_eq!(
+            gradient_area(&spanning_view, size, loc, view),
+            Rectangle::new(Point::from((-30., -20.)), view.size)
+        );
+    }
 
     fn key(text: &str) -> TextKey {
         TextKey {

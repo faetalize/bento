@@ -82,6 +82,11 @@ test("load refuses engines that don't fit", () => {
     assert.throws(load({ api: 2, name: "x" }, null), /default function/);
     assert.throws(load({ api: 2, name: "x", actions: { a: { args: [{ name: "n", type: "nope" }] } } }), /unknown type/);
     assert.throws(load({ api: 2, name: "x", options: { o: { type: "colour", default: "1" } } }), /unknown type/);
+    // Colours and gradients are for options and window rules, not for binds' arguments.
+    assert.throws(load({ api: 2, name: "x", actions: { a: { args: [{ name: "n", type: "color" }] } } }), /unknown type/);
+    assert.throws(load({ api: 2, name: "x", windowRules: { r: { type: "colour" } } }), /unknown type/);
+    // A gradient is written with the properties of one node.
+    assert.throws(load({ api: 2, name: "x", options: { g: { type: "gradient", list: true, default: null } } }), /can't be a list/);
     assert.throws(load({ api: 2, name: "x", options: { o: { type: "choice", default: "a" } } }), /list of choices/);
     // Workspaces and monitors are API 2 types.
     assert.throws(
@@ -384,6 +389,112 @@ test("options reach the engine as bento resolves them", () => {
     assert.equal(seen.length, 1);
     assert.deepEqual(seen[0].a, 3);
     assert.deepEqual(seen[0].w, { proportion: 0.5 });
+});
+
+test("colours and gradients are option types", () => {
+    const meta = JSON.parse(
+        prelude.load({
+            meta: {
+                api: 2,
+                name: "painted",
+                options: {
+                    tint: { type: "color", default: "#102030" },
+                    glow: { type: "gradient", default: null },
+                },
+                windowRules: { "tab-tint": { type: "color" }, "tab-glow": { type: "gradient" } },
+            },
+            default() {},
+        }),
+    );
+    assert.deepEqual(
+        meta.options.map((o) => [o.name, o.type, o.default]),
+        [
+            ["tint", "color", "#102030"],
+            ["glow", "gradient", null],
+        ],
+    );
+    assert.deepEqual(
+        meta.windowRules.map((r) => [r.name, r.type]),
+        [
+            ["tab-tint", "color"],
+            ["tab-glow", "gradient"],
+        ],
+    );
+
+    const glow = { from: "#000", to: "#fff", angle: 45, relativeTo: "view", in: "oklab" };
+    const h = host(
+        (bento) => {
+            bento.exposeState(() => ({ ...bento.options }));
+        },
+        { options: { glow } },
+        {
+            options: {
+                tint: { type: "color", default: "#102030" },
+                glow: { type: "gradient", default: null },
+            },
+        },
+    );
+    assert.deepEqual(h.exposedState(), { tint: "#102030", glow });
+});
+
+test("workspaces have the options of their monitor and their own on top of the engine's", () => {
+    const fired = [];
+    const h = host(
+        (bento) => {
+            bento.addEventListener("configchange", () => fired.push("configchange"));
+            bento.exposeState(() => ({
+                top: { ...bento.options },
+                workspaces: bento.monitors.map((m) => m.workspaces.map((ws) => ({ ...ws.options }))),
+            }));
+        },
+        {
+            monitors: TWO_MONITORS,
+            options: { a: 1, b: 1 },
+            outputOptions: { "dp-2": { a: 2, b: 2 } },
+            workspaceOptions: { Web: { b: 3 } },
+        },
+        {
+            options: {
+                a: { type: "number", default: 0 },
+                b: { type: "number", default: 0 },
+                c: { type: "number", default: 0 },
+            },
+        },
+    );
+    h.workspaces.get(2).name = "web";
+    h.workspaces.get(3).name = "WEB";
+    h.flush();
+    fired.length = 0;
+
+    const state = h.exposedState();
+    // `bento.options` stays the engine's.
+    assert.deepEqual(state.top, { a: 1, b: 1, c: 0 });
+    assert.deepEqual(state.workspaces, [
+        [
+            { a: 1, b: 1, c: 0 },
+            { a: 1, b: 3, c: 0 },
+        ],
+        [
+            { a: 2, b: 3, c: 0 },
+            { a: 2, b: 2, c: 0 },
+        ],
+    ]);
+
+    // A change to one scope tells the engine, and only that scope's workspaces change.
+    h.setOutputOptions("DP-2", { a: 5 });
+    assert.deepEqual(fired, ["configchange"]);
+    assert.deepEqual(h.exposedState().workspaces[1], [
+        { a: 5, b: 3, c: 0 },
+        { a: 5, b: 1, c: 0 },
+    ]);
+    h.setWorkspaceOptions("web", null);
+    assert.deepEqual(h.exposedState().workspaces[0][1], { a: 1, b: 1, c: 0 });
+    assert.equal(fired.length, 2);
+
+    // Renaming a workspace changes which options it has.
+    h.workspaces.get(1).name = "web";
+    h.setWorkspaceOptions("web", { c: 9 });
+    assert.deepEqual(h.exposedState().workspaces[0][0], { a: 1, b: 1, c: 9 });
 });
 
 test("workspaces report their config and tiling area", () => {

@@ -6,6 +6,22 @@
 // https://github.com/faetalize/bento#layout-engines
 
 // Everything below is at its default.
+//
+// Options can differ per output and per named workspace: an `output` or `workspace` block next to
+// `options` holds the options that change there. A workspace has the options above, then those
+// of its output, then its own, each replacing the one before it:
+//
+// output "DP-2" {
+//     options {
+//         default-width "33.333%"
+//     }
+// }
+//
+// workspace "web" {
+//     options {
+//         gravity false
+//     }
+// }
 options {
     // With gravity, windows slide left until they touch another window.
     gravity true

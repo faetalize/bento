@@ -6,6 +6,22 @@
 // https://github.com/faetalize/bento#layout-engines
 
 // Everything below is at its default.
+//
+// Options can differ per output and per named workspace: an `output` or `workspace` block next to
+// `options` holds the options that change there. A workspace has the options above, then those
+// of its output, then its own, each replacing the one before it:
+//
+// output "DP-2" {
+//     options {
+//         default-column-width "33.333%"
+//     }
+// }
+//
+// workspace "web" {
+//     options {
+//         tab-indicator-position "top"
+//     }
+// }
 options {
     // When to center a column when changing focus, options are:
     // - "never", focusing an off-screen column will keep it at the left or right edge of the
@@ -35,7 +51,8 @@ options {
     // tab indicator.
     default-column-display "normal"
 
-    // The tab indicator of tabbed columns. Colors are written "#rgb", "#rrggbb" or "#rrggbbaa".
+    // The tab indicator of tabbed columns. Colors are written "#rgb", "#rrggbb" or "#rrggbbaa",
+    // and gradients with properties, see the gradient examples below.
     tab-indicator true
     // Which side of the column it sits on: "left", "right", "top" or "bottom".
     tab-indicator-position "left"
@@ -45,6 +62,8 @@ options {
     // How much of the column's side it takes up, as a proportion.
     tab-indicator-length 0.5
     tab-indicator-corner-radius 0
+    // The space between its tabs.
+    tab-indicator-gaps-between-tabs 0
     // Draw it inside the column, over the windows, instead of next to it.
     tab-indicator-place-within-column false
     // Leave it out while the column has only one tab.
@@ -52,15 +71,28 @@ options {
     tab-indicator-active-color "#7fc8ff"
     tab-indicator-inactive-color "#505050"
     tab-indicator-urgent-color "#9b0000"
+    // A gradient replaces the color of its tab. It goes from one color to another at an angle in
+    // degrees, 0 being up and 90 to the right (180, top to bottom, when left out). It spans the
+    // tab, or with relative-to="view" the whole view, and is mixed in the color space of `in`:
+    // "srgb", "srgb-linear", "oklab", or "oklch" with "shorter hue", "longer hue", "increasing
+    // hue" or "decreasing hue". None is set by default:
+    // tab-indicator-active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view" in="oklch shorter hue"
+    // tab-indicator-inactive-gradient from="#505050" to="#303030"
+    // tab-indicator-urgent-gradient from="#9b0000" to="#ff5050"
 
     // The hint that shows where a window will go while you drag it.
     insert-hint true
     insert-hint-color "#7fc8ff80"
+    // A gradient replaces the color of the hint, written like the tab indicator's. None by default:
+    // insert-hint-gradient from="#80c8ff80" to="#c7ff7f80" angle=45
 }
 
 // Window rules have the same match and exclude as the ones in config.kdl, and set what the
-// engine declares: default-column-width, default-window-height, default-column-display and
-// open-maximized. See "bento msg engine" for their types.
+// engine declares: default-column-width, default-window-height, default-column-display,
+// open-maximized, and the colors and gradients of the window's tab in the tab indicator, like
+// tab-indicator-active-color "#ff5050" or
+// tab-indicator-inactive-gradient from="#303030" to="#101010". See "bento msg engine" for their
+// types.
 
 // Work around WezTerm's initial configure bug
 // by leaving its default-column-width empty.

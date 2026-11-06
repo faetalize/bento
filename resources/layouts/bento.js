@@ -266,22 +266,22 @@ export const meta = {
             description: "The space between the tab bar and its area.",
         },
         "tab-bar-active-color": {
-            type: "string",
+            type: "color",
             default: "#7fc8ff",
             description: "The color of the tab that shows.",
         },
         "tab-bar-inactive-color": {
-            type: "string",
+            type: "color",
             default: "#505050",
             description: "The color of the other tabs.",
         },
         "tab-bar-urgent-color": {
-            type: "string",
+            type: "color",
             default: "#9b0000",
             description: "The color of a tab whose window is urgent.",
         },
         "hint-color": {
-            type: "string",
+            type: "color",
             default: "#7fc8ff80",
             description: "The color of the hints that show a picked window and where a dragged one would land.",
         },
@@ -1292,7 +1292,8 @@ function createSpace(bento, ws) {
     let workingArea;
     let metrics;
 
-    const options = (name) => bento.options[name];
+    // The workspace's options: the engine's, with what its monitor and its name set on top.
+    const options = (name) => ws.options[name];
     /** Snaps a coordinate to physical pixels on the workspace's monitor. */
     const pixel = (value) => ws.monitor.round(value);
 
