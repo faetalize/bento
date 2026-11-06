@@ -723,8 +723,8 @@ describe("tabbed columns", () => {
         assert.deepEqual(
             tabs.map((tab) => [tab.rect, tab.background]),
             [
-                [rect(-9, 188, 4, 170), "#505050"],
-                [rect(-9, 360, 4, 170), "#7fc8ff"],
+                [rect(-9, 188, 4, 172), "#505050"],
+                [rect(-9, 360, 4, 172), "#7fc8ff"],
             ],
         );
 
@@ -766,8 +766,8 @@ describe("tabbed columns", () => {
         assert.deepEqual(
             tabsOf(host).map((tab) => [tab.rect, tab.background, tab.cornerRadius]),
             [
-                [rect(0, 8, 306, 6), "#778899", 3],
-                [rect(308, 8, 306, 6), "#112233", 3],
+                [rect(0, 8, 308, 6), "#778899", 3],
+                [rect(308, 8, 308, 6), "#112233", 3],
             ],
         );
         const off = await load({ options: { "tab-indicator": false } });
@@ -779,6 +779,76 @@ describe("tabbed columns", () => {
         single.open();
         single.action("toggle-column-tabbed-display");
         assert.equal(tabsOf(single).length, 0);
+    });
+
+    test("the tabs of the indicator can have space between them", async () => {
+        const host = await load({ options: { "tab-indicator-gaps-between-tabs": 4 } });
+        openStacked(host);
+        host.action("toggle-column-tabbed-display");
+        // The same 344 px of indicator, with 4 px between the two tabs.
+        assert.deepEqual(
+            tabsOf(host).map((tab) => tab.rect),
+            [rect(-9, 188, 4, 170), rect(-9, 362, 4, 170)],
+        );
+
+        const one = await load({ options: { "tab-indicator-gaps-between-tabs": 4 } });
+        one.open();
+        one.action("toggle-column-tabbed-display");
+        assert.deepEqual(tabsOf(one).map((tab) => tab.rect), [rect(-9, 188, 4, 344)]);
+    });
+
+    test("tabs can be painted with gradients, which win over colors", async () => {
+        const active = { from: "#112233", to: "#445566", angle: 90, relativeTo: "view", in: "oklab" };
+        const urgent = { from: "#aa0000", to: "#ff0000" };
+        const host = await load({
+            options: { "tab-indicator-active-gradient": active, "tab-indicator-urgent-gradient": urgent },
+        });
+        const [a] = openStacked(host);
+        host.action("toggle-column-tabbed-display");
+        assert.deepEqual(
+            tabsOf(host).map((tab) => tab.background),
+            ["#505050", active],
+        );
+
+        host.windows.get(a).urgent = true;
+        host.flush();
+        assert.deepEqual(
+            tabsOf(host).map((tab) => tab.background),
+            [urgent, active],
+        );
+
+        // A gradient that's taken away leaves the color.
+        host.setOptions({ "tab-indicator-active-gradient": null });
+        assert.equal(tabsOf(host)[1].background, "#7fc8ff");
+    });
+
+    test("a window's rules paint its tab, over the options", async () => {
+        const gradient = { from: "#000000", to: "#ffffff", angle: 0 };
+        const option = { from: "#111111", to: "#222222" };
+        const host = await load({ options: { "tab-indicator-active-gradient": option } });
+        const a = host.open({
+            rules: {
+                "tab-indicator-inactive-color": "#010203",
+                "tab-indicator-active-gradient": gradient,
+            },
+        });
+        // A rule's color is before the option's gradient, like niri's.
+        const b = host.open({ rules: { "tab-indicator-active-color": "#abcdef" } });
+        host.action("consume-or-expel-window-left");
+        host.action("toggle-column-tabbed-display");
+        assert.equal(host.focused(), b);
+        assert.deepEqual(
+            tabsOf(host).map((tab) => tab.background),
+            ["#010203", "#abcdef"],
+        );
+
+        // The other way around, with each window's active tab.
+        host.pointer(tabsOf(host)[0].id, "click");
+        assert.equal(host.focused(), a);
+        assert.deepEqual(
+            tabsOf(host).map((tab) => tab.background),
+            [gradient, "#505050"],
+        );
     });
 
     test("a tab indicator within the column takes room from the tabs", async () => {
@@ -969,6 +1039,15 @@ describe("dragging windows", () => {
         const [, d] = openMany(colored, 2);
         dragOver(colored, startDrag(colored, d), { x: 620, y: 300 }, undefined, true);
         assert.equal(drawn(colored)[0].background, "#ff000080");
+
+        // A gradient wins over the color.
+        const gradient = { from: "#ff0000", to: "#0000ff", angle: 45, relativeTo: "view" };
+        const painted = await load({
+            options: { "insert-hint-color": "#ff000080", "insert-hint-gradient": gradient },
+        });
+        const [, e] = openMany(painted, 2);
+        dragOver(painted, startDrag(painted, e), { x: 620, y: 300 }, undefined, true);
+        assert.deepEqual(drawn(painted)[0].background, gradient);
     });
 });
 
@@ -1425,6 +1504,35 @@ describe("workspaces and monitors", () => {
         host.action("focus-window-or-monitor-up");
         assert.equal(host.focusedMonitor, "DP-1");
         assert.deepEqual(columnsOf(host), [[a], [c]]);
+    });
+
+    test("workspaces follow the options of their monitor and their own name", async () => {
+        const host = await load({
+            monitors: [{ name: "DP-1" }, { name: "DP-2" }],
+            outputOptions: { "DP-2": { "default-column-width": "25%", "tab-indicator-width": 8 } },
+        });
+        const [dp1, dp2] = [host.workspace(0, "DP-1"), host.workspace(0, "DP-2")];
+        const a = host.open();
+        const b = host.open({ workspace: dp2.id });
+        assert.equal(host.rect(a).w, 616);
+        assert.equal(host.rect(b).w, 300);
+
+        // The indicator is drawn with the options of the workspace it's on.
+        host.actionOn(a, "toggle-column-tabbed-display");
+        host.actionOn(b, "toggle-column-tabbed-display");
+        assert.equal(tabsOf(host, dp1.id)[0].rect.w, 4);
+        assert.equal(tabsOf(host, dp2.id)[0].rect.w, 8);
+
+        // A workspace's own options come after its monitor's, by name.
+        const web = host.workspace(1, "DP-2");
+        web.name = "web";
+        host.setWorkspaceOptions("web", { "default-column-width": "100%" });
+        const c = host.open({ workspace: web.id });
+        assert.equal(host.rect(c).w, 1248);
+        // Changing them reaches the strips that already exist.
+        host.setOutputOptions("DP-2", { "tab-indicator-width": 6 });
+        assert.equal(tabsOf(host, dp2.id)[0].rect.w, 6);
+        assert.equal(tabsOf(host, dp1.id)[0].rect.w, 4);
     });
 
     test("columns move to the monitor beside, laid out for its size", async () => {
