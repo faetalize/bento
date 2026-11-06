@@ -470,6 +470,37 @@ test("windows that bento moves are told with a move event, and their node goes a
     assert.deepEqual(h.stacking(second), [a]);
 });
 
+test("a window moved off a workspace that goes away is told before the workspace goes", () => {
+    const log = [];
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("workspaceadd", (e) => {
+                const ws = e.workspace;
+                ws.addEventListener("remove", () => log.push(["remove", ws.id]));
+            });
+            for (const ws of bento.monitors[0].workspaces) {
+                ws.addEventListener("remove", () => log.push(["remove", ws.id]));
+            }
+            bento.addEventListener("windowadd", (e) => {
+                const win = e.window;
+                win.addEventListener("move", (m) => log.push(["move", win.id, m.from.id, m.to.id]));
+            });
+        },
+        { monitors: [{ name: "DP-1", workspaces: 3 }] },
+    );
+    const [first, second, third] = h.stack("DP-1").map((ws) => ws.id);
+    const a = h.open();
+    h.showWorkspace(second);
+    h.open();
+    // The first workspace is empty once the window leaves, and isn't shown, so it goes away.
+    h.move(a, third);
+    assert.deepEqual(log, [
+        ["move", a, first, third],
+        ["remove", first],
+    ]);
+});
+
 test("workspaces can be shown, renamed and moved", () => {
     const h = host(
         (bento) => {

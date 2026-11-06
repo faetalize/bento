@@ -543,9 +543,16 @@ impl<W: LayoutElement> Layout<W> {
                 continue;
             }
 
+            // Events can name monitors and workspaces that what they tell about removed, like a
+            // window moved off a workspace that went away with it, so those go away after.
+            let mut sync = sync;
+            let removals = sync.take_removals();
             let mut sync = Some(sync);
             for queued in queued {
                 self.send_engine(queued.event, sync.take(), queued.anim, queued.transaction);
+            }
+            if !removals.is_empty() {
+                self.send_engine(json!({ "type": "sync" }), Some(removals), None, None);
             }
         }
 

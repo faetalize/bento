@@ -198,6 +198,16 @@ impl SyncInfo {
             && self.options.is_none()
             && !self.focus_changed
     }
+
+    /// Takes out the monitors and workspaces that went away, as a sync of their own.
+    pub fn take_removals(&mut self) -> SyncInfo {
+        SyncInfo {
+            removed_monitors: std::mem::take(&mut self.removed_monitors),
+            removed_workspaces: std::mem::take(&mut self.removed_workspaces),
+            focused_monitor: self.focused_monitor.clone(),
+            ..SyncInfo::default()
+        }
+    }
 }
 
 /// What a layout call changed.

@@ -64,6 +64,12 @@ workspace.camera.move({ x: 1200 }, { animate: false });
 A change in a compositor is never just setting a value: it animates, tells the app, and can be
 refused. A method call makes that visible, where a setter would hide it.
 
+Some changes are carried out by bento after the engine's call returns, like moving a window or a
+workspace, showing or renaming a workspace, or changing a group. Their methods return whether the
+request is valid as the engine sees it. If bento then refuses one, for example because the target
+workspace went away, the engine gets the event that undoes it, like the window's `move` back, so
+its own state stays right.
+
 The objects, as an engine sees them:
 
 ```js
@@ -336,6 +342,12 @@ standard Wayland protocols (`ext-workspace`, foreign-toplevel, output management
 
 Wayland protocols are only for things tied to a surface, like background effects, since only
 Wayland knows which window is which.
+
+### A failing engine falls back
+
+An engine that fails to load, throws while it starts, or fails three calls in a row is replaced by
+the fallback engine, which places windows side by side and has no actions, until its file
+changes. The error shows in `bento validate`, `bento msg engine` and bento Settings.
 
 ### Old engines keep working for a while
 

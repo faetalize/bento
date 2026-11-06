@@ -994,3 +994,30 @@ fn an_engine_action_can_be_for_another_window_than_the_focused_one() {
     let state = crate::layout::tiling::engine::exposed_state().unwrap();
     assert_eq!(state["log"], serde_json::json!([["mark", 3], ["mark", 1]]));
 }
+
+#[test]
+fn a_move_off_a_workspace_that_goes_away_reaches_the_engine() {
+    // Window 1 is alone on the first workspace, which isn't shown, so moving it away empties
+    // the workspace, and bento removes it in the same call.
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        Op::FocusWorkspaceDown,
+        Op::CompleteAnimations,
+        add_window(2),
+        Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 2,
+        },
+    ];
+    let layout = check_ops_with_options(options_for_source("gone", RECORDER), ops);
+    drop(layout);
+
+    let state = crate::layout::tiling::engine::exposed_state().unwrap();
+    let log = state["log"].as_array().unwrap();
+    assert_eq!(log[2][0], "move", "{log:?}");
+    assert_eq!(log[2][1], 1, "{log:?}");
+    // The engine knows where window 1 is.
+    let windows = state["windows"].as_array().unwrap();
+    assert!(windows.iter().any(|w| w[0] == 1), "{windows:?}");
+}

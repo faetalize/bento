@@ -294,7 +294,22 @@ export class TestHost {
     sendNow(event) {
         const sync = this.sync();
         this.toldFocusedMonitor = this.focusedMonitor;
+        // Like bento, monitors and workspaces that went away go after the event, which can name
+        // them.
+        const removals = {
+            monitors: [],
+            removedMonitors: sync.removedMonitors,
+            workspaces: [],
+            removedWorkspaces: sync.removedWorkspaces,
+            windows: [],
+            focusedMonitor: sync.focusedMonitor,
+        };
+        sync.removedMonitors = [];
+        sync.removedWorkspaces = [];
         const out = this.call({ sync, event });
+        if (removals.removedMonitors.length > 0 || removals.removedWorkspaces.length > 0) {
+            this.call({ sync: removals, event: { type: "sync" } });
+        }
         this.flush();
         return out.result;
     }
@@ -605,15 +620,32 @@ export class TestHost {
         this.trees.get(win.workspace).remove(`w${id}`);
         const ws = this.workspaces.get(win.workspace);
         if (ws.focused === id) ws.focused = null;
+        this.cleanUpWorkspaces();
         this.sendNow({ type: "windowremove", id, reason });
     }
 
     /** Moves a window to another workspace like one of bento's own actions does. */
     move(id, workspace, activate = false) {
+        this.flush();
         const from = this.windows.get(id).workspace;
         this.moveWindow(id, workspace);
-        this.told.windows.set(id, this.windowInfo(this.windows.get(id)));
-        this.send({ type: "windowmove", id, from, to: workspace, activate });
+        this.cleanUpWorkspaces();
+        this.sendNow({ type: "windowmove", id, from, to: workspace, activate });
+    }
+
+    /**
+     * Removes workspaces that bento would: empty, unnamed and not shown ones, except the last of
+     * each monitor's stack.
+     */
+    cleanUpWorkspaces() {
+        for (const ws of [...this.workspaces.values()]) {
+            const stack = this.stack(ws.monitor);
+            const empty = ![...this.windows.values()].some((win) => win.workspace === ws.id);
+            const shown = this.monitors.get(ws.monitor).active === ws.id;
+            if (empty && !shown && ws.name === null && stack[stack.length - 1] !== ws) {
+                this.removeWorkspace(ws.id);
+            }
+        }
     }
 
     /** Runs an action: a bind in the engine's file does. `args` are as the engine declared them. */
