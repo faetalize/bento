@@ -459,23 +459,31 @@ as planned there. The order agreed on:
    `focus-column-or-monitor-left`, don't exist until the rework: engines can't see other monitors
    or workspaces before it, and bento adds no stopgap to fake it.
 
-   The gaps this leaves until the rework, on purpose rather than faked:
-   - no engine action crosses into another monitor or workspace;
-   - `move-column-to-workspace` and `move-column-to-monitor` are gone with the rest of niri's
-     names, and with them engines handing a group of windows to another workspace
-     (`transferOut`/`transferIn`); bento's `move-window-to-*` move one window;
-   - bento's own screens no longer borrow the engine's actions: the overview's left and right
-     arrow keys and its horizontal wheel, the window switcher reusing focus-left and focus-right
-     binds, and moving or resizing the screenshot selection with move and resize binds;
-   - the hotkey overlay lists no engine actions;
-   - double-clicking a window's resize edge no longer toggles its width or height;
-   - the fallback engine, used when the configured one fails to load, has no actions;
-   - the `default-window-height` window rule reaches the engine as niri's `set-window-height`, so
-     only `niri.js` honours it, until engines declare their own window rules.
+   The rework closes most of the gaps this left: actions that cross into another monitor or
+   workspace, moving a whole column to another workspace or monitor, double-clicking a window's
+   resize edge (now the engine's `edgedoubleclick`), and `default-window-height`, which is an
+   engine's window rule now. These stay open:
+   - bento's own screens don't borrow the engine's actions: the overview's left and right arrow
+     keys and its horizontal wheel, the window switcher reusing focus-left and focus-right binds,
+     and moving or resizing the screenshot selection with move and resize binds;
+   - the hotkey overlay lists no engine actions.
 3. **The Shortcuts page**, as described above, with bento's own action table. Done, in #27.
 4. **The engine rework**, everything else in this document: one engine for the session, the
-   object model, events, drawn surfaces, grouping, the socket. This document is the reference
-   for refactoring the repo.
+   object model, events, drawn surfaces, grouping, the socket, typed engine options and window
+   rules, the niri converter, and `bento.js` and `niri.js` on the new API. Done, in #28.
+
+   What it leaves open:
+   - a window drawn with a transform still takes input where it's placed, a `rect` transition on
+     a window's node doesn't animate (windows move with their placement's animation), and a clip
+     on a window also cuts its popups;
+   - boxes, text and images clip only to rectangles, and images are PNG, JPEG or WebP: icons are
+     found as PNGs, from the `hicolor` theme, since bento doesn't know the user's icon theme;
+   - touch and tablet input doesn't reach drawn nodes, and nodes don't take input in the
+     overview;
+   - switching a floating window between preset widths and heights went away with the preset
+     settings, which are engines' options now;
+   - bento still focuses a window on a workspace whose engine focuses none, and centres a window
+     the engine doesn't place.
 
 The other planned pages in bento Settings (Displays, Workspaces, Window Rules, Gestures, Startup
 Apps) and bento's own shell come after, in no agreed order yet.
