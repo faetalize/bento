@@ -185,11 +185,13 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for Tiling {
 /// The file with the engine's options and binds: `engines/<name>.kdl` next to the main config for
 /// a built-in engine, or the engine file with a `.kdl` extension.
 pub fn engine_config_path(config_path: &Path, layout: &TilingLayout) -> PathBuf {
+    engine_config_path_in(config_path.parent().unwrap_or(Path::new("")), layout)
+}
+
+/// The engine's file, with built-in engines' files in `engines/` under `dir`.
+pub fn engine_config_path_in(dir: &Path, layout: &TilingLayout) -> PathBuf {
     match layout {
-        TilingLayout::BuiltIn(name) => {
-            let dir = config_path.parent().unwrap_or(Path::new(""));
-            dir.join("engines").join(format!("{name}.kdl"))
-        }
+        TilingLayout::BuiltIn(name) => dir.join("engines").join(format!("{name}.kdl")),
         TilingLayout::File(path) => path.with_extension("kdl"),
     }
 }
@@ -209,14 +211,14 @@ const DEFAULT_ENGINE_CONFIGS: &[(&str, &str)] = &[
 /// Writes the default file of the built-in engine in `layout` if it has none yet, the way bento
 /// writes the default config on first start. From then on the file is the user's. Returns whether
 /// it wrote one.
-pub fn create_engine_config(config_path: &Path, layout: &TilingLayout) -> bool {
+pub fn create_engine_config(dir: &Path, layout: &TilingLayout) -> bool {
     let TilingLayout::BuiltIn(name) = layout else {
         return false;
     };
     let Some((_, text)) = DEFAULT_ENGINE_CONFIGS.iter().find(|(n, _)| n == name) else {
         return false;
     };
-    let path = engine_config_path(config_path, layout);
+    let path = engine_config_path_in(dir, layout);
     if path.exists() {
         return false;
     }
@@ -698,5 +700,28 @@ mod tests {
         let main = binds(r#"Mod+R { spawn "x"; }"#);
         let config = Config::parse_mem_with_engine(&main, &binds("Mod+R { resize; }"));
         assert!(error(config).contains("this key is already bound in the main config"));
+    }
+
+    #[test]
+    fn the_engine_file_is_the_users_even_with_the_system_config() {
+        let root = std::env::temp_dir().join(format!("bento-system-config-{}", std::process::id()));
+        let user = root.join("user/bento");
+        let system = root.join("etc/bento");
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::write(
+            system.join("config.kdl"),
+            "tiling {\n    layout \"niri\"\n}\n",
+        )
+        .unwrap();
+
+        let path = crate::ConfigPath::Regular {
+            user_path: user.join("config.kdl"),
+            system_path: system.join("config.kdl"),
+        };
+        path.load_and_create_engine_config().config.unwrap();
+
+        assert!(user.join("engines/niri.kdl").exists());
+        assert!(!system.join("engines").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

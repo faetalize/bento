@@ -61,8 +61,8 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
-    default_engine_config, engine_config_path, EngineRules, EngineWindowRule, Tiling, TilingLayout,
-    TilingOption,
+    default_engine_config, engine_config_path, engine_config_path_in, EngineRules,
+    EngineWindowRule, Tiling, TilingLayout, TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
@@ -505,7 +505,12 @@ where
 
 impl Config {
     pub fn load_default() -> Self {
-        let res = Config::parse_inner(Path::new("default-config.kdl"), DEFAULT_CONFIG, None);
+        let res = Config::parse_inner(
+            Path::new("default-config.kdl"),
+            Path::new(""),
+            DEFAULT_CONFIG,
+            None,
+        );
 
         // Includes in the default config can break its parsing at runtime.
         assert!(
@@ -517,6 +522,11 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> ConfigParseResult<Self, miette::Report> {
+        Self::load_in(path, path.parent().unwrap_or(Path::new("")))
+    }
+
+    /// Loads the config at `path`, with built-in engines' files in `engines/` under `dir`.
+    pub fn load_in(path: &Path, dir: &Path) -> ConfigParseResult<Self, miette::Report> {
         let contents = match fs::read_to_string(path) {
             Ok(x) => x,
             Err(err) => {
@@ -526,7 +536,13 @@ impl Config {
             }
         };
 
-        Self::parse(path, &contents).map_config_res(|res| {
+        Self::parse_inner(
+            path,
+            dir,
+            &contents,
+            Some(Box::new(|path: &Path| fs::read_to_string(path))),
+        )
+        .map_config_res(|res| {
             let config = res.context("error parsing")?;
             debug!("loaded config from {path:?}");
             Ok(config)
@@ -545,11 +561,14 @@ impl Config {
         text: &str,
         read_engine: impl FnOnce(&Path) -> std::io::Result<String>,
     ) -> ConfigParseResult<Self, ConfigIncludeError> {
-        Self::parse_inner(path, text, Some(Box::new(read_engine)))
+        let dir = path.parent().unwrap_or(Path::new(""));
+        Self::parse_inner(path, dir, text, Some(Box::new(read_engine)))
     }
 
+    /// Parses the config at `path`, with built-in engines' files in `engines/` under `dir`.
     fn parse_inner(
         path: &Path,
+        dir: &Path,
         text: &str,
         read_engine: Option<Box<ReadEngine<'_>>>,
     ) -> ConfigParseResult<Self, ConfigIncludeError> {
@@ -589,7 +608,7 @@ impl Config {
 
         // The engine's file goes last, once the main config has said which engine runs.
         if let (Ok(_), Some(read_engine)) = (&part, read_engine) {
-            let engine_path = engine_config_path(path, &config.borrow().tiling.layout);
+            let engine_path = engine_config_path_in(dir, &config.borrow().tiling.layout);
             // Watched even while it doesn't exist, so creating it applies it.
             includes.push(engine_path.clone());
             match read_engine(&engine_path) {
@@ -626,7 +645,7 @@ impl Config {
 
     /// Parses a config that isn't on disk, without an engine file.
     pub fn parse_mem(text: &str) -> Result<Self, ConfigIncludeError> {
-        Self::parse_inner(Path::new("config.kdl"), text, None).config
+        Self::parse_inner(Path::new("config.kdl"), Path::new(""), text, None).config
     }
 
     /// Parses a config that isn't on disk, with `engine` as the running engine's file.
@@ -683,23 +702,22 @@ impl ConfigPath {
         &self,
         result: ConfigParseResult<Config, miette::Report>,
     ) -> ConfigParseResult<Config, miette::Report> {
-        let path = match self {
-            ConfigPath::Explicit(path) => path,
-            ConfigPath::Regular {
-                user_path,
-                system_path,
-            } => {
-                if user_path.exists() {
-                    user_path
-                } else {
-                    system_path
-                }
-            }
-        };
         match &result.config {
-            Ok(config) if tiling::create_engine_config(path, &config.tiling.layout) => self.load(),
+            Ok(config) if tiling::create_engine_config(self.dir(), &config.tiling.layout) => {
+                self.load()
+            }
             _ => result,
         }
+    }
+
+    /// The directory of the user's config, where built-in engines' files are in `engines/`, even
+    /// when bento runs the system config.
+    fn dir(&self) -> &Path {
+        let path = match self {
+            ConfigPath::Explicit(path) => path,
+            ConfigPath::Regular { user_path, .. } => user_path,
+        };
+        path.parent().unwrap_or(Path::new(""))
     }
 
     fn load_inner<'a>(
@@ -724,7 +742,7 @@ impl ConfigPath {
                 }
             }
         };
-        Config::load(path)
+        Config::load_in(path, self.dir())
     }
 
     fn create<'a>(path: &'a Path, created_at: &mut Option<&'a Path>) -> miette::Result<()> {
