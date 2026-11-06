@@ -12,6 +12,7 @@
 // given, within their size limits. Like bento, the host carries out what the engine answers.
 
 import * as prelude from "../prelude/index.js";
+import { SearchField, rank } from "./search.js";
 
 const DEFAULT_MONITOR = { size: { w: 1280, h: 720 }, scale: 1, workspaces: 2 };
 
@@ -72,6 +73,14 @@ export class TestHost {
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
         this.toldOptions = null;
+        /**
+         * The running search, which bento owns: `{ scope, field }`, with the scope as the engine
+         * asked for it, `{ kind: "all" }`, `{ kind: "workspace", id }` or `{ kind: "group", id }`.
+         */
+        this.search = null;
+        this.toldSearch = null;
+        /** bento's clipboard, for copying and pasting in the search field. */
+        this.clipboard = "";
         this.trees = new Map();
         this.logs = [];
         this.errors = [];
@@ -268,6 +277,11 @@ export class TestHost {
             sync.groups = groups;
             this.toldGroups = groups;
         }
+        const search = this.searchInfo();
+        if (JSON.stringify(this.toldSearch) !== JSON.stringify(search)) {
+            if (search !== null) sync.search = search;
+            this.toldSearch = search;
+        }
         sync.focusedMonitor = this.focusedMonitor;
         const options = this.engineOptions();
         if (JSON.stringify(this.toldOptions) !== JSON.stringify(options)) {
@@ -285,6 +299,7 @@ export class TestHost {
             sync.removedWorkspaces.length === 0 &&
             sync.windows.length === 0 &&
             sync.groups === undefined &&
+            sync.search === undefined &&
             sync.options === undefined &&
             sync.focusedMonitor === this.toldFocusedMonitor
         );
@@ -341,12 +356,15 @@ export class TestHost {
     flush() {
         for (let round = 0; round < MAX_ROUNDS; round++) {
             this.settleSizes();
+            const searchEnded = this.refreshSearch();
             const sync = this.sync();
-            if (this.isEmptySync(sync)) {
+            if (!searchEnded && this.isEmptySync(sync)) {
                 return;
             }
             this.toldFocusedMonitor = this.focusedMonitor;
-            this.call({ sync, event: { type: "sync" } });
+            // Like bento, a search that lost its scope ends with the sync that follows.
+            const event = searchEnded ? { type: "searchend", pick: false } : { type: "sync" };
+            this.call({ sync, event });
         }
     }
 
@@ -403,6 +421,12 @@ export class TestHost {
                     break;
                 case "dissolveGroup":
                     this.groups = this.groups.filter((group) => group.id !== op.group);
+                    break;
+                case "search":
+                    this.search = { scope: op.scope, field: new SearchField() };
+                    break;
+                case "endSearch":
+                    this.search = null;
                     break;
                 default:
                     throw new Error(`unknown op: ${op.op}`);
@@ -578,6 +602,120 @@ export class TestHost {
     ungroupWindow() {
         const focused = this.focused();
         if (focused !== null) this.leaveGroup(focused);
+        this.flush();
+    }
+
+    // Search.
+
+    /** The windows a search over `scope` covers, or null if there's no such group or workspace. */
+    searchWindows(scope) {
+        switch (scope.kind) {
+            case "workspace":
+                if (!this.workspaces.has(scope.id)) return null;
+                return [...this.windows.values()].filter((win) => win.workspace === scope.id);
+            case "group": {
+                const group = this.groups.find((other) => other.id === scope.id);
+                return group === undefined ? null : group.windows.map((id) => this.windows.get(id));
+            }
+            default:
+                return [...this.windows.values()];
+        }
+    }
+
+    /** What the engine is told about the search: the query and the windows that match it. */
+    searchInfo() {
+        const windows = this.search === null ? null : this.searchWindows(this.search.scope);
+        if (windows === null) return null;
+        const query = this.search.field.text;
+        const hits = windows
+            .map((win) => [win.id, rank(query, win.title, win.appId)])
+            .filter(([, matched]) => matched !== null);
+        return { query, hits };
+    }
+
+    /** Ends a search whose scope is gone, and returns whether there was one. */
+    refreshSearch() {
+        if (this.search === null || this.searchWindows(this.search.scope) !== null) {
+            return false;
+        }
+        this.search = null;
+        return true;
+    }
+
+    /** Types text in the search's field, a character at a time. */
+    type(text) {
+        for (const c of text) {
+            this.editSearch((field) => field.insert(c));
+        }
+    }
+
+    /**
+     * Presses a key while the search runs: `"Return"` picks the best match and `"Escape"` cancels,
+     * `"BackSpace"`, `"Delete"`, `"Left"`, `"Right"`, `"Home"` and `"End"` edit and move, with
+     * `shift` selecting; with `ctrl`, `"a"` selects all and `"c"`, `"x"` and `"v"` use the
+     * clipboard.
+     */
+    key(name, { shift = false, ctrl = false } = {}) {
+        if (this.search === null) return;
+        if (ctrl) {
+            const field = this.search.field;
+            switch (name) {
+                case "a":
+                    return this.editSearch((f) => f.selectAll());
+                case "c":
+                    this.clipboard = field.selected ?? this.clipboard;
+                    return;
+                case "x":
+                    if (field.selected !== null) {
+                        this.clipboard = field.selected;
+                        this.editSearch((f) => f.backspace());
+                    }
+                    return;
+                case "v":
+                    return this.editSearch((f) => f.insert(this.clipboard));
+                default:
+                    return;
+            }
+        }
+        switch (name) {
+            case "Return":
+                return this.endSearch(true);
+            case "Escape":
+                return this.endSearch(false);
+            case "BackSpace":
+                return this.editSearch((f) => f.backspace());
+            case "Delete":
+                return this.editSearch((f) => f.delete());
+            case "Left":
+                return this.editSearch((f) => f.left(shift));
+            case "Right":
+                return this.editSearch((f) => f.right(shift));
+            case "Home":
+                return this.editSearch((f) => f.home(shift));
+            case "End":
+                return this.editSearch((f) => f.end(shift));
+            default:
+                throw new Error(`unknown key: ${name}`);
+        }
+    }
+
+    editSearch(edit) {
+        if (this.search === null) return;
+        edit(this.search.field);
+        this.flush();
+    }
+
+    /**
+     * Ends the search like bento does for Enter, with `pick`, and Escape: the engine hears the
+     * latest matches and then that it ended, and bento activates the window it picked.
+     */
+    endSearch(pick) {
+        if (this.search === null) return;
+        const result = this.send({ type: "searchend", pick });
+        this.search = null;
+        if (pick && result.picked !== null) {
+            this.activate(result.picked);
+        }
         this.flush();
     }
 
@@ -893,6 +1031,9 @@ export class TestHost {
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
         this.toldOptions = null;
+        // The new instance has no search.
+        this.search = null;
+        this.toldSearch = null;
         for (const [id, tree] of this.trees) {
             tree.reset([...this.windows.values()].filter((win) => win.workspace === id).map((win) => win.id));
         }

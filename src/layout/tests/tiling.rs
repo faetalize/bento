@@ -1223,3 +1223,338 @@ fn a_float_request_says_the_size_of_the_window() {
     let sizes = crate::layout::tiling::engine::exposed_state().unwrap();
     assert_eq!(sizes, serde_json::json!([{ "w": 300, "h": 200 }]));
 }
+
+use crate::layout::search::Edit;
+
+/// An engine that places windows side by side, searches on request, and tells what it saw through
+/// `bento.exposeState`. Windows go by the order the engine saw them.
+const SEARCHER: &str = r#"
+export const meta = {
+    api: 2,
+    name: "searcher",
+    actions: {
+        "group-first-three": { description: "Groups the first three windows." },
+        "dissolve": { description: "Dissolves the first group." },
+        "search-group": { description: "Searches the first group." },
+        "search-workspace": { description: "Searches the first monitor's active workspace." },
+        "search-all": { description: "Searches every window." },
+        "cancel-search": { description: "Cancels the search." },
+        "hang": { description: "Never returns." },
+    },
+};
+export default function create(bento) {
+    const log = [];
+    const seen = new Map();
+    const n = (win) => seen.get(win.id);
+    let field = null;
+    bento.exposeState(() => {
+        const search = bento.searching;
+        return {
+            log,
+            searching: search !== null,
+            query: search?.query ?? null,
+            matches: search ? search.matches.map(n) : null,
+            fieldAttached: field !== null && field.parent !== null,
+        };
+    });
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        seen.set(win.id, seen.size + 1);
+        const x = (win.workspace.windows.length - 1) * 110;
+        win.place({ x, y: 0, w: 100, h: 100 });
+        win.focus();
+        win.addEventListener("activaterequest", () => log.push(["activate", n(win)]));
+    });
+    const start = (scope) => {
+        const search = bento.search(scope);
+        if (search === null) {
+            log.push(["refused"]);
+            return;
+        }
+        field = search.field;
+        bento.monitors[0].activeWorkspace.tree.append(field);
+        field.set({ rect: { x: 0, y: 200, w: 300, h: 30 }, placeholder: "Search" });
+        search.addEventListener("change", () => log.push(["change", search.query, search.matches.map(n)]));
+        search.addEventListener("end", (e) => log.push(["end", e.picked ? n(e.picked) : null]));
+    };
+    bento.addEventListener("action", (e) => {
+        if (e.name === "group-first-three") {
+            bento.createGroup(bento.windows.slice(0, 3));
+        } else if (e.name === "dissolve") {
+            bento.groups[0].dissolve();
+        } else if (e.name === "search-group") {
+            start(bento.groups[0]);
+        } else if (e.name === "search-workspace") {
+            start(bento.monitors[0].activeWorkspace);
+        } else if (e.name === "search-all") {
+            start(null);
+        } else if (e.name === "cancel-search") {
+            bento.searching.cancel();
+        } else if (e.name === "hang") {
+            for (;;) {}
+        }
+    });
+}
+"#;
+
+fn titled(id: usize, title: &str) -> Op {
+    Op::AddWindow {
+        params: TestWindowParams {
+            title: Some(title.to_owned()),
+            ..TestWindowParams::new(id)
+        },
+    }
+}
+
+fn typing(text: &str) -> Op {
+    Op::SearchEdit(Edit::Insert(text.to_owned()))
+}
+
+fn action(name: &'static str) -> Op {
+    Op::LayoutAction(name, vec![], None)
+}
+
+/// A group of the first three windows, whose titles are "Firefox", "Terminal" and "Fire fox",
+/// and a fourth window outside it, "Firewall", with a search over the group started.
+fn group_search(name: &str) -> Layout<TestWindow> {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Terminal"),
+        titled(3, "Fire fox"),
+        titled(4, "Firewall"),
+        action("group-first-three"),
+        action("search-group"),
+    ];
+    check_ops_with_options(options_for_source(name, SEARCHER), ops)
+}
+
+fn engine_state() -> serde_json::Value {
+    crate::layout::tiling::engine::exposed_state().unwrap()
+}
+
+fn focused_window(layout: &Layout<TestWindow>) -> Option<usize> {
+    layout.focus().map(|win| win.0.id)
+}
+
+#[test]
+fn a_search_over_a_group_matches_its_windows_best_match_first() {
+    let mut layout = group_search("search-group");
+    assert!(layout.search_active());
+
+    // Nothing is typed, so the group's windows match, in the engine's order: "Firewall" isn't in
+    // the group. The engine isn't told of a change, since it knew that already.
+    let state = engine_state();
+    assert_eq!(state["searching"], true);
+    assert_eq!(state["query"], "");
+    assert_eq!(state["matches"], serde_json::json!([1, 2, 3]));
+    assert_eq!(state["log"], serde_json::json!([]));
+    assert_eq!(state["fieldAttached"], true);
+
+    // "Fire fox" has the whole word, "Firefox" only starts with it, and "Terminal" drops out.
+    check_ops_on_layout(&mut layout, [typing("fire")]);
+    let state = engine_state();
+    assert_eq!(state["query"], "fire");
+    assert_eq!(state["matches"], serde_json::json!([3, 1]));
+
+    // Matches that rank the same stay in the engine's order.
+    check_ops_on_layout(&mut layout, [Op::SearchEdit(Edit::Backspace)]);
+    assert_eq!(engine_state()["matches"], serde_json::json!([1, 3]));
+
+    check_ops_on_layout(&mut layout, [typing("e")]);
+    assert_eq!(engine_state()["matches"], serde_json::json!([3, 1]));
+    assert_eq!(
+        engine_state()["log"],
+        serde_json::json!([
+            ["change", "fire", [3, 1]],
+            ["change", "fir", [1, 3]],
+            ["change", "fire", [3, 1]],
+        ])
+    );
+
+    check_ops_on_layout(&mut layout, [typing("z")]);
+    assert_eq!(engine_state()["matches"], serde_json::json!([]));
+}
+
+#[test]
+fn enter_picks_the_best_match_and_the_engine_is_asked_to_activate_it() {
+    let mut layout = group_search("search-enter");
+    // The last window opened has focus.
+    assert_eq!(focused_window(&layout), Some(4));
+
+    check_ops_on_layout(&mut layout, [typing("fire"), Op::SearchSubmit]);
+
+    assert!(!layout.search_active());
+    assert_eq!(focused_window(&layout), Some(3));
+    let state = engine_state();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["change", "fire", [3, 1]], ["end", 3], ["activate", 3]])
+    );
+    assert_eq!(state["searching"], false);
+    // bento's field doesn't outlive the search.
+    assert_eq!(state["fieldAttached"], false);
+}
+
+#[test]
+fn enter_with_no_match_picks_nothing() {
+    let mut layout = group_search("search-no-match");
+    check_ops_on_layout(&mut layout, [typing("zzz"), Op::SearchSubmit]);
+
+    assert!(!layout.search_active());
+    assert_eq!(focused_window(&layout), Some(4));
+    assert_eq!(
+        engine_state()["log"],
+        serde_json::json!([["change", "zzz", []], ["end", null]])
+    );
+}
+
+#[test]
+fn escape_cancels_the_search_without_picking() {
+    let mut layout = group_search("search-escape");
+    check_ops_on_layout(&mut layout, [typing("fire"), Op::SearchCancel]);
+
+    assert!(!layout.search_active());
+    assert_eq!(focused_window(&layout), Some(4));
+    let state = engine_state();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["change", "fire", [3, 1]], ["end", null]])
+    );
+    assert_eq!(state["searching"], false);
+
+    // Typing goes nowhere once it's over.
+    check_ops_on_layout(&mut layout, [typing("x")]);
+    assert_eq!(engine_state()["log"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn the_engine_can_cancel_its_search_and_start_another() {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Terminal"),
+        action("search-all"),
+        // Another search can't start while one runs.
+        action("search-all"),
+    ];
+    let mut layout = check_ops_with_options(options_for_source("search-cancel", SEARCHER), ops);
+    assert!(layout.search_active());
+    assert_eq!(engine_state()["log"], serde_json::json!([["refused"]]));
+
+    check_ops_on_layout(&mut layout, [typing("term"), action("cancel-search")]);
+    assert!(!layout.search_active());
+    let state = engine_state();
+    assert_eq!(state["searching"], false);
+    assert_eq!(state["fieldAttached"], false);
+    assert_eq!(
+        state["log"],
+        serde_json::json!([["refused"], ["change", "term", [2]], ["end", null]])
+    );
+
+    // A new search starts over: nothing is typed.
+    check_ops_on_layout(&mut layout, [action("search-all")]);
+    assert!(layout.search_active());
+    assert_eq!(engine_state()["query"], "");
+    assert_eq!(engine_state()["matches"], serde_json::json!([1, 2]));
+}
+
+#[test]
+fn matches_follow_windows_that_open_close_and_change_titles() {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Terminal"),
+        action("search-all"),
+        typing("term"),
+        titled(3, "Terminal Two"),
+        // It stops matching.
+        Op::SetWindowTitle(3, "Notes"),
+        Op::Refresh { is_active: true },
+        Op::CloseWindow(2),
+    ];
+    let mut ops = ops.to_vec();
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("search-follow", SEARCHER), ops);
+
+    assert!(layout.search_active());
+    let state = engine_state();
+    assert_eq!(
+        state["log"],
+        serde_json::json!([
+            ["change", "term", [2]],
+            ["change", "term", [2, 3]],
+            ["change", "term", [2]],
+            ["change", "term", []],
+        ])
+    );
+}
+
+#[test]
+fn a_search_over_a_workspace_leaves_out_the_windows_on_others() {
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        titled(2, "Firefox private"),
+        Op::MoveWindowToWorkspace {
+            window_id: Some(2),
+            workspace_idx: 1,
+        },
+        action("search-workspace"),
+        typing("fire"),
+    ];
+    let layout = check_ops_with_options(options_for_source("search-workspace", SEARCHER), ops);
+    drop(layout);
+
+    assert_eq!(engine_state()["matches"], serde_json::json!([1]));
+}
+
+#[test]
+fn a_search_ends_when_its_group_is_gone() {
+    let mut layout = group_search("search-group-gone");
+    check_ops_on_layout(&mut layout, [action("dissolve")]);
+
+    assert!(!layout.search_active());
+    let state = engine_state();
+    assert_eq!(state["searching"], false);
+    assert_eq!(state["log"], serde_json::json!([["end", null]]));
+}
+
+#[test]
+fn a_search_ends_when_its_workspace_is_gone() {
+    // Window 1 is alone on the first workspace, which is searched. Moving it away empties the
+    // workspace while it isn't shown, and bento removes it.
+    let ops = [
+        Op::AddOutput(1),
+        titled(1, "Firefox"),
+        action("search-workspace"),
+        Op::FocusWorkspaceDown,
+        Op::CompleteAnimations,
+        titled(2, "Terminal"),
+    ];
+    let mut layout = check_ops_with_options(options_for_source("search-ws-gone", SEARCHER), ops);
+    assert!(layout.search_active());
+
+    check_ops_on_layout(
+        &mut layout,
+        [Op::MoveWindowToWorkspace {
+            window_id: Some(1),
+            workspace_idx: 2,
+        }],
+    );
+
+    assert!(!layout.search_active());
+    assert_eq!(engine_state()["log"], serde_json::json!([["end", null]]));
+}
+
+#[test]
+fn a_search_ends_when_the_engine_starts_over() {
+    let mut layout = group_search("search-restart");
+    assert!(layout.search_active());
+
+    // An engine that doesn't answer is created again, from where the windows are.
+    check_ops_on_layout(&mut layout, [action("hang")]);
+
+    assert!(!layout.search_active());
+    assert_eq!(engine_state()["searching"], false);
+}
