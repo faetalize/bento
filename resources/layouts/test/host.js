@@ -31,6 +31,9 @@ function setScoped(by, name, options) {
     }
 }
 const MAX_ROUNDS = 8;
+/** Longest wait that bento schedules a timer for, and most timers `advanceTime` fires in one go. */
+const MAX_TIMER_DELAY = 3_600_000;
+const MAX_TIMERS_FIRED = 10_000;
 
 export class TestHost {
     /**
@@ -80,6 +83,9 @@ export class TestHost {
         this.verdicts = [];
         /** Ops that bento refuses, like a move when the target can't take the window. */
         this.refused = new Set();
+        /** The clock that timers run by, in milliseconds, and the timers waiting: id to due time. */
+        this.now = 0;
+        this.timers = new Map();
 
         let x = 0;
         for (const given of opts.monitors ?? [{ name: "DP-1" }]) {
@@ -435,6 +441,34 @@ export class TestHost {
         if (out.stateChanged) {
             this.stateChanges = (this.stateChanges ?? 0) + 1;
         }
+        for (const timer of out.timers ?? []) {
+            this.timers.set(timer.id, this.now + Math.min(timer.ms, MAX_TIMER_DELAY));
+        }
+        for (const id of out.clearedTimers ?? []) {
+            this.timers.delete(id);
+        }
+    }
+
+    /**
+     * Lets `ms` milliseconds pass, sending the engine a `timer` event for each timer that comes
+     * due, earliest first, each between other events like in bento.
+     */
+    advanceTime(ms) {
+        const until = this.now + ms;
+        for (let fired = 0; ; fired++) {
+            const next = [...this.timers].filter(([, due]) => due <= until).sort((a, b) => a[1] - b[1] || a[0] - b[0])[0];
+            if (next === undefined) {
+                break;
+            }
+            if (fired >= MAX_TIMERS_FIRED) {
+                throw new Error(`more than ${MAX_TIMERS_FIRED} timers fired in ${ms} ms`);
+            }
+            const [id, due] = next;
+            this.now = Math.max(this.now, due);
+            this.timers.delete(id);
+            this.send({ type: "timer", id });
+        }
+        this.now = until;
     }
 
     moveWorkspace(id, monitor, index) {
@@ -893,6 +927,7 @@ export class TestHost {
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
         this.toldOptions = null;
+        this.timers.clear();
         for (const [id, tree] of this.trees) {
             tree.reset([...this.windows.values()].filter((win) => win.workspace === id).map((win) => win.id));
         }

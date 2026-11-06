@@ -519,6 +519,9 @@ function deliver(event) {
                 return { w: Math.max(0, answer.w), h: Math.max(0, answer.h) };
             });
         }
+        case "timer":
+            session.fireTimer(event.id);
+            return null;
         case "pointer": {
             const node = session.log.nodes.get(event.node);
             if (node !== undefined) {
