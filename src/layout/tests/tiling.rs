@@ -1843,3 +1843,370 @@ fn a_window_node_with_a_rect_transition_moves_as_it_says() {
     assert!((offset(1).x + 150.).abs() < 1e-6, "{:?}", offset(1));
     assert_eq!(offset(2), Point::from((0., 0.)));
 }
+
+use crate::layout::tiling::host::{EngineKey, KeyboardOwner, KeyboardRelease, TimerRequest};
+
+/// An engine that starts and clears timers, takes and gives back the keyboard, and logs what it
+/// hears of them.
+const KEYBOARD: &str = r#"
+export const meta = {
+    api: 2,
+    name: "keyboard",
+    floating: false,
+    actions: {
+        "take-keys": {},
+        "give-keys": {},
+        "prevent-escape": {},
+        "start-timer": {
+            args: [{ name: "ms", type: "number" }, { name: "label", type: "string" }],
+        },
+        "stop-timer": { args: [{ name: "label", type: "string" }] },
+        "flood-timers": {},
+    },
+};
+export default function create(bento) {
+    const log = [];
+    const timers = new Map();
+    let prevent = false;
+    const held = (mods) => Object.keys(mods).filter((name) => mods[name]).join("+");
+    bento.exposeState(() => ({ log, grabbed: bento.keyboardGrabbed }));
+    bento.addEventListener("action", (e) => {
+        const [first, second] = e.args;
+        switch (e.name) {
+            case "take-keys":
+                log.push(["take", bento.grabKeyboard()]);
+                break;
+            case "give-keys":
+                bento.releaseKeyboard();
+                break;
+            case "prevent-escape":
+                prevent = true;
+                break;
+            case "start-timer":
+                timers.set(second, bento.setTimeout(() => log.push(["timer", second]), first));
+                break;
+            case "stop-timer":
+                bento.clearTimeout(timers.get(first));
+                break;
+            case "flood-timers":
+                for (let i = 0; i < 1000; i++) {
+                    try {
+                        bento.setTimeout(() => {}, 1);
+                    } catch (error) {
+                        break;
+                    }
+                }
+                break;
+        }
+    });
+    for (const type of ["keydown", "keyup"]) {
+        bento.addEventListener(type, (e) => {
+            log.push([type, e.key, e.text, held(e.modifiers), e.repeat]);
+            if (prevent && type === "keydown" && e.key === "Escape") e.preventDefault();
+        });
+    }
+    bento.addEventListener("keyboardrelease", (e) => log.push(["keyboardrelease", e.reason]));
+    bento.addEventListener("modifierschange", (e) =>
+        log.push(["modifierschange", held(e.modifiers), held(bento.modifiers)]),
+    );
+}
+"#;
+
+fn engine_action(name: &'static str, args: Vec<niri_config::TilingOption>) -> Op {
+    Op::LayoutAction(name, args, None)
+}
+
+fn start_timer(ms: f64, label: &str) -> Op {
+    engine_action(
+        "start-timer",
+        vec![
+            niri_config::TilingOption::Number(ms),
+            niri_config::TilingOption::String(label.to_owned()),
+        ],
+    )
+}
+
+fn stop_timer(label: &str) -> Op {
+    engine_action(
+        "stop-timer",
+        vec![niri_config::TilingOption::String(label.to_owned())],
+    )
+}
+
+fn take_keys() -> Op {
+    engine_action("take-keys", vec![])
+}
+
+fn give_keys() -> Op {
+    engine_action("give-keys", vec![])
+}
+
+/// What the keyboard engine heard.
+fn heard() -> serde_json::Value {
+    crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone()
+}
+
+/// A timer request that starts a timer: its instance, id and delay.
+fn started(request: &TimerRequest) -> (u64, u64, Duration) {
+    match *request {
+        TimerRequest::Start {
+            instance,
+            id,
+            delay,
+        } => (instance, id, delay),
+        other => panic!("expected a timer to start, got {other:?}"),
+    }
+}
+
+fn key(name: &str, text: &str, pressed: bool) -> EngineKey {
+    EngineKey {
+        name: name.to_owned(),
+        text: text.to_owned(),
+        modifiers: [false; 4],
+        pressed,
+        repeat: false,
+    }
+}
+
+#[test]
+fn engine_timers_are_scheduled_and_come_back_as_events() {
+    let ops = [
+        Op::AddOutput(1),
+        start_timer(50., "a"),
+        start_timer(20., "b"),
+    ];
+    let mut layout = check_ops_with_options(options_for_source("timers", KEYBOARD), ops);
+
+    let requests = layout.take_timer_requests();
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let (instance, a, delay_a) = started(&requests[0]);
+    let (other_instance, b, delay_b) = started(&requests[1]);
+    assert_eq!(instance, other_instance);
+    assert_eq!(delay_a, Duration::from_millis(50));
+    assert_eq!(delay_b, Duration::from_millis(20));
+    assert!(layout.take_timer_requests().is_empty());
+
+    // Nothing happens until a timer comes due, and each only once.
+    assert_eq!(heard(), serde_json::json!([]));
+    layout.fire_engine_timer(instance, b);
+    assert_eq!(heard(), serde_json::json!([["timer", "b"]]));
+    layout.fire_engine_timer(instance, b);
+    layout.fire_engine_timer(instance, a);
+    assert_eq!(heard(), serde_json::json!([["timer", "b"], ["timer", "a"]]));
+    assert!(layout.take_timer_requests().is_empty());
+}
+
+#[test]
+fn a_cleared_timer_is_cancelled_and_does_nothing_if_it_comes_due_anyway() {
+    let ops = [Op::AddOutput(1), start_timer(50., "a")];
+    let mut layout = check_ops_with_options(options_for_source("cleared", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    let (instance, id, _) = started(&requests[0]);
+
+    check_ops_on_layout(&mut layout, [stop_timer("a")]);
+    assert_eq!(
+        layout.take_timer_requests(),
+        vec![TimerRequest::Cancel { instance, id }]
+    );
+
+    layout.fire_engine_timer(instance, id);
+    assert_eq!(heard(), serde_json::json!([]));
+}
+
+#[test]
+fn a_timer_of_another_instance_does_nothing() {
+    let ops = [Op::AddOutput(1), start_timer(50., "a")];
+    let mut layout = check_ops_with_options(options_for_source("instances", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    let (instance, id, _) = started(&requests[0]);
+
+    layout.fire_engine_timer(instance + 1, id);
+    assert_eq!(heard(), serde_json::json!([]));
+    layout.fire_engine_timer(instance, id);
+    assert_eq!(heard(), serde_json::json!([["timer", "a"]]));
+}
+
+#[test]
+fn timers_end_with_the_engine() {
+    let ops = [Op::AddOutput(1), start_timer(50., "a")];
+    let mut layout = check_ops_with_options(options_for_source("ending", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    let (instance, id, _) = started(&requests[0]);
+
+    // The engine is replaced, like when its file changes or it fails.
+    crate::layout::tiling::engine::fail(String::from("test"));
+    layout.fire_engine_timer(instance, id);
+    layout.flush_engine();
+
+    // The event loop is told to forget what the old engine started.
+    assert_eq!(layout.take_timer_requests(), vec![TimerRequest::CancelAll]);
+    // And a late timer of the old engine does nothing to the new one.
+    layout.fire_engine_timer(instance, id);
+    assert!(layout.take_timer_requests().is_empty());
+}
+
+#[test]
+fn an_engine_cant_flood_the_event_loop_with_timers() {
+    let ops = [Op::AddOutput(1), engine_action("flood-timers", vec![])];
+    let mut layout = check_ops_with_options(options_for_source("flood", KEYBOARD), ops);
+    let requests = layout.take_timer_requests();
+    assert_eq!(requests.len(), 128);
+    assert!(requests
+        .iter()
+        .all(|request| started(request).2 == Duration::from_millis(1)));
+}
+
+#[test]
+fn the_engine_gets_the_keys_it_holds_the_keyboard_for() {
+    let ops = [Op::AddOutput(1)];
+    let mut layout = check_ops_with_options(options_for_source("keys", KEYBOARD), ops);
+
+    // Keys it doesn't hold go nowhere near it.
+    assert!(!layout.keyboard_grabbed());
+    layout.engine_key(key("a", "a", true));
+    assert_eq!(heard(), serde_json::json!([]));
+
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(layout.keyboard_grabbed());
+    layout.engine_key(key("A", "A", true));
+    layout.engine_key(EngineKey {
+        repeat: true,
+        modifiers: [true, false, false, true],
+        ..key("Left", "", true)
+    });
+    layout.engine_key(key("A", "A", false));
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["take", true],
+            ["keydown", "A", "A", "", false],
+            ["keydown", "Left", "", "shift+super", true],
+            ["keyup", "A", "A", "", false],
+        ])
+    );
+
+    check_ops_on_layout(&mut layout, [give_keys()]);
+    assert!(!layout.keyboard_grabbed());
+    layout.engine_key(key("b", "b", true));
+    assert_eq!(
+        heard().as_array().unwrap().last().unwrap(),
+        &serde_json::json!(["keyboardrelease", "engine"])
+    );
+}
+
+#[test]
+fn escape_gives_the_keyboard_back_unless_the_engine_handles_it() {
+    let mut layout = check_ops_with_options(
+        options_for_source("escape", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+    layout.engine_key(key("Escape", "", true));
+    assert!(!layout.keyboard_grabbed());
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["take", true],
+            ["keydown", "Escape", "", "", false],
+            ["keyboardrelease", "escape"],
+        ])
+    );
+
+    // Only the press ends it, and only for an engine that doesn't prevent its default.
+    check_ops_on_layout(
+        &mut layout,
+        [engine_action("prevent-escape", vec![]), take_keys()],
+    );
+    layout.engine_key(key("Escape", "", true));
+    layout.engine_key(key("Escape", "", false));
+    assert!(layout.keyboard_grabbed());
+    assert_eq!(heard().as_array().unwrap().len(), 3 + 3);
+
+    check_ops_on_layout(&mut layout, [give_keys()]);
+    assert!(!layout.keyboard_grabbed());
+}
+
+#[test]
+fn a_press_outside_what_the_engine_draws_takes_the_keyboard_back() {
+    let mut layout = check_ops_with_options(
+        options_for_source("click", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+    layout.release_keyboard(KeyboardRelease::Click);
+    assert!(!layout.keyboard_grabbed());
+    // It isn't told twice.
+    layout.release_keyboard(KeyboardRelease::Click);
+    assert_eq!(
+        heard(),
+        serde_json::json!([["take", true], ["keyboardrelease", "click"]])
+    );
+}
+
+#[test]
+fn the_lock_screen_and_other_focus_take_the_keyboard_back_and_refuse_it() {
+    let mut layout = check_ops_with_options(
+        options_for_source("owners", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+
+    layout.set_keyboard_owner(KeyboardOwner::LockScreen);
+    assert!(!layout.keyboard_grabbed());
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(!layout.keyboard_grabbed());
+
+    layout.set_keyboard_owner(KeyboardOwner::Layout);
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(layout.keyboard_grabbed());
+
+    layout.set_keyboard_owner(KeyboardOwner::Other);
+    assert!(!layout.keyboard_grabbed());
+    check_ops_on_layout(&mut layout, [take_keys()]);
+    assert!(!layout.keyboard_grabbed());
+
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["take", true],
+            ["keyboardrelease", "lock"],
+            ["take", false],
+            ["take", true],
+            ["keyboardrelease", "focus"],
+            ["take", false],
+        ])
+    );
+}
+
+#[test]
+fn the_engine_failing_ends_the_grab_without_a_word() {
+    let mut layout = check_ops_with_options(
+        options_for_source("failing", KEYBOARD),
+        [Op::AddOutput(1), take_keys()],
+    );
+    assert!(layout.keyboard_grabbed());
+
+    crate::layout::tiling::engine::fail(String::from("test"));
+    assert!(!layout.keyboard_grabbed());
+    layout.release_keyboard(KeyboardRelease::Click);
+    layout.flush_engine();
+    assert!(!layout.keyboard_grabbed());
+}
+
+#[test]
+fn the_engine_hears_when_the_modifiers_change() {
+    let mut layout = check_ops_with_options(
+        options_for_source("modifiers", KEYBOARD),
+        [Op::AddOutput(1)],
+    );
+    layout.set_modifiers([false, false, false, true]);
+    // The same modifiers aren't told again.
+    layout.set_modifiers([false, false, false, true]);
+    layout.set_modifiers([true, true, false, true]);
+    layout.set_modifiers([false; 4]);
+    assert_eq!(
+        heard(),
+        serde_json::json!([
+            ["modifierschange", "super", "super"],
+            ["modifierschange", "shift+ctrl+super", "shift+ctrl+super"],
+            ["modifierschange", "", ""],
+        ])
+    );
+}

@@ -5,7 +5,7 @@
 // matches what it just did, and are recorded for bento to carry out. bento answers by reporting
 // what really happened in the next `sync`.
 
-import { BentoEvent, EventTarget, dispatch } from "./events.js";
+import { BentoEvent, EventTarget, dispatch, guarded } from "./events.js";
 import { GroupSet } from "./groups.js";
 import {
     TreeLog,
@@ -19,6 +19,20 @@ import {
 } from "./nodes.js";
 
 const SIZING_MODES = ["normal", "fullscreen", "maximized"];
+
+/** Longest delay of a timer, in milliseconds, and most timers an engine can have waiting. */
+const MAX_TIMER_DELAY = 3_600_000;
+const MAX_TIMERS = 128;
+
+const NO_MODIFIERS = Object.freeze({ shift: false, ctrl: false, alt: false, super: false });
+
+/** The modifiers held as engines read them, always with the same properties in the same order. */
+export function heldModifiers(modifiers) {
+    return Object.freeze({ ...NO_MODIFIERS, ...modifiers });
+}
+
+/** Timer ids, which are never reused across instances, so a late timer of an old one can't fire. */
+let nextTimerId = 1;
 
 function copyRect(rect) {
     return { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
@@ -65,6 +79,11 @@ class Recorder {
         this.cameras = new Map();
         this.monitorFocus = undefined;
         this.stateChanged = false;
+        /** Timers the engine started, `{ id, ms }`, and ids of earlier ones it cleared. */
+        this.timers = [];
+        this.clearedTimers = [];
+        /** Whether the engine holds the keyboard, if it took or gave it back. */
+        this.keyboard = undefined;
     }
 }
 
@@ -608,6 +627,74 @@ export class Bento extends EventTarget {
         return createNode(this.#s.log, kind, props);
     }
 
+    setTimeout(callback, ms) {
+        if (typeof callback !== "function") {
+            throw new TypeError("a timer's callback must be a function");
+        }
+        const asked = Number(ms ?? 0);
+        const delay = Number.isNaN(asked) ? 0 : Math.max(0, asked);
+        if (delay > MAX_TIMER_DELAY) {
+            throw new RangeError(`a timer can wait at most ${MAX_TIMER_DELAY} ms, not ${ms}`);
+        }
+        const s = this.#s;
+        if (s.querying) {
+            return 0;
+        }
+        if (s.timers.size >= MAX_TIMERS) {
+            throw new Error(`there are already ${MAX_TIMERS} timers waiting`);
+        }
+        const id = nextTimerId++;
+        s.timers.set(id, callback);
+        s.rec.timers.push({ id, ms: Math.round(delay) });
+        return id;
+    }
+
+    clearTimeout(id) {
+        const s = this.#s;
+        if (s.querying || !s.timers.delete(id)) {
+            return;
+        }
+        // A timer that started in this call never reaches bento.
+        const starting = s.rec.timers.findIndex((timer) => timer.id === id);
+        if (starting === -1) {
+            s.rec.clearedTimers.push(id);
+        } else {
+            s.rec.timers.splice(starting, 1);
+        }
+    }
+
+    grabKeyboard() {
+        const s = this.#s;
+        // bento says whether the keyboard can be taken: not on the lock screen, nor while it's
+        // with something that isn't the layout's.
+        if (s.querying || !s.keyboardAvailable) {
+            return false;
+        }
+        if (!s.keyboardGrabbed) {
+            s.keyboardGrabbed = true;
+            s.rec.keyboard = true;
+        }
+        return true;
+    }
+
+    releaseKeyboard() {
+        const s = this.#s;
+        if (s.querying || !s.keyboardGrabbed) {
+            return;
+        }
+        s.keyboardGrabbed = false;
+        s.rec.keyboard = false;
+        s.releasedByEngine = true;
+    }
+
+    get keyboardGrabbed() {
+        return this.#s.keyboardGrabbed;
+    }
+
+    get modifiers() {
+        return this.#s.modifiers;
+    }
+
     log(...args) {
         this.#s.rec.logs.push(
             args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "),
@@ -630,12 +717,51 @@ export class Session {
         this.pressing = false;
         this.stateProvider = null;
         this.savedState = savedState ?? null;
+        /** Timers waiting, by id, with their callbacks. */
+        this.timers = new Map();
+        /** Whether the engine can take the keyboard, and whether it holds it. */
+        this.keyboardAvailable = false;
+        this.keyboardGrabbed = false;
+        /** Whether the engine gave the keyboard back, and hasn't been told yet. */
+        this.releasedByEngine = false;
+        this.modifiers = NO_MODIFIERS;
         this.setOptions(given);
         this.bento = new Bento(this);
     }
 
     get querying() {
         return this.log.querying;
+    }
+
+    /** Calls the callback of a timer that bento says is due, unless it was cleared. */
+    fireTimer(id) {
+        const callback = this.timers.get(id);
+        if (callback !== undefined) {
+            this.timers.delete(id);
+            guarded(() => callback());
+        }
+    }
+
+    setModifiers(modifiers) {
+        this.modifiers = heldModifiers(modifiers);
+    }
+
+    /**
+     * Takes the keyboard back from the engine, for a reason that comes from bento. Returns
+     * whether the engine held it.
+     */
+    endGrab() {
+        const held = this.keyboardGrabbed;
+        this.keyboardGrabbed = false;
+        return held;
+    }
+
+    /** Tells the engine that it gave the keyboard back, after the call it did that in. */
+    fireKeyboardRelease() {
+        if (this.releasedByEngine) {
+            this.releasedByEngine = false;
+            dispatch(this.bento, new BentoEvent("keyboardrelease", this.bento, { reason: "engine" }));
+        }
     }
 
     /** Sets the engine's options, and returns whether they changed. */
@@ -875,6 +1001,9 @@ export class Session {
             this.focusedMonitor = sync.focusedMonitor;
         }
         const optionsChanged = "options" in sync && this.setOptions(sync.options);
+        if ("keyboardAvailable" in sync) {
+            this.keyboardAvailable = sync.keyboardAvailable;
+        }
 
         const removedMonitors = (sync.removedMonitors ?? [])
             .map((name) => this.monitors.get(name))
@@ -1030,6 +1159,15 @@ export class Session {
         }
         if (rec.stateChanged) {
             out.stateChanged = true;
+        }
+        if (rec.keyboard !== undefined) {
+            out.keyboard = rec.keyboard;
+        }
+        if (rec.timers.length > 0) {
+            out.timers = rec.timers;
+        }
+        if (rec.clearedTimers.length > 0) {
+            out.clearedTimers = rec.clearedTimers;
         }
         return out;
     }
