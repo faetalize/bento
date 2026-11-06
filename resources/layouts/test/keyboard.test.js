@@ -214,3 +214,321 @@ test("a timer started in a query isn't started", () => {
     h.advanceTime(10);
     assert.deepEqual(calls, [0]);
 });
+
+// The keyboard and the modifiers.
+
+/** The modifiers in `mods` that are held, like `"shift+ctrl"`. */
+const held = (mods) =>
+    Object.keys(mods)
+        .filter((name) => mods[name])
+        .join("+");
+
+/**
+ * An engine that logs the keyboard events it gets into `log`. Its actions `grab` and `release`
+ * take and give back the keyboard, and `grab`'s answers go to `grabs`. Each `keydown` that
+ * `prevent` returns true for is prevented.
+ */
+function keyboardEngine(log, grabs = [], prevent = () => false) {
+    return (bento) => {
+        for (const type of ["keydown", "keyup"]) {
+            bento.addEventListener(type, (e) => {
+                log.push([type, e.key, e.text, held(e.modifiers), e.repeat]);
+                if (type === "keydown" && prevent(e)) e.preventDefault();
+            });
+        }
+        bento.addEventListener("keyboardrelease", (e) => log.push(["keyboardrelease", e.reason, bento.keyboardGrabbed]));
+        bento.addEventListener("modifierschange", (e) =>
+            log.push(["modifierschange", held(e.modifiers), held(bento.modifiers)]),
+        );
+        bento.addEventListener("action", (e) => {
+            if (e.name === "grab") grabs.push(bento.grabKeyboard());
+            if (e.name === "release") bento.releaseKeyboard();
+        });
+        bento.exposeState(() => ({ grabbed: bento.keyboardGrabbed, modifiers: { ...bento.modifiers } }));
+    };
+}
+
+test("an engine gets keys only while it holds the keyboard", () => {
+    const log = [];
+    const grabs = [];
+    const h = host(keyboardEngine(log, grabs));
+    assert.equal(h.keyDown("a"), "app");
+    assert.equal(h.keyUp("a"), "app");
+    assert.deepEqual(log, []);
+    assert.equal(h.exposedState().grabbed, false);
+
+    h.action("grab");
+    assert.deepEqual(grabs, [true]);
+    assert.equal(h.exposedState().grabbed, true);
+    assert.equal(h.key("a"), "engine");
+    assert.deepEqual(log, [
+        ["keydown", "a", "a", "", false],
+        ["keyup", "a", "a", "", false],
+    ]);
+    assert.deepEqual(h.appKeys, [
+        ["down", "a"],
+        ["up", "a"],
+    ]);
+
+    h.action("release");
+    log.length = 0;
+    assert.equal(h.key("a"), "app");
+    assert.deepEqual(log, []);
+});
+
+test("keys come with their name, the text they type and the modifiers held", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    h.action("grab");
+    h.keyDown("Shift_L");
+    h.key("A");
+    h.key("Left");
+    h.keyDown("Left", { repeat: true });
+    h.keyUp("Left");
+    h.keyDown("1", { text: "!" });
+    h.keyUp("1");
+    h.keyUp("Shift_L");
+    assert.deepEqual(log, [
+        ["keydown", "Shift_L", "", "shift", false],
+        ["modifierschange", "shift", "shift"],
+        ["keydown", "A", "A", "shift", false],
+        ["keyup", "A", "A", "shift", false],
+        ["keydown", "Left", "", "shift", false],
+        ["keyup", "Left", "", "shift", false],
+        ["keydown", "Left", "", "shift", true],
+        ["keyup", "Left", "", "shift", false],
+        ["keydown", "1", "!", "shift", false],
+        ["keyup", "1", "!", "shift", false],
+        ["keyup", "Shift_L", "", "", false],
+        ["modifierschange", "", ""],
+    ]);
+});
+
+test("Escape gives the keyboard back, and its release goes to nobody", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    h.action("grab");
+    assert.equal(h.keyDown("Escape"), "engine");
+    // The engine saw the key, and then that the keyboard went back.
+    assert.deepEqual(log, [
+        ["keydown", "Escape", "", "", false],
+        ["keyboardrelease", "escape", false],
+    ]);
+    assert.equal(h.keyboard.grabbed, false);
+    assert.equal(h.exposedState().grabbed, false);
+    // The apps never saw it pressed, so they don't see it released.
+    assert.equal(h.keyUp("Escape"), "none");
+    assert.deepEqual(h.appKeys, []);
+    assert.equal(log.length, 2);
+    assert.equal(h.key("b"), "app");
+});
+
+test("an engine that prevents Escape keeps the keyboard until it gives it back", () => {
+    const log = [];
+    const h = host(keyboardEngine(log, [], (e) => e.key === "Escape"));
+    h.action("grab");
+    assert.equal(h.keyDown("Escape"), "engine");
+    assert.equal(h.keyboard.grabbed, true);
+    assert.equal(h.keyUp("Escape"), "engine");
+    assert.equal(h.key("x"), "engine");
+    assert.deepEqual(
+        log.map((entry) => entry[0]),
+        ["keydown", "keyup", "keydown", "keyup"],
+    );
+
+    h.action("release");
+    assert.deepEqual(log.at(-1), ["keyboardrelease", "engine", false]);
+    assert.equal(h.keyboard.grabbed, false);
+});
+
+test("preventing the default of other keys changes nothing", () => {
+    const log = [];
+    const h = host(keyboardEngine(log, [], () => true));
+    h.action("grab");
+    h.key("q");
+    h.key("Return");
+    assert.equal(h.keyboard.grabbed, true);
+});
+
+test("releaseKeyboard tells the engine after the call that made it", () => {
+    const order = [];
+    const h = host((bento) => {
+        bento.addEventListener("keyboardrelease", (e) => order.push(["event", e.reason, bento.keyboardGrabbed]));
+        bento.addEventListener("action", (e) => {
+            if (e.name === "grab") bento.grabKeyboard();
+            if (e.name === "release") {
+                bento.releaseKeyboard();
+                // Releasing what isn't held does nothing.
+                bento.releaseKeyboard();
+                order.push(["released", bento.keyboardGrabbed]);
+            }
+        });
+    });
+    h.action("grab");
+    h.action("release");
+    assert.deepEqual(order, [
+        ["released", false],
+        ["event", "engine", false],
+    ]);
+    h.action("release");
+    assert.equal(order.length, 3);
+});
+
+test("grabbing twice is one grab", () => {
+    const log = [];
+    const grabs = [];
+    const h = host(keyboardEngine(log, grabs));
+    h.action("grab");
+    h.action("grab");
+    assert.deepEqual(grabs, [true, true]);
+    h.action("release");
+    h.action("release");
+    assert.deepEqual(log, [["keyboardrelease", "engine", false]]);
+});
+
+test("binds that can be inhibited don't run while the engine holds the keyboard", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    h.bind("q");
+    h.bind("p", { allowInhibiting: false });
+    assert.equal(h.key("q"), "bind");
+    assert.equal(h.key("p"), "bind");
+    assert.deepEqual(log, []);
+
+    h.action("grab");
+    // `q` goes to the engine like any other key, and `p` still runs its bind.
+    assert.equal(h.key("q"), "engine");
+    assert.equal(h.key("p"), "bind");
+    assert.deepEqual(log, [
+        ["keydown", "q", "q", "", false],
+        ["keyup", "q", "q", "", false],
+    ]);
+    assert.deepEqual(h.ranBinds, ["q", "p", "p"]);
+});
+
+test("a key pressed before the grab is released to the apps, and one pressed in it to nobody", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    h.keyDown("a");
+    h.action("grab");
+    assert.equal(h.keyUp("a"), "app");
+    h.keyDown("b");
+    h.action("release");
+    assert.equal(h.keyUp("b"), "none");
+    assert.deepEqual(log, [
+        ["keydown", "b", "b", "", false],
+        ["keyboardrelease", "engine", false],
+    ]);
+});
+
+test("a press outside what the engine draws gives the keyboard back", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    h.pressOutsideNodes();
+    assert.deepEqual(log, []);
+    h.action("grab");
+    h.pressOutsideNodes();
+    assert.deepEqual(log, [["keyboardrelease", "click", false]]);
+    h.pressOutsideNodes();
+    assert.equal(log.length, 1);
+    assert.equal(h.key("a"), "app");
+});
+
+test("the lock screen refuses the keyboard and takes it back", () => {
+    const log = [];
+    const grabs = [];
+    const h = host(keyboardEngine(log, grabs));
+    h.lock();
+    h.action("grab");
+    assert.deepEqual(grabs, [false]);
+    assert.equal(h.exposedState().grabbed, false);
+    h.lock(false);
+    h.action("grab");
+    assert.deepEqual(grabs, [false, true]);
+
+    h.lock();
+    assert.deepEqual(log, [["keyboardrelease", "lock", false]]);
+    assert.equal(h.keyboard.grabbed, false);
+    assert.equal(h.key("a"), "app");
+});
+
+test("keyboard focus moving to something that isn't the engine's takes the keyboard back", () => {
+    const log = [];
+    const grabs = [];
+    const h = host(keyboardEngine(log, grabs));
+    h.action("grab");
+    h.focusKeyboard("other");
+    assert.deepEqual(log, [["keyboardrelease", "focus", false]]);
+    h.action("grab");
+    assert.deepEqual(grabs, [true, false]);
+    h.focusKeyboard("layout");
+    h.action("grab");
+    assert.deepEqual(grabs, [true, false, true]);
+    assert.equal(h.keyboard.grabbed, true);
+});
+
+test("a query can't take the keyboard", () => {
+    const answers = [];
+    const h = host((bento) => {
+        bento.addEventListener("newwindowsize", (e) => {
+            answers.push(bento.grabKeyboard());
+            e.respondWith({ w: 1, h: 1 });
+        });
+    });
+    h.newWindowSize();
+    assert.deepEqual(answers, [false]);
+    assert.equal(h.keyboard.grabbed, false);
+});
+
+test("reloading the engine ends the grab without telling anyone", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    h.action("grab");
+    h.reload();
+    assert.equal(h.keyboard.grabbed, false);
+    assert.equal(h.exposedState().grabbed, false);
+    assert.equal(h.key("a"), "app");
+    assert.deepEqual(log, []);
+});
+
+test("keys and releases that arrive when the engine holds nothing do nothing", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    const down = { type: "keydown", key: "a", text: "a", modifiers: {}, repeat: false };
+    assert.deepEqual(h.send(down), { prevented: false });
+    h.send({ ...down, type: "keyup" });
+    h.send({ type: "keyboardrelease", reason: "focus" });
+    assert.deepEqual(log, []);
+});
+
+test("the engine is told when the modifiers held change, grab or not, and can read them", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    assert.deepEqual(h.exposedState().modifiers, { shift: false, ctrl: false, alt: false, super: false });
+
+    h.setModifiers({ super: true });
+    assert.deepEqual(log, [["modifierschange", "super", "super"]]);
+    assert.equal(h.exposedState().modifiers.super, true);
+
+    // Pressing the key of a modifier that's held changes nothing, and the same set isn't told twice.
+    h.setModifiers({ super: true });
+    h.keyDown("Super_L");
+    assert.equal(log.length, 1);
+
+    h.setModifiers({ super: true, ctrl: true, alt: true });
+    assert.deepEqual(log.at(-1), ["modifierschange", "ctrl+alt+super", "ctrl+alt+super"]);
+    h.setModifiers({});
+    assert.deepEqual(log.at(-1), ["modifierschange", "", ""]);
+    // Never keys outside a grab.
+    assert.ok(log.every((entry) => entry[0] === "modifierschange"));
+});
+
+test("the modifiers held when the engine starts are what it reads", () => {
+    const log = [];
+    const h = host(keyboardEngine(log));
+    h.setModifiers({ shift: true });
+    h.reload();
+    assert.equal(h.exposedState().modifiers.shift, true);
+    h.setModifiers({});
+    assert.deepEqual(log.at(-1), ["modifierschange", "", ""]);
+});

@@ -223,6 +223,7 @@ export function handle(callJson) {
             if (!isQuery) {
                 session.fireFocusChanges(focus);
                 session.fireGroupChanges();
+                session.fireKeyboardRelease();
             }
         }
     } catch (e) {
@@ -251,6 +252,7 @@ export function handle(callJson) {
 function create(call) {
     const event = call.event;
     session = new Session(meta, event.options, event.savedState);
+    session.setModifiers(event.modifiers);
     adapter = null;
     // The engine learns about what's there when it looks, not from events. Groups need the windows.
     const { groups, ...sync } = call.sync;
@@ -291,6 +293,7 @@ function create(call) {
     session.fireFocusChanges(focus);
     // Groups that are there are announced after the windows in them.
     session.fireGroupChanges();
+    session.fireKeyboardRelease();
 }
 
 /**
@@ -521,6 +524,31 @@ function deliver(event) {
         }
         case "timer":
             session.fireTimer(event.id);
+            return null;
+        case "keydown":
+        case "keyup": {
+            if (!session.keyboardGrabbed) {
+                return { prevented: false };
+            }
+            const e = dispatch(
+                bento,
+                new BentoEvent(event.type, bento, {
+                    key: event.key,
+                    text: event.text,
+                    modifiers: Object.freeze({ ...event.modifiers }),
+                    repeat: event.repeat,
+                }),
+            );
+            return { prevented: e.defaultPrevented };
+        }
+        case "keyboardrelease":
+            if (session.endGrab()) {
+                dispatch(bento, new BentoEvent("keyboardrelease", bento, { reason: event.reason }));
+            }
+            return null;
+        case "modifierschange":
+            session.setModifiers(event.modifiers);
+            dispatch(bento, new BentoEvent("modifierschange", bento, { modifiers: session.modifiers }));
             return null;
         case "pointer": {
             const node = session.log.nodes.get(event.node);

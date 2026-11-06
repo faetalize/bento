@@ -24,6 +24,8 @@ const SIZING_MODES = ["normal", "fullscreen", "maximized"];
 const MAX_TIMER_DELAY = 3_600_000;
 const MAX_TIMERS = 128;
 
+const NO_MODIFIERS = Object.freeze({ shift: false, ctrl: false, alt: false, super: false });
+
 /** Timer ids, which are never reused across instances, so a late timer of an old one can't fire. */
 let nextTimerId = 1;
 
@@ -591,6 +593,38 @@ export class Bento extends EventTarget {
         }
     }
 
+    grabKeyboard() {
+        const s = this.#s;
+        // bento says whether the keyboard can be taken: not on the lock screen, nor while it's
+        // with something that isn't the layout's.
+        if (s.querying || !s.keyboardAvailable) {
+            return false;
+        }
+        if (!s.keyboardGrabbed) {
+            s.keyboardGrabbed = true;
+            s.rec.keyboard = true;
+        }
+        return true;
+    }
+
+    releaseKeyboard() {
+        const s = this.#s;
+        if (s.querying || !s.keyboardGrabbed) {
+            return;
+        }
+        s.keyboardGrabbed = false;
+        s.rec.keyboard = false;
+        s.releasedByEngine = true;
+    }
+
+    get keyboardGrabbed() {
+        return this.#s.keyboardGrabbed;
+    }
+
+    get modifiers() {
+        return this.#s.modifiers;
+    }
+
     log(...args) {
         this.#s.rec.logs.push(
             args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "),
@@ -613,6 +647,12 @@ export class Session {
         this.savedState = savedState ?? null;
         /** Timers waiting, by id, with their callbacks. */
         this.timers = new Map();
+        /** Whether the engine can take the keyboard, and whether it holds it. */
+        this.keyboardAvailable = false;
+        this.keyboardGrabbed = false;
+        /** Whether the engine gave the keyboard back, and hasn't been told yet. */
+        this.releasedByEngine = false;
+        this.modifiers = NO_MODIFIERS;
         this.setOptions(given);
         this.bento = new Bento(this);
     }
@@ -627,6 +667,28 @@ export class Session {
         if (callback !== undefined) {
             this.timers.delete(id);
             guarded(() => callback());
+        }
+    }
+
+    setModifiers(modifiers) {
+        this.modifiers = Object.freeze({ ...NO_MODIFIERS, ...modifiers });
+    }
+
+    /**
+     * Takes the keyboard back from the engine, for a reason that comes from bento. Returns
+     * whether the engine held it.
+     */
+    endGrab() {
+        const held = this.keyboardGrabbed;
+        this.keyboardGrabbed = false;
+        return held;
+    }
+
+    /** Tells the engine that it gave the keyboard back, after the call it did that in. */
+    fireKeyboardRelease() {
+        if (this.releasedByEngine) {
+            this.releasedByEngine = false;
+            dispatch(this.bento, new BentoEvent("keyboardrelease", this.bento, { reason: "engine" }));
         }
     }
 
@@ -855,6 +917,9 @@ export class Session {
             this.focusedMonitor = sync.focusedMonitor;
         }
         const optionsChanged = "options" in sync && this.setOptions(sync.options);
+        if ("keyboardAvailable" in sync) {
+            this.keyboardAvailable = sync.keyboardAvailable;
+        }
 
         const removedMonitors = (sync.removedMonitors ?? [])
             .map((name) => this.monitors.get(name))
@@ -1002,6 +1067,9 @@ export class Session {
         }
         if (rec.stateChanged) {
             out.stateChanged = true;
+        }
+        if (rec.keyboard !== undefined) {
+            out.keyboard = rec.keyboard;
         }
         if (rec.timers.length > 0) {
             out.timers = rec.timers;

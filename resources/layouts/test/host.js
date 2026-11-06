@@ -35,6 +35,18 @@ const MAX_ROUNDS = 8;
 const MAX_TIMER_DELAY = 3_600_000;
 const MAX_TIMERS_FIRED = 10_000;
 
+/** The modifier that each modifier key holds. */
+const MODIFIER_KEYS = {
+    Shift_L: "shift",
+    Shift_R: "shift",
+    Control_L: "ctrl",
+    Control_R: "ctrl",
+    Alt_L: "alt",
+    Alt_R: "alt",
+    Super_L: "super",
+    Super_R: "super",
+};
+
 export class TestHost {
     /**
      * Loads a layout engine's module and creates it for an empty session.
@@ -86,6 +98,23 @@ export class TestHost {
         /** The clock that timers run by, in milliseconds, and the timers waiting: id to due time. */
         this.now = 0;
         this.timers = new Map();
+        /**
+         * The keyboard: whether the engine holds it, and who has the focus that it could take,
+         * `"layout"`, `"lock"` or `"other"`, like a layer surface.
+         */
+        this.keyboard = { grabbed: false, owner: "layout" };
+        this.toldKeyboardAvailable = null;
+        /** Modifiers held, and as the engine was last told. */
+        this.modifiers = { shift: false, ctrl: false, alt: false, super: false };
+        this.toldModifiers = JSON.stringify(this.modifiers);
+        /** Keys pressed while the engine held the keyboard, which the apps never saw pressed, with their text. */
+        this.engineKeys = new Map();
+        /** bento's own binds by key, `{ allowInhibiting }`, and the keys that ran them or reached apps. */
+        this.binds = new Map();
+        this.ranBinds = [];
+        this.appKeys = [];
+        /** Events bento queued for the engine, which it gets when bento flushes. */
+        this.queued = [];
 
         let x = 0;
         for (const given of opts.monitors ?? [{ name: "DP-1" }]) {
@@ -275,6 +304,11 @@ export class TestHost {
             this.toldGroups = groups;
         }
         sync.focusedMonitor = this.focusedMonitor;
+        const available = this.keyboard.owner === "layout";
+        if (this.toldKeyboardAvailable !== available) {
+            sync.keyboardAvailable = available;
+            this.toldKeyboardAvailable = available;
+        }
         const options = this.engineOptions();
         if (JSON.stringify(this.toldOptions) !== JSON.stringify(options)) {
             sync.options = options;
@@ -292,6 +326,7 @@ export class TestHost {
             sync.windows.length === 0 &&
             sync.groups === undefined &&
             sync.options === undefined &&
+            sync.keyboardAvailable === undefined &&
             sync.focusedMonitor === this.toldFocusedMonitor
         );
     }
@@ -304,7 +339,17 @@ export class TestHost {
             this.told.windows.set(win.id, this.windowInfo(this.windows.get(win.id)));
         }
         this.call(
-            { sync, event: { type: "create", options: this.engineOptions(), savedState: state, windows, focused: this.focused() } },
+            {
+                sync,
+                event: {
+                    type: "create",
+                    options: this.engineOptions(),
+                    savedState: state,
+                    windows,
+                    focused: this.focused(),
+                    modifiers: { ...this.modifiers },
+                },
+            },
             true,
         );
         this.flush();
@@ -345,6 +390,9 @@ export class TestHost {
 
     /** Tells the engine about what changed because of what it did, until it settles. */
     flush() {
+        while (this.queued.length > 0) {
+            this.sendNow(this.queued.shift());
+        }
         for (let round = 0; round < MAX_ROUNDS; round++) {
             this.settleSizes();
             const sync = this.sync();
@@ -447,6 +495,144 @@ export class TestHost {
         for (const id of out.clearedTimers ?? []) {
             this.timers.delete(id);
         }
+        if (out.keyboard === true) {
+            if (this.keyboard.owner === "layout") {
+                this.keyboard.grabbed = true;
+            } else {
+                // It can't be taken after all, which the engine hears like a release.
+                this.queued.push({ type: "keyboardrelease", reason: this.keyboard.owner === "lock" ? "lock" : "focus" });
+            }
+        } else if (out.keyboard === false) {
+            this.keyboard.grabbed = false;
+        }
+    }
+
+    // The keyboard.
+
+    /** Takes the keyboard from the engine, which hears why. Returns whether it held it. */
+    releaseKeyboard(reason) {
+        if (!this.keyboard.grabbed) return false;
+        this.keyboard.grabbed = false;
+        this.queued.push({ type: "keyboardrelease", reason });
+        return true;
+    }
+
+    /** Moves the keyboard focus to `owner`: the layout, the `"lock"` screen, or `"other"`. */
+    focusKeyboard(owner) {
+        this.keyboard.owner = owner;
+        if (owner === "lock") this.releaseKeyboard("lock");
+        else if (owner === "other") this.releaseKeyboard("focus");
+        this.flush();
+    }
+
+    /** The session locks, or unlocks. */
+    lock(locked = true) {
+        this.focusKeyboard(locked ? "lock" : "layout");
+    }
+
+    /**
+     * One of bento's own binds on `key`. Like binds that apps can inhibit, it doesn't run while
+     * the engine holds the keyboard, unless `allowInhibiting` is false.
+     */
+    bind(key, { allowInhibiting = true } = {}) {
+        this.binds.set(key, { allowInhibiting });
+    }
+
+    /**
+     * Presses a key, with `opts.text` it types (by default the key itself if it's one character,
+     * else nothing) and `opts.repeat`. A modifier key changes the modifiers held. Returns where
+     * the key went: `"bind"`, `"engine"` or `"app"`.
+     */
+    keyDown(key, opts = {}) {
+        const modifier = MODIFIER_KEYS[key];
+        const changes = modifier !== undefined && !this.modifiers[modifier];
+        if (changes) this.modifiers[modifier] = true;
+        const bind = this.binds.get(key);
+        let went;
+        if (bind !== undefined && !(this.keyboard.grabbed && bind.allowInhibiting)) {
+            this.ranBinds.push(key);
+            went = "bind";
+        } else if (this.keyboard.grabbed) {
+            went = "engine";
+            const text = opts.text ?? (key.length === 1 ? key : "");
+            this.engineKeys.set(key, text);
+            const verdict = this.send({
+                type: "keydown",
+                key,
+                text,
+                modifiers: { ...this.modifiers },
+                repeat: opts.repeat ?? false,
+            });
+            if (key === "Escape" && !verdict.prevented) {
+                this.releaseKeyboard("escape");
+                this.flush();
+            }
+        } else {
+            this.appKeys.push(["down", key]);
+            went = "app";
+        }
+        if (changes) this.sendModifiers();
+        return went;
+    }
+
+    /**
+     * Releases a key. A key that the engine got the press of is released to it while it still
+     * holds the keyboard (`"engine"`, else `"none"`), and one pressed before that goes to the apps.
+     */
+    keyUp(key) {
+        const modifier = MODIFIER_KEYS[key];
+        const changes = modifier !== undefined && this.modifiers[modifier];
+        if (changes) this.modifiers[modifier] = false;
+        let went;
+        const text = this.engineKeys.get(key);
+        if (this.engineKeys.delete(key)) {
+            // The apps never saw the press, so they don't get the release either.
+            went = this.keyboard.grabbed ? "engine" : "none";
+            if (this.keyboard.grabbed) {
+                this.send({
+                    type: "keyup",
+                    key,
+                    text,
+                    modifiers: { ...this.modifiers },
+                    repeat: false,
+                });
+            }
+        } else if (this.binds.has(key) && this.ranBinds.includes(key)) {
+            went = "bind";
+        } else {
+            this.appKeys.push(["up", key]);
+            went = "app";
+        }
+        if (changes) this.sendModifiers();
+        return went;
+    }
+
+    /** Presses and releases a key, and returns where the press went. */
+    key(key, opts = {}) {
+        const went = this.keyDown(key, opts);
+        this.keyUp(key);
+        return went;
+    }
+
+    /** Tells the engine the modifiers held if they changed since it was last told. */
+    sendModifiers() {
+        const now = JSON.stringify(this.modifiers);
+        if (now !== this.toldModifiers) {
+            this.toldModifiers = now;
+            this.send({ type: "modifierschange", modifiers: { ...this.modifiers } });
+        }
+    }
+
+    /** Holds exactly these modifiers, like keys that aren't shown here. Missing ones are released. */
+    setModifiers(held) {
+        this.modifiers = { shift: false, ctrl: false, alt: false, super: false, ...held };
+        this.sendModifiers();
+    }
+
+    /** A pointer press that no node of the engine's takes. It ends the engine's hold on the keyboard. */
+    pressOutsideNodes() {
+        this.releaseKeyboard("click");
+        this.flush();
     }
 
     /**
@@ -928,6 +1114,10 @@ export class TestHost {
         this.toldGroups = null;
         this.toldOptions = null;
         this.timers.clear();
+        // The engine that held the keyboard is gone, so nobody is told.
+        this.keyboard.grabbed = false;
+        this.queued = [];
+        this.toldKeyboardAvailable = null;
         for (const [id, tree] of this.trees) {
             tree.reset([...this.windows.values()].filter((win) => win.workspace === id).map((win) => win.id));
         }

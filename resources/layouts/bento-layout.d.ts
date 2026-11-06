@@ -316,7 +316,10 @@ export interface Modifiers {
 export interface KeyEvent extends BentoEvent {
     /** The key's xkb name with the held modifiers applied, like `"a"`, `"A"`, `"Return"`, `"Left"`. */
     readonly key: string;
-    /** What the key types with the keyboard layout, or `""`, like for arrows. */
+    /**
+     * What the key types with the keyboard layout, like `"a"` or `" "`, or `""` for keys that
+     * type nothing printable, like arrows, Return, and keys with Ctrl held.
+     */
     readonly text: string;
     readonly modifiers: Modifiers;
     /** Whether the key is held down and repeating. */
@@ -466,7 +469,9 @@ export interface Bento extends EventTarget<BentoEvents> {
 
     /**
      * Calls `callback` once, after `ms` milliseconds, between events like an event of its own.
-     * Returns an id for `clearTimeout`. Timers end when the engine is unloaded.
+     * Returns an id for `clearTimeout`. Timers end when the engine is unloaded or reloaded. A
+     * delay can't be longer than an hour, and at most 128 timers can be waiting: `setTimeout`
+     * throws beyond that. Negative delays count as 0.
      */
     setTimeout(callback: () => void, ms: number): number;
     clearTimeout(id: number): void;
