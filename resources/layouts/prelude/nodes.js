@@ -50,9 +50,19 @@ export class TreeLog {
     }
 }
 
-function checkProps(props) {
+const INPUTS = ["app", "engine", "none"];
+
+function checkProps(props, kind) {
     if (props === null || typeof props !== "object") {
         throw new TypeError("node properties must be an object");
+    }
+    if (props.input !== undefined) {
+        if (kind !== "window") {
+            throw new Error("`input` is only for window nodes");
+        }
+        if (!INPUTS.includes(props.input)) {
+            throw new Error(`invalid input: ${JSON.stringify(props.input)}`);
+        }
     }
     if (props.rect !== undefined && !isRect(props.rect)) {
         throw new Error(`invalid rect: ${JSON.stringify(props.rect)}`);
@@ -122,7 +132,7 @@ export class Node extends EventTarget {
 
     /** Changes some properties. Those with a transition animate to their new value. */
     set(props) {
-        checkProps(props);
+        checkProps(props, this.#kind);
         const changed = {};
         for (const [name, value] of Object.entries(props)) {
             if (value !== undefined && !sameValue(this.#props[name], value)) {
@@ -301,7 +311,7 @@ export function createNode(log, kind, props = {}) {
     if (!["box", "text", "image"].includes(kind)) {
         throw new Error(`unknown node kind: ${kind}`);
     }
-    checkProps(props);
+    checkProps(props, kind);
     return new Node(log, `n${log.nextId++}`, kind, props, false);
 }
 

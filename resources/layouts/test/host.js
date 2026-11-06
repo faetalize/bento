@@ -124,7 +124,7 @@ export class TestHost {
             name,
             monitor,
             index: stack.length,
-            camera: { x: 0, y: 0 },
+            camera: { x: 0, y: 0, zoom: 1 },
             focused: null,
         };
         this.workspaces.set(ws.id, ws);
@@ -426,7 +426,7 @@ export class TestHost {
             this.workspaces.get(id).focused = focused;
         }
         for (const camera of out.cameras ?? []) {
-            this.workspaces.get(camera.workspace).camera = { x: camera.x, y: camera.y };
+            this.workspaces.get(camera.workspace).camera = { x: camera.x, y: camera.y, zoom: camera.zoom };
             this.lastCamera = camera;
         }
         if (out.monitorFocus !== undefined) {

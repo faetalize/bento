@@ -621,14 +621,16 @@ export interface Camera {
     readonly x: number;
     readonly y: number;
     /**
-     * How large the canvas is drawn: 1 at its size, 0.5 shows twice as much of it. Pointer input
-     * lands where things are drawn at any zoom.
+     * How large the canvas is drawn: 1 at its size, 0.5 shows twice as much of it. `x` and `y`
+     * stay the canvas point at the view's top left, and windows aren't told a new size. Pointer
+     * input lands where things are drawn at any zoom. bento keeps it between 0.01 and 100.
      */
     readonly zoom: number;
 
     /**
-     * Moves it. Values left out stay as they are. `velocity` continues a swipe's speed into the
-     * animation, in px/s.
+     * Moves it, animating `x`, `y` and `zoom` the same way. Values left out stay as they are. A
+     * `zoom` that isn't above 0 throws. `velocity` continues a swipe's speed into the animation,
+     * in px/s.
      */
     move(to: Partial<Point & { zoom: number }>, opts?: { animate?: boolean; velocity?: number }): boolean;
 }

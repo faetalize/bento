@@ -327,7 +327,7 @@ test("queries get the first answer and change nothing", () => {
     assert.deepEqual(h.newWindowSize(), { w: 640, h: 100 });
     assert.deepEqual(h.rect(a), { x: 0, y: 0, w: 10, h: 10 });
     assert.equal(h.focused(), a);
-    assert.deepEqual(h.camera(), { x: 0, y: 0 });
+    assert.deepEqual(h.camera(), { x: 0, y: 0, zoom: 1 });
 });
 
 test("a query without an answer says 0 × 0", () => {
@@ -714,7 +714,7 @@ test("the camera moves with the options the engine gives", () => {
     );
     h.open();
     h.action("go");
-    assert.deepEqual(h.camera(), { x: 100, y: 5 });
+    assert.deepEqual(h.camera(), { x: 100, y: 5, zoom: 1 });
     assert.equal(h.lastCamera.velocity, 300);
     assert.equal(h.lastCamera.animate, true);
 });
@@ -729,7 +729,7 @@ test("horizontal swipes are reported, and the engine moves the camera", () => {
         }
     });
     h.swipe(h.workspace(0).id, [30, 40], 500);
-    assert.deepEqual(h.camera(), { x: -100, y: 0 });
+    assert.deepEqual(h.camera(), { x: -100, y: 0, zoom: 1 });
     assert.equal(h.lastCamera.velocity, 500);
 });
 
@@ -1005,6 +1005,142 @@ test("pointerenter and pointerleave go to the node they're for and don't bubble"
     assert.deepEqual(log, [["pointermove", "inner"], ["pointermove", "outer"]]);
 });
 
+test("a window's node says where pointer input on it goes", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => e.window.node.set({ input: e.args[0] }));
+        },
+        {},
+        { actions: { go: { args: [{ name: "input", type: "choice", choices: ["app", "engine", "none"] }] } } },
+    );
+    const a = h.open();
+    const props = () => h.tree().node(`w${a}`).props;
+
+    // A window's input is for the app unless the engine says.
+    assert.equal(props().input, undefined);
+    h.action("go", "engine");
+    assert.equal(props().input, "engine");
+    h.action("go", "none");
+    assert.equal(props().input, "none");
+    h.action("go", "app");
+    assert.equal(props().input, "app");
+});
+
+test("input is only for windows' nodes, and has three values", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                const only = /`input` is only for window nodes/;
+                assert.throws(() => bento.createNode("box").set({ input: "none" }), only);
+                assert.throws(() => bento.createNode("box", { input: "none" }), only);
+                assert.throws(() => e.window.node.set({ input: "touch" }), /invalid input: "touch"/);
+                assert.throws(() => e.window.node.set({ input: true }), /invalid input: true/);
+            });
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    const a = h.open();
+    h.action("go");
+    assert.equal(h.tree().node(`w${a}`).props.input, undefined);
+});
+
+test("pointer events for a window's node reach the engine and bubble", () => {
+    const log = [];
+    const h = host((bento) => {
+        placing(bento);
+        bento.addEventListener("windowadd", (e) => {
+            const frame = bento.createNode("box", { interactive: true });
+            e.window.workspace.tree.append(frame);
+            frame.append(e.window.node);
+            frame.addEventListener("click", (c) => log.push(["frame", c.target === e.window.node]));
+            e.window.node.addEventListener("click", (c) => log.push(["window", c.target.window.id === e.window.id, c.button]));
+        });
+    });
+    const a = h.open();
+    h.pointer(`w${a}`, "click", { button: 1 });
+    assert.deepEqual(log, [["window", true, 1], ["frame", true]]);
+});
+
+test("the camera zooms, and what the engine reads is where it's going", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                const camera = e.window.workspace.camera;
+                assert.equal(camera.zoom, 1);
+                assert.equal(camera.move({ zoom: 0.5 }, { animate: false }), true);
+                // The camera's position stays what it was.
+                assert.deepEqual([camera.x, camera.y, camera.zoom], [0, 0, 0.5]);
+                camera.move({ x: 100 });
+                assert.deepEqual([camera.x, camera.y, camera.zoom], [100, 0, 0.5]);
+            });
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    h.open();
+    h.action("go");
+    assert.deepEqual(h.camera(), { x: 100, y: 0, zoom: 0.5 });
+    // The last move said where the camera stays zoomed, and animated.
+    assert.equal(h.lastCamera.zoom, 0.5);
+    assert.equal(h.lastCamera.animate, true);
+});
+
+test("a zoom move animates unless the engine says not to", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                e.window.workspace.camera.move({ zoom: 2 }, { animate: e.args[0] });
+            });
+        },
+        {},
+        { actions: { go: { args: [{ name: "animate", type: "boolean" }] } } },
+    );
+    h.open();
+    h.action("go", false);
+    assert.equal(h.lastCamera.animate, false);
+    assert.equal(h.lastCamera.zoom, 2);
+});
+
+test("bento tells the engine the camera's zoom", () => {
+    const seen = [];
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => seen.push(e.window.workspace.camera.zoom));
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    h.open();
+    h.workspace(0).camera = { x: 5, y: 6, zoom: 2 };
+    h.action("go");
+    assert.deepEqual(seen, [2]);
+});
+
+test("a camera can't zoom to nothing", () => {
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                for (const zoom of [0, -1, Infinity, NaN]) {
+                    assert.throws(() => e.window.workspace.camera.move({ zoom }), /invalid camera zoom/);
+                }
+            });
+        },
+        {},
+        { actions: { go: {} } },
+    );
+    h.open();
+    h.action("go");
+    assert.deepEqual(h.camera(), { x: 0, y: 0, zoom: 1 });
+    assert.equal(h.lastCamera, undefined);
+});
+
 // The API 1 adapter.
 
 /** A V1 engine that places every window in the same spot, and records what it's told. */
@@ -1165,7 +1301,7 @@ test("swipes move the camera for an API 1 engine, which gets gestureEnd", () => 
         },
     }));
     h.swipe(h.workspace(0).id, [10, 20], 100);
-    assert.deepEqual(h.camera(), { x: 30, y: 0 });
+    assert.deepEqual(h.camera(), { x: 30, y: 0, zoom: 1 });
     assert.deepEqual(seen, ["begin", [100, true]]);
 });
 

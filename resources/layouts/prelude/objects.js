@@ -110,20 +110,29 @@ export class Camera {
         return this.#d.camera.y;
     }
 
+    get zoom() {
+        return this.#d.camera.zoom;
+    }
+
     move(to, opts = {}) {
         const x = to.x ?? this.#d.camera.x;
         const y = to.y ?? this.#d.camera.y;
+        const zoom = to.zoom ?? this.#d.camera.zoom;
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
             throw new Error(`invalid camera position: ${JSON.stringify(to)}`);
+        }
+        if (!Number.isFinite(zoom) || zoom <= 0) {
+            throw new Error(`invalid camera zoom: ${JSON.stringify(to)}`);
         }
         if (this.#s.querying) {
             return true;
         }
-        this.#d.camera = { x, y };
+        this.#d.camera = { x, y, zoom };
         this.#s.rec.cameras.set(this.#d.id, {
             workspace: this.#d.id,
             x,
             y,
+            zoom,
             animate: opts.animate ?? true,
             velocity: Number.isFinite(opts.velocity) ? opts.velocity : 0,
         });
@@ -764,7 +773,7 @@ export class Session {
                 workingArea: freezeRect(info.view.workingArea),
                 scale: info.view.scale,
             };
-            d.camera = { x: info.camera.x, y: info.camera.y };
+            d.camera = { x: info.camera.x, y: info.camera.y, zoom: info.camera.zoom };
             d.config = Object.freeze({
                 gaps: info.config.gaps,
                 struts: Object.freeze({ ...info.config.struts }),

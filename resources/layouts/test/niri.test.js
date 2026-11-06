@@ -117,7 +117,7 @@ describe("opening windows", () => {
         const host = await load();
         const a = host.open();
         assert.deepEqual(host.rect(a), rect(0, 16, 616, 688));
-        assert.deepEqual(host.camera(), { x: -16, y: 0 });
+        assert.deepEqual(host.camera(), { x: -16, y: 0, zoom: 1 });
         assert.deepEqual(host.screenRect(a), rect(16, 16, 616, 688));
         assert.equal(host.focused(), a);
         assert.deepEqual(host.errors, []);
@@ -1396,7 +1396,7 @@ describe("workspaces and monitors", () => {
         assert.deepEqual(host.rect(b), rect(0, 16, 616, 688));
         assert.deepEqual(columnsOf(host, w0), [[a]]);
         assert.deepEqual(columnsOf(host, w1), [[b]]);
-        assert.deepEqual(host.camera(w1), { x: -16, y: 0 });
+        assert.deepEqual(host.camera(w1), { x: -16, y: 0, zoom: 1 });
     });
 
     test("move-column-to-workspace-down takes the column and focus along", async () => {
