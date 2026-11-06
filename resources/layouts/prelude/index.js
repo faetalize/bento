@@ -522,7 +522,13 @@ function deliver(event) {
         case "pointer": {
             const node = session.log.nodes.get(event.node);
             if (node !== undefined) {
-                dispatchPointer(node, event);
+                // A press is when the engine can begin a move or resize with the pointer.
+                session.pressing = event.event === "pointerdown";
+                try {
+                    dispatchPointer(node, event);
+                } finally {
+                    session.pressing = false;
+                }
             }
             return null;
         }

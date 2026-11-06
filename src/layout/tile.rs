@@ -4,6 +4,7 @@ use std::rc::Rc;
 use niri_config::utils::MergeWith as _;
 use niri_config::{Color, CornerRadius, GradientInterpolation};
 use niri_ipc::WindowLayout;
+use serde::{Deserialize, Serialize};
 use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
@@ -50,6 +51,26 @@ pub(super) struct PendingMove {
     pub between_workspaces: bool,
 }
 
+/// Which of bento's decorations around a window are drawn: a tiling layout turns them off to draw
+/// its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Decorations {
+    pub border: bool,
+    pub focus_ring: bool,
+    pub shadow: bool,
+}
+
+impl Default for Decorations {
+    fn default() -> Self {
+        Self {
+            border: true,
+            focus_ring: true,
+            shadow: true,
+        }
+    }
+}
+
 /// Toplevel window with decorations.
 #[derive(Debug)]
 pub struct Tile<W: LayoutElement> {
@@ -64,6 +85,9 @@ pub struct Tile<W: LayoutElement> {
 
     /// The shadow around the window.
     shadow: Shadow,
+
+    /// What the tiling layout turned off of the border, focus ring and shadow.
+    pub(super) decorations: Decorations,
 
     /// This tile's current sizing mode.
     ///
@@ -228,6 +252,7 @@ impl<W: LayoutElement> Tile<W> {
             border: FocusRing::new(border_config.into()),
             focus_ring: FocusRing::new(focus_ring_config),
             shadow: Shadow::new(shadow_config),
+            decorations: Decorations::default(),
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), fullscreen_backdrop_color),
             restore_to_floating: false,
@@ -267,12 +292,21 @@ impl<W: LayoutElement> Tile<W> {
         self.fullscreen_backdrop
             .set_color(self.options.layout.fullscreen_backdrop_color);
 
+        self.update_decoration_config();
+
+        self.window.update_config(self.options.blur);
+    }
+
+    /// Sets the border, focus ring and shadow from the options and the window's rules, less what
+    /// the tiling layout turned off.
+    fn update_decoration_config(&mut self) {
         let round_max1 = |logical| round_logical_in_physical_max1(self.scale, logical);
 
         let rules = self.window.rules();
 
         let mut border_config = self.options.layout.border.merged_with(&rules.border);
         border_config.width = round_max1(border_config.width);
+        border_config.off |= !self.decorations.border;
         self.border.update_config(border_config.into());
 
         let mut focus_ring_config = self
@@ -281,12 +315,21 @@ impl<W: LayoutElement> Tile<W> {
             .focus_ring
             .merged_with(&rules.focus_ring);
         focus_ring_config.width = round_max1(focus_ring_config.width);
+        focus_ring_config.off |= !self.decorations.focus_ring;
         self.focus_ring.update_config(focus_ring_config);
 
-        let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
+        let mut shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
+        shadow_config.on &= self.decorations.shadow;
         self.shadow.update_config(shadow_config);
+    }
 
-        self.window.update_config(self.options.blur);
+    /// Turns the border, focus ring and shadow on or off. Returns whether the border changed,
+    /// which changes how large the window is within the tile.
+    pub(super) fn set_decorations(&mut self, decorations: Decorations) -> bool {
+        let border_changed = self.decorations.border != decorations.border;
+        self.decorations = decorations;
+        self.update_decoration_config();
+        border_changed
     }
 
     pub fn update_shaders(&mut self) {
@@ -418,23 +461,7 @@ impl<W: LayoutElement> Tile<W> {
             }
         }
 
-        let round_max1 = |logical| round_logical_in_physical_max1(self.scale, logical);
-
-        let rules = self.window.rules();
-        let mut border_config = self.options.layout.border.merged_with(&rules.border);
-        border_config.width = round_max1(border_config.width);
-        self.border.update_config(border_config.into());
-
-        let mut focus_ring_config = self
-            .options
-            .layout
-            .focus_ring
-            .merged_with(&rules.focus_ring);
-        focus_ring_config.width = round_max1(focus_ring_config.width);
-        self.focus_ring.update_config(focus_ring_config);
-
-        let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
-        self.shadow.update_config(shadow_config);
+        self.update_decoration_config();
 
         let window_size = self.window_size();
         let radius = self

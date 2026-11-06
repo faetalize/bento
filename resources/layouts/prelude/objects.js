@@ -36,6 +36,12 @@ function freezeRect(rect) {
     return Object.freeze(copyRect(rect));
 }
 
+const NO_BORDERS = Object.freeze({ w: 0, h: 0 });
+
+function freezeDecorations(d) {
+    return Object.freeze({ border: d.border, focusRing: d.focusRing, shadow: d.shadow });
+}
+
 function copyJson(value) {
     return value === undefined ? null : JSON.parse(JSON.stringify(value));
 }
@@ -50,6 +56,10 @@ class Recorder {
         /** Windows whose rect, visibility or mode changed, with whether to animate. */
         this.placed = new Map();
         this.data = new Set();
+        /** Windows whose decorations changed. */
+        this.decorations = new Set();
+        /** The pointer move or resize that the engine began, which bento starts. */
+        this.grab = null;
         /** Workspace id to the id of the window that has its focus. */
         this.focus = new Map();
         this.cameras = new Map();
@@ -379,6 +389,10 @@ export class Window extends EventTarget {
         return this.#d.data;
     }
 
+    get decorations() {
+        return this.#d.decorations;
+    }
+
     /** Throws if the window is gone from the engine, or was never in it. */
     #check() {
         if (this.#s.windows.get(this.#d.id) !== this.#d) {
@@ -471,6 +485,48 @@ export class Window extends EventTarget {
         this.#d.data = copy;
         this.#s.rec.data.add(this.#d.id);
     }
+
+    beginMove() {
+        this.#check();
+        return this.#s.beginGrab({ kind: "move", window: this.#d.id });
+    }
+
+    beginResize(edges) {
+        this.#check();
+        if (edges === null || typeof edges !== "object") {
+            throw new TypeError("the edges to resize from must be an object");
+        }
+        const picked = { left: !!edges.left, right: !!edges.right, top: !!edges.top, bottom: !!edges.bottom };
+        if (!Object.values(picked).some(Boolean)) {
+            return false;
+        }
+        return this.#s.beginGrab({ kind: "resize", window: this.#d.id, edges: picked });
+    }
+
+    setDecorations(decorations) {
+        this.#check();
+        if (decorations === null || typeof decorations !== "object") {
+            throw new TypeError("decorations must be an object");
+        }
+        const d = this.#d;
+        const next = { ...d.decorations };
+        for (const name of ["border", "focusRing", "shadow"]) {
+            if (decorations[name] === undefined) {
+                continue;
+            }
+            if (typeof decorations[name] !== "boolean") {
+                throw new TypeError(`\`${name}\` must be a boolean`);
+            }
+            next[name] = decorations[name];
+        }
+        if (this.#s.querying || JSON.stringify(next) === JSON.stringify(d.decorations)) {
+            return;
+        }
+        d.decorations = freezeDecorations(next);
+        // The border is part of the window's rect, so its size is what changes with it.
+        d.borders = next.border ? d.borderSize : NO_BORDERS;
+        this.#s.rec.decorations.add(d.id);
+    }
 }
 
 /** What `create(bento)` receives. */
@@ -561,6 +617,8 @@ export class Session {
         this.windows = new Map();
         this.groups = new GroupSet(this);
         this.focusedMonitor = null;
+        /** Whether a pointer press is being delivered, which is when a move or resize can begin. */
+        this.pressing = false;
         this.stateProvider = null;
         this.savedState = savedState ?? null;
         this.setOptions(given);
@@ -647,6 +705,15 @@ export class Session {
         }
     }
 
+    /** Records a pointer move or resize for bento to start. Only a press being delivered can begin one. */
+    beginGrab(grab) {
+        if (!this.pressing || this.querying || this.rec.grab !== null) {
+            return false;
+        }
+        this.rec.grab = grab;
+        return true;
+    }
+
     focusWindow(ws, id) {
         if (ws.focused !== id) {
             ws.focused = id;
@@ -701,6 +768,9 @@ export class Session {
         d.minSize = freezeSize(info.minSize);
         d.maxSize = freezeSize(info.maxSize);
         d.borders = freezeSize(info.borders);
+        d.decorations = freezeDecorations(info.decorations);
+        // The border's size while it's on, to give `borders` back when the engine turns it on.
+        d.borderSize = d.decorations.border ? d.borders : (d.borderSize ?? NO_BORDERS);
         d.mode = info.mode;
         d.urgent = info.urgent;
         d.rules = Object.freeze({ ...info.rules });
@@ -904,6 +974,7 @@ export class Session {
         detachNode(d.node);
         this.rec.placed.delete(d.id);
         this.rec.data.delete(d.id);
+        this.rec.decorations.delete(d.id);
     }
 
     /** What the engine did since the last call, as bento reads it. */
@@ -927,6 +998,13 @@ export class Session {
         const data = [...rec.data].filter((id) => this.windows.has(id));
         if (data.length > 0) {
             out.data = data.map((id) => [id, this.windows.get(id).data]);
+        }
+        const decorations = [...rec.decorations].filter((id) => this.windows.has(id));
+        if (decorations.length > 0) {
+            out.decorations = decorations.map((id) => [id, this.windows.get(id).decorations]);
+        }
+        if (rec.grab !== null) {
+            out.grab = rec.grab;
         }
         if (rec.focus.size > 0) {
             out.focus = [...rec.focus];

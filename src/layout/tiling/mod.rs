@@ -28,7 +28,7 @@ use self::protocol::{
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
 use super::surfaces::{Drawn, NodeTransform, RenderItem, SurfaceRenderElement, Tree, WindowSlot};
-use super::tile::{PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
+use super::tile::{Decorations, PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::InteractiveResize;
 use super::{
     ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, LayoutElementRenderElement,
@@ -620,6 +620,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 w: borders,
                 h: tile.tile_height_for_window_height(0.),
             },
+            decorations: tile.decorations,
             mode: mode_of(win.pending_sizing_mode()),
             urgent: win.is_urgent(),
             rules: engine::rules_json(&win.rules().engine),
@@ -719,6 +720,33 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub(super) fn set_window_data(&mut self, id: u64, value: Value, layout_name: &str) {
         if let Some(idx) = self.idx_of_layout_id(id) {
             self.tiles[idx].layout_data = Some((layout_name.to_owned(), value));
+        }
+    }
+
+    /// Turns the border, focus ring and shadow around a window on or off, as the layout says.
+    pub(super) fn set_decorations(&mut self, id: u64, decorations: Decorations) {
+        let Some(idx) = self.idx_of_layout_id(id) else {
+            return;
+        };
+
+        let tile = &mut self.tiles[idx];
+        if !tile.set_decorations(decorations) {
+            return;
+        }
+
+        // The border is part of the size that the window is asked for, so with it gone or back
+        // the window is asked again, even if the layout places it where it already is.
+        let data = &self.data[idx];
+        if let (Some(rect), Mode::Normal) = (data.rect, data.mode) {
+            tile.request_tile_size(rect.size, true, None);
+        }
+    }
+
+    /// Turns bento's border, focus ring and shadow back on around every window.
+    pub(super) fn reset_decorations(&mut self) {
+        let ids: Vec<u64> = self.data.iter().map(|data| data.id).collect();
+        for id in ids {
+            self.set_decorations(id, Decorations::default());
         }
     }
 
@@ -1022,6 +1050,9 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             self.tree.remove_window(data.id);
             tile.engine_workspace = None;
+            // What the layout turned off around the window is its own drawing's business, which
+            // the window leaves.
+            tile.set_decorations(Decorations::default());
             host::queue_with_transaction(
                 json!({ "type": "windowremove", "id": data.id, "reason": reason }),
                 transaction,
@@ -1657,6 +1688,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
         let active = self.active;
         for (tile, data) in zip(&mut self.tiles, &self.data) {
+            let decorations = tile.decorations;
             let win = tile.window_mut();
 
             win.set_floating(false);
@@ -1674,7 +1706,8 @@ impl<W: LayoutElement> TilingSpace<W> {
                 .map(|resize| resize.data);
             win.set_interactive_resize(resize_data);
 
-            let border = self.options.layout.border.merged_with(&win.rules().border);
+            let mut border = self.options.layout.border.merged_with(&win.rules().border);
+            border.off |= !decorations.border;
             let gaps = self.options.layout.gaps;
             win.set_bounds(toplevel_bounds(border, self.working_area.size, gaps));
 

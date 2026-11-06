@@ -606,12 +606,22 @@ export interface Window extends EventTarget<WindowEvents> {
      * Starts moving it with the pointer, like dragging a title bar the engine draws. Only from a
      * `pointerdown` listener, with the button still held; bento runs the move as when it starts
      * one, and the window leaves the engine with reason `"drag"` and comes back with `"drop"`.
-     * Returns false outside a press.
+     * The press belongs to the move from then on: the node gets no `pointerup` or `click` for it.
+     * Returns false outside a press, and when the press began a move or resize already.
      */
     beginMove(): boolean;
-    /** Starts resizing it from `edges` with the pointer, like `beginMove`; `resizebegin` follows. */
+    /**
+     * Starts resizing it from `edges` with the pointer, like `beginMove`; `resizebegin` follows,
+     * and bento refuses the resize like any other if no listener takes it. Returns false for no
+     * edge at all.
+     */
     beginResize(edges: Edges): boolean;
-    /** Turns bento's border, focus ring and shadow around it on or off; all on by default. */
+    /**
+     * Turns bento's border, focus ring and shadow around it on or off; all on by default. Without
+     * the border the window takes the whole of its rect, and `borders` is 0. They come back on
+     * when the window leaves the engine, and when a new instance of the engine starts, since what
+     * the engine drew in their place is gone too.
+     */
     setDecorations(decorations: { border?: boolean; focusRing?: boolean; shadow?: boolean }): void;
     readonly decorations: { readonly border: boolean; readonly focusRing: boolean; readonly shadow: boolean };
 }
