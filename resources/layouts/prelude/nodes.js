@@ -11,8 +11,9 @@
 //
 // Ids are "n<number>" for nodes the engine creates, "w<window id>" for window nodes and
 // "r<workspace id>" for the root of a workspace's tree. bento creates window nodes and roots
-// itself, so the ops never create them. The field of a search is a created node, of kind "search". Only nodes that are in a workspace's tree are known to
-// bento, and a node that's taken out of one is forgotten, and created again when it comes back.
+// itself, so the ops never create them. The field of a search is a created node, of kind "search".
+// Only nodes that are in a workspace's tree are known to bento, and a node that's taken out of one
+// is forgotten, and created again when it comes back.
 
 import { BentoEvent, EventTarget, dispatch, isPropagationStopped } from "./events.js";
 
