@@ -524,6 +524,31 @@ test("a move that bento refuses comes back as a move event", () => {
     assert.equal(h.windows.get(a).workspace, h.workspace(0).id);
 });
 
+test("a window's node can't go into another workspace's tree", () => {
+    let tried = null;
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("action", (e) => {
+                const other = bento.monitors[0].workspaces[1];
+                try {
+                    other.tree.append(e.window.node);
+                    tried = "appended";
+                } catch (error) {
+                    tried = String(error.message);
+                }
+            });
+        },
+        {},
+        { actions: { steal: {} } },
+    );
+    const a = h.open();
+    h.action("steal");
+    assert.match(tried, /moveTo/);
+    assert.equal(h.windows.get(a).workspace, h.workspace(0).id);
+    assert.deepEqual(h.stacking(h.workspace(0).id), [a]);
+});
+
 test("workspaces can be shown, renamed and moved", () => {
     const h = host(
         (bento) => {

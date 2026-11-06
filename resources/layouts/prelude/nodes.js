@@ -175,6 +175,9 @@ export class Node extends EventTarget {
         if (!live && child.#hasWindows()) {
             throw new Error("a window's node can only be in a workspace's tree");
         }
+        if (child.#hasWindows() && this.#root() !== child.#root()) {
+            throw new Error("a window's node stays in its workspace's tree; move the window with moveTo");
+        }
 
         const old = child.#parent;
         if (old !== null) {
@@ -218,11 +221,15 @@ export class Node extends EventTarget {
 
     /** Whether the node is in a workspace's tree. */
     #isLive() {
+        return this.#root().#kind === "root";
+    }
+
+    #root() {
         let node = this;
         while (node.#parent !== null) {
             node = node.#parent;
         }
-        return node.#kind === "root";
+        return node;
     }
 
     #hasWindows() {
