@@ -17,6 +17,7 @@ import {
     isRect,
     windowsOf,
 } from "./nodes.js";
+import { SearchSlot } from "./search.js";
 
 const SIZING_MODES = ["normal", "fullscreen", "maximized"];
 
@@ -610,6 +611,14 @@ export class Bento extends EventTarget {
         return this.#s.groups.create(windows, active);
     }
 
+    search(scope) {
+        return this.#s.search.start(scope);
+    }
+
+    get searching() {
+        return this.#s.search.facade;
+    }
+
     exposeState(provider) {
         if (typeof provider !== "function") {
             throw new TypeError("the state provider must be a function");
@@ -712,6 +721,7 @@ export class Session {
         this.workspaces = new Map();
         this.windows = new Map();
         this.groups = new GroupSet(this);
+        this.search = new SearchSlot(this);
         this.focusedMonitor = null;
         /** Whether a pointer press is being delivered, which is when a move or resize can begin. */
         this.pressing = false;
@@ -829,6 +839,18 @@ export class Session {
             for (const call of fire) {
                 call();
             }
+        }
+    }
+
+    /** Fires `change` for the search when its query or matches changed since listeners were told. */
+    fireSearchChanges() {
+        // Bounded, so listeners that keep changing the matches can't hang the call.
+        for (let i = 0; i < 8; i++) {
+            const fire = this.search.announce();
+            if (fire === null) {
+                return;
+            }
+            fire();
         }
     }
 
@@ -995,6 +1017,9 @@ export class Session {
 
         if (sync.groups !== undefined) {
             this.groups.apply(sync.groups);
+        }
+        if (sync.search !== undefined) {
+            this.search.apply(sync.search);
         }
 
         if ("focusedMonitor" in sync) {

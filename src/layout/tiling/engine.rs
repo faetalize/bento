@@ -49,6 +49,10 @@ const PRELUDE_MODULES: &[(&str, &str)] = &[
         include_str!("../../../resources/layouts/prelude/objects.js"),
     ),
     (
+        "bento:prelude/search.js",
+        include_str!("../../../resources/layouts/prelude/search.js"),
+    ),
+    (
         "bento:prelude/v1.js",
         include_str!("../../../resources/layouts/prelude/v1.js"),
     ),

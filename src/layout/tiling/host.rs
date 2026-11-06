@@ -21,8 +21,8 @@ use serde_json::{json, Value};
 use smithay::utils::{Logical, Point, Rectangle};
 
 use super::protocol::{
-    CameraChange, Grab, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SyncInfo,
-    TimerStart, TreeOp, Verdict, Wh, WindowChange, Xy,
+    CameraChange, Grab, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SearchInfo,
+    SyncInfo, TimerStart, TreeOp, Verdict, Wh, WindowChange, Xy,
 };
 use super::{engine, TilingSpace};
 use crate::layout::monitor::InsertWorkspace;
@@ -241,6 +241,8 @@ pub struct Host {
     /// Every group, as the layout was last told. It hears about all of them at once, since there
     /// are few.
     groups: Option<Vec<GroupInfo>>,
+    /// The search, as the layout was last told: it only hears about what changed.
+    search: Option<SearchInfo>,
     focused_monitor: Option<String>,
     options: Option<Value>,
     /// What to tell the layout about again, because it changed it and bento may not agree.
@@ -279,6 +281,7 @@ impl Host {
         self.workspaces.clear();
         self.windows.clear();
         self.groups = None;
+        self.search = None;
         self.focused_monitor = None;
         self.options = None;
         self.resend_all = false;
@@ -475,10 +478,36 @@ impl<W: LayoutElement> Layout<W> {
             .collect()
     }
 
+    /// What the layout is told about the running search.
+    fn search_info(&self) -> Option<SearchInfo> {
+        let search = self.search.as_ref()?;
+        Some(SearchInfo {
+            query: search.field().text().to_owned(),
+            hits: search
+                .hits()
+                .iter()
+                .map(|hit| (hit.window, hit.rank as u8))
+                .collect(),
+        })
+    }
+
+    /// Ends the running search, telling the layout, which answers with the window it picked when
+    /// asked to. The layout hears the latest matches before the search ends, since Enter picks
+    /// from them.
+    pub(in crate::layout) fn end_search(&mut self, pick: bool) -> Option<W::Id> {
+        self.search.as_ref()?;
+        let result = self.engine_event(json!({ "type": "searchend", "pick": pick }));
+        self.search = None;
+        let picked = result?["picked"].as_u64()?;
+        self.window_by_engine_id(picked)
+    }
+
     /// What changed since the layout was last told, for the events that are about to go to it.
     fn build_sync(&mut self, queued: &[Queued]) -> SyncInfo {
         let snapshot = self.snapshot(false);
         let groups = self.group_infos();
+        let search = self.search_info();
+        let keyboard_available = self.keyboard_available();
         let host = &mut self.host;
         let mut sync = SyncInfo::default();
         let resend_all = std::mem::take(&mut host.resend_all);
@@ -573,6 +602,11 @@ impl<W: LayoutElement> Layout<W> {
             sync.groups = Some(groups);
         }
 
+        if host.search != search {
+            sync.search = search.clone();
+            host.search = search;
+        }
+
         sync.focus_changed = host.focused_monitor != snapshot.focused_monitor;
         host.focused_monitor = snapshot.focused_monitor.clone();
         sync.focused_monitor = snapshot.focused_monitor;
@@ -583,10 +617,9 @@ impl<W: LayoutElement> Layout<W> {
             sync.options = Some(options);
         }
 
-        let available = host.keyboard_owner == KeyboardOwner::Layout;
-        if host.keyboard_told != Some(available) {
-            host.keyboard_told = Some(available);
-            sync.keyboard_available = Some(available);
+        if host.keyboard_told != Some(keyboard_available) {
+            host.keyboard_told = Some(keyboard_available);
+            sync.keyboard_available = Some(keyboard_available);
         }
 
         sync
@@ -606,9 +639,10 @@ impl<W: LayoutElement> Layout<W> {
             return false;
         }
 
-        // The new instance starts from the session as it is.
+        // The new instance starts from the session as it is, with no search.
         take_queue();
         self.host.reset();
+        self.forget_search();
         self.host.generation = generation;
 
         // What the previous instance turned off around windows comes back on, since what it drew
@@ -653,7 +687,7 @@ impl<W: LayoutElement> Layout<W> {
         sync.workspaces = snapshot.workspaces;
         sync.groups = Some(groups);
         sync.focused_monitor = snapshot.focused_monitor;
-        let available = self.host.keyboard_owner == KeyboardOwner::Layout;
+        let available = self.keyboard_available();
         self.host.keyboard_told = Some(available);
         sync.keyboard_available = Some(available);
         self.host.modifiers_told = self.host.modifiers;
@@ -697,6 +731,7 @@ impl<W: LayoutElement> Layout<W> {
     fn flush_rounds(&mut self) {
         for _ in 0..MAX_ROUNDS {
             self.prune_groups();
+            self.refresh_search();
             if !self.ensure_engine() {
                 take_queue();
                 break;
@@ -731,6 +766,7 @@ impl<W: LayoutElement> Layout<W> {
             ws.scrolling_mut().place_unplaced();
             ws.scrolling_mut().stack_by_tree();
         }
+        self.sync_search_field();
     }
 
     /// Sends an event to the layout, with what changed before it, and carries out the answer.
@@ -943,6 +979,8 @@ impl<W: LayoutElement> Layout<W> {
                 self.groups.activate(group, window);
             }
             Op::DissolveGroup { group } => self.groups.dissolve(group),
+            Op::Search { scope } => self.start_search(scope),
+            Op::EndSearch => self.forget_search(),
         }
     }
 
@@ -1203,9 +1241,20 @@ impl<W: LayoutElement> Layout<W> {
         self.flush_engine();
     }
 
+    /// Whether the layout can take the keyboard: its windows have the focus, and no search has
+    /// the keys, since the keyboard has one owner at a time.
+    fn keyboard_available(&self) -> bool {
+        self.host.keyboard_owner == KeyboardOwner::Layout && !self.search_active()
+    }
+
     /// The layout takes the keyboard, if the layout's windows have the focus.
     fn take_keyboard(&mut self) {
         if self.host.keyboard_grabbed {
+            return;
+        }
+        // A search that has the keys keeps them.
+        if self.search_active() {
+            self.queue_keyboard_release(KeyboardRelease::Focus);
             return;
         }
         match self.host.keyboard_owner {
@@ -1216,7 +1265,7 @@ impl<W: LayoutElement> Layout<W> {
         }
     }
 
-    fn queue_keyboard_release(&mut self, why: KeyboardRelease) {
+    pub(in crate::layout) fn queue_keyboard_release(&mut self, why: KeyboardRelease) {
         self.host.keyboard_grabbed = false;
         queue_unsilenced(json!({ "type": "keyboardrelease", "reason": why.reason() }));
     }

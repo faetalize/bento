@@ -70,6 +70,7 @@ pub mod pick_window_grab;
 pub mod resize_grab;
 pub mod scroll_swipe_gesture;
 pub mod scroll_tracker;
+mod search_keys;
 pub mod spatial_movement_grab;
 pub mod swipe_tracker;
 pub mod touch_overview_grab;
@@ -483,7 +484,9 @@ impl State {
             self.hide_cursor_if_needed();
         }
 
-        let is_inhibiting_shortcuts = self.is_inhibiting_shortcuts();
+        // While a search runs, the keyboard goes to its field, which inhibits shortcuts.
+        let is_searching = self.niri.search_takes_keys();
+        let is_inhibiting_shortcuts = self.is_inhibiting_shortcuts() || is_searching;
 
         // While the layout engine holds the keyboard, the filter counts it as inhibiting shortcuts,
         // see `engine_grab`. The lock screen takes the keyboard from the engine right away.
@@ -730,6 +733,11 @@ impl State {
                     )
                 };
 
+                let res = if is_searching {
+                    this.search_intercept_key(res, key_code, pressed, modified, raw, modifiers)
+                } else {
+                    res
+                };
                 let (res, to_engine) = engine_grab::route(
                     res,
                     engine_grabbed,

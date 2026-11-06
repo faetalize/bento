@@ -657,12 +657,19 @@ export interface Camera {
 export interface Search extends EventTarget<SearchEvents> {
     readonly scope: Group | Workspace | null;
     readonly query: string;
-    /** The windows in scope that match the query, best match first; all of them for no query. */
+    /**
+     * The windows in scope that match the query, best match first; all of them for no query.
+     * Windows that match equally well are in the engine's order: that of `Group.windows`,
+     * `Workspace.windows` or `Bento.windows`.
+     */
     readonly matches: readonly Window[];
     /**
      * The field people type in, a node of kind `"search"` that bento draws: the query, its caret
      * and selection, and a placeholder. The engine adds it to a tree and sets its `rect`, `font`,
-     * `color`, `background`, `border`, `cornerRadius` and the like.
+     * `color`, `background`, `border`, `cornerRadius` and the like. The text is left-aligned,
+     * inset from the node's edge by half a line, and scrolls to keep the caret in view; the
+     * caret and the selection take `color`, and the placeholder takes it dimmed. bento takes the
+     * field out of its tree when the search ends.
      */
     readonly field: Node;
     /** Ends it without picking a window. */

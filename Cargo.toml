@@ -107,6 +107,7 @@ smithay-drm-extras.workspace = true
 tracing-subscriber.workspace = true
 tracing.workspace = true
 tracy-client.workspace = true
+unicode-segmentation = "1.13"
 wayland-backend = "0.3"
 wayland-scanner = "0.31.11"
 wayland-server = "0.31.14"

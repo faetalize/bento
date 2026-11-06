@@ -11,8 +11,9 @@
 //
 // Ids are "n<number>" for nodes the engine creates, "w<window id>" for window nodes and
 // "r<workspace id>" for the root of a workspace's tree. bento creates window nodes and roots
-// itself, so the ops never create them. Only nodes that are in a workspace's tree are known to
-// bento, and a node that's taken out of one is forgotten, and created again when it comes back.
+// itself, so the ops never create them. The field of a search is a created node, of kind "search".
+// Only nodes that are in a workspace's tree are known to bento, and a node that's taken out of one
+// is forgotten, and created again when it comes back.
 
 import { BentoEvent, EventTarget, dispatch, isPropagationStopped } from "./events.js";
 
@@ -86,6 +87,9 @@ function checkProps(props, kind) {
         }
         checkProps(enter);
     }
+    if (props.placeholder !== undefined && typeof props.placeholder !== "string") {
+        throw new Error(`invalid placeholder: ${JSON.stringify(props.placeholder)}`);
+    }
 }
 
 /** The properties that `enter` can start from, which are the ones that can have a transition. */
@@ -99,7 +103,7 @@ function sameValue(a, b) {
     return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Something drawn on a workspace: a box, text, an image, or a window. */
+/** Something drawn on a workspace: a box, text, an image, a window, or a search's field. */
 export class Node extends EventTarget {
     #log;
     #id;
@@ -333,6 +337,11 @@ export function createNode(log, kind, props = {}) {
     }
     checkProps(props, kind);
     return new Node(log, `n${log.nextId++}`, kind, props, false);
+}
+
+/** The field of a search, which bento creates with the search. The engine puts it in a tree. */
+export function createSearchField(log) {
+    return new Node(log, `n${log.nextId++}`, "search", {}, false);
 }
 
 /** The root of a workspace's tree, which bento creates with the workspace. */

@@ -532,3 +532,26 @@ test("the modifiers held when the engine starts are what it reads", () => {
     h.setModifiers({});
     assert.deepEqual(log.at(-1), ["modifierschange", "", ""]);
 });
+
+test("a search takes the keyboard from the engine, and the engine can't take it during one", () => {
+    const log = [];
+    const h = new TestHost({
+        meta: { api: 2, name: "keys-and-search", actions: { "take-keys": {}, search: {} } },
+        default(bento) {
+            bento.addEventListener("keyboardrelease", (e) => log.push(["release", e.reason]));
+            bento.addEventListener("action", (e) => {
+                if (e.name === "take-keys") log.push(["take", bento.grabKeyboard()]);
+                if (e.name === "search") log.push(["search", bento.search(null) !== null]);
+            });
+        },
+    });
+    h.action("take-keys");
+    h.action("search");
+    h.action("take-keys");
+    assert.deepEqual(log, [
+        ["take", true],
+        ["search", true],
+        ["release", "focus"],
+        ["take", false],
+    ]);
+});

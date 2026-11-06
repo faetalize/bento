@@ -82,6 +82,7 @@ pub mod focus_ring;
 pub mod groups;
 pub mod monitor;
 pub mod opening_window;
+pub mod search;
 pub mod shadow;
 pub mod surfaces;
 pub mod tile;
@@ -385,6 +386,8 @@ pub struct Layout<W: LayoutElement> {
     options: Rc<Options>,
     /// Windows grouped together.
     groups: Groups,
+    /// The running search of windows, which has the keyboard.
+    search: Option<search::Search>,
     /// The tiling layout engine's view of the session.
     host: Host,
 }
@@ -774,6 +777,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_progress: None,
             options: Rc::new(options),
             groups: Groups::default(),
+            search: None,
             host: Host::default(),
         };
         // The layout engine sees the session from the start, so that it can answer queries.
@@ -805,6 +809,7 @@ impl<W: LayoutElement> Layout<W> {
             overview_progress: None,
             options: opts,
             groups: Groups::default(),
+            search: None,
             host: Host::default(),
         };
         tiling::engine::ensure_loaded(&layout.options.tiling);
@@ -2350,6 +2355,13 @@ impl<W: LayoutElement> Layout<W> {
                 assert!(grouped.insert(*window), "a window is in one group at most");
             }
         }
+
+        if let Some(search) = &self.search {
+            let mut matched = HashSet::new();
+            for hit in search.hits() {
+                assert!(matched.insert(hit.window), "a window matches a search once");
+            }
+        }
     }
 
     pub fn advance_animations(&mut self) {
@@ -3517,11 +3529,11 @@ impl<W: LayoutElement> Layout<W> {
 
         // A tile that the layout draws moved, scaled or zoomed is grabbed where it's drawn.
         let pos_within_workspace = (start_pos_within_output - ws_geo.loc).downscale(zoom);
-        let pointer_offset_within_window = match ws.pos_within_tile(&window_id, pos_within_workspace)
-        {
-            Some(pos_within_tile) => (pos_within_tile - window_offset).upscale(zoom),
-            None => start_pos_within_output - tile_pos - window_offset.upscale(zoom),
-        };
+        let pointer_offset_within_window =
+            match ws.pos_within_tile(&window_id, pos_within_workspace) {
+                Some(pos_within_tile) => (pos_within_tile - window_offset).upscale(zoom),
+                None => start_pos_within_output - tile_pos - window_offset.upscale(zoom),
+            };
         let window_size = tile.window_size().upscale(zoom);
         let pointer_ratio_within_window = (
             f64::clamp(pointer_offset_within_window.x / window_size.w, 0., 1.),

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::layout::search::Scope;
 use crate::layout::tile::Decorations;
 use crate::utils::ResizeEdge;
 
@@ -178,6 +179,14 @@ pub struct GroupInfo {
     pub active: u64,
 }
 
+/// What bento tells the layout about the running search.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SearchInfo {
+    pub query: String,
+    /// The windows that match the query, with how well: `(window, rank)`, the greater the better.
+    pub hits: Vec<(u64, u8)>,
+}
+
 /// What changed about the session since the layout was last told, which the prelude applies
 /// before it handles an event.
 #[derive(Debug, Default, Serialize)]
@@ -191,6 +200,9 @@ pub struct SyncInfo {
     /// Every group, when they changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<GroupInfo>>,
+    /// The running search, when its query or matches changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchInfo>,
     /// Name of the monitor with keyboard focus.
     pub focused_monitor: Option<String>,
     /// The layout's options, when they changed.
@@ -213,6 +225,7 @@ impl SyncInfo {
             && self.removed_workspaces.is_empty()
             && self.windows.is_empty()
             && self.groups.is_none()
+            && self.search.is_none()
             && self.options.is_none()
             && self.keyboard_available.is_none()
             && !self.focus_changed
@@ -326,6 +339,11 @@ pub enum Op {
     DissolveGroup {
         group: u64,
     },
+    Search {
+        scope: Scope,
+    },
+    /// The layout ended its search, which it was told about already.
+    EndSearch,
 }
 
 /// A move or resize with the pointer that the layout asks for, from a press on one of its nodes.
@@ -409,4 +427,53 @@ pub struct Verdict {
     /// Whether any listener took the event on, for events that are refused otherwise.
     #[serde(default)]
     pub handled: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn the_layout_starts_and_ends_searches() {
+        let op = |value| serde_json::from_value::<Op>(value).unwrap();
+
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "all" } })),
+            Op::Search { scope: Scope::All }
+        ));
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "workspace", "id": 4 } })),
+            Op::Search {
+                scope: Scope::Workspace { id: 4 }
+            }
+        ));
+        assert!(matches!(
+            op(json!({ "op": "search", "scope": { "kind": "group", "id": 3 } })),
+            Op::Search {
+                scope: Scope::Group { id: 3 }
+            }
+        ));
+        assert!(matches!(op(json!({ "op": "endSearch" })), Op::EndSearch));
+    }
+
+    #[test]
+    fn the_layout_is_told_the_query_and_how_well_windows_match() {
+        let sync = SyncInfo {
+            search: Some(SearchInfo {
+                query: String::from("fire"),
+                hits: vec![(3, 4), (1, 3)],
+            }),
+            ..SyncInfo::default()
+        };
+        assert!(!sync.is_empty());
+        assert_eq!(
+            serde_json::to_value(&sync).unwrap()["search"],
+            json!({ "query": "fire", "hits": [[3, 4], [1, 3]] })
+        );
+
+        // A sync without one leaves it out.
+        assert!(serde_json::to_value(SyncInfo::default()).unwrap()["search"].is_null());
+    }
 }

@@ -142,6 +142,7 @@ pub struct Update {
     pub font: Option<String>,
     pub color: Option<Color>,
     pub image: Option<String>,
+    pub placeholder: Option<String>,
     pub interactive: Option<bool>,
     pub input: Option<Input>,
     pub transitions: Option<Transitions>,
@@ -167,6 +168,7 @@ impl TryFrom<Update> for Enter {
             image,
             interactive,
             input,
+            placeholder,
             transitions,
             enter,
         } = update;
@@ -179,6 +181,7 @@ impl TryFrom<Update> for Enter {
             || image.is_some()
             || interactive.is_some()
             || input.is_some()
+            || placeholder.is_some()
             || transitions.is_some()
             || enter.is_some();
         if others {
@@ -284,6 +287,7 @@ struct RawProps {
     font: Option<String>,
     color: Option<String>,
     image: Option<String>,
+    placeholder: Option<String>,
     interactive: Option<bool>,
     input: Option<Input>,
     transitions: Option<HashMap<String, RawTransition>>,
@@ -469,6 +473,7 @@ impl TryFrom<RawProps> for Update {
                 .map(|color| Color::from_hex(color).map_err(|err| format!("`color`: {err}")))
                 .transpose()?,
             image: raw.image,
+            placeholder: raw.placeholder,
             interactive: raw.interactive,
             input: raw.input,
             transitions: raw.transitions.map(Transitions::from_raw).transpose()?,
@@ -507,6 +512,7 @@ mod tests {
             "border": { "width": 2, "color": "#fff" },
             "interactive": true,
             "input": "engine",
+            "placeholder": "Search",
         }))
         .unwrap();
 
@@ -540,6 +546,7 @@ mod tests {
         );
         assert_eq!(update.interactive, Some(true));
         assert_eq!(update.input, Some(Input::Engine));
+        assert_eq!(update.placeholder.as_deref(), Some("Search"));
     }
 
     #[test]

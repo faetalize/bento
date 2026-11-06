@@ -1789,3 +1789,89 @@ fn an_enter_prop_that_is_not_a_transitioning_one_is_an_error() {
     assert!(err.contains("enter"), "{err}");
     assert!(!tree.contains("n1"));
 }
+
+// Search nodes.
+
+#[test]
+fn a_search_node_takes_its_own_props() {
+    let (mut tree, _) = tree();
+    apply(
+        &mut tree,
+        json!([
+            {
+                "op": "create", "id": "n1", "kind": "search",
+                "props": {
+                    "rect": props_rect(0., 0., 200., 30.),
+                    "font": "sans 14",
+                    "color": "#fff",
+                    "background": "#000",
+                    "border": { "width": 1, "color": "#888" },
+                    "cornerRadius": 6,
+                    "placeholder": "Search windows",
+                },
+            },
+            { "op": "append", "parent": "r1", "child": "n1" },
+        ]),
+    );
+    let node = &tree.nodes["n1"];
+    assert_eq!(node.kind, NodeKind::Search);
+    assert_eq!(node.placeholder, "Search windows");
+    assert_eq!(node.font, "sans 14");
+
+    set(&mut tree, "n1", json!({ "placeholder": "Find" }));
+    assert_eq!(tree.nodes["n1"].placeholder, "Find");
+}
+
+#[test]
+fn a_search_node_has_no_text_of_its_own_and_placeholders_are_for_search_nodes() {
+    let (mut tree, _) = tree();
+    let create = |kind: &str, props: Value| json!({ "op": "create", "id": "n1", "kind": kind, "props": props });
+
+    assert!(error(&mut tree, create("search", json!({ "text": "hi" }))).contains("only for text"));
+    assert!(
+        error(&mut tree, create("search", json!({ "image": "firefox" })))
+            .contains("only for image")
+    );
+    assert!(
+        error(&mut tree, create("box", json!({ "placeholder": "hi" }))).contains("only for search")
+    );
+    assert!(
+        error(&mut tree, create("text", json!({ "placeholder": "hi" })))
+            .contains("only for search")
+    );
+}
+
+#[test]
+fn the_tree_keeps_the_field_that_search_nodes_draw() {
+    let (mut tree, _) = tree();
+    assert!(tree.search.is_none());
+
+    let mut field = Field::default();
+    field.apply(&crate::layout::search::Edit::Insert("fire".into()));
+    tree.set_search_field(Some(&field));
+    assert_eq!(tree.search.as_ref().map(Field::text), Some("fire"));
+
+    // Starting over for a new engine leaves it, since it's bento's.
+    tree.reset([]);
+    assert_eq!(tree.search.as_ref().map(Field::text), Some("fire"));
+
+    tree.set_search_field(None);
+    assert!(tree.search.is_none());
+}
+
+#[test]
+fn search_nodes_take_the_pointer_like_other_nodes_when_interactive() {
+    let (mut tree, _) = tree();
+    apply(
+        &mut tree,
+        json!([
+            {
+                "op": "create", "id": "n1", "kind": "search",
+                "props": { "rect": props_rect(0., 0., 100., 20.), "interactive": true },
+            },
+            { "op": "append", "parent": "r1", "child": "n1" },
+        ]),
+    );
+    assert_eq!(tree.hit(point(10., 10.)).as_deref(), Some("n1"));
+    assert_eq!(tree.hit(point(10., 50.)), None);
+}

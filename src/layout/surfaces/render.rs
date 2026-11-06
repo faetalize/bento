@@ -15,7 +15,8 @@ use smithay::backend::renderer::Texture as _;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size};
 
 use super::props::Paint;
-use super::{icons, svg, Clip, Drawn, Node, NodeKind, WindowSlot};
+use super::{icons, search_field, svg, Clip, Drawn, Node, NodeKind, WindowSlot};
+use crate::layout::search::Field;
 use crate::niri_render_elements;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::memory::MemoryBuffer;
@@ -62,6 +63,8 @@ pub(super) struct Target<'a> {
     /// `location`.
     pub view: Rectangle<f64, Logical>,
     pub icon_theme: &'a str,
+    /// What the nodes of the running search draw.
+    pub search: Option<&'a Field>,
     pub has_border_shader: bool,
 }
 
@@ -89,6 +92,7 @@ pub(super) struct Visuals {
     image: Option<CachedImage>,
     fade: Group,
     clip: Group,
+    search: search_field::Cache,
 }
 
 /// How a node's subtree is drawn as one: for its opacity, or for its clip's rounded corners.
@@ -172,7 +176,7 @@ impl CachedText {
     }
 }
 
-fn emit<E>(
+pub(super) fn emit<E>(
     elem: E,
     crop: Option<Rectangle<i32, Physical>>,
     scale: f64,
@@ -404,8 +408,8 @@ fn draw_run<R: NiriRenderer>(
     emit(elem, target.crop, target.scale, &mut |item| out.push(item));
 }
 
-/// Draws a box, text or image node, with the opacity it has in its group. Window nodes only get a
-/// slot, from the caller.
+/// Draws a box, text, image or search node, with the opacity it has in its group. Window nodes
+/// only get a slot, from the caller.
 pub(super) fn draw<R: NiriRenderer>(
     renderer: &mut R,
     node: &Node,
@@ -413,7 +417,10 @@ pub(super) fn draw<R: NiriRenderer>(
     target: &Target,
     push: &mut dyn FnMut(RenderItem),
 ) {
-    if !matches!(node.kind, NodeKind::Box | NodeKind::Text | NodeKind::Image) {
+    if !matches!(
+        node.kind,
+        NodeKind::Box | NodeKind::Text | NodeKind::Image | NodeKind::Search
+    ) {
         return;
     }
 
@@ -463,6 +470,15 @@ pub(super) fn draw<R: NiriRenderer>(
     match node.kind {
         NodeKind::Text => draw_text(renderer, node, &mut visuals, drawn, target, crop, push),
         NodeKind::Image => draw_image(renderer, node, &mut visuals, drawn, target, crop, push),
+        NodeKind::Search => search_field::draw(
+            renderer,
+            node,
+            &mut visuals.search,
+            drawn,
+            target,
+            crop,
+            push,
+        ),
         _ => (),
     }
 
@@ -884,6 +900,7 @@ mod tests {
             view: Rectangle::from_size(Size::from((1280., 720.))),
             icon_theme: "hicolor",
             has_border_shader: false,
+            search: None,
         }
     }
 

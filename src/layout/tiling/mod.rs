@@ -2041,8 +2041,8 @@ impl TileMap {
         let pivot = tile_pos + rect.size.downscale(2.).to_point();
         let moved = Point::from((transform.x, transform.y));
 
-        // The zoom scales the view around its origin: `zoom * (pivot + scale * (p - pivot) + moved)`
-        // is a scale around the pivot, then a move.
+        // The zoom scales the view around its origin: `zoom * (pivot + scale * (p - pivot) +
+        // moved)` is a scale around the pivot, then a move.
         Self {
             pivot,
             scale: transform.scale * zoom,
@@ -2357,7 +2357,8 @@ mod tests {
         let tree = drawn(placed, NodeTransform::IDENTITY, Some(clip));
         let map = TileMap::new(&tree, placed, point(100., 50.), point(20., 10.), 0.5);
 
-        // The clip starts 80, 40 from the camera on the canvas, and is as large as the view shows it.
+        // The clip starts 80, 40 from the camera on the canvas, and is as large as the view shows
+        // it.
         assert_eq!(map.clip, Some((rect(40., 20., 100., 50.), 4.)));
         assert!(map.clip_contains(point(41., 21.)));
         assert!(!map.clip_contains(point(39., 21.)));

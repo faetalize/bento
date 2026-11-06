@@ -344,6 +344,12 @@ Grouping is bento's too. A group is a set of windows and which one is active; ho
 Engines can group windows too, and read the groups, through `bento.groups` and `bento.createGroup`.
 Floating windows can't be in a group, and a window that closes, floats or is dragged out leaves its group.
 
+Searching windows is bento's too. An engine starts a search over a group's windows, a workspace's, or every window with `bento.search`, and bento keeps the query, takes the typing, and matches it against the windows' titles and app ids: whole words first, then prefixes, then substrings, then letters in order, and not at all windows that don't match.
+While it runs the keyboard goes to the search's field, a node that bento draws and the engine places and styles, and apps get no keys; binds that can't be inhibited still run.
+Typing, Backspace, Delete, the arrow keys, Home, End, Shift for selecting, Ctrl+A, Ctrl+C, Ctrl+X and Ctrl+V work in it, and screen readers see it as a text input.
+Enter picks the best match, which reaches the engine as an `activaterequest` for that window, and Escape cancels.
+Text from an input method can't be typed into it yet.
+
 Run an engine's action from the command line with `layout-action`, followed by the action's name and any arguments:
 
 ```sh
@@ -450,6 +456,7 @@ In short:
 - **Objects** are what the engine reads and changes: monitors, their workspaces, windows, each workspace's camera, and groups. Properties are read-only, and every change is a method call that says whether it worked, like `win.place(rect)`, `win.focus()`, `win.moveTo(workspace)` or `workspace.camera.move({ x })`.
 - **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes and drags over a workspace, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
 - **Groups** are bento's own: a set of windows and which one is active. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
+- **Search** is bento's own: `bento.search(scope)` starts it, and the engine gets a `Search` with the query, the matching windows best first, and the field to place in a tree, and hears `change` and `end`.
 - **Nodes** are what the engine draws: boxes, text and images in a tree for each workspace, which also holds the windows. Tab bars, hints and drop targets are nodes. bento renders the tree and runs the transitions the engine describes, so no engine code runs per frame.
 - **State** can be exposed with `bento.exposeState`, so that the shell, bento Settings and scripts can read it through bento's socket, and `unload` can keep state for the next instance of the engine when it reloads.
 - **Timers and the keyboard**: `bento.setTimeout` calls back after a delay, between events, and ends with the engine. `bento.grabKeyboard()` takes the keyboard for a short interaction the person started, like picking a window by the letter it shows: keys come as `keydown` and `keyup` with their name, the text they type and the modifiers held, and apps get none until `releaseKeyboard()`, Escape (unless the engine prevents it), a click outside what the engine draws, the lock screen or keyboard focus moving elsewhere ends it, which `keyboardrelease` says. Outside a grab, an engine only hears `modifierschange`.

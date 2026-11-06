@@ -17,11 +17,12 @@ use serde_json::Value;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use self::animated::Animated;
-pub use self::props::{Input, NodeTransform};
 use self::props::{Border, Enter, Paint, Transitions, Update};
+pub use self::props::{Input, NodeTransform};
 use self::render::{GroupKind, Target, Visuals};
 pub use self::render::{RenderItem, SurfaceRenderElement};
 use crate::animation::Clock;
+use crate::layout::search::Field;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::utils::center_f64;
@@ -30,6 +31,7 @@ mod animated;
 mod icons;
 mod props;
 mod render;
+mod search_field;
 mod svg;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,6 +40,8 @@ enum NodeKind {
     Box,
     Text,
     Image,
+    /// The field of the running search, which bento draws.
+    Search,
     /// A window, by its id.
     Window(u64),
 }
@@ -48,6 +52,7 @@ enum CreateKind {
     Box,
     Text,
     Image,
+    Search,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +95,7 @@ struct Node {
     font: String,
     color: Color,
     image: Option<String>,
+    placeholder: String,
     interactive: bool,
     /// Where pointer input goes, for a window's node.
     input: Input,
@@ -236,7 +242,6 @@ impl Drawn {
     pub fn contains(&self, point: Point<f64, Logical>) -> bool {
         self.bounds().contains(point) && self.clip.is_none_or(|clip| clip.contains(point))
     }
-
 }
 
 impl Space {
@@ -321,6 +326,7 @@ impl Node {
             font: String::from("sans 11"),
             color: Color::from_rgba8_unpremul(255, 255, 255, 255),
             image: None,
+            placeholder: String::new(),
             interactive: false,
             input: Input::default(),
             transitions: Transitions::default(),
@@ -391,6 +397,9 @@ impl Node {
         }
         if let Some(image) = update.image {
             self.image = Some(image);
+        }
+        if let Some(placeholder) = update.placeholder {
+            self.placeholder = placeholder;
         }
         if let Some(interactive) = update.interactive {
             self.interactive = interactive;
@@ -472,17 +481,20 @@ fn check_props(kind: NodeKind, update: &Update) -> Result<(), String> {
     if update.text.is_some() && kind != NodeKind::Text {
         return only("text", "text");
     }
-    if update.font.is_some() && kind != NodeKind::Text {
-        return only("font", "text");
+    if update.font.is_some() && !matches!(kind, NodeKind::Text | NodeKind::Search) {
+        return only("font", "text and search");
     }
-    if update.color.is_some() && kind != NodeKind::Text {
-        return only("color", "text");
+    if update.color.is_some() && !matches!(kind, NodeKind::Text | NodeKind::Search) {
+        return only("color", "text and search");
     }
     if update.image.is_some() && kind != NodeKind::Image {
         return only("image", "image");
     }
     if update.input.is_some() && !matches!(kind, NodeKind::Window(_)) {
         return only("input", "window");
+    }
+    if update.placeholder.is_some() && kind != NodeKind::Search {
+        return only("placeholder", "search");
     }
     if (update.background.is_some() || update.border.is_some())
         && matches!(kind, NodeKind::Root | NodeKind::Window(_))
@@ -507,6 +519,8 @@ pub struct Tree {
     /// The nodes the pointer is on, innermost first.
     hovered: Vec<String>,
     icon_theme: String,
+    /// What the nodes of the running search draw.
+    search: Option<Field>,
     clock: Clock,
     animations: Animations,
 }
@@ -519,6 +533,7 @@ impl Tree {
             root,
             hovered: Vec::new(),
             icon_theme: String::from("hicolor"),
+            search: None,
             clock,
             animations,
         }
@@ -538,6 +553,13 @@ impl Tree {
         self.animations = animations;
     }
 
+    /// Sets the field that search nodes draw, or none while no search runs.
+    pub fn set_search_field(&mut self, field: Option<&Field>) {
+        if self.search.as_ref() != field {
+            self.search = field.cloned();
+        }
+    }
+
     /// Changes the icon theme that image nodes look icons up in.
     pub fn set_icon_theme(&mut self, theme: &str) {
         self.icon_theme = theme.to_owned();
@@ -546,7 +568,8 @@ impl Tree {
     /// Applies ops, in order:
     ///
     /// - `{"op":"create","id":"n4","kind":"box"|"text"|"image","props":{...}}` makes a node, which
-    ///   is drawn once it's added to the tree. Its `enter` prop is where it starts from then;
+    ///   is drawn once it's added to the tree. Its `enter` prop is where it starts from then. A
+    ///   `"search"` node draws bento's search field;
     /// - `{"op":"set","id":"n4","props":{...}}` changes properties, and those with a transition
     ///   animate;
     /// - `{"op":"append","parent":"r2","child":"n4","before":"w7"|null}` puts a node in the tree,
@@ -594,6 +617,7 @@ impl Tree {
             CreateKind::Box => NodeKind::Box,
             CreateKind::Text => NodeKind::Text,
             CreateKind::Image => NodeKind::Image,
+            CreateKind::Search => NodeKind::Search,
         };
         check_props(kind, &props)?;
 
@@ -973,6 +997,7 @@ impl Tree {
             scale,
             view: Rectangle::from_size(view_size),
             icon_theme: &self.icon_theme,
+            search: self.search.as_ref(),
             has_border_shader: BorderRenderElement::has_shader(renderer),
         };
 

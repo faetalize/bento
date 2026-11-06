@@ -474,6 +474,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracy-client",
+ "unicode-segmentation",
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",

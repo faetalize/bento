@@ -224,6 +224,7 @@ export function handle(callJson) {
                 session.fireFocusChanges(focus);
                 session.fireGroupChanges();
                 session.fireKeyboardRelease();
+                session.fireSearchChanges();
             }
         }
     } catch (e) {
@@ -487,6 +488,8 @@ function deliver(event) {
             );
             return null;
         }
+        case "searchend":
+            return { picked: session.search.end(event.pick) };
         case "action": {
             const window = event.window === null || event.window === undefined ? null : mustWindow(event.window);
             dispatch(

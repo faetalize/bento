@@ -38,6 +38,8 @@ struct TestWindowInner {
     animate_next_configure: Cell<bool>,
     animation_snapshot: RefCell<Option<LayoutElementRenderSnapshot>>,
     rules: ResolvedWindowRules,
+    title: RefCell<Option<String>>,
+    app_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +58,10 @@ struct TestWindowParams {
     min_max_size: (Size<i32, Logical>, Size<i32, Logical>),
     #[proptest(strategy = "prop::option::of(arbitrary_rules())")]
     rules: Option<ResolvedWindowRules>,
+    #[proptest(value = "None")]
+    title: Option<String>,
+    #[proptest(value = "None")]
+    app_id: Option<String>,
 }
 
 impl TestWindowParams {
@@ -67,6 +73,8 @@ impl TestWindowParams {
             bbox: Rectangle::from_size(Size::from((100, 200))),
             min_max_size: Default::default(),
             rules: None,
+            title: None,
+            app_id: None,
         }
     }
 }
@@ -90,6 +98,8 @@ impl TestWindow {
             animate_next_configure: Cell::new(false),
             animation_snapshot: RefCell::new(None),
             rules: params.rules.unwrap_or_default(),
+            title: RefCell::new(params.title),
+            app_id: params.app_id,
         }))
     }
 
@@ -276,6 +286,14 @@ impl LayoutElement for TestWindow {
 
     fn is_urgent(&self) -> bool {
         false
+    }
+
+    fn title(&self) -> Option<String> {
+        self.0.title.borrow().clone()
+    }
+
+    fn app_id(&self) -> Option<String> {
+        self.0.app_id.clone()
     }
 }
 
@@ -504,6 +522,16 @@ enum Op {
     LayoutAction(&'static str, Vec<niri_config::TilingOption>, Option<usize>),
     GroupWindow(#[proptest(strategy = "arbitrary_group_direction()")] groups::Direction),
     UngroupWindow,
+    /// Gives a window another title, which the layout learns about when it refreshes.
+    #[proptest(skip)]
+    SetWindowTitle(usize, &'static str),
+    /// Types in the running search's field.
+    #[proptest(skip)]
+    SearchEdit(search::Edit),
+    #[proptest(skip)]
+    SearchSubmit,
+    #[proptest(skip)]
+    SearchCancel,
     ToggleWindowFloating {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
@@ -1084,6 +1112,14 @@ impl Op {
             }
             Op::GroupWindow(direction) => layout.group_window(direction),
             Op::UngroupWindow => layout.ungroup_window(),
+            Op::SetWindowTitle(id, title) => {
+                if let Some((_, win)) = layout.windows().find(|(_, win)| *win.id() == id) {
+                    win.0.title.replace(Some(title.to_owned()));
+                }
+            }
+            Op::SearchEdit(edit) => layout.search_edit(&edit),
+            Op::SearchSubmit => layout.search_submit(),
+            Op::SearchCancel => layout.search_cancel(),
             Op::MaximizeWindowToEdges { id } => {
                 let id = id.or_else(|| layout.focus().map(|win| *win.id()));
                 let Some(id) = id else {
