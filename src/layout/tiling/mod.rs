@@ -1286,12 +1286,26 @@ impl<W: LayoutElement> TilingSpace<W> {
                 xray_pos,
                 focus_ring,
                 opacity,
+                true,
                 &mut |elem| push(elem.into()),
             );
             return;
         }
 
         let placement = Placement::new(drawn, rect, transform, tile_pos, camera, self.scale);
+
+        // Popups belong above the window, so a clip that cuts the window doesn't cut them. They
+        // still go where the window goes.
+        let clipped = drawn.clip.is_some();
+        if clipped {
+            let uncut = placement.uncropped();
+            tile.render_popups(ctx.r(), tile_pos, xray_pos, opacity, &mut |elem| {
+                if let Some(elem) = uncut.place(elem) {
+                    push(elem);
+                }
+            });
+        }
+
         let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
         tile.render_with_opacity(
             ctx.r(),
@@ -1299,6 +1313,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             xray_pos,
             focus_ring,
             opacity,
+            !clipped,
             &mut |elem| {
                 let elem = placement.round_corners(elem, clip_shader.as_ref());
                 if let Some(elem) = placement.place(elem) {
@@ -1779,6 +1794,7 @@ fn render_pos<W: LayoutElement>(
 
 /// How the tree puts a tile on the view: the physical pixels that its elements are scaled around,
 /// moved and cut by.
+#[derive(Clone, Copy)]
 struct Placement {
     output_scale: f64,
     /// The centre of the tile's rect, which the tree scales it around.
@@ -1850,6 +1866,15 @@ impl Placement {
                     .into()
             }
             elem => elem,
+        }
+    }
+
+    /// The same placement without the clip.
+    fn uncropped(self) -> Self {
+        Self {
+            crop: None,
+            corners: None,
+            ..self
         }
     }
 
@@ -1926,4 +1951,46 @@ fn toplevel_bounds(
         f64::max(working_area.h - gaps * 2. - border, 1.),
     ))
     .to_i32_floor()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::surfaces::Clip;
+
+    #[test]
+    fn popups_are_placed_like_the_window_without_its_clip() {
+        let rect = Rectangle::new(Point::from((0., 0.)), Size::from((200., 100.)));
+        let clip = Clip {
+            rect: Rectangle::new(Point::from((10., 10.)), Size::from((50., 50.))),
+            radius: 8.,
+        };
+        let drawn = Drawn {
+            rect,
+            opacity: 1.,
+            transform: NodeTransform {
+                scale: 0.5,
+                x: 20.,
+                y: 0.,
+            },
+            clip: Some(clip),
+        };
+        let transform = drawn.transform_around(rect);
+        let placement = Placement::new(
+            &drawn,
+            rect,
+            transform,
+            Point::from((100., 50.)),
+            Point::from((0., 0.)),
+            1.,
+        );
+        assert!(placement.crop.is_some() && placement.corners.is_some());
+
+        let popups = placement.uncropped();
+        assert!(popups.crop.is_none() && popups.corners.is_none());
+        // They still go where the window goes.
+        assert_eq!(popups.pivot, placement.pivot);
+        assert_eq!(popups.scale, placement.scale);
+        assert_eq!(popups.offset, placement.offset);
+    }
 }

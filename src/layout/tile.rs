@@ -1087,12 +1087,27 @@ impl<W: LayoutElement> Tile<W> {
         Point::from((0., y))
     }
 
+    /// The window's own opacity, from its rules, which goes fully opaque in fullscreen.
+    fn window_alpha(&self) -> f32 {
+        if self.window.is_ignoring_opacity_window_rule() {
+            return 1.;
+        }
+
+        let alpha = self.window.rules().opacity.unwrap_or(1.).clamp(0., 1.);
+
+        // Interpolate towards alpha = 1. at fullscreen.
+        let p = self.fullscreen_progress() as f32;
+        alpha * (1. - p) + 1. * p
+    }
+
+    /// Renders the tile, with the window's popups if `popups`.
     fn render_inner<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
         mut xray_pos: XrayPos,
         focus_ring: bool,
+        popups: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
@@ -1101,15 +1116,7 @@ impl<W: LayoutElement> Tile<W> {
         let fullscreen_progress = self.fullscreen_progress();
         let expanded_progress = self.expanded_progress();
 
-        let win_alpha = if self.window.is_ignoring_opacity_window_rule() {
-            1.
-        } else {
-            let alpha = self.window.rules().opacity.unwrap_or(1.).clamp(0., 1.);
-
-            // Interpolate towards alpha = 1. at fullscreen.
-            let p = fullscreen_progress as f32;
-            alpha * (1. - p) + 1. * p
-        };
+        let win_alpha = self.window_alpha();
 
         // This is here rather than in render_offset() because render_offset() is currently assumed
         // by the code to be temporary. So, for example, interactive move will try to "grab" the
@@ -1141,14 +1148,16 @@ impl<W: LayoutElement> Tile<W> {
             .scaled_by(1. - expanded_progress as f32);
 
         // Popups go on top, whether it's resize or not.
-        self.window.render_popups(
-            ctx.r(),
-            window_render_loc,
-            scale,
-            win_alpha,
-            xray_pos,
-            &mut |elem| push(elem.into()),
-        );
+        if popups {
+            self.window.render_popups(
+                ctx.r(),
+                window_render_loc,
+                scale,
+                win_alpha,
+                xray_pos,
+                &mut |elem| push(elem.into()),
+            );
+        }
 
         // If we're resizing, try to render a shader, or a fallback.
         let mut pushed_resize = false;
@@ -1388,12 +1397,44 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
-        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., push);
+        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., true, push);
+    }
+
+    /// Renders only the window's popups, as [`Tile::render_with_opacity`] does with the whole
+    /// tile, for a caller that draws them apart from the rest of the tile.
+    ///
+    /// They're not drawn into a buffer with the rest, so they go translucent themselves.
+    pub fn render_popups<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        location: Point<f64, Logical>,
+        xray_pos: XrayPos,
+        opacity: f32,
+        push: &mut dyn FnMut(TileRenderElement<R>),
+    ) {
+        let alpha = self
+            .alpha_animation
+            .as_ref()
+            .map_or(1., |alpha| alpha.anim.clamped_value()) as f32
+            * opacity
+            * self.window_alpha();
+
+        let bob_offset = self.bob_offset();
+        let window_loc = self.window_loc();
+        self.window.render_popups(
+            ctx.r(),
+            location + bob_offset + window_loc,
+            Scale::from(self.scale),
+            alpha,
+            xray_pos.offset(bob_offset).offset(window_loc),
+            &mut |elem| push(elem.into()),
+        );
     }
 
     /// Renders the tile as translucent as `opacity` says, on top of its own opacity animation.
     /// The whole tile is drawn into one buffer first, so what overlaps in it doesn't show
-    /// through.
+    /// through. The window's popups are left out unless `popups`.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_with_opacity<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
@@ -1401,6 +1442,7 @@ impl<W: LayoutElement> Tile<W> {
         xray_pos: XrayPos,
         focus_ring: bool,
         opacity: f32,
+        popups: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render");
@@ -1424,6 +1466,7 @@ impl<W: LayoutElement> Tile<W> {
                 Point::new(0., 0.),
                 xray_pos,
                 focus_ring,
+                popups,
                 &mut |elem| elements.push(elem),
             );
             match open.render(
@@ -1455,6 +1498,7 @@ impl<W: LayoutElement> Tile<W> {
                 Point::new(0., 0.),
                 xray_pos,
                 focus_ring,
+                popups,
                 &mut |elem| elements.push(elem),
             );
             match offscreen.render(ctx.renderer, scale, &elements) {
@@ -1473,7 +1517,9 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         if !pushed {
-            self.render_inner(ctx, location, xray_pos, focus_ring, &mut |elem| push(elem));
+            self.render_inner(ctx, location, xray_pos, focus_ring, popups, &mut |elem| {
+                push(elem)
+            });
         }
     }
 
