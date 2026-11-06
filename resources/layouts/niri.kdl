@@ -1,9 +1,76 @@
-// Binds for the niri engine, loaded only while it runs. bento copies this file to
-// ~/.config/bento/engines/niri.kdl the first time the engine runs without one; from then on
-// it's yours to edit.
+// Options, window rules and binds for the niri engine, loaded only while it runs. bento copies this
+// file to ~/.config/bento/engines/niri.kdl the first time the engine runs without one; from then
+// on it's yours to edit.
 //
 // A key bound here can't also be bound in config.kdl.
 // https://github.com/faetalize/bento#layout-engines
+
+// Everything below is at its default.
+options {
+    // When to center a column when changing focus, options are:
+    // - "never", focusing an off-screen column will keep it at the left or right edge of the
+    //   screen.
+    // - "always", the focused column will always be centered.
+    // - "on-overflow", focusing a column will center it if it doesn't fit together with the
+    //   previously focused column.
+    center-focused-column "never"
+
+    // Center a column that is alone on its workspace, whatever center-focused-column says.
+    always-center-single-column false
+
+    // The width that new windows open with. Written as a proportion of the working area, like
+    // "50%", or as logical pixels, like "960".
+    // Leave it empty to let the windows decide their initial width:
+    // default-column-width
+    default-column-width "50%"
+
+    // The widths that "switch-preset-column-width" cycles through. Proportions take gaps into
+    // account: you can perfectly fit four windows sized "25%".
+    preset-column-widths "33.333%" "50%" "66.667%"
+
+    // The heights that "switch-preset-window-height" cycles through.
+    preset-window-heights "33.333%" "50%" "66.667%"
+
+    // How a new column shows its windows: "normal", stacked, or "tabbed", one at a time with a
+    // tab indicator.
+    default-column-display "normal"
+
+    // The tab indicator of tabbed columns. Colors are written "#rgb", "#rrggbb" or "#rrggbbaa".
+    tab-indicator true
+    // Which side of the column it sits on: "left", "right", "top" or "bottom".
+    tab-indicator-position "left"
+    // How thick it is, and how far from the column, in logical pixels.
+    tab-indicator-width 4
+    tab-indicator-gap 5
+    // How much of the column's side it takes up, as a proportion.
+    tab-indicator-length 0.5
+    tab-indicator-corner-radius 0
+    // Draw it inside the column, over the windows, instead of next to it.
+    tab-indicator-place-within-column false
+    // Leave it out while the column has only one tab.
+    tab-indicator-hide-when-single-tab false
+    tab-indicator-active-color "#7fc8ff"
+    tab-indicator-inactive-color "#505050"
+    tab-indicator-urgent-color "#9b0000"
+
+    // The hint that shows where a window will go while you drag it.
+    insert-hint true
+    insert-hint-color "#7fc8ff80"
+}
+
+// Window rules have the same match and exclude as the ones in config.kdl, and set what the
+// engine declares: default-column-width, default-window-height, default-column-display and
+// open-maximized. See "bento msg engine" for their types.
+
+// Work around WezTerm's initial configure bug
+// by leaving its default-column-width empty.
+window-rule {
+    // This regular expression is intentionally made as specific as possible,
+    // since this is the default config, and we want no false positives.
+    // You can get away with just app-id="wezterm" if you want.
+    match app-id=r#"^org\.wezfurlong\.wezterm$"#
+    default-column-width
+}
 
 binds {
     Mod+Left  { focus-column-left; }
@@ -90,4 +157,41 @@ binds {
     // Windows in this column will appear as vertical tabs,
     // rather than stacked on top of each other.
     Mod+W { toggle-column-tabbed-display; }
+
+    // Move the focused column to the workspace below or above. The binds on Ctrl and Page_Down or
+    // Page_Up in config.kdl move one window instead.
+    Mod+Ctrl+Shift+Page_Down { move-column-to-workspace-down; }
+    Mod+Ctrl+Shift+Page_Up   { move-column-to-workspace-up; }
+    Mod+Ctrl+Shift+U         { move-column-to-workspace-down; }
+    Mod+Ctrl+Shift+I         { move-column-to-workspace-up; }
+
+    // Move it to a workspace of the focused monitor by its number. Add "false" after the number
+    // to keep the focus where it is.
+    Mod+Ctrl+Shift+1 { move-column-to-workspace 1; }
+    Mod+Ctrl+Shift+2 { move-column-to-workspace 2; }
+    Mod+Ctrl+Shift+3 { move-column-to-workspace 3; }
+    Mod+Ctrl+Shift+4 { move-column-to-workspace 4; }
+    Mod+Ctrl+Shift+5 { move-column-to-workspace 5; }
+    Mod+Ctrl+Shift+6 { move-column-to-workspace 6; }
+    Mod+Ctrl+Shift+7 { move-column-to-workspace 7; }
+    Mod+Ctrl+Shift+8 { move-column-to-workspace 8; }
+    Mod+Ctrl+Shift+9 { move-column-to-workspace 9; }
+
+    // These move the focused column to the monitor beside. The binds on Ctrl and Shift and the
+    // arrow keys in config.kdl move one window instead; to move columns, bind these there.
+    // Mod+Ctrl+Shift+Left  { move-column-to-monitor-left; }
+    // Mod+Ctrl+Shift+Down  { move-column-to-monitor-down; }
+    // Mod+Ctrl+Shift+Up    { move-column-to-monitor-up; }
+    // Mod+Ctrl+Shift+Right { move-column-to-monitor-right; }
+
+    // These go on to the monitor or workspace beside once the strip has nothing further. To use
+    // them, bind them to your focus keys instead of the actions above.
+    // Mod+Left  { focus-column-or-monitor-left; }
+    // Mod+Right { focus-column-or-monitor-right; }
+    // Mod+Down  { focus-window-or-workspace-down; }
+    // Mod+Up    { focus-window-or-workspace-up; }
+    // Mod+Ctrl+Left  { move-column-left-or-to-monitor-left; }
+    // Mod+Ctrl+Right { move-column-right-or-to-monitor-right; }
+    // Mod+Ctrl+Down  { move-window-down-or-to-workspace-down; }
+    // Mod+Ctrl+Up    { move-window-up-or-to-workspace-up; }
 }

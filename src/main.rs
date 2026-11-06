@@ -2,7 +2,7 @@
 extern crate tracing;
 
 use std::fmt::Write as _;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::FromRawFd;
 use std::path::PathBuf;
@@ -10,6 +10,8 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::{env, mem};
 
+use anyhow::Context as _;
+use bento_ipc::socket::SOCKET_PATH_ENV;
 use calloop::EventLoop;
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
@@ -26,7 +28,6 @@ use niri::utils::spawning::{
 };
 use niri::utils::{cause_panic, link_niri_config, version, watcher, xwayland, IS_SYSTEMD_SERVICE};
 use niri_config::{Config, ConfigPath};
-use niri_ipc::socket::SOCKET_PATH_ENV;
 use sd_notify::NotifyState;
 use smithay::reexports::wayland_server::Display;
 use tracing_subscriber::EnvFilter;
@@ -115,6 +116,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("config is valid");
                 return Ok(());
             }
+            Sub::MigrateFromNiri { path, config } => {
+                migrate_from_niri(path, config)?;
+                return Ok(());
+            }
             Sub::Msg {
                 msg,
                 json,
@@ -152,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Needs to be done before starting Tracy, so that it applies to Tracy's threads.
     niri::utils::signals::block_early().unwrap();
 
-    // Avoid starting Tracy for the `niri msg` code path since starting/stopping Tracy is a bit
+    // Avoid starting Tracy for the `bento msg` code path since starting/stopping Tracy is a bit
     // slow.
     tracy_client::Client::start();
 
@@ -215,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket_name.to_string_lossy()
     );
 
-    // Set NIRI_SOCKET for children.
+    // Set BENTO_SOCKET for children.
     if let Some(ipc) = &state.niri.ipc_server {
         let socket_path = ipc.socket_path.as_deref().unwrap();
         env::set_var(SOCKET_PATH_ENV, socket_path);
@@ -363,6 +368,11 @@ fn default_config_path() -> Option<PathBuf> {
     Some(path)
 }
 
+fn default_niri_config_path() -> Option<PathBuf> {
+    let dirs = ProjectDirs::from("", "", "niri")?;
+    Some(dirs.config_dir().join("config.kdl"))
+}
+
 fn system_config_path() -> PathBuf {
     PathBuf::from("/etc/bento/config.kdl")
 }
@@ -383,6 +393,42 @@ fn config_path(cli_path: Option<PathBuf>) -> ConfigPath {
         // Couldn't find the home directory, or whatever.
         ConfigPath::Explicit(system_path)
     }
+}
+
+/// Converts a niri config into bento's, writes it, and says what couldn't be converted.
+fn migrate_from_niri(niri_path: Option<PathBuf>, config: Option<PathBuf>) -> anyhow::Result<()> {
+    let niri_path = niri_path
+        .or_else(default_niri_config_path)
+        .context("error retrieving the home directory; give the path to niri's config")?;
+    let text = fs::read_to_string(&niri_path)
+        .with_context(|| format!("error reading {}", niri_path.display()))?;
+    let conversion = niri_config::convert::convert(&text)
+        .map_err(|err| anyhow::anyhow!("{err:?}"))
+        .with_context(|| format!("error parsing {}", niri_path.display()))?;
+
+    let target = match config_path(config) {
+        ConfigPath::Explicit(path) => path,
+        ConfigPath::Regular { user_path, .. } => user_path,
+    };
+    let written = niri_config::convert::write(&conversion, &target)
+        .with_context(|| format!("error writing {}", target.display()))?;
+
+    println!("Converted {}.", niri_path.display());
+    for backup in &written.backups {
+        println!("Kept the previous file as {}.", backup.display());
+    }
+    println!("Wrote {}.", written.config.display());
+    println!("Wrote {}.", written.engine.display());
+    if !conversion.notes.is_empty() {
+        println!();
+        println!("Not everything could be converted:");
+        for note in &conversion.notes {
+            println!("- {note}");
+        }
+    }
+    println!();
+    println!("Run `bento validate` to check the result.");
+    Ok(())
 }
 
 fn notify_fd() -> anyhow::Result<()> {

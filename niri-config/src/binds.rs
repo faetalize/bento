@@ -361,6 +361,8 @@ pub enum Action {
     LayoutAction(
         #[knuffel(argument)] String,
         #[knuffel(arguments)] Vec<TilingOption>,
+        // The window to run it for, if not the focused one; not settable from knuffel.
+        Option<u64>,
     ),
     SwitchLayout(#[knuffel(argument, str)] LayoutSwitchTarget),
     ShowHotkeyOverlay,
@@ -403,10 +405,11 @@ pub enum Action {
     CenterFloatingWindow,
     SetFloatingWindowWidth(#[knuffel(argument, str)] SizeChange),
     SetFloatingWindowHeight(#[knuffel(argument, str)] SizeChange),
-    SwitchPresetFloatingWindowWidth,
-    SwitchPresetFloatingWindowWidthBack,
-    SwitchPresetFloatingWindowHeight,
-    SwitchPresetFloatingWindowHeightBack,
+    GroupWindowLeft,
+    GroupWindowRight,
+    GroupWindowUp,
+    GroupWindowDown,
+    UngroupWindow,
     ToggleWindowRuleOpacity,
     #[knuffel(skip)]
     ToggleWindowRuleOpacityById(u64),
@@ -571,9 +574,11 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::MaximizeWindowToEdges { id: Some(id) } => {
                 Self::MaximizeWindowToEdgesById(id)
             }
-            niri_ipc::Action::LayoutAction { name, args } => {
-                Self::LayoutAction(name, args.into_iter().map(TilingOption::from_arg).collect())
-            }
+            niri_ipc::Action::LayoutAction { name, args } => Self::LayoutAction(
+                name,
+                args.into_iter().map(TilingOption::from_arg).collect(),
+                None,
+            ),
             niri_ipc::Action::SwitchLayout { layout } => Self::SwitchLayout(layout),
             niri_ipc::Action::ShowHotkeyOverlay {} => Self::ShowHotkeyOverlay,
             niri_ipc::Action::MoveWorkspaceToMonitorLeft {} => Self::MoveWorkspaceToMonitorLeft,
@@ -649,18 +654,11 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::SetFloatingWindowHeight { change } => {
                 Self::SetFloatingWindowHeight(change)
             }
-            niri_ipc::Action::SwitchPresetFloatingWindowWidth {} => {
-                Self::SwitchPresetFloatingWindowWidth
-            }
-            niri_ipc::Action::SwitchPresetFloatingWindowWidthBack {} => {
-                Self::SwitchPresetFloatingWindowWidthBack
-            }
-            niri_ipc::Action::SwitchPresetFloatingWindowHeight {} => {
-                Self::SwitchPresetFloatingWindowHeight
-            }
-            niri_ipc::Action::SwitchPresetFloatingWindowHeightBack {} => {
-                Self::SwitchPresetFloatingWindowHeightBack
-            }
+            niri_ipc::Action::GroupWindowLeft {} => Self::GroupWindowLeft,
+            niri_ipc::Action::GroupWindowRight {} => Self::GroupWindowRight,
+            niri_ipc::Action::GroupWindowUp {} => Self::GroupWindowUp,
+            niri_ipc::Action::GroupWindowDown {} => Self::GroupWindowDown,
+            niri_ipc::Action::UngroupWindow {} => Self::UngroupWindow,
             niri_ipc::Action::ToggleWindowRuleOpacity { id: None } => Self::ToggleWindowRuleOpacity,
             niri_ipc::Action::ToggleWindowRuleOpacity { id: Some(id) } => {
                 Self::ToggleWindowRuleOpacityById(id)
@@ -1117,7 +1115,11 @@ fn engine_action<S: knuffel::traits::ErrorSpan>(
             Err(err) => ctx.emit_error(err),
         }
     }
-    Some(Action::LayoutAction(String::from(&**node.node_name), args))
+    Some(Action::LayoutAction(
+        String::from(&**node.node_name),
+        args,
+        None,
+    ))
 }
 
 impl FromStr for Key {

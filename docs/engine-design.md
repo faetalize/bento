@@ -64,6 +64,12 @@ workspace.camera.move({ x: 1200 }, { animate: false });
 A change in a compositor is never just setting a value: it animates, tells the app, and can be
 refused. A method call makes that visible, where a setter would hide it.
 
+Some changes are carried out by bento after the engine's call returns, like moving a window or a
+workspace, showing or renaming a workspace, or changing a group. Their methods return whether the
+request is valid as the engine sees it. If bento then refuses one, for example because the target
+workspace went away, the engine gets the event that undoes it, like the window's `move` back, so
+its own state stays right.
+
 The objects, as an engine sees them:
 
 ```js
@@ -276,6 +282,12 @@ Each workspace has its own tree. Workspaces and monitors aren't nodes: bento com
 workspaces itself, since switching between them and the overview are bento's, and an engine
 transforming a workspace would fight bento's animations.
 
+bento draws the tree with its own renderer, on smithay's, and borrows little else from a
+browser. Nodes come in a few kinds: boxes (a fill, a border and a corner radius), text, images,
+and windows. Any node can have a transform, opacity, clipping and transitions. Pointer events hit
+the topmost node under the pointer and bubble up to its parents, like the DOM's. There's no layout
+system, since engines do their own layout, and no browser engine underneath.
+
 Engines only ever draw inside workspaces. Anything above them on a monitor, like a panel, an OSD
 or a mini-map of an engine's columns, is the shell's job, and the shell can read the engine's
 state to draw it.
@@ -324,11 +336,19 @@ without bindings, it can be inspected with `bento msg -j`, and it works without 
 connection.
 
 The socket's format belongs to bento and its own programs, and can change at any time.
-Compatibility with niri's IPC isn't a goal. Third-party shells get the basics through standard
-Wayland protocols (`ext-workspace`, foreign-toplevel, output management).
+Compatibility with niri's IPC isn't a goal, and bento has no niri IPC socket: shells written for
+niri, like noctalia, lose what they read from it. Third-party shells get the basics through
+standard Wayland protocols (`ext-workspace`, foreign-toplevel, output management).
 
 Wayland protocols are only for things tied to a surface, like background effects, since only
 Wayland knows which window is which.
+
+### A failing engine falls back
+
+An engine that fails to load, throws while it starts, or runs out of time or memory three calls in
+a row is replaced by the fallback engine, which places windows side by side and has no actions,
+until its file changes. When a new version of a running engine fails to load, the running one
+stays. The error shows in `bento validate`, `bento msg engine` and bento Settings.
 
 ### Old engines keep working for a while
 
@@ -412,9 +432,10 @@ them: an edit in place would be lost when it rewrites the file, and an override 
 config only wins when the `include` comes before its `binds {}`. The parsed config remembers
 which file each bind comes from.
 
-The Engine page lists every action the running engine declares, with the keys bound to it or
-none. Binding an action from there opens the Shortcuts page's own flow for adding a shortcut,
-with the action already picked, so the only thing left to pick is the key.
+The page has a search bar that matches a bind's action, arguments and keys. The Engine page
+doesn't list shortcuts again: it says how many actions the running engine has and how many have
+a shortcut, and links to the Shortcuts page. Every action, bound or not, is in the add dialog's
+action picker.
 
 The page lists bento's actions and the running engine's. It can't see the actions of engines that
 aren't running: Settings never runs engine code itself, and learns an engine's declarations only
@@ -438,32 +459,31 @@ as planned there. The order agreed on:
    `focus-column-or-monitor-left`, don't exist until the rework: engines can't see other monitors
    or workspaces before it, and bento adds no stopgap to fake it.
 
-   The gaps this leaves until the rework, on purpose rather than faked:
-   - no engine action crosses into another monitor or workspace;
-   - `move-column-to-workspace` and `move-column-to-monitor` are gone with the rest of niri's
-     names, and with them engines handing a group of windows to another workspace
-     (`transferOut`/`transferIn`); bento's `move-window-to-*` move one window;
-   - bento's own screens no longer borrow the engine's actions: the overview's left and right
-     arrow keys and its horizontal wheel, the window switcher reusing focus-left and focus-right
-     binds, and moving or resizing the screenshot selection with move and resize binds;
-   - the hotkey overlay lists no engine actions;
-   - double-clicking a window's resize edge no longer toggles its width or height;
-   - the fallback engine, used when the configured one fails to load, has no actions;
-   - the `default-window-height` window rule reaches the engine as niri's `set-window-height`, so
-     only `niri.js` honours it, until engines declare their own window rules.
+   The rework closes most of the gaps this left: actions that cross into another monitor or
+   workspace, moving a whole column to another workspace or monitor, double-clicking a window's
+   resize edge (now the engine's `edgedoubleclick`), and `default-window-height`, which is an
+   engine's window rule now. These stay open:
+   - bento's own screens don't borrow the engine's actions: the overview's left and right arrow
+     keys and its horizontal wheel, the window switcher reusing focus-left and focus-right binds,
+     and moving or resizing the screenshot selection with move and resize binds;
+   - the hotkey overlay lists no engine actions.
 3. **The Shortcuts page**, as described above, with bento's own action table. Done, in #27.
 4. **The engine rework**, everything else in this document: one engine for the session, the
-   object model, events, drawn surfaces, grouping, the socket. This document is the reference
-   for refactoring the repo.
+   object model, events, drawn surfaces, grouping, the socket, typed engine options and window
+   rules, the niri converter, and `bento.js` and `niri.js` on the new API. Done, in #28.
+
+   What it leaves open:
+   - a window drawn with a transform still takes input where it's placed, a `rect` transition on
+     a window's node doesn't animate (windows move with their placement's animation), and a clip
+     on a window also cuts its popups;
+   - boxes, text and images clip only to rectangles, and images are PNG, JPEG or WebP: icons are
+     found as PNGs, from the `hicolor` theme, since bento doesn't know the user's icon theme;
+   - touch and tablet input doesn't reach drawn nodes, and nodes don't take input in the
+     overview;
+   - switching a floating window between preset widths and heights went away with the preset
+     settings, which are engines' options now;
+   - bento still focuses a window on a workspace whose engine focuses none, and centres a window
+     the engine doesn't place.
 
 The other planned pages in bento Settings (Displays, Workspaces, Window Rules, Gestures, Startup
 Apps) and bento's own shell come after, in no agreed order yet.
-
-## Open questions
-
-- **How much of a browser to borrow.** Engines describing a retained tree that bento renders and
-  animates is a browser's compositor model. Not decided yet: which other parts to take (property
-  trees for transform, clip and effects; hit testing and events bubbling up the tree), how small
-  the vocabulary of drawable nodes stays (shapes, text, images, window contents and transitions,
-  with no layout system, since engines do their own layout), and whether to reuse Servo's crates,
-  like WebRender, or write it on smithay's renderer.

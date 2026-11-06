@@ -47,7 +47,7 @@ fn stack_resize_waits_for_both_windows() {
     let _ = f.client(id).window(&surface2).recent_configures();
 
     // Stack the second window under the first.
-    f.niri().layout.layout_action("stack-left", &[]);
+    f.niri().layout.layout_action("stack-left", &[], None);
     f.double_roundtrip(id);
 
     // Commit for the stacking.
@@ -76,7 +76,7 @@ fn stack_resize_waits_for_both_windows() {
     // Make the bottom window taller. The window above it is stuck to it, so it gets shorter, and
     // both resize together.
     let height = TilingOption::String(String::from("75%"));
-    f.niri().layout.layout_action("set-height", &[height]);
+    f.niri().layout.layout_action("set-height", &[height], None);
     f.double_roundtrip(id);
 
     // Commit window 1 in response to resize.

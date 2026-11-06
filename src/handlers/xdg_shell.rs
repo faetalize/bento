@@ -1,7 +1,6 @@
 use std::cell::Cell;
 
 use calloop::Interest;
-use niri_config::PresetSize;
 use smithay::backend::input::InputTime;
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, utils, LayerSurface,
@@ -38,11 +37,13 @@ use tracing::field::Empty;
 
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
-use crate::input::AnyStartData;
+use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
 use crate::layout::ActivateWindow;
 use crate::niri::{CastTarget, PopupGrabState, State};
 use crate::utils::transaction::Transaction;
-use crate::utils::{output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge};
+use crate::utils::{
+    get_monotonic_time, output_matches_name, send_scale_transform, update_tiled_state, ResizeEdge,
+};
 use crate::window::{InitialConfigureState, ResolvedWindowRules, Unmapped, WindowRef};
 
 impl XdgShellHandler for State {
@@ -242,6 +243,33 @@ impl XdgShellHandler for State {
 
         let edges = ResizeEdge::from(edges);
         let window = mapped.window.clone();
+
+        // See if we got a double click on a resize edge.
+        let time = get_monotonic_time();
+        let last_cell = mapped.last_interactive_resize_start();
+        let mut last = last_cell.get();
+        last_cell.set(Some((time, edges)));
+
+        // Floating windows don't have the double click, so just allow it to resize.
+        if mapped.is_floating() {
+            last = None;
+            last_cell.set(None);
+        }
+
+        if let Some((last_time, last_edges)) = last {
+            if time.saturating_sub(last_time) <= DOUBLE_CLICK_TIME {
+                // Allow quick resize after a triple click.
+                last_cell.set(None);
+
+                let both = edges.intersection(last_edges);
+                if !both.is_empty() {
+                    self.niri.layout.edge_double_click(&window, both);
+                }
+                // FIXME: granular.
+                self.niri.queue_redraw_all();
+                return;
+            }
+        }
 
         if !self
             .niri
@@ -495,7 +523,7 @@ impl XdgShellHandler for State {
                                 state.states.set(xdg_toplevel::State::Maximized);
                             }
                         });
-                        ws.configure_new_window(&unmapped.window, None, None, false, rules);
+                        ws.configure_new_window(&unmapped.window, false, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -531,11 +559,6 @@ impl XdgShellHandler for State {
                 }
                 InitialConfigureState::Configured {
                     rules,
-                    width,
-                    height,
-                    floating_width,
-                    floating_height,
-                    is_full_width,
                     output,
                     workspace_name,
                     is_pending_maximized,
@@ -596,25 +619,7 @@ impl XdgShellHandler for State {
                         });
 
                         let is_floating = rules.compute_open_floating(&toplevel);
-                        let configure_width = if is_floating {
-                            *floating_width
-                        } else if *is_full_width {
-                            Some(PresetSize::Proportion(1.))
-                        } else {
-                            *width
-                        };
-                        let configure_height = if is_floating {
-                            *floating_height
-                        } else {
-                            *height
-                        };
-                        ws.configure_new_window(
-                            &unmapped.window,
-                            configure_width,
-                            configure_height,
-                            is_floating,
-                            rules,
-                        );
+                        ws.configure_new_window(&unmapped.window, is_floating, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -706,7 +711,7 @@ impl XdgShellHandler for State {
                             state.states.set(xdg_toplevel::State::Fullscreen);
                             state.states.unset(xdg_toplevel::State::Maximized);
                         });
-                        ws.configure_new_window(&unmapped.window, None, None, false, rules);
+                        ws.configure_new_window(&unmapped.window, false, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -742,11 +747,6 @@ impl XdgShellHandler for State {
                 }
                 InitialConfigureState::Configured {
                     rules,
-                    width,
-                    height,
-                    floating_width,
-                    floating_height,
-                    is_full_width,
                     output,
                     workspace_name,
                     is_pending_maximized,
@@ -806,25 +806,7 @@ impl XdgShellHandler for State {
                         });
 
                         let is_floating = rules.compute_open_floating(&toplevel);
-                        let configure_width = if is_floating {
-                            *floating_width
-                        } else if *is_full_width {
-                            Some(PresetSize::Proportion(1.))
-                        } else {
-                            *width
-                        };
-                        let configure_height = if is_floating {
-                            *floating_height
-                        } else {
-                            *height
-                        };
-                        ws.configure_new_window(
-                            &unmapped.window,
-                            configure_width,
-                            configure_height,
-                            is_floating,
-                            rules,
-                        );
+                        ws.configure_new_window(&unmapped.window, is_floating, rules);
                     }
 
                     // We already sent the initial configure, so we need to reconfigure.
@@ -1050,6 +1032,7 @@ impl State {
         let config = self.niri.config.borrow();
         let rules = ResolvedWindowRules::compute(
             &config.window_rules,
+            &config.tiling.window_rules,
             WindowRef::Unmapped(unmapped),
             self.niri.is_at_startup,
         );
@@ -1119,11 +1102,6 @@ impl State {
             .map(|(mon, _)| mon.output().clone());
         let mon = mon.map(|(mon, _)| mon);
 
-        let mut width = None;
-        let mut floating_width = None;
-        let mut height = None;
-        let mut floating_height = None;
-        let is_full_width = rules.open_maximized.unwrap_or(false);
         let is_floating = rules.compute_open_floating(toplevel);
 
         // Tell the surface the preferred size and bounds for its likely output.
@@ -1154,26 +1132,7 @@ impl State {
                 });
             }
 
-            width = ws.resolve_default_width(rules.default_width, false);
-            floating_width = ws.resolve_default_width(rules.default_width, true);
-            height = ws.resolve_default_height(rules.default_height, false);
-            floating_height = ws.resolve_default_height(rules.default_height, true);
-
-            let configure_width = if is_floating {
-                floating_width
-            } else if is_full_width {
-                Some(PresetSize::Proportion(1.))
-            } else {
-                width
-            };
-            let configure_height = if is_floating { floating_height } else { height };
-            ws.configure_new_window(
-                window,
-                configure_width,
-                configure_height,
-                is_floating,
-                &rules,
-            );
+            ws.configure_new_window(window, is_floating, &rules);
         }
 
         // Set the tiled state for the initial configure.
@@ -1182,11 +1141,6 @@ impl State {
         // Set the configured settings.
         *state = InitialConfigureState::Configured {
             rules,
-            width,
-            height,
-            floating_width,
-            floating_height,
-            is_full_width,
             output,
             workspace_name: ws.and_then(|w| w.name().cloned()),
             is_pending_maximized,
@@ -1396,10 +1350,12 @@ impl State {
     pub fn update_window_rules(&mut self, toplevel: &ToplevelSurface) {
         let config = self.niri.config.borrow();
         let window_rules = &config.window_rules;
+        let engine_rules = &config.tiling.window_rules;
 
         if let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) {
             let new_rules = ResolvedWindowRules::compute(
                 window_rules,
+                engine_rules,
                 WindowRef::Unmapped(unmapped),
                 self.niri.is_at_startup,
             );
@@ -1411,7 +1367,7 @@ impl State {
             .layout
             .find_window_and_output_mut(toplevel.wl_surface())
         {
-            if mapped.recompute_window_rules(window_rules, self.niri.is_at_startup) {
+            if mapped.recompute_window_rules(window_rules, engine_rules, self.niri.is_at_startup) {
                 drop(config);
                 let output = output.cloned();
                 let window = mapped.window.clone();

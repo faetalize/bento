@@ -4,6 +4,11 @@
 // stacked vertically or shown as tabs. Opening a window adds a column next to the focused one, and
 // the camera scrolls to keep the focused column in view.
 //
+// The engine runs once for the whole session and keeps a strip for each workspace. Actions that
+// cross a strip's edge, like focusing the monitor to the left, or moving a column to another
+// workspace, are handled between strips by `create`. Tabbed columns are bento groups, and the tab
+// indicator and the insert hint are drawn with nodes.
+//
 // This is a port of niri's `src/layout/scrolling.rs`. Functions keep niri's names where they do the
 // same thing, so the two are easy to compare. bento animates windows and the camera, so everything
 // niri does for animations is left out, and windows take the size they're given right away, so the
@@ -21,12 +26,20 @@ const SIZE = [
         description: 'A size like "50%" or "800", or a change like "+10%" or "-100".',
     },
 ];
+// Whether focus goes along with what moved, like niri's `focus=false`.
+const FOCUS = {
+    name: "focus",
+    type: "boolean",
+    default: true,
+    description: "Whether focus follows what moves.",
+};
 
 export const meta = {
-    api: 1,
+    api: 2,
     name: "niri",
     description: "niri's scrollable tiling: columns of windows on an infinite horizontal strip.",
-    // niri's layout actions, all of which this engine handles like niri does.
+    // niri's layout actions, all of which this engine handles like niri does. Each workspace has
+    // its own strip, and the actions that cross a strip's edge go to the next monitor or workspace.
     actions: {
         "focus-column-left": { description: "Focus the column to the left." },
         "focus-column-right": { description: "Focus the column to the right." },
@@ -39,12 +52,30 @@ export const meta = {
             description: "Focus the column to the left, or the last one from the first one.",
         },
         "focus-column": { description: "Focus a column by its index.", args: INDEX },
+        "focus-column-or-monitor-left": {
+            description: "Focus the column to the left, or the monitor to the left from the first one.",
+        },
+        "focus-column-or-monitor-right": {
+            description: "Focus the column to the right, or the monitor to the right from the last one.",
+        },
         "focus-window-in-column": {
             description: "Focus a window in the focused column by its index.",
             args: INDEX,
         },
         "focus-window-down": { description: "Focus the window below in the column." },
         "focus-window-up": { description: "Focus the window above in the column." },
+        "focus-window-or-monitor-down": {
+            description: "Focus the window below, or the monitor below from the bottom window.",
+        },
+        "focus-window-or-monitor-up": {
+            description: "Focus the window above, or the monitor above from the top window.",
+        },
+        "focus-window-or-workspace-down": {
+            description: "Focus the window below, or the workspace below from the bottom window.",
+        },
+        "focus-window-or-workspace-up": {
+            description: "Focus the window above, or the workspace above from the top window.",
+        },
         "focus-window-down-or-column-left": {
             description: "Focus the window below, or the column to the left from the bottom window.",
         },
@@ -67,14 +98,77 @@ export const meta = {
         },
         "move-column-left": { description: "Move the focused column to the left." },
         "move-column-right": { description: "Move the focused column to the right." },
+        "move-column-left-or-to-monitor-left": {
+            description: "Move the focused column to the left, or to the monitor to the left from the first place.",
+            args: [FOCUS],
+        },
+        "move-column-right-or-to-monitor-right": {
+            description: "Move the focused column to the right, or to the monitor to the right from the last place.",
+            args: [FOCUS],
+        },
         "move-column-to-first": { description: "Move the focused column to the start." },
         "move-column-to-last": { description: "Move the focused column to the end." },
         "move-column-to-index": {
             description: "Move the focused column to an index.",
             args: INDEX,
         },
+        "move-column-to-workspace": {
+            description: "Move the focused column to a workspace of the focused monitor.",
+            args: [
+                {
+                    name: "workspace",
+                    type: "workspace",
+                    description: "An index counting from 1, or a name.",
+                },
+                FOCUS,
+            ],
+        },
+        "move-column-to-workspace-down": {
+            description: "Move the focused column to the workspace below.",
+            args: [FOCUS],
+        },
+        "move-column-to-workspace-up": {
+            description: "Move the focused column to the workspace above.",
+            args: [FOCUS],
+        },
+        "move-column-to-monitor": {
+            description: "Move the focused column to a monitor's active workspace.",
+            args: [{ name: "monitor", type: "monitor", description: "A connector name, like DP-2." }, FOCUS],
+        },
+        "move-column-to-monitor-left": {
+            description: "Move the focused column to the monitor to the left.",
+            args: [FOCUS],
+        },
+        "move-column-to-monitor-right": {
+            description: "Move the focused column to the monitor to the right.",
+            args: [FOCUS],
+        },
+        "move-column-to-monitor-up": {
+            description: "Move the focused column to the monitor above.",
+            args: [FOCUS],
+        },
+        "move-column-to-monitor-down": {
+            description: "Move the focused column to the monitor below.",
+            args: [FOCUS],
+        },
+        "move-column-to-monitor-previous": {
+            description: "Move the focused column to the previous monitor.",
+            args: [FOCUS],
+        },
+        "move-column-to-monitor-next": {
+            description: "Move the focused column to the next monitor.",
+            args: [FOCUS],
+        },
         "move-window-down": { description: "Move the focused window down in its column." },
         "move-window-up": { description: "Move the focused window up in its column." },
+        "move-window-down-or-to-workspace-down": {
+            description: "Move the focused window down in its column, or to the workspace below from the bottom.",
+            args: [FOCUS],
+        },
+        "move-window-up-or-to-workspace-up": {
+            description: "Move the focused window up in its column, or to the workspace above from the top.",
+            args: [FOCUS],
+        },
         "consume-or-expel-window-left": {
             description: "Put the focused window into the column to the left, or take it out of its column to the left.",
         },
@@ -139,7 +233,139 @@ export const meta = {
             description: "Widen the focused column into the space other fully visible columns leave.",
         },
     },
+    options: {
+        "center-focused-column": {
+            type: "choice",
+            choices: ["never", "always", "on-overflow"],
+            default: "never",
+            description: "When to center a column that gets focus.",
+        },
+        "always-center-single-column": {
+            type: "boolean",
+            default: false,
+            description: "Center a column that is alone on its workspace.",
+        },
+        "default-column-width": {
+            type: "size",
+            default: "50%",
+            description: "The width new columns open with. Left empty, the window picks.",
+        },
+        "preset-column-widths": {
+            type: "size",
+            list: true,
+            default: ["33.333%", "50%", "66.667%"],
+            description: "The widths that switching preset column widths goes through.",
+        },
+        "preset-window-heights": {
+            type: "size",
+            list: true,
+            default: ["33.333%", "50%", "66.667%"],
+            description: "The heights that switching preset window heights goes through.",
+        },
+        "default-column-display": {
+            type: "choice",
+            choices: ["normal", "tabbed"],
+            default: "normal",
+            description: "How a new column shows its windows.",
+        },
+        "tab-indicator": {
+            type: "boolean",
+            default: true,
+            description: "Draw an indicator along tabbed columns.",
+        },
+        "tab-indicator-position": {
+            type: "choice",
+            choices: ["left", "right", "top", "bottom"],
+            default: "left",
+            description: "The side of the column the tab indicator is on.",
+        },
+        "tab-indicator-width": {
+            type: "number",
+            default: 4,
+            description: "How thick the tab indicator is.",
+        },
+        "tab-indicator-gap": {
+            type: "number",
+            default: 5,
+            description: "The space between the tab indicator and the column; negative to overlap.",
+        },
+        "tab-indicator-length": {
+            type: "number",
+            default: 0.5,
+            description: "How much of the column's side the tab indicator takes, as a proportion.",
+        },
+        "tab-indicator-corner-radius": {
+            type: "number",
+            default: 0,
+            description: "The corner radius of each tab of the indicator.",
+        },
+        "tab-indicator-place-within-column": {
+            type: "boolean",
+            default: false,
+            description: "Draw the tab indicator inside the column, which leaves room for it.",
+        },
+        "tab-indicator-hide-when-single-tab": {
+            type: "boolean",
+            default: false,
+            description: "Leave out the tab indicator while a column has one tab.",
+        },
+        "tab-indicator-active-color": {
+            type: "string",
+            default: "#7fc8ff",
+            description: "The color of the active tab.",
+        },
+        "tab-indicator-inactive-color": {
+            type: "string",
+            default: "#505050",
+            description: "The color of the other tabs.",
+        },
+        "tab-indicator-urgent-color": {
+            type: "string",
+            default: "#9b0000",
+            description: "The color of a tab whose window is urgent.",
+        },
+        "insert-hint": {
+            type: "boolean",
+            default: true,
+            description: "Show where a dragged window would land.",
+        },
+        "insert-hint-color": {
+            type: "string",
+            default: "#7fc8ff80",
+            description: "The color of the insert hint.",
+        },
+    },
+    windowRules: {
+        "default-column-width": {
+            type: "size",
+            default: null,
+            description: "The width the window's column opens with. Left empty, the window picks.",
+        },
+        "default-window-height": {
+            type: "size",
+            default: null,
+            description: "The height the window opens with in its column.",
+        },
+        "default-column-display": {
+            type: "choice",
+            choices: ["normal", "tabbed"],
+            default: "normal",
+            description: "How the window's new column shows its windows.",
+        },
+        "open-maximized": {
+            type: "boolean",
+            default: false,
+            description: "Open the window as a column as wide as the view.",
+        },
+    },
 };
+
+/** Space between the tabs of a tab indicator, in logical pixels. */
+const TAB_SPACING = 2;
+/** Corner radius of the insert hint. */
+const HINT_CORNER_RADIUS = 8;
+/** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
+const SWIPE_DECELERATION = 0.997;
 
 // Limits from niri, which keep sizes in a range where nothing overflows.
 const MAX_PX = 100000;
@@ -207,7 +433,11 @@ function computeNewViewOffset(curX, viewWidth, newColX, newColWidth, gaps) {
     return distToLeft <= distToRight ? -padding : -(viewWidth - padding - newColWidth);
 }
 
-export default function create(ws) {
+/**
+ * The columns of one workspace. The engine keeps one for every workspace, and each only knows its
+ * own: moving a column to another workspace takes it out of one and puts it in another.
+ */
+function createStrip(bento, ws) {
     // Engine state. `save()` writes all of it out, and `adopt()` reads it back.
 
     /** Columns from left to right. */
@@ -230,24 +460,37 @@ export default function create(ws) {
     let interactiveResize = null;
     /** The column width of the window being dragged, to give back when it's dropped. */
     let dragged = null;
-    let lastConfig = ws.config;
+    let lastOptions = bento.options;
     /** What `ws.focused` was at the end of the last call. */
     let lastFocused = null;
     let nextColumnId = 1;
+    /** Whether a swipe is moving the camera, which the strip leaves alone until it ends. */
+    let swiping = false;
+    /** The nodes that draw each tabbed column's tab indicator, by column id. */
+    const tabNodes = new Map();
+    /** The node that shows where a dragged window would land, while one is over the workspace. */
+    let hintNode = null;
+    /** What the strip told the outside about itself last, see `exposed()`. */
+    let lastExposed = null;
 
     // Per call: set while a call runs, and handled at its end.
     let skipCameraAnimation = false;
     let refitView = false;
     let viewSettled = false;
+    /** Speed to continue into the camera's animation, in px/s, while a swipe ends. */
+    let cameraVelocity = 0;
 
     // Geometry.
 
+    const options = (name) => bento.options[name];
     const gaps = () => ws.config.gaps;
+    const viewSize = () => ws.monitor.size;
+    const round = (value) => ws.monitor.round(value);
     /** The area that maximized windows take: the view minus panels. */
-    const parentArea = () => ws.view.workingArea;
+    const parentArea = () => ws.monitor.workingArea;
 
     /** The area that columns fit in: the parent area minus struts, starting at a physical pixel. */
-    const workingArea = () => ws.view.tilingArea;
+    const workingArea = () => ws.tilingArea;
 
     // Window sizes in this API are tile sizes, borders included. niri's fixed sizes (like
     // `set-window-height 500` or a `fixed` preset) are for the window inside the borders.
@@ -255,6 +498,17 @@ export default function create(ws) {
     const tileHeightForWindowHeight = (tile, h) => h + tile.win.borders.h;
     const windowWidthForTileWidth = (tile, w) => w - tile.win.borders.w;
     const windowHeightForTileHeight = (tile, h) => h - tile.win.borders.h;
+
+    // Window rules. A rule that no rule sets is left out of `rules`, so the option of the same name
+    // is the default, if there is one. `null` is a size left to the window.
+
+    const rulesWidth = (rules) =>
+        rules["default-column-width"] !== undefined
+            ? rules["default-column-width"]
+            : options("default-column-width");
+    const rulesHeight = (rules) => rules["default-window-height"] ?? null;
+    const rulesDisplay = (rules) =>
+        rules["default-column-display"] ?? options("default-column-display");
 
     /** Smallest tile size, at least 1 px of window. */
     function minSize(tile) {
@@ -280,20 +534,50 @@ export default function create(ws) {
         return width.fixed;
     }
 
-    // The tab indicator. bento draws it, but tabbed columns leave room for it when it's placed
+    // The tab indicator. The strip draws it, and tabbed columns leave room for it when it's placed
     // within the column.
+
+    /**
+     * Space the indicator takes inside a tabbed area of `count` tabs: `w` and `h` to leave free
+     * across and down, and `x` and `y` for how far the tabs start from the area's left and top
+     * edges. All 0 when the indicator goes outside the area or is hidden, which it does by default.
+     */
+    function tabIndicatorSpace(count) {
+        const none = { x: 0, y: 0, w: 0, h: 0 };
+        if (
+            !options("tab-indicator") ||
+            !options("tab-indicator-place-within-column") ||
+            (options("tab-indicator-hide-when-single-tab") && count === 1)
+        ) {
+            return none;
+        }
+        const size = Math.max(
+            0,
+            round(options("tab-indicator-width")) + round(options("tab-indicator-gap")),
+        );
+        switch (options("tab-indicator-position")) {
+            case "left":
+                return { x: size, y: 0, w: size, h: 0 };
+            case "right":
+                return { x: 0, y: 0, w: size, h: 0 };
+            case "top":
+                return { x: 0, y: size, w: 0, h: size };
+            default:
+                return { x: 0, y: 0, w: 0, h: size };
+        }
+    }
 
     /** Space the indicator takes in a column, niri's `TabIndicator::extra_size`. */
     function extraSize(col) {
         return col.display === "tabbed"
-            ? ws.tabIndicatorSpace(col.tiles.length)
+            ? tabIndicatorSpace(col.tiles.length)
             : { x: 0, y: 0, w: 0, h: 0 };
     }
 
     /** Extra size for a new column with one window. */
     function newColumnExtraSize() {
-        return ws.config.defaultColumnDisplay === "tabbed"
-            ? ws.tabIndicatorSpace(1)
+        return options("default-column-display") === "tabbed"
+            ? tabIndicatorSpace(1)
             : { x: 0, y: 0, w: 0, h: 0 };
     }
 
@@ -340,11 +624,11 @@ export default function create(ws) {
      * to go back to.
      */
     function makeColumn(width, isFullWidth) {
-        const presetWidthIdx = ws.config.presetColumnWidths.findIndex((preset) =>
+        const presetWidthIdx = options("preset-column-widths").findIndex((preset) =>
             sameWidth(columnWidthFromPreset(preset), width),
         );
         return {
-            // Tells tab bars apart.
+            // Tells the tab indicators apart.
             id: nextColumnId++,
             tiles: [],
             activeTileIdx: 0,
@@ -356,7 +640,7 @@ export default function create(ws) {
             pendingFullscreen: false,
             // Can be set together with fullscreen: leaving fullscreen goes back to maximized.
             pendingMaximized: false,
-            display: ws.config.defaultColumnDisplay,
+            display: options("default-column-display"),
             // Sizing mode at the end of the last call, see `commit()`.
             committedMode: null,
         };
@@ -366,7 +650,7 @@ export default function create(ws) {
     function columnWithTile(tile, width, isFullWidth, mode = "normal") {
         const col = makeColumn(width, isFullWidth);
         // Like niri, the window rules can make a new column tabbed.
-        col.display = tile.win.rules.defaultColumnDisplay ?? ws.config.defaultColumnDisplay;
+        col.display = rulesDisplay(tile.win.rules);
         addTileAt(col, 0, tile);
         if (mode === "maximized") col.pendingMaximized = true;
         if (mode === "fullscreen") col.pendingFullscreen = true;
@@ -424,7 +708,7 @@ export default function create(ws) {
     function updateTileSizes(col) {
         const mode = sizingMode(col);
         if (mode === "fullscreen" || mode === "maximized") {
-            const area = mode === "fullscreen" ? ws.view.size : parentArea();
+            const area = mode === "fullscreen" ? viewSize() : parentArea();
             for (const tile of col.tiles) {
                 tile.request = { w: Math.round(area.w), h: Math.round(area.h) };
                 settle(tile, mode);
@@ -476,7 +760,7 @@ export default function create(ws) {
                     Math.round(windowHeightForTileHeight(tile, maxTileHeight));
                 windowHeight = Math.min(windowHeight, max);
             } else {
-                const preset = ws.config.presetWindowHeights[height.idx];
+                const preset = options("preset-window-heights")[height.idx];
                 const resolved = resolvePresetSize(preset, area.h, extra.h);
                 windowHeight =
                     resolved.tile !== undefined
@@ -588,8 +872,8 @@ export default function create(ws) {
         }
         if (mode === "fullscreen") {
             // A fullscreen tile covers the view even if the window is smaller.
-            size.w = Math.max(size.w, ws.view.size.w);
-            size.h = Math.max(size.h, ws.view.size.h);
+            size.w = Math.max(size.w, viewSize().w);
+            size.h = Math.max(size.h, viewSize().h);
         }
         tile.size = size;
     }
@@ -622,7 +906,7 @@ export default function create(ws) {
 
     /** Offsets of the tiles from the column's x, and one past the last tile. */
     function tileOffsets(col) {
-        const center = ws.config.centerFocusedColumn === "always";
+        const center = options("center-focused-column") === "always";
         const isTabbed = col.display === "tabbed";
         const width = tilesWidth(col);
         const origin = tilesOrigin(col);
@@ -640,8 +924,8 @@ export default function create(ws) {
 
     function isCenteringFocusedColumn() {
         return (
-            ws.config.centerFocusedColumn === "always" ||
-            (ws.config.alwaysCenterSingleColumn && columns.length <= 1)
+            options("center-focused-column") === "always" ||
+            (options("always-center-single-column") && columns.length <= 1)
         );
     }
 
@@ -688,7 +972,7 @@ export default function create(ws) {
             return computeNewViewOffsetForColumnCentered(targetX, idx);
         }
         if (
-            ws.config.centerFocusedColumn !== "on-overflow" ||
+            options("center-focused-column") !== "on-overflow" ||
             prevIdx === null ||
             prevIdx === idx
         ) {
@@ -853,11 +1137,11 @@ export default function create(ws) {
 
     /** Width for a column that a window arrives in, from the window rules. */
     function defaultWidth(win) {
-        const preset = win.rules.defaultWidth;
+        const preset = rulesWidth(win.rules);
         if (preset === null) {
             // Let the window pick, so use the size it has, unless it doesn't have one yet.
             if (win.size.w > 0) return { fixed: win.size.w };
-            return columnWidthFromPreset(ws.config.defaultColumnWidth ?? { proportion: 0.5 });
+            return columnWidthFromPreset(options("default-column-width") ?? { proportion: 0.5 });
         }
         if ("proportion" in preset) return { proportion: preset.proportion };
         // niri's column widths include borders, fixed presets don't.
@@ -872,7 +1156,7 @@ export default function create(ws) {
     function widthForSize(w, win) {
         if (w <= 0) return defaultWidth(win);
         const area = workingArea();
-        const presets = [...ws.config.presetColumnWidths, { proportion: 1 }];
+        const presets = [...options("preset-column-widths"), { proportion: 1 }];
         const extra = newColumnExtraSize().w;
         for (const preset of presets) {
             const resolved = resolvePresetSize(preset, area.w, extra);
@@ -909,11 +1193,11 @@ export default function create(ws) {
             case "open": {
                 const nextTo = how.nextTo === null ? null : find(how.nextTo);
                 const colIdx = nextTo === null ? null : nextTo[0] + 1;
-                const fullWidth = win.rules.openFullWidth === true;
+                const fullWidth = win.rules["open-maximized"] === true;
                 addTile(colIdx, tile, how.activate, defaultWidth(win), fullWidth, win.mode);
-                if (win.rules.defaultHeight !== null) {
+                if (rulesHeight(win.rules) !== null) {
                     const [newColIdx, tileIdx] = find(win);
-                    const change = sizeChangeFromPreset(win.rules.defaultHeight);
+                    const change = sizeChangeFromPreset(rulesHeight(win.rules));
                     setWindowHeight(columns[newColIdx], change, tileIdx);
                 }
                 return;
@@ -1281,7 +1565,7 @@ export default function create(ws) {
 
     /** `switch-preset-column-width` and `switch-preset-window-width`. */
     function toggleWidth(col, tileIdx, forwards) {
-        const presets = ws.config.presetColumnWidths;
+        const presets = options("preset-column-widths");
         if (presets.length === 0) return;
         const tile = col.tiles[tileIdx ?? col.activeTileIdx];
         const len = presets.length;
@@ -1386,7 +1670,7 @@ export default function create(ws) {
 
     /** `switch-preset-window-height`. */
     function toggleWindowHeight(col, tileIdx, forwards) {
-        const presets = ws.config.presetWindowHeights;
+        const presets = options("preset-window-heights");
         if (presets.length === 0) return;
         tileIdx ??= col.activeTileIdx;
         // Like in `setWindowHeight`, only one window can have a non-auto height.
@@ -1554,7 +1838,7 @@ export default function create(ws) {
         const currentViewPos = ws.camera.x;
         const targetViewPos = projected.x;
         const gap = gaps();
-        const viewWidth = ws.view.size.w;
+        const viewWidth = viewSize().w;
         const areaFor = (col) => (sizingMode(col) === "maximized" ? parentArea() : workingArea());
         // Padding from `computeNewViewOffset`, smaller for columns about as wide as the area.
         const paddingFor = (col, area) =>
@@ -1574,7 +1858,7 @@ export default function create(ws) {
                 snaps.push({ viewPos, colIdx });
             });
         } else {
-            const centerOnOverflow = ws.config.centerFocusedColumn === "on-overflow";
+            const centerOnOverflow = options("center-focused-column") === "on-overflow";
             const snapPoints = (colIdx) => {
                 const col = columns[colIdx];
                 const colX = columnX(colIdx);
@@ -1630,7 +1914,7 @@ export default function create(ws) {
                     const colX = columnX(colIdx);
                     const colW = columnWidth(col);
                     if (sizingMode(col) === "fullscreen") {
-                        if (snap.viewPos + ws.view.size.w < colX + colW) break;
+                        if (snap.viewPos + viewSize().w < colX + colW) break;
                     } else {
                         const area = areaFor(col);
                         if (snap.viewPos + area.x + area.w < colX + colW + paddingFor(col, area))
@@ -1766,13 +2050,13 @@ export default function create(ws) {
         }
         if ("newColumn" in position) {
             // Keep the hint at least partially on screen.
-            rect.x = clamp(rect.x, camera - rect.w / 2, camera + ws.view.size.w - rect.w / 2);
+            rect.x = clamp(rect.x, camera - rect.w / 2, camera + viewSize().w - rect.w / 2);
         }
         return {
-            x: ws.round(rect.x),
-            y: ws.round(rect.y),
-            w: ws.round(rect.w),
-            h: ws.round(rect.h),
+            x: round(rect.x),
+            y: round(rect.y),
+            w: round(rect.w),
+            h: round(rect.h),
         };
     }
 
@@ -1806,7 +2090,7 @@ export default function create(ws) {
 
     function validHeight(height) {
         if (height?.kind === "preset") {
-            return height.idx < ws.config.presetWindowHeights.length
+            return height.idx < options("preset-window-heights").length
                 ? height
                 : { kind: "auto", weight: 1 };
         }
@@ -1827,7 +2111,7 @@ export default function create(ws) {
         col.activeTileIdx = clamp(saved.activeTileIdx ?? 0, 0, tiles.length - 1);
         const presetIdx = saved.presetWidthIdx;
         col.presetWidthIdx =
-            Number.isInteger(presetIdx) && presetIdx < ws.config.presetColumnWidths.length
+            Number.isInteger(presetIdx) && presetIdx < options("preset-column-widths").length
                 ? presetIdx
                 : null;
         col.pendingFullscreen =
@@ -1882,36 +2166,41 @@ export default function create(ws) {
      * Rebuilds columns from where windows are: windows that overlap horizontally were stacked in
      * one column, from top to bottom.
      */
-    function columnsFromRects(windows) {
+    function columnsFromRects(windows, rects) {
         const withRect = windows
-            .filter((win) => win.rect !== null)
-            .sort((a, b) => a.rect.x - b.rect.x || a.rect.y - b.rect.y);
+            .filter((win) => rects.get(win.id) !== null)
+            .sort((a, b) => rects.get(a.id).x - rects.get(b.id).x || rects.get(a.id).y - rects.get(b.id).y);
         const groups = [];
         for (const win of withRect) {
+            const rect = rects.get(win.id);
             const last = groups.at(-1);
             const alone = win.mode !== "normal";
-            if (last && !alone && !last.alone && win.rect.x < last.right) {
+            if (last && !alone && !last.alone && rect.x < last.right) {
                 last.windows.push(win);
-                last.right = Math.max(last.right, win.rect.x + win.rect.w);
+                last.right = Math.max(last.right, rect.x + rect.w);
             } else {
-                groups.push({ windows: [win], right: win.rect.x + win.rect.w, alone });
+                groups.push({ windows: [win], right: rect.x + rect.w, alone });
             }
         }
         // Without a rect, there's no telling where a window was; windows usually open to the
         // right, so go by the order they opened in.
-        const withoutRect = windows.filter((win) => win.rect === null).sort((a, b) => a.id - b.id);
+        const withoutRect = windows
+            .filter((win) => rects.get(win.id) === null)
+            .sort((a, b) => a.id - b.id);
         for (const win of withoutRect) groups.push({ windows: [win], alone: true });
 
         for (const group of groups) {
-            const wins = group.windows.sort((a, b) => (a.rect?.y ?? 0) - (b.rect?.y ?? 0));
+            const wins = group.windows.sort(
+                (a, b) => (rects.get(a.id)?.y ?? 0) - (rects.get(b.id)?.y ?? 0),
+            );
             const first = wins[0];
-            const w = Math.max(...wins.map((win) => win.rect?.w ?? win.size.w));
+            const w = Math.max(...wins.map((win) => rects.get(win.id)?.w ?? win.size.w));
             const width = first.mode === "normal" ? widthForSize(w, first) : defaultWidth(first);
             const col = makeColumn(width, false);
             if (first.mode === "fullscreen") col.pendingFullscreen = true;
             if (first.mode === "maximized") col.pendingMaximized = true;
             // Keep the heights the windows had, as weights like `convertHeightsToAuto` gives.
-            const heights = wins.map((win) => win.rect?.h ?? 1);
+            const heights = wins.map((win) => rects.get(win.id)?.h ?? 1);
             const median = [...heights].sort((a, b) => a - b)[Math.floor(heights.length / 2)];
             col.tiles = wins.map((win, idx) => {
                 const weight = wins.length > 1 ? heights[idx] / median : 1;
@@ -1923,7 +2212,11 @@ export default function create(ws) {
         }
     }
 
-    function adopt(windows, focused, state) {
+    /**
+     * Takes over windows that were there when the engine started: `rects` has where each was on
+     * the canvas, or `null`.
+     */
+    function adopt(windows, rects, focused, state) {
         let rest = windows;
         if (state?.layout === "niri" && state.version === 1 && Array.isArray(state.columns)) {
             rest = restoreState(state, windows);
@@ -1932,7 +2225,7 @@ export default function create(ws) {
                     columns.length,
                     makeTile(win),
                     false,
-                    widthForSize(win.rect?.w ?? win.size.w, win),
+                    widthForSize(rects.get(win.id)?.w ?? win.size.w, win),
                     false,
                     win.mode,
                 );
@@ -1941,7 +2234,7 @@ export default function create(ws) {
             return;
         }
 
-        columnsFromRects(rest);
+        columnsFromRects(rest, rects);
         if (columns.length === 0) return;
         const found = focused === null ? null : find(focused);
         if (found !== null) {
@@ -1949,11 +2242,11 @@ export default function create(ws) {
             columns[activeColumnIdx].activeTileIdx = found[1];
         }
         // Keep the active column where it was on screen, then make sure it's in view.
-        const anchor = activeWindow();
+        const anchorRect = rects.get(activeWindow().id);
         viewOffset =
-            anchor.rect === null
+            anchorRect === null
                 ? ws.camera.x - columnX(activeColumnIdx)
-                : ws.camera.x - anchor.rect.x;
+                : ws.camera.x - anchorRect.x;
         fitView();
     }
 
@@ -1993,58 +2286,265 @@ export default function create(ws) {
         refitView = false;
     }
 
-    /** Places every window, shows tab bars, and moves the camera. */
+    // The tab indicator's nodes.
+
+    /** Whether a tabbed column in normal mode shows its tab indicator. */
+    function showsIndicator(col) {
+        return (
+            options("tab-indicator") &&
+            col.display === "tabbed" &&
+            sizingMode(col) === "normal" &&
+            !(options("tab-indicator-hide-when-single-tab") && col.tiles.length === 1)
+        );
+    }
+
+    /** Rects of the tabs of an indicator along `area`, in order, on the canvas. */
+    function tabRects(area, count) {
+        const position = options("tab-indicator-position");
+        const width = options("tab-indicator-width");
+        const gap = options("tab-indicator-gap");
+        const horizontal = position === "top" || position === "bottom";
+        // The indicator spans a proportion of the side it's on, centered.
+        const side = horizontal ? area.w : area.h;
+        const total = side * clamp(options("tab-indicator-length"), 0, 1);
+        const start = (horizontal ? area.x : area.y) + (side - total) / 2;
+        const step = total / count;
+        const length = count > 1 ? Math.max(0, step - TAB_SPACING) : step;
+        const across = {
+            left: area.x - gap - width,
+            right: area.x + area.w + gap,
+            top: area.y - gap - width,
+            bottom: area.y + area.h + gap,
+        }[position];
+        return Array.from({ length: count }, (_, i) => {
+            const from = start + i * step;
+            return horizontal
+                ? { x: round(from), y: round(across), w: length, h: width }
+                : { x: round(across), y: round(from), w: width, h: length };
+        });
+    }
+
+    /**
+     * Draws the tab indicators of the columns in `bars`, `{ area, tiles }` by column id, and
+     * takes away those of columns that don't have one.
+     */
+    function drawTabIndicators(bars) {
+        for (const [id, bar] of bars) {
+            let nodes = tabNodes.get(id);
+            if (nodes === undefined) {
+                nodes = [];
+                tabNodes.set(id, nodes);
+            }
+            const count = bar.tiles.length;
+            while (nodes.length > count) nodes.pop().remove();
+            while (nodes.length < count) {
+                const index = nodes.length;
+                const node = bento.createNode("box", {
+                    interactive: true,
+                    transitions: { rect: "window-movement" },
+                });
+                node.addEventListener("click", () => clickTab(id, index));
+                nodes.push(node);
+                ws.tree.append(node);
+            }
+            const rects = tabRects(bar.area, count);
+            bar.tiles.forEach((tile, idx) => {
+                const color = tile.win.urgent
+                    ? options("tab-indicator-urgent-color")
+                    : idx === bar.active
+                      ? options("tab-indicator-active-color")
+                      : options("tab-indicator-inactive-color");
+                nodes[idx].set({
+                    rect: rects[idx],
+                    background: color,
+                    cornerRadius: options("tab-indicator-corner-radius"),
+                });
+            });
+        }
+        for (const [id, nodes] of tabNodes) {
+            if (!bars.has(id)) {
+                nodes.forEach((node) => node.remove());
+                tabNodes.delete(id);
+            }
+        }
+    }
+
+    /** Clicking a tab activates its window. */
+    function clickTab(colId, index) {
+        const tile = columns.find((col) => col.id === colId)?.tiles[index];
+        if (tile !== undefined) {
+            mutate(() => activateWindow(tile.win), { focus: "always" });
+        }
+    }
+
+    // Groups. A tabbed column of two or more windows is a group in bento, which keeps native
+    // group actions and tabbed columns the same thing.
+
+    /** Makes bento's groups match the tabbed columns: one group for each. */
+    function syncGroups() {
+        for (const col of columns) {
+            const wins = col.tiles.map((tile) => tile.win);
+            if (col.display !== "tabbed" || wins.length < 2) {
+                col.group = null;
+                continue;
+            }
+            const activeWin = col.tiles[col.activeTileIdx].win;
+            let group = activeWin.group;
+            const matches =
+                group !== null &&
+                group.windows.length === wins.length &&
+                wins.every((win) => win.group === group);
+            if (!matches) {
+                group = bento.createGroup(wins, activeWin);
+            } else if (group.active !== activeWin) {
+                group.activate(activeWin);
+            }
+            col.group = group;
+        }
+        // Groups that aren't one column's tabs end, if all of their windows are in this strip.
+        const wanted = new Set(columns.map((col) => col.group).filter((group) => group !== null));
+        for (const col of columns) {
+            for (const { win } of col.tiles) {
+                const group = win.group;
+                if (
+                    group !== null &&
+                    !wanted.has(group) &&
+                    group.windows.every((other) => find(other) !== null)
+                ) {
+                    group.dissolve();
+                }
+            }
+        }
+    }
+
+    /**
+     * Makes the strip show `group` the way it is: its windows as the tabs of one column, the one
+     * of its active window, with the group's active window shown.
+     */
+    function matchGroup(group) {
+        const found = find(group.active);
+        if (found === null) return;
+        const wins = group.windows.filter((win) => find(win) !== null);
+        if (wins.length < 2) return;
+
+        let col = columns[found[0]];
+        col.display = "tabbed";
+        const same =
+            col.tiles.length === wins.length && col.tiles.every((tile) => wins.includes(tile.win));
+        if (!same) {
+            // Windows of the group that are elsewhere join this column as tabs.
+            for (const win of wins) {
+                if (col.tiles.some((tile) => tile.win === win)) continue;
+                const [colIdx, tileIdx] = find(win);
+                const { tile } = removeTile(colIdx, tileIdx);
+                col = columns[find(group.active)[0]];
+                addTileAt(col, col.tiles.length, tile);
+            }
+            // Windows that left the group go to columns of their own, to the right.
+            for (const tile of [...col.tiles]) {
+                if (wins.includes(tile.win)) continue;
+                const colIdx = columns.indexOf(col);
+                const removed = removeTile(colIdx, col.tiles.indexOf(tile));
+                col = columns[find(group.active)[0]];
+                addTile(
+                    columns.indexOf(col) + 1,
+                    removed.tile,
+                    false,
+                    removed.width,
+                    removed.isFullWidth,
+                    removed.mode,
+                );
+            }
+        }
+        col.group = group;
+        col.activeTileIdx = col.tiles.findIndex((tile) => tile.win === group.active);
+        cancelResizeForColumn(col);
+        updateTileSizes(col);
+    }
+
+    /** A group went away: its column stops being tabbed, unless it was down to one tab. */
+    function dropGroup(group) {
+        const col = columns.find((other) => other.group === group);
+        if (col === undefined) return;
+        col.group = null;
+        if (col.tiles.length > 1 && col.tiles.every((tile) => tile.win.group === null)) {
+            col.display = "normal";
+            updateTileSizes(col);
+        }
+    }
+
+    // The insert hint.
+
+    function showHint(pointer) {
+        if (!options("insert-hint")) return;
+        hintNode ??= bento.createNode("box", {
+            cornerRadius: HINT_CORNER_RADIUS,
+            transitions: { rect: "window-movement" },
+        });
+        hintNode.set({
+            rect: insertHintArea(insertPosition(pointer)),
+            background: options("insert-hint-color"),
+        });
+        // Last, so it's above the windows.
+        ws.tree.append(hintNode);
+    }
+
+    function hideHint() {
+        hintNode?.remove();
+    }
+
+    /** Places every window, draws the tab indicators, and moves the camera. */
     function apply(animate) {
-        const tabBars = new Map();
+        const bars = new Map();
         let x = 0;
         for (const col of columns) {
             const mode = sizingMode(col);
             const offsets = tileOffsets(col);
 
             // Fullscreen and maximized columns hide the tab indicator.
-            if (col.display === "tabbed" && mode === "normal") {
+            if (showsIndicator(col)) {
                 const origin = tilesOrigin(col);
                 const active = col.tiles[col.activeTileIdx];
-                const bar = {
+                bars.set(col.id, {
                     // The active tab's width, and the height of the tallest one, so the indicator
                     // stays put when switching to a smaller tab like a dialog.
                     area: {
-                        x: ws.round(x + origin.x),
-                        y: ws.round(origin.y),
+                        x: round(x + origin.x),
+                        y: round(origin.y),
                         w: active.size.w,
                         h: Math.max(...col.tiles.map((tile) => tile.size.h)),
                     },
-                    windows: col.tiles.map((tile) => tile.win),
-                    active: active.win,
-                };
-                tabBars.set(`column-${col.id}`, bar);
+                    tiles: col.tiles,
+                    active: col.activeTileIdx,
+                });
             }
 
             col.tiles.forEach((tile, idx) => {
                 const { win } = tile;
-                ws.setMode(win, mode);
-                ws.setVisible(win, col.display !== "tabbed" || idx === col.activeTileIdx);
-                ws.setActiveInColumn(win, idx === col.activeTileIdx);
+                win.setMode(mode);
+                win.setVisible(col.display !== "tabbed" || idx === col.activeTileIdx);
                 const rect = {
-                    x: ws.round(x + offsets[idx].x),
-                    y: ws.round(offsets[idx].y),
+                    x: round(x + offsets[idx].x),
+                    y: round(offsets[idx].y),
                     w: tile.size.w,
                     h: tile.size.h,
                 };
-                ws.place(win, rect, { animate });
+                win.place(rect, { animate });
             });
             x += columnWidth(col) + gaps();
         }
 
-        for (const [key, bar] of tabBars) ws.setTabBar(key, bar);
-        for (const key of ws.tabBars) {
-            if (!tabBars.has(key)) ws.setTabBar(key, null);
-        }
+        drawTabIndicators(bars);
+        syncGroups();
 
-        if (columns.length > 0) {
-            const camera = { x: ws.round(columnX(activeColumnIdx) + viewOffset), y: 0 };
+        // A swipe moves the camera itself until it ends.
+        if (columns.length > 0 && !swiping) {
+            const camera = { x: round(columnX(activeColumnIdx) + viewOffset), y: 0 };
             if (camera.x !== ws.camera.x || camera.y !== ws.camera.y) {
-                ws.moveCamera(camera, { animate: animate && !skipCameraAnimation });
+                ws.camera.move(camera, {
+                    animate: animate && !skipCameraAnimation,
+                    velocity: cameraVelocity,
+                });
             }
         }
     }
@@ -2057,7 +2557,7 @@ export default function create(ws) {
      * doesn't take focus from somewhere else.
      */
     function mutate(fn, { animate = true, focus = "follow", hadFocus = ws.focused !== null } = {}) {
-        // bento moves the camera itself for swipes and while dragging near the edges; take the
+        // Swipes and dragging near the view's edges move the camera without the strip; take the
         // view offset from wherever it is.
         if (columns.length > 0) viewOffset = ws.camera.x - columnX(activeColumnIdx);
         const activeBefore = activeWindow();
@@ -2071,12 +2571,33 @@ export default function create(ws) {
 
         const active = activeWindow();
         const changed = active !== activeBefore;
-        if (focus === "always" || (changed && (focus === "changed" || hadFocus))) {
-            if (ws.focused !== active) ws.focus(active);
-            if (active !== null) ws.raise(active);
+        if (active !== null && (focus === "always" || (changed && (focus === "changed" || hadFocus)))) {
+            if (ws.focused !== active) active.focus();
+            active.raise();
         }
         lastFocused = ws.focused;
+
+        const exposedNow = JSON.stringify(exposed());
+        if (exposedNow !== lastExposed) {
+            lastExposed = exposedNow;
+            bento.stateChanged();
+        }
         return result;
+    }
+
+    /** The strip's state for those reading it from outside. */
+    function exposed() {
+        return {
+            active: columns.length > 0 ? activeColumnIdx : null,
+            columns: columns.map((col) => ({
+                windows: col.tiles.map((tile) => tile.win.id),
+                active: col.tiles[col.activeTileIdx].win.id,
+                width: col.width,
+                fullWidth: col.isFullWidth,
+                display: col.display,
+                mode: sizingMode(col),
+            })),
+        };
     }
 
     // Actions.
@@ -2234,28 +2755,88 @@ export default function create(ws) {
         }
     }
 
-    // The engine.
+    // The strip.
+
+    /** The size a window opening on this workspace gets, niri's `new_window_size`. */
+    function newWindowSize({ rules, minSize, maxSize, borders }) {
+        const area = workingArea();
+        const extra = newColumnExtraSize();
+        const fromPreset = (preset, length, extra, border) => {
+            const resolved = resolvePresetSize(preset, length, extra);
+            return resolved.tile !== undefined ? resolved.tile - border : resolved.window;
+        };
+        const width = rulesWidth(rules);
+        const height = rulesHeight(rules);
+        let w =
+            width === null
+                ? 0
+                : Math.max(1, Math.floor(fromPreset(width, area.w, extra.w, borders.w)));
+        const fullHeight = area.h - gaps() * 2 - borders.h;
+        let h =
+            height === null
+                ? fullHeight
+                : Math.min(fromPreset(height, area.h, extra.h, borders.h), fullHeight);
+        h = Math.max(Math.floor(h), 1);
+
+        // Window limits, without borders.
+        const limit = (value, border) => (value > 0 ? Math.max(1, value - border) : 0);
+        const min = { w: limit(minSize.w, borders.w), h: limit(minSize.h, borders.h) };
+        const max = { w: limit(maxSize.w, borders.w), h: limit(maxSize.h, borders.h) };
+        // Fixed-size windows get their size, others can pick a width if none is set.
+        if (w !== 0) w = applyLimits(w, min.w, max.w);
+        else if (min.w > 0 && min.w === max.w) w = min.w;
+        // Scrolling only honors a fixed height, and always min height.
+        if (min.h === max.h) h = applyLimits(h, min.h, max.h);
+        else h = Math.max(h, min.h);
+
+        return { w: w === 0 ? 0 : w + borders.w, h: h + borders.h };
+    }
+
+    /** Resets what a window that moved to another strip remembers of the one it left. */
+    function resetTile(tile) {
+        tile.taken = null;
+        tile.seen = { size: { ...tile.win.size }, limits: limitsKey(tile.win) };
+        tile.committedSize = null;
+    }
 
     return {
+        has: (win) => find(win) !== null,
+        exposed,
+
         windowAdded(win, how) {
+            hideHint();
             mutate(() => addWindow(win, how), { focus: how.activate ? "always" : "follow" });
         },
 
-        windowRemoved(win, how) {
+        windowRemoved(win, reason) {
             const hadFocus = ws.focused !== null || lastFocused?.id === win.id;
-            mutate(() => removeWindow(win, how.reason), { hadFocus });
+            mutate(() => removeWindow(win, reason), { hadFocus });
         },
 
-        adopt(windows, focused, state) {
-            mutate(() => adopt(windows, focused, state), {
-                focus: focused !== null ? "always" : "follow",
-            });
+        /** Takes over the windows that were here when the engine started, `{ win, rect }`. */
+        adopt(entries, focused, state) {
+            const rects = new Map(entries.map(({ win, rect }) => [win.id, rect ?? null]));
+            mutate(
+                () => {
+                    adopt(
+                        entries.map(({ win }) => win),
+                        rects,
+                        focused,
+                        state,
+                    );
+                    // Groups that were already there show as tabbed columns.
+                    for (const group of bento.groups) {
+                        if (find(group.active) !== null) matchGroup(group);
+                    }
+                },
+                { focus: focused !== null ? "always" : "follow" },
+            );
         },
 
         save,
 
+        /** Runs an action; returns whether it changed the layout. */
         action(name, args, target) {
-            // Whether an action did anything is whether it changed the layout.
             return mutate(
                 () => {
                     const before = JSON.stringify(save());
@@ -2264,6 +2845,11 @@ export default function create(ws) {
                 },
                 { focus: "changed" },
             );
+        },
+
+        /** Gives focus to the active window, for a strip that just became the one shown. */
+        focusActive() {
+            mutate(() => {}, { focus: "always" });
         },
 
         activate(win) {
@@ -2319,6 +2905,7 @@ export default function create(ws) {
             });
         },
 
+        /** The monitor's size, scale or working area changed, or the workspace moved to another. */
         viewChanged() {
             mutate(() => {
                 updateAllTileSizes();
@@ -2328,19 +2915,31 @@ export default function create(ws) {
 
         configChanged() {
             mutate(() => {
-                const config = ws.config;
-                if (!samePresets(config.presetColumnWidths, lastConfig.presetColumnWidths)) {
+                const now = bento.options;
+                if (!samePresets(now["preset-column-widths"], lastOptions["preset-column-widths"])) {
                     for (const col of columns) col.presetWidthIdx = null;
                 }
-                if (!samePresets(config.presetWindowHeights, lastConfig.presetWindowHeights)) {
+                if (!samePresets(now["preset-window-heights"], lastOptions["preset-window-heights"])) {
                     for (const col of columns) convertHeightsToAuto(col);
                 }
-                lastConfig = config;
+                lastOptions = now;
                 updateAllTileSizes();
                 // Apply always-center and such right away.
                 if (columns.length > 0) fitView();
             });
         },
+
+        // Groups.
+
+        groupChanged(group) {
+            mutate(() => matchGroup(group));
+        },
+
+        groupRemoved(group) {
+            mutate(() => dropGroup(group));
+        },
+
+        // Pointer resizing.
 
         resizeBegin(win, resize) {
             if (interactiveResize !== null) return false;
@@ -2374,58 +2973,403 @@ export default function create(ws) {
             });
         },
 
-        gestureEnd(velocity, projected) {
-            mutate(() => viewOffsetGestureEnd(projected ?? ws.camera), { focus: "changed" });
+        /** A double click on a resize edge: left and right toggle the width, top and bottom the height. */
+        edgeDoubleClick(win, edges) {
+            mutate(() => {
+                const found = find(win);
+                if (found === null) return;
+                const [colIdx, tileIdx] = found;
+                const col = columns[colIdx];
+                if (sizingMode(col) === "fullscreen") return;
+                if (edges.left || edges.right) toggleFullWidth(col);
+                if (edges.top || edges.bottom) {
+                    if (col.tiles[tileIdx].height.kind === "auto") {
+                        setWindowHeight(col, { op: "set", value: 100, unit: "%" }, tileIdx);
+                    } else {
+                        resetWindowHeight(col, tileIdx);
+                    }
+                }
+                cancelResizeForColumn(col);
+            });
         },
 
-        // Queries: these only compute, without changing anything.
+        // Swipes. The camera follows the fingers, and the end snaps it to a column.
 
-        dropTarget(win, pointer) {
-            return insertHintArea(insertPosition(pointer));
+        swipeBegin() {
+            swiping = true;
         },
 
-        newWindowSize({ rules, minSize, maxSize, borders }) {
-            // niri's `new_window_size`, computed for the window and given back as a tile size.
-            const area = workingArea();
-            const extra = newColumnExtraSize();
-            const fromPreset = (preset, length, extra, border) => {
-                const resolved = resolvePresetSize(preset, length, extra);
-                return resolved.tile !== undefined ? resolved.tile - border : resolved.window;
-            };
-            let w =
-                rules.defaultWidth === null
-                    ? 0
-                    : Math.max(
-                          1,
-                          Math.floor(fromPreset(rules.defaultWidth, area.w, extra.w, borders.w)),
-                      );
-            const fullHeight = area.h - gaps() * 2 - borders.h;
-            let h =
-                rules.defaultHeight === null
-                    ? fullHeight
-                    : Math.min(
-                          fromPreset(rules.defaultHeight, area.h, extra.h, borders.h),
-                          fullHeight,
-                      );
-            h = Math.max(Math.floor(h), 1);
-
-            // Window limits, without borders.
-            const limit = (value, border) => (value > 0 ? Math.max(1, value - border) : 0);
-            const min = { w: limit(minSize.w, borders.w), h: limit(minSize.h, borders.h) };
-            const max = { w: limit(maxSize.w, borders.w), h: limit(maxSize.h, borders.h) };
-            // Fixed-size windows get their size, others can pick a width if none is set.
-            if (w !== 0) w = applyLimits(w, min.w, max.w);
-            else if (min.w > 0 && min.w === max.w) w = min.w;
-            // Scrolling only honors a fixed height, and always min height.
-            if (min.h === max.h) h = applyLimits(h, min.h, max.h);
-            else h = Math.max(h, min.h);
-
-            return { w: w === 0 ? 0 : w + borders.w, h: h + borders.h };
+        swipeUpdate(delta) {
+            ws.camera.move({ x: ws.camera.x + delta }, { animate: false });
         },
 
-        ipcPosition(win) {
-            const found = find(win);
-            return found === null ? null : [found[0] + 1, found[1] + 1];
+        swipeEnd(velocity) {
+            swiping = false;
+            const projected = ws.camera.x - velocity / (1000 * Math.log(SWIPE_DECELERATION));
+            cameraVelocity = velocity;
+            try {
+                mutate(() => viewOffsetGestureEnd({ x: projected, y: 0 }), { focus: "changed" });
+            } finally {
+                cameraVelocity = 0;
+            }
+        },
+
+        // Dragging windows over the workspace.
+
+        dragOver: showHint,
+        dragLeave: hideHint,
+
+        newWindowSize,
+
+        // Moving between workspaces.
+
+        /** Takes the column of `target`, or the active one, out for another workspace. */
+        takeColumn(target) {
+            return mutate(() => {
+                if (columns.length === 0) return null;
+                const colIdx = target === null ? activeColumnIdx : find(target)[0];
+                const col = columns[colIdx];
+                const windows = col.tiles.map((tile) => tile.win);
+                // The group is made again where the column lands.
+                col.group?.dissolve();
+                col.group = null;
+                removeColumn(colIdx);
+                return { column: col, windows };
+            });
+        },
+
+        /** Puts a column that came from another workspace right of the active one. */
+        putColumn(col, activate) {
+            mutate(
+                () => {
+                    col.id = nextColumnId++;
+                    col.tiles.forEach(resetTile);
+                    updateTileSizes(col);
+                    markCommitted(col);
+                    addColumn(null, col, activate);
+                },
+                { focus: activate ? "always" : "follow" },
+            );
+        },
+
+        /** Takes the window of `target`, or the active one, out of its column. */
+        takeTile(target) {
+            return mutate(() => {
+                if (columns.length === 0) return null;
+                const [colIdx, tileIdx] = target === null ? [activeColumnIdx, columns[activeColumnIdx].activeTileIdx] : find(target);
+                const col = columns[colIdx];
+                col.group?.remove(col.tiles[tileIdx].win);
+                return removeTile(colIdx, tileIdx);
+            });
+        },
+
+        /** Puts a window that came from another workspace in a column of its own. */
+        putTile(removed, activate) {
+            mutate(
+                () => {
+                    resetTile(removed.tile);
+                    addTile(null, removed.tile, activate, removed.width, removed.isFullWidth, removed.mode);
+                },
+                { focus: activate ? "always" : "follow" },
+            );
+        },
+
+        /** Takes away what the strip drew, for a workspace that's gone. */
+        dispose() {
+            for (const nodes of tabNodes.values()) nodes.forEach((node) => node.remove());
+            tabNodes.clear();
+            hideHint();
         },
     };
+}
+
+// The engine: one strip for each workspace, and what crosses from one to another.
+
+export default function create(bento) {
+    /** Strips by workspace id. */
+    const strips = new Map();
+    /** Windows and groups whose events are followed. */
+    const followed = new WeakSet();
+    /**
+     * Windows that were there when the engine started, by workspace: they come to the engine one
+     * by one, and a strip takes them over together, once the last one arrived.
+     */
+    const adopting = new Map();
+
+    const geometryOf = (ws) =>
+        JSON.stringify([ws.monitor?.name, ws.monitor?.size, ws.monitor?.scale, ws.monitor?.workingArea]);
+
+    function stripOf(ws) {
+        let strip = strips.get(ws.id);
+        if (strip === undefined) {
+            strip = createStrip(bento, ws);
+            strips.set(ws.id, strip);
+            watchWorkspace(ws, strip);
+        }
+        return strip;
+    }
+
+    /** The strip a window is in, if the engine places it. */
+    function stripWith(win) {
+        const strip = strips.get(win.workspace?.id);
+        return strip?.has(win) ? strip : undefined;
+    }
+
+    function watchWorkspace(ws, strip) {
+        let geometry = geometryOf(ws);
+        ws.addEventListener("change", () => {
+            // Moving to another monitor lays the columns out again; switching to it doesn't.
+            const now = geometryOf(ws);
+            if (now !== geometry) {
+                geometry = now;
+                strip.viewChanged();
+            }
+        });
+        ws.addEventListener("remove", () => {
+            strip.dispose();
+            strips.delete(ws.id);
+            bento.stateChanged();
+        });
+        ws.addEventListener("swipebegin", () => strip.swipeBegin());
+        ws.addEventListener("swipeupdate", (e) => strip.swipeUpdate(e.delta));
+        ws.addEventListener("swipeend", (e) => strip.swipeEnd(e.velocity));
+        ws.addEventListener("dragenter", (e) => strip.dragOver(e.pointer));
+        ws.addEventListener("dragmove", (e) => strip.dragOver(e.pointer));
+        ws.addEventListener("dragleave", () => strip.dragLeave());
+    }
+
+    function watchMonitor(monitor) {
+        monitor.addEventListener("change", () => {
+            for (const ws of monitor.workspaces) strips.get(ws.id)?.viewChanged();
+        });
+    }
+
+    function watchGroup(group) {
+        if (followed.has(group)) return;
+        followed.add(group);
+        group.addEventListener("change", () => matchGroup(group));
+        group.addEventListener("remove", () => {
+            for (const strip of strips.values()) strip.groupRemoved(group);
+        });
+    }
+
+    function matchGroup(group) {
+        stripWith(group.active)?.groupChanged(group);
+    }
+
+    function watchWindow(win) {
+        if (followed.has(win)) return;
+        followed.add(win);
+        win.addEventListener("remove", (e) => stripWith(win)?.windowRemoved(win, e.reason));
+        win.addEventListener("move", (e) => {
+            // bento moved the window with one of its own actions.
+            const from = strips.get(e.from.id);
+            if (from?.has(win)) {
+                from.windowRemoved(win, "move");
+                stripOf(e.to).windowAdded(win, {
+                    reason: "move",
+                    activate: e.activate,
+                    rect: null,
+                    pointer: null,
+                    nextTo: null,
+                });
+            }
+        });
+        win.addEventListener("change", () => stripWith(win)?.windowChanged(win));
+        win.addEventListener("moderequest", (e) => {
+            const strip = stripWith(win);
+            if (strip !== undefined) {
+                e.preventDefault();
+                strip.modeRequested(win, e.mode, { ...e.request });
+            }
+        });
+        win.addEventListener("activaterequest", () => stripWith(win)?.activate(win));
+        win.addEventListener("resizebegin", (e) => {
+            // Without the engine's say, bento refuses the resize.
+            const strip = stripWith(win);
+            if (strip === undefined || !strip.resizeBegin(win, e)) e.preventDefault();
+        });
+        win.addEventListener("resizeupdate", (e) => stripWith(win)?.resizeUpdate(win, e));
+        win.addEventListener("resizeend", () => stripWith(win)?.resizeEnd(win));
+        win.addEventListener("edgedoubleclick", (e) => stripWith(win)?.edgeDoubleClick(win, e.edges));
+    }
+
+    // Across strips.
+
+    /** Moves keyboard focus to a monitor. Returns whether there was one. */
+    function focusMonitor(monitor) {
+        if (monitor === null || monitor === undefined) return false;
+        monitor.focus();
+        const ws = monitor.activeWorkspace;
+        if (ws.focused === null) stripOf(ws).focusActive();
+        return true;
+    }
+
+    /** Shows a workspace, and focuses its window. Returns whether there was one. */
+    function focusWorkspace(ws) {
+        if (ws === null || ws === undefined) return false;
+        ws.show();
+        ws.monitor.focus();
+        if (ws.focused === null) stripOf(ws).focusActive();
+        return true;
+    }
+
+    const below = (ws) => ws.monitor.workspaces[ws.index + 1];
+    const above = (ws) => ws.monitor.workspaces[ws.index - 1];
+
+    /** The monitor `step` places from the workspace's monitor, going around. */
+    function monitorBy(ws, step) {
+        const monitors = bento.monitors;
+        return monitors[(monitors.indexOf(ws.monitor) + step + monitors.length) % monitors.length];
+    }
+
+    /** Moves the column of `target` to a workspace, and focus goes along with it. */
+    function moveColumn(strip, target, to, focus) {
+        if (to === null || to === undefined || stripOf(to) === strip) return false;
+        const taken = strip.takeColumn(target);
+        if (taken === null) return false;
+        for (const win of taken.windows) win.moveTo(to);
+        stripOf(to).putColumn(taken.column, focus);
+        if (focus) focusWorkspace(to);
+        return true;
+    }
+
+    /** Moves a window to a workspace, as a column of its own. */
+    function moveWindow(strip, target, to, focus) {
+        if (to === null || to === undefined || stripOf(to) === strip) return false;
+        const removed = strip.takeTile(target);
+        if (removed === null) return false;
+        removed.tile.win.moveTo(to);
+        stripOf(to).putTile(removed, focus);
+        if (focus) focusWorkspace(to);
+        return true;
+    }
+
+    /**
+     * Actions that go on to another monitor or workspace when the strip can't do them; the
+     * others are the strip's own. Each gets the strip, the window it's for, and the arguments.
+     */
+    const across = {
+        "focus-column-or-monitor-left": (ws, strip, target) =>
+            strip.action("focus-column-left", [], target) || focusMonitor(ws.monitor.left),
+        "focus-column-or-monitor-right": (ws, strip, target) =>
+            strip.action("focus-column-right", [], target) || focusMonitor(ws.monitor.right),
+        "focus-window-or-monitor-up": (ws, strip, target) =>
+            strip.action("focus-window-up", [], target) || focusMonitor(ws.monitor.up),
+        "focus-window-or-monitor-down": (ws, strip, target) =>
+            strip.action("focus-window-down", [], target) || focusMonitor(ws.monitor.down),
+        "focus-window-or-workspace-up": (ws, strip, target) =>
+            strip.action("focus-window-up", [], target) || focusWorkspace(above(ws)),
+        "focus-window-or-workspace-down": (ws, strip, target) =>
+            strip.action("focus-window-down", [], target) || focusWorkspace(below(ws)),
+
+        "move-column-left-or-to-monitor-left": (ws, strip, target, args) =>
+            strip.action("move-column-left", [], target) ||
+            moveColumn(strip, target, ws.monitor.left?.activeWorkspace, args[0] !== false),
+        "move-column-right-or-to-monitor-right": (ws, strip, target, args) =>
+            strip.action("move-column-right", [], target) ||
+            moveColumn(strip, target, ws.monitor.right?.activeWorkspace, args[0] !== false),
+
+        "move-column-to-workspace": (ws, strip, target, args) =>
+            moveColumn(strip, target, args[0], args[1] !== false),
+        "move-column-to-workspace-up": (ws, strip, target, args) =>
+            moveColumn(strip, target, above(ws), args[0] !== false),
+        "move-column-to-workspace-down": (ws, strip, target, args) =>
+            moveColumn(strip, target, below(ws), args[0] !== false),
+        "move-column-to-monitor": (ws, strip, target, args) =>
+            moveColumn(strip, target, args[0]?.activeWorkspace, args[1] !== false),
+        "move-column-to-monitor-left": (ws, strip, target, args) =>
+            moveColumn(strip, target, ws.monitor.left?.activeWorkspace, args[0] !== false),
+        "move-column-to-monitor-right": (ws, strip, target, args) =>
+            moveColumn(strip, target, ws.monitor.right?.activeWorkspace, args[0] !== false),
+        "move-column-to-monitor-up": (ws, strip, target, args) =>
+            moveColumn(strip, target, ws.monitor.up?.activeWorkspace, args[0] !== false),
+        "move-column-to-monitor-down": (ws, strip, target, args) =>
+            moveColumn(strip, target, ws.monitor.down?.activeWorkspace, args[0] !== false),
+        "move-column-to-monitor-previous": (ws, strip, target, args) =>
+            moveColumn(strip, target, monitorBy(ws, -1).activeWorkspace, args[0] !== false),
+        "move-column-to-monitor-next": (ws, strip, target, args) =>
+            moveColumn(strip, target, monitorBy(ws, 1).activeWorkspace, args[0] !== false),
+
+        "move-window-down-or-to-workspace-down": (ws, strip, target, args) =>
+            strip.action("move-window-down", [], target) ||
+            moveWindow(strip, target, below(ws), args[0] !== false),
+        "move-window-up-or-to-workspace-up": (ws, strip, target, args) =>
+            strip.action("move-window-up", [], target) ||
+            moveWindow(strip, target, above(ws), args[0] !== false),
+    };
+
+    // Listening.
+
+    bento.addEventListener("monitoradd", (e) => watchMonitor(e.monitor));
+    bento.addEventListener("workspaceadd", (e) => stripOf(e.workspace));
+    bento.addEventListener("groupadd", (e) => {
+        watchGroup(e.group);
+        matchGroup(e.group);
+    });
+    bento.addEventListener("configchange", () => {
+        for (const strip of strips.values()) strip.configChanged();
+    });
+    bento.addEventListener("newwindowsize", (e) => e.respondWith(stripOf(e.workspace).newWindowSize(e)));
+
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        watchWindow(win);
+        const ws = win.workspace;
+        const pending = adopting.get(ws.id);
+        if (e.reason === "adopt" && pending !== undefined) {
+            pending.entries.push({ win, rect: e.rect, activate: e.activate });
+            if (pending.entries.length === pending.expected) {
+                adopting.delete(ws.id);
+                const state = bento.savedState?.workspaces?.[ws.id] ?? null;
+                const focused = pending.entries.find((entry) => entry.activate)?.win ?? null;
+                stripOf(ws).adopt(pending.entries, focused, state);
+            }
+            return;
+        }
+        stripOf(ws).windowAdded(win, {
+            reason: e.reason,
+            activate: e.activate,
+            rect: e.rect,
+            pointer: e.pointer,
+            nextTo: e.nextTo,
+        });
+    });
+
+    bento.addEventListener("action", (e) => {
+        const ws = e.window?.workspace ?? bento.focusedMonitor?.activeWorkspace;
+        if (ws === null || ws === undefined) return;
+        const strip = stripOf(ws);
+        // An action on a window the engine doesn't place, like a floating one, is for the strip.
+        const target = e.window !== null && strip.has(e.window) ? e.window : null;
+        const args = [...e.args];
+        if (Object.hasOwn(across, e.name)) {
+            across[e.name](ws, strip, target, args);
+        } else {
+            strip.action(e.name, args, target);
+        }
+    });
+
+    bento.addEventListener("unload", (e) => {
+        e.saveState({
+            workspaces: Object.fromEntries([...strips].map(([id, strip]) => [id, strip.save()])),
+        });
+    });
+
+    bento.exposeState(() => ({
+        workspaces: [...strips].map(([id, strip]) => ({ id, ...strip.exposed() })),
+    }));
+
+    // What's there already.
+
+    for (const monitor of bento.monitors) {
+        watchMonitor(monitor);
+        for (const ws of monitor.workspaces) {
+            stripOf(ws);
+            if (ws.windows.length > 0) {
+                adopting.set(ws.id, { expected: ws.windows.length, entries: [] });
+            }
+        }
+    }
+    for (const group of bento.groups) watchGroup(group);
 }

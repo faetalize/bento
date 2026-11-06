@@ -1,26 +1,21 @@
-use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::{env, io, process};
 
 use anyhow::Context;
 use async_channel::{Receiver, Sender, TrySendError};
+use bento_ipc::{
+    Event, EventKind, Focused, Get, LayoutEngine, OutputConfigChanged, Overview, Request, Response,
+};
 use calloop::futures::Scheduler;
 use calloop::io::Async;
 use directories::BaseDirs;
 use futures_util::io::{AsyncReadExt, BufReader};
 use futures_util::{select_biased, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, FutureExt as _};
-use niri_config::OutputName;
-use niri_ipc::state::{EventStreamState, EventStreamStatePart as _};
-use niri_ipc::{
-    Action, Event, KeyboardLayouts, OutputConfigChanged, Overview, Reply, Request, Response,
-    Timestamp, WindowLayout, Workspace,
-};
-use smithay::desktop::layer_map_for_output;
+use niri_config::actions::native_actions;
+use niri_config::{Action, OutputName};
 use smithay::input::pointer::{
     CursorIcon, CursorImageStatus, Focus, GrabStartData as PointerGrabStartData,
 };
@@ -28,16 +23,14 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::rustix::fs::unlink;
 use smithay::utils::SERIAL_COUNTER;
-use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer};
 
-use crate::backend::IpcOutputMap;
-use crate::handlers::image_copy_capture;
+use super::action::{self, ActionRequest};
+use super::read;
+use super::snapshot::{Focus as FocusedIds, Snapshot};
 use crate::input::pick_window_grab::PickWindowGrab;
 use crate::layout::tiling::engine;
-use crate::layout::workspace::WorkspaceId;
 use crate::niri::State;
-use crate::utils::{version, with_toplevel_role};
-use crate::window::Mapped;
+use crate::utils::version;
 
 // If an event stream client fails to read events fast enough that we accumulate more than this
 // number in our buffer, we drop that event stream client.
@@ -48,19 +41,26 @@ pub struct IpcServer {
     ///
     /// This is `None` when creating `IpcServer` without a socket.
     pub socket_path: Option<PathBuf>,
-    event_streams: Rc<RefCell<Vec<EventStreamSender>>>,
-    event_stream_state: Rc<RefCell<EventStreamState>>,
+    event_streams: Vec<EventStreamSender>,
+    /// What the event streams know. It's only kept up to date while there are streams.
+    snapshot: Snapshot,
+    /// Whether the last attempt to load the config failed, once there was one.
+    config_failed: Option<bool>,
+    /// The engine the event streams know, with the generation it was read at.
+    engine: Option<LayoutEngine>,
+    engine_generation: u64,
+    /// Whether the engine's options may have changed since it was read.
+    engine_dirty: bool,
 }
 
 struct ClientCtx {
     event_loop: LoopHandle<'static, State>,
     scheduler: Scheduler<()>,
-    ipc_outputs: Arc<Mutex<IpcOutputMap>>,
-    event_streams: Rc<RefCell<Vec<EventStreamSender>>>,
-    event_stream_state: Rc<RefCell<EventStreamState>>,
 }
 
 struct EventStreamClient {
+    /// What the subscriber has to be told first.
+    replay: Vec<Event>,
     events: Receiver<Event>,
     disconnect: Receiver<()>,
     write: Box<dyn AsyncWrite + Unpin>,
@@ -69,6 +69,16 @@ struct EventStreamClient {
 struct EventStreamSender {
     events: Sender<Event>,
     disconnect: Sender<()>,
+    /// The kinds of events the subscriber wants, or all of them.
+    kinds: Option<HashSet<EventKind>>,
+}
+
+impl EventStreamSender {
+    fn wants(&self, kind: EventKind) -> bool {
+        self.kinds
+            .as_ref()
+            .is_none_or(|kinds| kinds.contains(&kind))
+    }
 }
 
 impl IpcServer {
@@ -109,15 +119,23 @@ impl IpcServer {
 
         Ok(Self {
             socket_path,
-            event_streams: Rc::new(RefCell::new(Vec::new())),
-            event_stream_state: Rc::new(RefCell::new(EventStreamState::default())),
+            event_streams: Vec::new(),
+            snapshot: Snapshot::default(),
+            config_failed: None,
+            engine: None,
+            engine_generation: 0,
+            engine_dirty: false,
         })
     }
 
-    fn send_event(&self, event: Event) {
-        let mut streams = self.event_streams.borrow_mut();
+    fn send_event(&mut self, event: Event) {
+        let kind = event.kind();
         let mut to_remove = Vec::new();
-        for (idx, stream) in streams.iter_mut().enumerate() {
+        for (idx, stream) in self.event_streams.iter().enumerate() {
+            if !stream.wants(kind) {
+                continue;
+            }
+
             match stream.events.try_send(event.clone()) {
                 Ok(()) => (),
                 Err(TrySendError::Closed(_)) => to_remove.push(idx),
@@ -132,9 +150,13 @@ impl IpcServer {
         }
 
         for idx in to_remove.into_iter().rev() {
-            let stream = streams.swap_remove(idx);
+            let stream = self.event_streams.swap_remove(idx);
             let _ = stream.disconnect.send_blocking(());
         }
+    }
+
+    fn wants(&self, kind: EventKind) -> bool {
+        self.event_streams.iter().any(|stream| stream.wants(kind))
     }
 }
 
@@ -166,14 +188,9 @@ fn on_new_ipc_client(state: &mut State, stream: UnixStream) {
         }
     };
 
-    let ipc_server = state.niri.ipc_server.as_ref().unwrap();
-
     let ctx = ClientCtx {
         event_loop: state.niri.event_loop.clone(),
         scheduler: state.niri.scheduler.clone(),
-        ipc_outputs: state.backend.ipc_outputs(),
-        event_streams: ipc_server.event_streams.clone(),
-        event_stream_state: ipc_server.event_stream_state.clone(),
     };
 
     let future = async move {
@@ -204,11 +221,12 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
             }
         }
 
-        let request = serde_json::from_slice(&buf)
-            .context("error parsing request")
-            .map_err(|err| err.to_string());
-        let requested_error = matches!(request, Ok(Request::ReturnError));
-        let requested_event_stream = matches!(request, Ok(Request::EventStream));
+        let request = serde_json::from_slice::<Request>(&buf)
+            .map_err(|err| format!("error parsing request: {err}"));
+        let subscription = match &request {
+            Ok(Request::Subscribe { events }) => Some(events.clone()),
+            _ => None,
+        };
 
         let reply = match request {
             Ok(request) => process(&ctx, request).await,
@@ -216,22 +234,33 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
         };
 
         if let Err(err) = &reply {
-            if !requested_error {
-                warn!("error processing IPC request: {err:?}");
-            }
+            warn!("error processing IPC request: {err}");
         }
+        let response = reply.unwrap_or_else(Response::Error);
 
         buf.clear();
-        serde_json::to_writer(&mut buf, &reply).context("error formatting reply")?;
+        serde_json::to_writer(&mut buf, &response).context("error formatting reply")?;
         buf.push(b'\n');
         write.write_all(&buf).await.context("error writing reply")?;
 
-        if requested_event_stream {
+        if let Some(events) = subscription {
             let (events_tx, events_rx) = async_channel::bounded(EVENT_STREAM_BUFFER_SIZE);
             let (disconnect_tx, disconnect_rx) = async_channel::bounded(1);
+            let sender = EventStreamSender {
+                events: events_tx,
+                disconnect: disconnect_tx,
+                kinds: events.map(|kinds| kinds.into_iter().collect()),
+            };
+
+            // The state the subscriber is told and the events after it have to follow each other
+            // without a gap, so both are settled in one go on the main thread.
+            let replay = on_main(&ctx, move |state| state.ipc_subscribe(sender))
+                .await
+                .map_err(anyhow::Error::msg)?;
 
             // Spawn a task for the client.
             let client = EventStreamClient {
+                replay,
                 events: events_rx,
                 disconnect: disconnect_rx,
                 write: Box::new(write) as _,
@@ -245,102 +274,68 @@ async fn handle_client(ctx: ClientCtx, stream: Async<'static, UnixStream>) -> an
                 warn!("error scheduling IPC event stream future: {err:?}");
             }
 
-            // Send the initial state.
-            {
-                let state = ctx.event_stream_state.borrow();
-                for event in state.replicate() {
-                    events_tx
-                        .try_send(event)
-                        .expect("initial event burst had more events than buffer size");
-                }
-            }
-
-            // Add it to the list.
-            {
-                let mut streams = ctx.event_streams.borrow_mut();
-                let sender = EventStreamSender {
-                    events: events_tx,
-                    disconnect: disconnect_tx,
-                };
-                streams.push(sender);
-            }
-
             return Ok(());
         }
     }
 }
 
-async fn process(ctx: &ClientCtx, request: Request) -> Reply {
+/// Runs `f` on the main thread, where the compositor's state is, and waits for its result.
+async fn on_main<T: 'static>(
+    ctx: &ClientCtx,
+    f: impl FnOnce(&mut State) -> T + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = async_channel::bounded(1);
+    ctx.event_loop.insert_idle(move |state| {
+        let _ = tx.send_blocking(f(state));
+    });
+    rx.recv()
+        .await
+        .map_err(|_| String::from("bento is shutting down"))
+}
+
+async fn process(ctx: &ClientCtx, request: Request) -> Result<Response, String> {
     let response = match request {
-        Request::ReturnError => return Err(String::from("example compositor error")),
-        Request::Version => Response::Version(version()),
-        Request::Outputs => {
-            let ipc_outputs = ctx.ipc_outputs.lock().unwrap().clone();
-            let outputs = ipc_outputs.values().cloned().map(|o| (o.name.clone(), o));
-            Response::Outputs(outputs.collect())
+        Request::Get { what } => get(ctx, what).await?,
+        Request::Action {
+            name,
+            args,
+            properties,
+            window,
+            workspace,
+        } => {
+            let request = ActionRequest {
+                name,
+                args,
+                properties,
+                window,
+                workspace,
+            };
+            // The engine lives on this thread, where the futures run too.
+            let action = action::parse(request, engine::action_args)?;
+            run_action(ctx, action).await;
+            Response::Handled
         }
-        Request::Workspaces => {
-            let state = ctx.event_stream_state.borrow();
-            let workspaces = state.workspaces.workspaces.values().cloned().collect();
-            Response::Workspaces(workspaces)
-        }
-        Request::Windows => {
-            let state = ctx.event_stream_state.borrow();
-            let windows = state.windows.windows.values().cloned().collect();
-            Response::Windows(windows)
-        }
-        Request::Layers => {
-            let (tx, rx) = async_channel::bounded(1);
-            ctx.event_loop.insert_idle(move |state| {
-                let mut layers = Vec::new();
-                for output in state.niri.global_space.outputs() {
-                    let name = output.name();
-                    for surface in layer_map_for_output(output).layers() {
-                        let layer = match surface.layer() {
-                            Layer::Background => niri_ipc::Layer::Background,
-                            Layer::Bottom => niri_ipc::Layer::Bottom,
-                            Layer::Top => niri_ipc::Layer::Top,
-                            Layer::Overlay => niri_ipc::Layer::Overlay,
-                        };
-                        let keyboard_interactivity =
-                            match surface.cached_state().keyboard_interactivity {
-                                KeyboardInteractivity::None => {
-                                    niri_ipc::LayerSurfaceKeyboardInteractivity::None
-                                }
-                                KeyboardInteractivity::Exclusive => {
-                                    niri_ipc::LayerSurfaceKeyboardInteractivity::Exclusive
-                                }
-                                KeyboardInteractivity::OnDemand => {
-                                    niri_ipc::LayerSurfaceKeyboardInteractivity::OnDemand
-                                }
-                            };
+        Request::Output { output, action } => {
+            action.validate()?;
 
-                        layers.push(niri_ipc::LayerSurface {
-                            namespace: surface.namespace().to_owned(),
-                            output: name.clone(),
-                            layer,
-                            keyboard_interactivity,
-                        });
-                    }
-                }
+            let found = on_main(ctx, move |state| {
+                let found = state
+                    .backend
+                    .ipc_outputs()
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .any(|o| OutputName::from_ipc_output(o).matches(&output));
+                state.apply_transient_output_config(&output, action);
+                found
+            })
+            .await?;
 
-                let _ = tx.send_blocking(layers);
-            });
-            let result = rx.recv().await;
-            let layers = result.map_err(|_| String::from("error getting layers info"))?;
-            Response::Layers(layers)
-        }
-        Request::KeyboardLayouts => {
-            let state = ctx.event_stream_state.borrow();
-            let layout = state.keyboard_layouts.keyboard_layouts.clone();
-            let layout = layout.expect("keyboard layouts should be set at startup");
-            Response::KeyboardLayouts(layout)
-        }
-        Request::FocusedWindow => {
-            let state = ctx.event_stream_state.borrow();
-            let windows = &state.windows.windows;
-            let window = windows.values().find(|win| win.is_focused).cloned();
-            Response::FocusedWindow(window)
+            Response::OutputConfigChanged(if found {
+                OutputConfigChanged::Applied
+            } else {
+                OutputConfigChanged::OutputWasMissing
+            })
         }
         Request::PickWindow => {
             let (tx, rx) = async_channel::bounded(1);
@@ -365,10 +360,16 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             });
             let result = rx.recv().await;
             let id = result.map_err(|_| String::from("error getting picked window info"))?;
-            let window = id.and_then(|id| {
-                let state = ctx.event_stream_state.borrow();
-                state.windows.windows.get(&id.get()).cloned()
-            });
+            let window = match id {
+                Some(id) => {
+                    on_main(ctx, move |state| {
+                        let groups = read::groups(state);
+                        read::windows(state, &groups).remove(&id.get())
+                    })
+                    .await?
+                }
+                None => None,
+            };
             Response::PickedWindow(window)
         }
         Request::PickColor => {
@@ -380,133 +381,162 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let color = result.map_err(|_| String::from("error getting picked color"))?;
             Response::PickedColor(color)
         }
-        Request::Action(action) => {
-            validate_action(&action)?;
-
-            let (tx, rx) = async_channel::bounded(1);
-
-            let action = niri_config::Action::from(action);
-            ctx.event_loop.insert_idle(move |state| {
-                // Make sure some logic like workspace clean-up has a chance to run before doing
-                // actions.
-                state.niri.advance_animations();
-                state.do_action(action, false);
-                let _ = tx.send_blocking(());
-            });
-
-            // Wait until the action has been processed before returning. This is important for a
-            // few actions, for instance for DoScreenTransition this wait ensures that the screen
-            // contents were sampled into the texture.
-            let _ = rx.recv().await;
+        Request::LoadConfigFile { path } => {
+            if let Some(path) = &path {
+                let p = Path::new(path);
+                // A relative path would resolve against bento's working directory, which is
+                // almost certainly not what you want.
+                if !p.is_absolute() {
+                    return Err(format!("path must be absolute: {path}"));
+                }
+                if !p.is_file() {
+                    return Err(format!("path does not point to a file: {path}"));
+                }
+            }
+            run_action(ctx, Action::LoadConfigFile(path)).await;
             Response::Handled
         }
-        Request::Output { output, action } => {
-            action.validate()?;
-
-            let ipc_outputs = ctx.ipc_outputs.lock().unwrap();
-            let found = ipc_outputs
-                .values()
-                .any(|o| OutputName::from_ipc_output(o).matches(&output));
-            let response = if found {
-                OutputConfigChanged::Applied
-            } else {
-                OutputConfigChanged::OutputWasMissing
+        Request::FocusWindow { id } => {
+            run_action(ctx, Action::FocusWindow(id)).await;
+            Response::Handled
+        }
+        Request::SetWindowUrgent { id, urgent } => {
+            let action = match urgent {
+                Some(true) => Action::SetWindowUrgent(id),
+                Some(false) => Action::UnsetWindowUrgent(id),
+                None => Action::ToggleWindowUrgent(id),
             };
-            drop(ipc_outputs);
-
-            ctx.event_loop.insert_idle(move |state| {
-                state.apply_transient_output_config(&output, action);
-            });
-
-            Response::OutputConfigChanged(response)
+            run_action(ctx, action).await;
+            Response::Handled
         }
-        Request::FocusedOutput => {
-            let (tx, rx) = async_channel::bounded(1);
-            ctx.event_loop.insert_idle(move |state| {
-                let active_output = state
-                    .niri
-                    .layout
-                    .active_output()
-                    .map(|output| output.name());
-
-                let output = active_output.and_then(|active_output| {
-                    state
-                        .backend
-                        .ipc_outputs()
-                        .lock()
-                        .unwrap()
-                        .values()
-                        .find(|o| o.name == active_output)
-                        .cloned()
-                });
-
-                let _ = tx.send_blocking(output);
-            });
-            let result = rx.recv().await;
-            let output = result.map_err(|_| String::from("error getting active output info"))?;
-            Response::FocusedOutput(output)
+        Request::StopCast { session_id } => {
+            run_action(ctx, Action::StopCast(session_id)).await;
+            Response::Handled
         }
-        Request::EventStream => Response::Handled,
-        Request::OverviewState => {
-            let state = ctx.event_stream_state.borrow();
-            let is_open = state.overview.is_open;
-            Response::OverviewState(Overview { is_open })
-        }
-        Request::Casts => {
-            let state = ctx.event_stream_state.borrow();
-            let casts = state.casts.casts.values().cloned().collect();
-            Response::Casts(casts)
-        }
-        Request::LayoutEngine => {
-            let (tx, rx) = async_channel::bounded(1);
-            // Idle callbacks run on the main thread, where the engine lives, with the config.
-            ctx.event_loop.insert_idle(move |state| {
-                let config = state.niri.config.borrow();
-                let _ = tx.send_blocking(engine::ipc_info(&config.tiling));
-            });
-            let result = rx.recv().await;
-            let info = result.map_err(|_| String::from("error getting layout engine info"))?;
-            let info = info.ok_or_else(|| String::from("no layout engine is loaded"))?;
-            Response::LayoutEngine(info)
-        }
+        // The connection turns into an event stream once the reply is written.
+        Request::Subscribe { .. } => Response::Handled,
     };
 
     Ok(response)
 }
 
-fn validate_action(action: &Action) -> Result<(), String> {
-    if let Action::Screenshot { path, .. }
-    | Action::ScreenshotScreen { path, .. }
-    | Action::ScreenshotWindow { path, .. }
-    | Action::LoadConfigFile { path } = action
-    {
-        if let Some(path) = path {
-            // Relative paths are resolved against the niri compositor's working directory, which
-            // is almost certainly not what you want.
-            if !Path::new(path).is_absolute() {
-                return Err(format!("path must be absolute: {path}"));
-            }
+async fn get(ctx: &ClientCtx, what: Get) -> Result<Response, String> {
+    let response = match what {
+        Get::Version => Response::Version(version()),
+        Get::Monitors => {
+            on_main(ctx, |state| {
+                let workspaces = read::workspaces(state);
+                Response::Monitors(read::monitors(state, &workspaces).into_values().collect())
+            })
+            .await?
         }
-    }
-
-    if let Action::LoadConfigFile { path: Some(path) } = action {
-        let p = Path::new(path);
-        if !p.is_file() {
-            return Err(format!("path does not point to a file: {path}"));
+        Get::Workspaces => {
+            on_main(ctx, |state| {
+                Response::Workspaces(read::workspaces(state).into_values().collect())
+            })
+            .await?
         }
-    }
+        Get::Windows => {
+            on_main(ctx, |state| {
+                let groups = read::groups(state);
+                Response::Windows(read::windows(state, &groups).into_values().collect())
+            })
+            .await?
+        }
+        Get::Groups => {
+            on_main(ctx, |state| {
+                Response::Groups(read::groups(state).into_values().collect())
+            })
+            .await?
+        }
+        Get::Layers => on_main(ctx, |state| Response::Layers(read::layers(state))).await?,
+        Get::Focused => {
+            on_main(ctx, |state| {
+                let workspaces = read::workspaces(state);
+                let groups = read::groups(state);
+                Response::Focused(Box::new(Focused {
+                    monitor: read::monitors(state, &workspaces)
+                        .into_values()
+                        .find(|monitor| monitor.focused),
+                    window: read::windows(state, &groups)
+                        .into_values()
+                        .find(|window| window.focused),
+                }))
+            })
+            .await?
+        }
+        Get::KeyboardLayouts => {
+            on_main(ctx, |state| {
+                Response::KeyboardLayouts(read::keyboard_layouts(state))
+            })
+            .await?
+        }
+        Get::Overview => {
+            on_main(ctx, |state| {
+                Response::Overview(Overview {
+                    is_open: state.niri.layout.is_overview_open(),
+                })
+            })
+            .await?
+        }
+        Get::Casts => {
+            on_main(ctx, |state| {
+                Response::Casts(read::casts(state).into_values().collect())
+            })
+            .await?
+        }
+        // Idle callbacks run on the main thread, where the engine lives, with the config.
+        Get::Engine => {
+            let info = on_main(ctx, |state| {
+                let config = state.niri.config.borrow();
+                engine::ipc_info(&config.tiling)
+            })
+            .await?;
+            let info = info.ok_or_else(|| String::from("no layout engine is loaded"))?;
+            Response::Engine(info)
+        }
+        Get::EngineState => {
+            let state = on_main(ctx, |_| engine::exposed_state()).await?;
+            Response::EngineState(state.map_err(|err| format!("{err:#}"))?)
+        }
+        Get::Actions => Response::Actions(native_actions()),
+    };
 
-    Ok(())
+    Ok(response)
+}
+
+/// Runs the action on the main thread and waits until it's done.
+///
+/// This is important for a few actions, for instance for DoScreenTransition this wait ensures that
+/// the screen contents were sampled into the texture.
+async fn run_action(ctx: &ClientCtx, action: Action) {
+    let _ = on_main(ctx, move |state| {
+        // Make sure some logic like workspace clean-up has a chance to run before doing
+        // actions.
+        state.niri.advance_animations();
+        state.do_action(action, false);
+    })
+    .await;
 }
 
 async fn handle_event_stream_client(client: EventStreamClient) -> anyhow::Result<()> {
     let EventStreamClient {
+        replay,
         events,
         disconnect,
         mut write,
     } = client;
 
-    while let Ok(event) = events.recv().await {
+    let mut replay = replay.into_iter();
+    loop {
+        let event = match replay.next() {
+            Some(event) => event,
+            None => match events.recv().await {
+                Ok(event) => event,
+                Err(_) => return Ok(()),
+            },
+        };
+
         let mut buf = serde_json::to_vec(&event).context("error formatting event")?;
         buf.push(b'\n');
 
@@ -522,496 +552,139 @@ async fn handle_event_stream_client(client: EventStreamClient) -> anyhow::Result
             res @ Err(_) => res.context("error writing event")?,
         }
     }
-
-    Ok(())
-}
-
-fn make_ipc_window(
-    mapped: &Mapped,
-    workspace_id: Option<WorkspaceId>,
-    layout: WindowLayout,
-) -> niri_ipc::Window {
-    with_toplevel_role(mapped.toplevel(), |role| niri_ipc::Window {
-        id: mapped.id().get(),
-        title: role.title.clone(),
-        app_id: role.app_id.clone(),
-        pid: mapped.credentials().map(|c| c.pid),
-        workspace_id: workspace_id.map(|id| id.get()),
-        is_focused: mapped.is_focused(),
-        is_floating: mapped.is_floating(),
-        is_urgent: mapped.is_urgent(),
-        layout,
-        focus_timestamp: mapped.get_focus_timestamp().map(Timestamp::from),
-    })
 }
 
 impl State {
-    pub fn ipc_keyboard_layouts_changed(&mut self) {
-        let keyboard = self.niri.seat.get_keyboard().unwrap();
-        let keyboard_layouts = keyboard.with_xkb_state(self, |context| {
-            let xkb = context.xkb().lock().unwrap();
-            let layouts = xkb.layouts();
-            KeyboardLayouts {
-                names: layouts
-                    .map(|layout| xkb.layout_name(layout).to_owned())
-                    .collect(),
-                current_idx: xkb.active_layout().0 as u8,
-            }
-        });
-
+    /// Tells the event streams what changed since the last time.
+    ///
+    /// Nothing is read while nobody listens.
+    pub fn ipc_refresh(&mut self) {
         let Some(server) = &self.niri.ipc_server else {
             return;
         };
+        if server.event_streams.is_empty() {
+            return;
+        }
 
-        let mut state = server.event_stream_state.borrow_mut();
-        let state = &mut state.keyboard_layouts;
-
-        let event = Event::KeyboardLayoutsChanged { keyboard_layouts };
-        state.apply(event.clone());
-        server.send_event(event);
+        self.ipc_update();
     }
 
-    pub fn ipc_refresh_keyboard_layout_index(&mut self) {
-        let keyboard = self.niri.seat.get_keyboard().unwrap();
-        let idx = keyboard.with_xkb_state(self, |context| {
-            let xkb = context.xkb().lock().unwrap();
-            xkb.active_layout().0 as u8
-        });
+    fn ipc_update(&mut self) {
+        let _span = tracy_client::span!("State::ipc_update");
 
-        let Some(server) = &self.niri.ipc_server else {
-            return;
-        };
+        let snapshot = self.ipc_snapshot();
+        let state_changed = self.niri.layout.take_engine_state_changed();
 
-        let mut state = server.event_stream_state.borrow_mut();
-        let state = &mut state.keyboard_layouts;
-
-        if state.keyboard_layouts.as_ref().unwrap().current_idx == idx {
-            return;
-        }
-
-        let event = Event::KeyboardLayoutSwitched { idx };
-        state.apply(event.clone());
-        server.send_event(event);
-    }
-
-    pub fn ipc_refresh_layout(&mut self) {
-        self.ipc_refresh_workspaces();
-        self.ipc_refresh_windows();
-        self.ipc_refresh_overview();
-    }
-
-    fn ipc_refresh_workspaces(&mut self) {
-        let Some(server) = &self.niri.ipc_server else {
-            return;
-        };
-
-        let _span = tracy_client::span!("State::ipc_refresh_workspaces");
-
-        let mut state = server.event_stream_state.borrow_mut();
-        let state = &mut state.workspaces;
-
-        let mut events = Vec::new();
-        let layout = &self.niri.layout;
-        let focused_ws_id = layout.active_workspace().map(|ws| ws.id().get());
-
-        // Check for workspace changes.
-        let mut seen = HashSet::new();
-        let mut need_workspaces_changed = false;
-        for (mon, ws_idx, ws) in layout.workspaces() {
-            let id = ws.id().get();
-            seen.insert(id);
-
-            let Some(ipc_ws) = state.workspaces.get(&id) else {
-                // A new workspace was added.
-                need_workspaces_changed = true;
-                break;
-            };
-
-            // Check for any changes that we can't signal as individual events.
-            let output_name = mon.map(|mon| mon.output_name());
-            if ipc_ws.idx != u8::try_from(ws_idx + 1).unwrap_or(u8::MAX)
-                || ipc_ws.name.as_ref() != ws.name()
-                || ipc_ws.output.as_ref() != output_name
-            {
-                need_workspaces_changed = true;
-                break;
-            }
-
-            let active_window_id = ws.active_window().map(|win| win.id().get());
-            if ipc_ws.active_window_id != active_window_id {
-                events.push(Event::WorkspaceActiveWindowChanged {
-                    workspace_id: id,
-                    active_window_id,
-                });
-            }
-
-            // Check if this workspace urgent state changed.
-            let urgent = ws.is_urgent();
-            if urgent != ipc_ws.is_urgent {
-                events.push(Event::WorkspaceUrgencyChanged { id, urgent });
-            }
-
-            // Check if this workspace became focused.
-            let is_focused = Some(id) == focused_ws_id;
-            if is_focused && !ipc_ws.is_focused {
-                events.push(Event::WorkspaceActivated { id, focused: true });
-                continue;
-            }
-
-            // Check if this workspace became active.
-            let is_active = mon.is_some_and(|mon| mon.active_workspace_idx() == ws_idx);
-            if is_active && !ipc_ws.is_active {
-                events.push(Event::WorkspaceActivated { id, focused: false });
-            }
-        }
-
-        // Check if any workspaces were removed.
-        if !need_workspaces_changed && state.workspaces.keys().any(|id| !seen.contains(id)) {
-            need_workspaces_changed = true;
-        }
-
-        if need_workspaces_changed {
-            events.clear();
-
-            let workspaces = layout
-                .workspaces()
-                .map(|(mon, ws_idx, ws)| {
-                    let id = ws.id().get();
-                    Workspace {
-                        id,
-                        idx: u8::try_from(ws_idx + 1).unwrap_or(u8::MAX),
-                        name: ws.name().cloned(),
-                        output: mon.map(|mon| mon.output_name().clone()),
-                        is_urgent: ws.is_urgent(),
-                        is_active: mon.is_some_and(|mon| mon.active_workspace_idx() == ws_idx),
-                        is_focused: Some(id) == focused_ws_id,
-                        active_window_id: ws.active_window().map(|win| win.id().get()),
-                    }
-                })
-                .collect();
-
-            events.push(Event::WorkspacesChanged { workspaces });
-        }
-
-        for event in events {
-            state.apply(event.clone());
-            server.send_event(event);
-        }
-    }
-
-    fn ipc_refresh_windows(&mut self) {
-        let Some(server) = &self.niri.ipc_server else {
-            return;
-        };
-
-        let _span = tracy_client::span!("State::ipc_refresh_windows");
-
-        let mut state = server.event_stream_state.borrow_mut();
-        let state = &mut state.windows;
-
-        let mut events = Vec::new();
-        let layout = &self.niri.layout;
-
-        let mut batch_change_layouts: Vec<(u64, WindowLayout)> = Vec::new();
-
-        // Check for window changes.
-        let mut seen = HashSet::new();
-        let mut focused_id = None;
-        layout.with_windows(|mapped, _, ws_id, window_layout| {
-            let id = mapped.id().get();
-            seen.insert(id);
-
-            if mapped.is_focused() {
-                focused_id = Some(id);
-            }
-
-            let Some(ipc_win) = state.windows.get(&id) else {
-                let window = make_ipc_window(mapped, ws_id, window_layout);
-                events.push(Event::WindowOpenedOrChanged { window });
-                return;
-            };
-
-            let workspace_id = ws_id.map(|id| id.get());
-            let mut changed =
-                ipc_win.workspace_id != workspace_id || ipc_win.is_floating != mapped.is_floating();
-
-            changed |= with_toplevel_role(mapped.toplevel(), |role| {
-                ipc_win.title != role.title || ipc_win.app_id != role.app_id
-            });
-
-            if changed {
-                let window = make_ipc_window(mapped, ws_id, window_layout);
-                events.push(Event::WindowOpenedOrChanged { window });
-                return;
-            }
-
-            if ipc_win.layout != window_layout {
-                batch_change_layouts.push((id, window_layout));
-            }
-
-            if mapped.is_focused() && !ipc_win.is_focused {
-                events.push(Event::WindowFocusChanged { id: Some(id) });
-            }
-
-            let focus_timestamp = mapped.get_focus_timestamp().map(Timestamp::from);
-            if focus_timestamp != ipc_win.focus_timestamp {
-                events.push(Event::WindowFocusTimestampChanged {
-                    id,
-                    focus_timestamp,
-                });
-            }
-
-            let urgent = mapped.is_urgent();
-            if urgent != ipc_win.is_urgent {
-                events.push(Event::WindowUrgencyChanged { id, urgent })
-            }
-        });
-
-        // It might make sense to push layout changes after closed windows (since windows about to
-        // be closed will occupy the same column/tile positions as the window that moved into this
-        // vacated space), but also we are already pushing some layout changes in
-        // WindowOpenedOrChanged above, meaning that the receiving end has to handle this case
-        // anyway.
-        if !batch_change_layouts.is_empty() {
-            events.push(Event::WindowLayoutsChanged {
-                changes: batch_change_layouts,
-            });
-        }
-
-        // Check for closed windows.
-        let mut ipc_focused_id = None;
-        for (id, ipc_win) in &state.windows {
-            if !seen.contains(id) {
-                events.push(Event::WindowClosed { id: *id });
-            }
-
-            if ipc_win.is_focused {
-                ipc_focused_id = Some(id);
-            }
-        }
-
-        // Extra check for focus becoming None, since the checks above only work for focus becoming
-        // a different window.
-        if focused_id.is_none() && ipc_focused_id.is_some() {
-            events.push(Event::WindowFocusChanged { id: None });
-        }
-
-        for event in events {
-            state.apply(event.clone());
-            server.send_event(event);
-        }
-    }
-
-    pub fn ipc_refresh_overview(&mut self) {
-        let Some(server) = &self.niri.ipc_server else {
-            return;
-        };
-
-        let mut state = server.event_stream_state.borrow_mut();
-        let state = &mut state.overview;
-        let is_open = self.niri.layout.is_overview_open();
-
-        if state.is_open == is_open {
-            return;
-        }
-
-        let event = Event::OverviewOpenedOrClosed { is_open };
-        state.apply(event.clone());
-        server.send_event(event);
-    }
-
-    pub fn ipc_refresh_casts(&mut self) {
-        let Some(server) = &self.niri.ipc_server else {
-            return;
-        };
-
-        let _span = tracy_client::span!("State::ipc_refresh_casts");
-
-        let mut state = server.event_stream_state.borrow_mut();
-        let state = &mut state.casts;
-
-        let mut events = Vec::new();
-        let mut seen = HashSet::new();
-
-        // Check PipeWire screencasts.
-        #[cfg(feature = "xdp-gnome-screencast")]
-        {
-            // Check pending dynamic casts.
-            for pending in &self.niri.casting.pending_dynamic_casts {
-                let stream_id = pending.stream_id.get();
-                seen.insert(stream_id);
-
-                // Pending dynamic casts don't change any properties, so we only need to check if
-                // it's missing from the state.
-                if !state.casts.contains_key(&stream_id) {
-                    let cast = niri_ipc::Cast {
-                        session_id: pending.session_id.get(),
-                        stream_id,
-                        kind: niri_ipc::CastKind::PipeWire,
-                        target: niri_ipc::CastTarget::Nothing {},
-                        is_dynamic_target: true,
-                        is_active: false,
-                        pid: None,
-                        pw_node_id: None,
-                    };
-                    events.push(Event::CastStartedOrChanged { cast });
-                }
-            }
-
-            // Check active casts.
-            for cast in &self.niri.casting.casts {
-                let stream_id = cast.stream_id.get();
-                seen.insert(stream_id);
-
-                let pw_node_id = cast.node_id();
-                if state.casts.get(&stream_id).is_none_or(|existing| {
-                    // Only these properties can change.
-                    existing.is_active != cast.is_active()
-                        || !cast.target.matches(&existing.target)
-                        || existing.pw_node_id != pw_node_id
-                }) {
-                    let cast = niri_ipc::Cast {
-                        session_id: cast.session_id.get(),
-                        stream_id,
-                        kind: niri_ipc::CastKind::PipeWire,
-                        target: cast.target.make_ipc(),
-                        is_dynamic_target: cast.dynamic_target,
-                        is_active: cast.is_active(),
-                        pid: None,
-                        pw_node_id,
-                    };
-                    events.push(Event::CastStartedOrChanged { cast });
-                }
-            }
-        }
-
-        // Check screencopy casts.
-        //
-        // First, clear expired casts. Ideally we'd have a deadline timer, but our 1 second frame
-        // callback timer calls refresh regularly, so that's fine as is.
-        self.niri.screencopy_state.clear_expired_casts();
-
-        for queue in self.niri.screencopy_state.queues() {
-            if let Some(cast_info) = queue.cast() {
-                let stream_id = cast_info.stream_id.get();
-                seen.insert(stream_id);
-
-                if state.casts.get(&stream_id).is_none_or(|existing| {
-                    // Only this property can change.
-                    match &existing.target {
-                        niri_ipc::CastTarget::Output { name } => *name != cast_info.output_name,
-                        _ => true,
-                    }
-                }) {
-                    let cast = niri_ipc::Cast {
-                        session_id: cast_info.session_id.get(),
-                        stream_id,
-                        kind: niri_ipc::CastKind::WlrScreencopy,
-                        target: niri_ipc::CastTarget::Output {
-                            name: cast_info.output_name.clone(),
-                        },
-                        is_dynamic_target: false,
-                        is_active: true,
-                        pid: queue.credentials().map(|creds| creds.pid),
-                        pw_node_id: None,
-                    };
-                    events.push(Event::CastStartedOrChanged { cast });
-                }
-            }
-        }
-
-        // Check ext-image-copy-capture casts.
-        //
-        // Unlike wlr-screencopy, a session is an explicit protocol object, so
-        // the cast lifetime is tied to it. Dead sessions are already dropped by
-        // refresh_image_copy_capture(), which runs before this.
-        let output_sessions = self
+        let generation = engine::generation();
+        let engine = self
             .niri
-            .image_copy_sessions
-            .iter()
-            .map(|s| (s.session_id, s.stream_id, s.session.source(), s.credentials));
-        let cursor_sessions = self
-            .niri
-            .image_copy_cursor_sessions
-            .iter()
-            .map(|s| (s.session_id, s.stream_id, s.session.source(), s.credentials));
-        for (session_id, stream_id, source, credentials) in output_sessions.chain(cursor_sessions) {
-            let Some(output) = image_copy_capture::source_output(&source) else {
-                continue;
-            };
+            .ipc_server
+            .as_ref()
+            .is_some_and(|server| server.engine_dirty || server.engine_generation != generation)
+            .then(|| engine::ipc_info(&self.niri.config.borrow().tiling));
 
-            let stream_id = stream_id.get();
-            seen.insert(stream_id);
+        let Some(server) = &mut self.niri.ipc_server else {
+            return;
+        };
 
-            if !state.casts.contains_key(&stream_id) {
-                let cast = niri_ipc::Cast {
-                    session_id: session_id.get(),
-                    stream_id,
-                    kind: niri_ipc::CastKind::ExtImageCopyCapture,
-                    target: niri_ipc::CastTarget::Output {
-                        name: output.name(),
-                    },
-                    is_dynamic_target: false,
-                    is_active: true,
-                    pid: credentials.map(|creds| creds.pid),
-                    pw_node_id: None,
-                };
-                events.push(Event::CastStartedOrChanged { cast });
+        let mut events = snapshot.events_since(Some(&server.snapshot));
+        server.snapshot = snapshot;
+
+        if let Some(engine) = engine {
+            server.engine_generation = generation;
+            server.engine_dirty = false;
+            if server.engine != engine {
+                server.engine = engine.clone();
+                events.extend(engine.map(|engine| Event::EngineChanged { engine }));
             }
         }
 
-        // Check for stopped casts.
-        for stream_id in state.casts.keys() {
-            if !seen.contains(stream_id) {
-                events.push(Event::CastStopped {
-                    stream_id: *stream_id,
-                });
+        if state_changed && server.wants(EventKind::EngineStateChanged) {
+            match engine::exposed_state() {
+                Ok(state) => events.push(Event::EngineStateChanged { state }),
+                Err(err) => warn!("error reading the layout engine's state: {err:?}"),
             }
         }
 
         for event in events {
-            state.apply(event.clone());
             server.send_event(event);
         }
     }
 
-    pub fn ipc_refresh_touchpad(&mut self) {
-        let Some(server) = &self.niri.ipc_server else {
-            return;
+    fn ipc_snapshot(&mut self) -> Snapshot {
+        let workspaces = read::workspaces(self);
+        let monitors = read::monitors(self, &workspaces);
+        let groups = read::groups(self);
+        let windows = read::windows(self, &groups);
+
+        let focus = FocusedIds {
+            monitor: monitors
+                .values()
+                .find(|monitor| monitor.focused)
+                .map(|monitor| monitor.name.clone()),
+            window: windows
+                .values()
+                .find(|window| window.focused)
+                .map(|window| window.id),
         };
 
-        let mut state = server.event_stream_state.borrow_mut();
-        let state = &mut state.touchpad;
-        let on = !self.niri.touchpad_disabled_by_toggle;
-
-        if state.on == on {
-            return;
+        Snapshot {
+            monitors,
+            workspaces,
+            windows,
+            groups,
+            focus,
+            keyboard_layouts: Some(read::keyboard_layouts(self)),
+            overview_open: self.niri.layout.is_overview_open(),
+            casts: read::casts(self),
+            touchpad_on: !self.niri.touchpad_disabled_by_toggle,
         }
+    }
 
-        let event = Event::TouchpadToggled { on };
-        state.apply(event.clone());
-        server.send_event(event);
+    /// Adds an event stream, and returns what its subscriber has to be told first.
+    fn ipc_subscribe(&mut self, stream: EventStreamSender) -> Vec<Event> {
+        // The other streams get whatever happened before this one starts, so that what follows is
+        // only what happens next.
+        self.ipc_update();
+
+        let Some(server) = &mut self.niri.ipc_server else {
+            return Vec::new();
+        };
+
+        let mut replay = server.snapshot.events_since(None);
+        if let Some(failed) = server.config_failed {
+            replay.push(Event::ConfigLoaded { failed });
+        }
+        if let Some(engine) = server.engine.clone() {
+            replay.push(Event::EngineChanged { engine });
+        }
+        if stream.wants(EventKind::EngineStateChanged) {
+            match engine::exposed_state() {
+                Ok(state) => replay.push(Event::EngineStateChanged { state }),
+                Err(err) => warn!("error reading the layout engine's state: {err:?}"),
+            }
+        }
+        replay.retain(|event| stream.wants(event.kind()));
+
+        server.event_streams.push(stream);
+        replay
     }
 
     pub fn ipc_config_loaded(&mut self, failed: bool) {
-        let Some(server) = &self.niri.ipc_server else {
+        let Some(server) = &mut self.niri.ipc_server else {
             return;
         };
-        let mut state = server.event_stream_state.borrow_mut();
 
-        let event = Event::ConfigLoaded { failed };
-        state.apply(event.clone());
-        server.send_event(event);
+        server.config_failed = Some(failed);
+        server.engine_dirty = true;
+        server.send_event(Event::ConfigLoaded { failed });
     }
 
     pub fn ipc_screenshot_taken(&mut self, path: Option<String>) {
-        let Some(server) = &self.niri.ipc_server else {
+        let Some(server) = &mut self.niri.ipc_server else {
             return;
         };
-        let mut state = server.event_stream_state.borrow_mut();
 
-        let event = Event::ScreenshotCaptured { path };
-        state.apply(event.clone());
-        server.send_event(event);
+        server.send_event(Event::ScreenshotCaptured { path });
     }
 }

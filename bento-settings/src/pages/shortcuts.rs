@@ -125,7 +125,7 @@ fn parse_key(text: &str) -> Option<Key> {
 
 /// Name of a parsed action as configs write it, like `FocusMonitorLeft` as `focus-monitor-left`.
 fn action_name(action: &Action) -> String {
-    if let Action::LayoutAction(name, _) = action {
+    if let Action::LayoutAction(name, ..) = action {
         return name.clone();
     }
     // `Debug` starts with the variant name.
@@ -148,20 +148,38 @@ fn action_name(action: &Action) -> String {
 struct View {
     ctx: PageContext,
     group: adw::PreferencesGroup,
-    rows: RefCell<Vec<gtk::Widget>>,
+    search: gtk::SearchEntry,
+    /// Each bind's row, with the words search matches it on.
+    rows: RefCell<Vec<(gtk::Widget, String)>>,
+    /// Shown when the search matches nothing.
+    empty: adw::ActionRow,
 }
 
 fn build(ctx: &PageContext) -> gtk::Widget {
-    let group = adw::PreferencesGroup::builder()
-        .title("Shortcuts")
-        .description("Shortcuts for bento and the running layout engine.")
-        .build();
+    let group = adw::PreferencesGroup::builder().title("Shortcuts").build();
     ctx.anchor("shortcuts.list", &group);
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search shortcuts")
+        .build();
+    let empty = adw::ActionRow::builder()
+        .title("No Matching Shortcuts")
+        .css_classes(["dim-label"])
+        .visible(false)
+        .build();
+    group.add(&empty);
 
     let view = Rc::new(View {
         ctx: ctx.clone(),
         group: group.clone(),
+        search: search.clone(),
         rows: RefCell::new(Vec::new()),
+        empty,
+    });
+    let weak = Rc::downgrade(&view);
+    search.connect_search_changed(move |_| {
+        if let Some(view) = weak.upgrade() {
+            filter(&view);
+        }
     });
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -181,7 +199,7 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     group.set_header_suffix(Some(&buttons));
 
     let ctx = view.ctx.clone();
-    add.connect_clicked(move |button| open(&ctx, button, Edit::New(None)));
+    add.connect_clicked(move |button| open(&ctx, button, Edit::New));
     let ctx = view.ctx.clone();
     reset.connect_clicked(move |button| reset_all(&ctx, button));
 
@@ -193,13 +211,28 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         }
     });
 
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    column.append(&search);
     column.append(&group);
+    crate::page::keep_alive(&column, view);
     column.upcast()
 }
 
+/// Shows the rows that have every word of the search.
+fn filter(view: &View) {
+    let query = view.search.text().to_lowercase();
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let mut any = false;
+    for (row, text) in view.rows.borrow().iter() {
+        let visible = words.iter().all(|word| text.contains(word));
+        row.set_visible(visible);
+        any |= visible;
+    }
+    view.empty.set_visible(!any);
+}
+
 fn refresh(view: &Rc<View>) {
-    for row in view.rows.take() {
+    for (row, _) in view.rows.take() {
         view.group.remove(&row);
     }
     let choices = choices();
@@ -207,9 +240,8 @@ fn refresh(view: &Rc<View>) {
     let mut rows = Vec::new();
     for entry in entries(&view.ctx.store) {
         let choice = choices.iter().find(|c| c.action.name == entry.action);
-        let row = adw::ActionRow::builder()
-            .title(choice.map_or_else(|| entry.action.clone(), Choice::title))
-            .build();
+        let title = choice.map_or_else(|| entry.action.clone(), Choice::title);
+        let row = adw::ActionRow::builder().title(&title).build();
         let args = entry.node.as_ref().and_then(|node| node.action.as_ref());
         let args = args.map(ActionNode::arguments).unwrap_or_default();
         let subtitle = match (&entry.include, &entry.node) {
@@ -234,9 +266,11 @@ fn refresh(view: &Rc<View>) {
             row.connect_activated(move |row| open(&ctx, row, Edit::Existing(key)));
         }
         view.group.add(&row);
-        rows.push(row.upcast());
+        let text = format!("{title} {subtitle} {}", key_label(&entry.key, mod_key));
+        rows.push((row.upcast(), text.to_lowercase()));
     }
     view.rows.replace(rows);
+    filter(view);
 }
 
 fn mod_key(store: &Store) -> Modifiers {
@@ -250,8 +284,7 @@ fn tilde(path: &Path) -> String {
 
 /// What the dialog changes.
 pub enum Edit {
-    /// A new shortcut, with an action already picked, from the Engine page.
-    New(Option<String>),
+    New,
     /// The shortcut on this key.
     Existing(Key),
 }
@@ -261,7 +294,7 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     let choices = Rc::new(choices());
     let existing = match &edit {
         Edit::Existing(key) => entries(&ctx.store).into_iter().find(|e| e.key == *key),
-        Edit::New(_) => None,
+        Edit::New => None,
     };
     let node = existing.as_ref().and_then(|e| e.node.clone());
 
@@ -340,13 +373,10 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     action_group.add(&action_row);
     page.add(&action_group);
 
-    let picked = match &edit {
-        Edit::New(Some(name)) => Some(name.clone()),
-        _ => node
-            .as_ref()
-            .and_then(|n| n.action.as_ref())
-            .map(|a| a.name.clone()),
-    };
+    let picked = node
+        .as_ref()
+        .and_then(|n| n.action.as_ref())
+        .map(|a| a.name.clone());
     if let Some(idx) = picked.and_then(|name| choices.iter().position(|c| c.action.name == name)) {
         action_row.set_selected(idx as u32);
     }
@@ -687,7 +717,7 @@ impl Field {
             Some(action) => action.args.get(index).cloned().into_iter().collect(),
             None => Vec::new(),
         };
-        let default = arg.default.as_ref().map(crate::store::option_value);
+        let default = arg.default.as_ref().and_then(crate::store::option_value);
         let first = current.first().cloned().or(default.clone());
         let required = arg.default.is_none() && !arg.optional;
 
@@ -859,7 +889,7 @@ fn action_node(action: &LayoutEngineAction, fields: &[Field]) -> Result<ActionNo
             Some(values) => node.args.extend(values),
             // A default left out before a given argument has to be written after all.
             None => match &arg.default {
-                Some(default) => node.args.push(crate::store::option_value(default)),
+                Some(default) => node.args.extend(crate::store::option_value(default)),
                 None => return Err(format!("Fill in “{}”", sentence_case(&arg.name))),
             },
         }
@@ -1207,8 +1237,8 @@ fn sentence_case(text: &str) -> String {
     }
 }
 
-/// Draws a bind's keys as keycaps, with the compositor's Mod key spelled out.
-pub fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
+/// The modifiers a key shows, with the compositor's Mod key spelled out, and the same as GDK's.
+fn shown_modifiers(key: &Key, mod_key: Modifiers) -> (Modifiers, gdk::ModifierType) {
     let mut modifiers = key.modifiers;
     if modifiers.contains(Modifiers::COMPOSITOR) {
         modifiers.remove(Modifiers::COMPOSITOR);
@@ -1225,33 +1255,62 @@ pub fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
             mask |= gdk_modifier;
         }
     }
+    (modifiers, mask)
+}
 
-    match key.trigger {
-        Trigger::Keysym(keysym) => {
-            // SAFETY: GDK key values are X keysyms, which is what xkb gives bento.
-            let key = unsafe { gdk::Key::from_glib(keysym.raw()) };
-            let label = gtk::ShortcutLabel::new(&gtk::accelerator_name(key, mask));
-            label.set_valign(gtk::Align::Center);
-            label.upcast()
-        }
-        // Mouse buttons and scrolling have no keycap; spell them the way the config does.
-        trigger => {
-            let mut text = String::new();
-            for (modifier, name) in [
-                (Modifiers::SUPER, "Super"),
-                (Modifiers::CTRL, "Ctrl"),
-                (Modifiers::ALT, "Alt"),
-                (Modifiers::SHIFT, "Shift"),
-            ] {
-                if modifiers.contains(modifier) {
-                    text.push_str(name);
-                    text.push('+');
-                }
-            }
-            text.push_str(&format!("{trigger:?}"));
-            dim_label(&text).upcast()
+fn gdk_key(trigger: Trigger) -> Option<gdk::Key> {
+    match trigger {
+        // SAFETY: GDK key values are X keysyms, which is what xkb gives bento.
+        Trigger::Keysym(keysym) => Some(unsafe { gdk::Key::from_glib(keysym.raw()) }),
+        _ => None,
+    }
+}
+
+/// A key as text, like `Shift+Super+T`.
+fn key_label(key: &Key, mod_key: Modifiers) -> String {
+    let (modifiers, mask) = shown_modifiers(key, mod_key);
+    if let Some(gdk_key) = gdk_key(key.trigger) {
+        return gtk::accelerator_get_label(gdk_key, mask).to_string();
+    }
+    // Mouse buttons and scrolling have no keycap; spell them the way the config does.
+    let mut text = String::new();
+    for (modifier, name) in [
+        (Modifiers::SUPER, "Super"),
+        (Modifiers::CTRL, "Ctrl"),
+        (Modifiers::ALT, "Alt"),
+        (Modifiers::SHIFT, "Shift"),
+    ] {
+        if modifiers.contains(modifier) {
+            text.push_str(name);
+            text.push('+');
         }
     }
+    text.push_str(&format!("{:?}", key.trigger));
+    text
+}
+
+/// Draws a bind's keys as keycaps, with the compositor's Mod key spelled out.
+fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
+    let Some(gdk_key) = gdk_key(key.trigger) else {
+        // Mouse buttons and scrolling have no keycap; spell them the way the config does.
+        return dim_label(&key_label(key, mod_key)).upcast();
+    };
+    let (_, mask) = shown_modifiers(key, mod_key);
+    let label = gtk::ShortcutLabel::new(&gtk::accelerator_name(gdk_key, mask));
+    label.set_valign(gtk::Align::Center);
+    // The keycaps read on their own; hide the "+" GTK puts between them. If GTK ever draws
+    // them differently, the worst case is that the "+" shows again.
+    let mut child = label.first_child();
+    while let Some(widget) = child {
+        if widget
+            .downcast_ref::<gtk::Label>()
+            .is_some_and(|l| l.label() == "+")
+        {
+            widget.set_visible(false);
+        }
+        child = widget.next_sibling();
+    }
+    label.upcast()
 }
 
 #[cfg(test)]

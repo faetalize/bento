@@ -11,6 +11,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::focus_ring::{FocusRing, FocusRingRenderElement};
 use super::opening_window::{OpenAnimation, OpeningWindowRenderElement};
 use super::shadow::Shadow;
+use super::surfaces::Subtree;
 use super::{
     HitType, LayoutElement, LayoutElementRenderElement, LayoutElementRenderSnapshot, Options,
     SizeFrac, RESIZE_ANIMATION_THRESHOLD,
@@ -30,10 +31,24 @@ use crate::render_helpers::snapshot::RenderSnapshot;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::xray::{Xray, XrayPos};
 use crate::render_helpers::{RenderCtx, RenderTarget};
+use crate::utils::id::IdCounter;
 use crate::utils::transaction::Transaction;
 use crate::utils::{
     baba_is_float_offset, round_logical_in_physical, round_logical_in_physical_max1,
 };
+
+static TILE_ENGINE_ID_COUNTER: IdCounter = IdCounter::new();
+
+/// Where a tile that was just added to a tiling layout animates from, once the layout places it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PendingMove {
+    /// Where the tile was, as a render position in the workspace that it's now on.
+    pub from: Point<f64, Logical>,
+    /// Animation to use instead of the configured window movement.
+    pub config: Option<niri_config::Animation>,
+    /// Whether the tile moves between workspaces, which affects how it's rendered.
+    pub between_workspaces: bool,
+}
 
 /// Toplevel window with decorations.
 #[derive(Debug)]
@@ -75,15 +90,20 @@ pub struct Tile<W: LayoutElement> {
     /// the window starts out in the tiling layout.
     pub(super) floating_pos: Option<Point<f64, SizeFrac>>,
 
-    /// Currently selected preset width index when this tile is floating.
-    pub(super) floating_preset_width_idx: Option<usize>,
+    /// Id of the window for the tiling layout engine, which stays the same for as long as the
+    /// window lives.
+    pub(super) engine_id: u64,
 
-    /// Currently selected preset height index when this tile is floating.
-    pub(super) floating_preset_height_idx: Option<usize>,
+    /// The workspace that the tiling layout engine knows the window on, if it knows it. Adding the
+    /// tile to the tiling layout of another workspace moves the window there.
+    pub(super) engine_workspace: Option<u64>,
 
-    /// Whether the tile has been in the tiling layout before, so that adding it again is a move
-    /// rather than a new window opening.
-    pub(super) was_tiled: bool,
+    /// The window's node in the tree that the tiling layout draws, while the tile is between the
+    /// tiling layouts of two workspaces.
+    pub(super) tree_node: Option<Subtree>,
+
+    /// How the tile animates to where the tiling layout places it, when it doesn't know yet.
+    pub(super) pending_move: Option<PendingMove>,
 
     /// What a tiling layout stored on the window, with the name of that layout.
     pub(super) layout_data: Option<(String, serde_json::Value)>,
@@ -102,6 +122,9 @@ pub struct Tile<W: LayoutElement> {
 
     /// The animation of the tile's opacity.
     pub(super) alpha_animation: Option<AlphaAnimation>,
+
+    /// Buffer to draw the tile into when the tiling layout's tree makes it translucent.
+    opacity_offscreen: OffscreenBuffer,
 
     /// Offset during the initial interactive move rubberband.
     pub(super) interactive_move_offset: Point<f64, Logical>,
@@ -210,15 +233,17 @@ impl<W: LayoutElement> Tile<W> {
             restore_to_floating: false,
             floating_window_size: None,
             floating_pos: None,
-            floating_preset_width_idx: None,
-            floating_preset_height_idx: None,
-            was_tiled: false,
+            engine_id: TILE_ENGINE_ID_COUNTER.next(),
+            engine_workspace: None,
+            tree_node: None,
+            pending_move: None,
             layout_data: None,
             open_animation: None,
             resize_animation: None,
             move_x_animation: None,
             move_y_animation: None,
             alpha_animation: None,
+            opacity_offscreen: OffscreenBuffer::default(),
             interactive_move_offset: Point::from((0., 0.)),
             unmap_snapshot: None,
             rounded_corner_damage: Default::default(),
@@ -235,14 +260,6 @@ impl<W: LayoutElement> Tile<W> {
         scale: f64,
         options: Rc<Options>,
     ) {
-        // If preset widths or heights changed, clear our stored preset index.
-        if self.options.layout.preset_column_widths != options.layout.preset_column_widths {
-            self.floating_preset_width_idx = None;
-        }
-        if self.options.layout.preset_window_heights != options.layout.preset_window_heights {
-            self.floating_preset_height_idx = None;
-        }
-
         self.view_size = view_size;
         self.scale = scale;
         self.options = options;
@@ -940,9 +957,7 @@ impl<W: LayoutElement> Tile<W> {
             let win_pos = self.buf_loc() + offset;
             Some(HitType::Input { win_pos })
         } else if self.is_in_activation_region(point) {
-            Some(HitType::Activate {
-                is_tab_indicator: false,
-            })
+            Some(HitType::Activate)
         } else {
             None
         }
@@ -1367,10 +1382,25 @@ impl<W: LayoutElement> Tile<W> {
 
     pub fn render<R: NiriRenderer>(
         &self,
+        ctx: RenderCtx<R>,
+        location: Point<f64, Logical>,
+        xray_pos: XrayPos,
+        focus_ring: bool,
+        push: &mut dyn FnMut(TileRenderElement<R>),
+    ) {
+        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., push);
+    }
+
+    /// Renders the tile as translucent as `opacity` says, on top of its own opacity animation.
+    /// The whole tile is drawn into one buffer first, so what overlaps in it doesn't show
+    /// through.
+    pub fn render_with_opacity<R: NiriRenderer>(
+        &self,
         mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
         xray_pos: XrayPos,
         focus_ring: bool,
+        opacity: f32,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render");
@@ -1380,7 +1410,8 @@ impl<W: LayoutElement> Tile<W> {
         let tile_alpha = self
             .alpha_animation
             .as_ref()
-            .map_or(1., |alpha| alpha.anim.clamped_value()) as f32;
+            .map_or(1., |alpha| alpha.anim.clamped_value()) as f32
+            * opacity;
 
         let mut pushed = false;
         self.window().set_offscreen_data(None);
@@ -1412,7 +1443,11 @@ impl<W: LayoutElement> Tile<W> {
                     warn!("error rendering window opening animation: {err:?}");
                 }
             }
-        } else if let Some(alpha) = &self.alpha_animation {
+        } else if self.alpha_animation.is_some() || opacity < 1. {
+            let offscreen = self
+                .alpha_animation
+                .as_ref()
+                .map_or(&self.opacity_offscreen, |alpha| &alpha.offscreen);
             let mut ctx = ctx.as_gles();
             let mut elements = Vec::new();
             self.render_inner(
@@ -1422,7 +1457,7 @@ impl<W: LayoutElement> Tile<W> {
                 focus_ring,
                 &mut |elem| elements.push(elem),
             );
-            match alpha.offscreen.render(ctx.renderer, scale, &elements) {
+            match offscreen.render(ctx.renderer, scale, &elements) {
                 Ok((elem, _sync, data)) => {
                     let offset = elem.offset();
                     let elem = elem.with_alpha(tile_alpha).with_offset(location + offset);

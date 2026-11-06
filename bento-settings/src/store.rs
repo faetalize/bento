@@ -419,13 +419,28 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-/// A plain value for a layout engine option.
-pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Value {
+/// A plain value for a layout engine option or action argument, or `None` for a list.
+pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Option<Value> {
+    use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
+    Some(match value {
+        OptionValue::Boolean(x) => Value::Bool(*x),
+        OptionValue::Number(x) if x.fract() == 0. => Value::Int(*x as i64),
+        OptionValue::Number(x) => Value::Float(*x),
+        OptionValue::String(x) => Value::Str(x.clone()),
+        OptionValue::List(_) => return None,
+    })
+}
+
+/// The values an option is written with: one for a plain option, one each for a list, none for a
+/// size left to the window.
+pub fn option_values(value: &Option<niri_ipc::LayoutEngineOptionValue>) -> Vec<Value> {
+    use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
     match value {
-        niri_ipc::LayoutEngineOptionValue::Boolean(x) => Value::Bool(*x),
-        niri_ipc::LayoutEngineOptionValue::Number(x) if x.fract() == 0. => Value::Int(*x as i64),
-        niri_ipc::LayoutEngineOptionValue::Number(x) => Value::Float(*x),
-        niri_ipc::LayoutEngineOptionValue::String(x) => Value::Str(x.clone()),
+        None => Vec::new(),
+        Some(OptionValue::List(items)) => items.iter().filter_map(option_value).collect(),
+        Some(value) => option_value(value).into_iter().collect(),
     }
 }
 
@@ -540,9 +555,71 @@ mod tests {
             store.config().tiling.options,
             [(
                 String::from("gravity"),
-                niri_config::TilingOption::Bool(true)
+                vec![niri_config::TilingOption::Bool(true)]
             )]
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn engine_edits_keep_window_rules_and_typed_options() {
+        use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
+        let dir = std::env::temp_dir().join(format!("bento-settings-rules-{}", std::process::id()));
+        fs::create_dir_all(dir.join("engines")).unwrap();
+        let config_path = dir.join("config.kdl");
+        fs::write(&config_path, "tiling {\n    layout \"niri\"\n}\n").unwrap();
+        let engine_path = dir.join("engines").join("niri.kdl");
+        let engine = "\
+// Mine.
+options {
+    default-column-width
+    center-focused-column \"always\"
+}
+
+// Terminals open wide.
+window-rule {
+    match app-id=\"kitty\"
+    default-column-width \"67%\"
+}
+
+binds {
+    Mod+L { focus-column-right; }
+}
+";
+        fs::write(&engine_path, engine).unwrap();
+
+        let store = Store::load_from(config_path);
+        assert_eq!(store.config().tiling.window_rules.len(), 1);
+        assert!(store.config().tiling.options[0].1.is_empty());
+
+        // A list is written as several values, and a size with no value as a bare name.
+        let widths = Some(OptionValue::List(vec![
+            OptionValue::String(String::from("33%")),
+            OptionValue::String(String::from("800")),
+        ]));
+        store.edit_in(File::Engine, "options.preset-column-widths", move |doc| {
+            doc.set(&["options", "preset-column-widths"], option_values(&widths))
+        });
+        store.edit_in(File::Engine, "options.default-column-width", |doc| {
+            doc.set(&["options", "default-column-width"], option_values(&None))
+        });
+        store.flush();
+
+        let text = fs::read_to_string(&engine_path).unwrap();
+        assert_eq!(
+            text,
+            engine.replace(
+                "    center-focused-column \"always\"\n",
+                "    center-focused-column \"always\"\n    preset-column-widths \"33%\" \"800\"\n"
+            )
+        );
+        let config = store.config();
+        assert_eq!(config.tiling.window_rules.len(), 1);
+        assert_eq!(config.tiling.options.len(), 3);
+        assert_eq!(config.tiling.options[2].1.len(), 2);
+        drop(config);
 
         fs::remove_dir_all(&dir).unwrap();
     }

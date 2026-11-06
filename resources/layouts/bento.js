@@ -13,8 +13,11 @@
 // 1. The cell grid: pure arithmetic on rectangles of cells, with no windows, pixels or camera.
 //    `Grid`, `Area` and `CellMetrics` are exported so that tests can check them on
 //    their own.
-// 2. The engine: it keeps one item on the grid per window, or per tabbed area of several windows,
-//    and maps the grid onto window rects, focus, the camera and actions.
+// 2. The engine: it runs once for the whole session and keeps a space for each workspace, with
+//    one item on its grid per window, or per tabbed area of several windows, and maps the grid
+//    onto window rects, focus, the camera and actions. Actions that cross from one workspace or
+//    monitor to another are handled between spaces. Tabbed areas are bento groups, and the tab
+//    bars and hints are drawn with nodes.
 //
 // Coordinates: column 0 of the grid starts at x = 0 on the canvas, and the camera's x is where
 // the left edge of the view is, so a window in column 0 shows at the left edge of the view when
@@ -36,7 +39,7 @@ const SIZE = [
 ];
 
 export const meta = {
-    api: 1,
+    api: 2,
     name: "bento",
     description: "Windows on a scrolling grid.",
     // Every action, bound by name in engines/bento.kdl. A window's stack is the windows covering
@@ -161,6 +164,44 @@ export const meta = {
             description: "Grow the focused window into the empty cells beside it in view.",
         },
 
+        // Where the grid ends, these go on to the monitor or workspace beside it.
+        "focus-left-or-monitor": {
+            description: "Focus the nearest window to the left, or the monitor to the left when there is none.",
+        },
+        "focus-right-or-monitor": {
+            description: "Focus the nearest window to the right, or the monitor to the right when there is none.",
+        },
+        "focus-up-or-workspace": {
+            description: "Focus the nearest window above, or the workspace above when there is none.",
+        },
+        "focus-down-or-workspace": {
+            description: "Focus the nearest window below, or the workspace below when there is none.",
+        },
+        // The grid has no end to the right, so only moving left, up and down can run out of room.
+        "move-left-or-to-monitor": {
+            description: "Move the focused window one cell left, or to the monitor to the left when it can't.",
+        },
+        "move-up-or-to-workspace": {
+            description: "Move the focused window one cell up, or to the workspace above when it can't.",
+        },
+        "move-down-or-to-workspace": {
+            description: "Move the focused window one cell down, or to the workspace below when it can't.",
+        },
+        "move-to-workspace": {
+            description: "Move the focused window, with its tabs, to a workspace of the focused monitor.",
+            args: [
+                {
+                    name: "workspace",
+                    type: "workspace",
+                    description: "An index counting from 1, or a name.",
+                },
+            ],
+        },
+        "move-to-monitor": {
+            description: "Move the focused window, with its tabs, to the active workspace of a monitor.",
+            args: [{ name: "monitor", type: "monitor", description: "A connector name, like DP-2." }],
+        },
+
         // Each takes two presses: the first picks the focused window, then focus another window
         // and press again. Pressing again on the same window cancels.
         "split-h": { description: "Share a window's space with another, side by side." },
@@ -175,6 +216,96 @@ export const meta = {
             type: "boolean",
             default: true,
             description: "Windows fall to the left.",
+        },
+        "center-focused-window": {
+            type: "choice",
+            choices: ["never", "always", "on-overflow"],
+            default: "never",
+            description: "When to center a window that gets focus.",
+        },
+        "always-center-single-window": {
+            type: "boolean",
+            default: false,
+            description: "Center a window when no two windows are side by side.",
+        },
+        "default-width": {
+            type: "size",
+            default: "50%",
+            description: "The width new windows open with. Left empty, the window picks.",
+        },
+        "preset-widths": {
+            type: "size",
+            list: true,
+            default: ["33.333%", "50%", "66.667%"],
+            description: "The widths that cycling widths goes through.",
+        },
+        "preset-heights": {
+            type: "size",
+            list: true,
+            default: ["33.333%", "50%", "66.667%"],
+            description: "The heights that cycling heights goes through.",
+        },
+        "default-tabs": {
+            type: "boolean",
+            default: false,
+            description: "Open new windows as the tabs of an area of their own.",
+        },
+        "tab-bar": {
+            type: "boolean",
+            default: true,
+            description: "Draw a tab bar along tabbed areas.",
+        },
+        "tab-bar-width": {
+            type: "number",
+            default: 4,
+            description: "How thick the tab bar is.",
+        },
+        "tab-bar-gap": {
+            type: "number",
+            default: 5,
+            description: "The space between the tab bar and its area.",
+        },
+        "tab-bar-active-color": {
+            type: "string",
+            default: "#7fc8ff",
+            description: "The color of the tab that shows.",
+        },
+        "tab-bar-inactive-color": {
+            type: "string",
+            default: "#505050",
+            description: "The color of the other tabs.",
+        },
+        "tab-bar-urgent-color": {
+            type: "string",
+            default: "#9b0000",
+            description: "The color of a tab whose window is urgent.",
+        },
+        "hint-color": {
+            type: "string",
+            default: "#7fc8ff80",
+            description: "The color of the hints that show a picked window and where a dragged one would land.",
+        },
+    },
+    windowRules: {
+        "default-width": {
+            type: "size",
+            default: null,
+            description: "The width the window opens with. Left empty, the window picks.",
+        },
+        "default-height": {
+            type: "size",
+            default: null,
+            description: "The height the window opens with. Left out, as tall as the grid.",
+        },
+        "default-tabs": {
+            type: "boolean",
+            default: false,
+            description: "Open the window as the tabs of an area of its own.",
+        },
+        "open-full-width": {
+            type: "boolean",
+            default: false,
+            description: "Open the window as wide as the view.",
         },
     },
 };
@@ -1090,8 +1221,18 @@ export function nextPresetSpan(current, spans, forwards) {
 
 /** How many windows that left to float or be dragged elsewhere to remember the size of. */
 const REMEMBERED_WINDOWS = 64;
+/** Space between the tabs of a tab bar, in logical pixels. */
+const TAB_SPACING = 2;
+/** Corner radius of the hints. */
+const HINT_CORNER_RADIUS = 8;
+/** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
+const SWIPE_DECELERATION = 0.997;
 
-export default function create(ws) {
+/**
+ * The grid of one workspace. The engine keeps one for every workspace, and each only knows its
+ * own: moving a window to another workspace takes its item out of one and puts it in another.
+ */
+function createSpace(bento, ws) {
     // ---------------------------------------------------------------------------------------------
     // State
     // ---------------------------------------------------------------------------------------------
@@ -1122,6 +1263,17 @@ export default function create(ws) {
     let restore = null;
     /** Ongoing pointer resize, with the grid as it was when it started. */
     let resize = null;
+    /** Whether a swipe is moving the camera, which the space leaves alone until it ends. */
+    let swiping = false;
+    /** Speed to continue into the camera's animation, in px/s, while a swipe ends. */
+    let cameraVelocity = 0;
+    /** The nodes that draw each tabbed area's tab bar, by item key. */
+    const tabNodes = new Map();
+    /** The nodes that highlight a picked window, and where a dragged window would land. */
+    let hintNode = null;
+    let dropNode = null;
+    /** What the space told the outside about itself last, see `exposed()`. */
+    let lastExposed = null;
     /** Size of windows that left to float or to be dragged, by window id, for when they're back. */
     const remembered = new Map();
     /**
@@ -1140,17 +1292,21 @@ export default function create(ws) {
     let workingArea;
     let metrics;
 
+    const options = (name) => bento.options[name];
+    /** Snaps a coordinate to physical pixels on the workspace's monitor. */
+    const pixel = (value) => ws.monitor.round(value);
+
     updateGeometry();
     grid.setGravity(gravityOption());
 
     function gravityOption() {
-        return ws.options.gravity !== false;
+        return options("gravity") !== false;
     }
 
     function updateGeometry() {
-        viewSize = ws.view.size;
-        parentArea = ws.view.workingArea;
-        workingArea = ws.view.tilingArea;
+        viewSize = ws.monitor.size;
+        parentArea = ws.monitor.workingArea;
+        workingArea = ws.tilingArea;
         metrics = new CellMetrics(workingArea, DEFAULT_ROWS, ws.config.gaps);
     }
 
@@ -1163,6 +1319,8 @@ export default function create(ws) {
             /** Key of the item's tab bar, see `flush`. */
             key: `area-${nextItemId++}`,
             windows,
+            /** The bento group of the windows, when there are several, see `syncGroups`. */
+            group: null,
             /** Index of the tab that shows. */
             active: 0,
             // Like niri, the window rules can make a new area tabbed.
@@ -1175,12 +1333,22 @@ export default function create(ws) {
             maximized: false,
             /** Row to go back to when the item stops being fullscreen or maximized. */
             rowToRestore: null,
+            /** Rows to go back to when the window stops being as tall as the grid. */
+            restoreRows: null,
         };
     }
 
-    /** `default-column-display` for a new area of `win`: its window rule, or the config's. */
+    // Window rules. A rule that no rule sets is left out of `rules`, so the option of the same
+    // name is the default, if there is one. `null` is a size left to the window.
+
+    const rulesWidth = (rules) =>
+        rules["default-width"] !== undefined ? rules["default-width"] : options("default-width");
+    const rulesHeight = (rules) => rules["default-height"] ?? null;
+    const rulesTabs = (rules) => rules["default-tabs"] ?? options("default-tabs");
+
+    /** Whether a new area of `win` is tabbed: its window rule, or the option. */
     function displayOf(win) {
-        return win?.rules.defaultColumnDisplay ?? ws.config.defaultColumnDisplay;
+        return win !== undefined && win !== null && rulesTabs(win.rules) ? "tabbed" : "normal";
     }
 
     function intentOf(item) {
@@ -1190,9 +1358,11 @@ export default function create(ws) {
     /** Size of a new window from the window rules and the config. */
     function intentForNewWindow(win) {
         const rules = win.rules;
+        const defaultWidth = rulesWidth(rules);
+        const defaultHeight = rulesHeight(rules);
         let width;
-        if (rules.defaultWidth) {
-            width = widthFromPreset(rules.defaultWidth, win.borders.w);
+        if (defaultWidth) {
+            width = widthFromPreset(defaultWidth, win.borders.w);
         } else if (win.size.w > 0) {
             // Like niri, a window without a default width keeps the width it opened with.
             width = { fixed: win.size.w };
@@ -1202,9 +1372,9 @@ export default function create(ws) {
         return {
             width,
             // `open-maximized` opens the window as wide as the view, like `maximize-column`.
-            fullWidth: rules.openFullWidth === true,
+            fullWidth: rules["open-full-width"] === true,
             cols: null,
-            rows: rules.defaultHeight ? { preset: rules.defaultHeight } : null,
+            rows: defaultHeight ? { preset: defaultHeight } : null,
         };
     }
 
@@ -1318,7 +1488,7 @@ export default function create(ws) {
 
     /** X of a grid column on the canvas. Column 0 starts at x = 0. */
     function gridX(col) {
-        return ws.round(col * (metrics.cellW + metrics.gap));
+        return pixel(col * (metrics.cellW + metrics.gap));
     }
 
     /** Tile geometry for an area: `y` relative to the top of the working area, and the size. */
@@ -1329,8 +1499,8 @@ export default function create(ws) {
         // Round the edges rather than the sizes so that neighbors line up exactly.
         const left = gridX(area.col);
         const right = gridX(area.right) - m.gap;
-        const top = ws.round(rect.y);
-        const bottom = ws.round(rect.y + rect.h);
+        const top = pixel(rect.y);
+        const bottom = pixel(rect.y + rect.h);
 
         // With gaps too large to fit the rows, cells bottom out at 1 px and the rows overflow.
         // Keep tiles within the working area like niri does.
@@ -1374,22 +1544,9 @@ export default function create(ws) {
         return itemRect(item).w;
     }
 
-    /**
-     * Rect of the windows of an item. Tabs share the item's rect, minus the space for the tab
-     * indicator.
-     */
+    /** Rect of the windows of an item. Tabs share the item's rect. */
     function windowRect(item) {
-        const rect = itemRect(item);
-        if (!item.tabbed || modeOf(item) !== "normal") {
-            return rect;
-        }
-        const space = ws.tabIndicatorSpace(item.windows.length);
-        return {
-            x: rect.x + space.x,
-            y: rect.y + space.y,
-            w: Math.max(rect.w - space.w, 1),
-            h: Math.max(rect.h - space.h, 1),
-        };
+        return itemRect(item);
     }
 
     /** Area of `cols` × `rows` cells nearest to a window with its top-left corner at `x, y`. */
@@ -1434,6 +1591,212 @@ export default function create(ws) {
         }
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Drawing
+    // ---------------------------------------------------------------------------------------------
+
+    /** Highlights `rect` with a hint node of its own, or takes the hint away with `null`. */
+    function showHint(slot, rect) {
+        const node = slot === "pick" ? hintNode : dropNode;
+        if (rect === null) {
+            node?.remove();
+            return;
+        }
+        const box =
+            node ??
+            bento.createNode("box", {
+                cornerRadius: HINT_CORNER_RADIUS,
+                transitions: { rect: "window-movement" },
+            });
+        if (slot === "pick") hintNode = box;
+        else dropNode = box;
+        box.set({ rect, background: options("hint-color") });
+        // Last, so it's above the windows.
+        ws.tree.append(box);
+    }
+
+    /**
+     * Draws the tab bars of the areas in `bars`, `{ item, rect }` by item key, a segment for each
+     * tab along the left of the area, and takes away those of areas that don't have one.
+     */
+    function drawTabBars(bars) {
+        const width = options("tab-bar-width");
+        const gap = options("tab-bar-gap");
+        for (const [key, { item, rect }] of bars) {
+            let nodes = tabNodes.get(key);
+            if (nodes === undefined) {
+                nodes = [];
+                tabNodes.set(key, nodes);
+            }
+            const count = item.windows.length;
+            while (nodes.length > count) nodes.pop().remove();
+            while (nodes.length < count) {
+                const index = nodes.length;
+                const node = bento.createNode("box", {
+                    interactive: true,
+                    cornerRadius: 2,
+                    transitions: { rect: "window-movement" },
+                });
+                node.addEventListener("click", () => clickTab(key, index));
+                nodes.push(node);
+                ws.tree.append(node);
+            }
+            const step = rect.h / count;
+            item.windows.forEach((win, i) => {
+                nodes[i].set({
+                    rect: {
+                        x: rect.x - gap - width,
+                        y: rect.y + i * step,
+                        w: width,
+                        h: Math.max(0, step - TAB_SPACING),
+                    },
+                    background: win.urgent
+                        ? options("tab-bar-urgent-color")
+                        : i === item.active
+                          ? options("tab-bar-active-color")
+                          : options("tab-bar-inactive-color"),
+                });
+            });
+        }
+        for (const [key, nodes] of tabNodes) {
+            if (!bars.has(key)) {
+                nodes.forEach((node) => node.remove());
+                tabNodes.delete(key);
+            }
+        }
+    }
+
+    /** Clicking a tab activates its window. */
+    function clickTab(key, index) {
+        const win = items.find((item) => item.key === key)?.windows[index];
+        if (win !== undefined) {
+            activateWindow(win);
+            flush();
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Groups
+    // ---------------------------------------------------------------------------------------------
+    //
+    // The windows of a tabbed area are a group in bento, so that native group actions and tabbed
+    // areas are the same thing.
+
+    /** Makes bento's groups match the areas with tabs: one group for the windows of each. */
+    function syncGroups() {
+        for (const item of items) {
+            const wins = item.windows;
+            if (wins.length < 2) {
+                item.group = null;
+                continue;
+            }
+            const activeWin = wins[item.active];
+            let group = activeWin.group;
+            const matches =
+                group !== null &&
+                group.windows.length === wins.length &&
+                wins.every((win) => win.group === group);
+            if (!matches) {
+                group = bento.createGroup(wins, activeWin);
+            } else if (group.active !== activeWin) {
+                group.activate(activeWin);
+            }
+            item.group = group;
+        }
+        // Groups that aren't one area's tabs end, if all of their windows are on this grid.
+        const wanted = new Set(items.map((item) => item.group).filter((group) => group !== null));
+        for (const item of items) {
+            for (const win of item.windows) {
+                const group = win.group;
+                if (
+                    group !== null &&
+                    !wanted.has(group) &&
+                    group.windows.every((other) => itemOf(other) !== null)
+                ) {
+                    group.dissolve();
+                }
+            }
+        }
+    }
+
+    /**
+     * Makes the grid show `group` the way it is: its windows as the tabs of one area, the one of
+     * its active window, with the group's active window shown. Returns whether anything changed.
+     */
+    function matchGroup(group) {
+        const item = itemOf(group.active);
+        if (item === null) {
+            return false;
+        }
+        const wins = group.windows.filter((win) => itemOf(win) !== null);
+        if (wins.length < 2) {
+            return false;
+        }
+
+        const before = JSON.stringify([item.windows.map((win) => win.id), item.active, item.tabbed]);
+        const same =
+            item.windows.length === wins.length && item.windows.every((win) => wins.includes(win));
+        if (!same) {
+            // Windows of the group that are elsewhere join this area as tabs.
+            for (const win of wins) {
+                if (item.windows.includes(win)) continue;
+                const other = itemOf(win);
+                if (other.windows.length > 1) {
+                    removeTab(other, win);
+                } else {
+                    const wasActive = other === active;
+                    takeItem(other);
+                    if (wasActive) active = item;
+                }
+                item.windows.push(win);
+            }
+            // Windows that left the group go beside the area, in areas of their own.
+            for (const win of [...item.windows]) {
+                if (wins.includes(win)) continue;
+                const tab = item.windows.indexOf(win);
+                expelTab(item, tab, Right);
+            }
+        }
+        item.tabbed = true;
+        item.group = group;
+        item.active = item.windows.indexOf(group.active);
+        const after = JSON.stringify([item.windows.map((win) => win.id), item.active, item.tabbed]);
+        if (before === after) {
+            return false;
+        }
+        stopResizeFor(item);
+        sync();
+        if (active !== null) {
+            cameraToItem(active);
+        }
+        return true;
+    }
+
+    /** A group went away: its area stops having tabs, unless it was down to one. */
+    function dropGroup(group) {
+        const item = items.find((other) => other.group === group);
+        if (item === undefined) {
+            return false;
+        }
+        item.group = null;
+        if (item.windows.length < 2 || item.windows.some((win) => win.group !== null)) {
+            return false;
+        }
+        // Splitting the tabs makes the area with the shown tab the focused one; keep the focus.
+        const focused = active;
+        stopResizeFor(item);
+        untab(item);
+        if (focused !== null && focused !== item) {
+            active = focused;
+        }
+        sync();
+        return true;
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Applying changes
+    // ---------------------------------------------------------------------------------------------
+
     /**
      * Tells bento where every window goes, how it's sized, whether it shows and what has focus.
      *
@@ -1449,7 +1812,8 @@ export default function create(ws) {
         if (picking?.action === "stuff") {
             checkSeam();
         }
-        ws.setHint(
+        showHint(
+            "pick",
             picking === null
                 ? null
                 : picking.action === "stuff"
@@ -1457,43 +1821,53 @@ export default function create(ws) {
                   : itemRect(picking.first),
         );
 
-        const bars = new Set();
+        const bars = new Map();
         for (const item of items) {
             const rect = windowRect(item);
             const mode = modeOf(item);
-            // An area is its own column for `is-active-in-column`: its shown tab is the active one,
-            // which is what bento assumes for windows it isn't told about.
             item.windows.forEach((win, i) => {
-                ws.setMode(win, mode);
-                ws.setVisible(win, !item.tabbed || i === item.active);
-                ws.place(win, rect, { animate });
+                win.setMode(mode);
+                win.setVisible(!item.tabbed || i === item.active);
+                win.place(rect, { animate });
             });
 
-            // Tabbed areas get a tab indicator, except while they cover the view.
-            if (item.tabbed && mode === "normal") {
-                ws.setTabBar(item.key, {
-                    area: rect,
-                    windows: item.windows,
-                    active: item.windows[item.active],
-                });
-                bars.add(item.key);
+            // Tabbed areas get a tab bar, except while they cover the view.
+            if (options("tab-bar") && item.tabbed && mode === "normal") {
+                bars.set(item.key, { item, rect });
             }
         }
-        for (const key of ws.tabBars) {
-            if (!bars.has(key)) {
-                ws.setTabBar(key, null);
-            }
-        }
+        drawTabBars(bars);
+        syncGroups();
 
         const focus = active ? active.windows[active.active] : null;
-        if (ws.focused !== focus) {
-            ws.focus(focus);
-            if (focus) {
-                // Draw the focused window above any it overlaps, like a window too big for its
-                // cells.
-                ws.raise(focus);
-            }
+        if (focus !== null && ws.focused !== focus) {
+            focus.focus();
+            // Draw the focused window above any it overlaps, like a window too big for its
+            // cells.
+            focus.raise();
         }
+
+        const exposedNow = JSON.stringify(exposed());
+        if (exposedNow !== lastExposed) {
+            lastExposed = exposedNow;
+            bento.stateChanged();
+        }
+    }
+
+    /** The space's state for those reading it from outside. */
+    function exposed() {
+        return {
+            active: active === null ? null : active.windows[active.active].id,
+            rows: grid.rows,
+            colsPerView: metrics.colsPerView,
+            items: items.map((item) => ({
+                windows: item.windows.map((win) => win.id),
+                active: item.windows[item.active].id,
+                area: grid.area(item).toJSON(),
+                tabbed: item.tabbed,
+                mode: modeOf(item),
+            })),
+        };
     }
 
     /** Wraps an engine call so that bento gets what it changed. */
@@ -1514,8 +1888,8 @@ export default function create(ws) {
 
     function isCentering() {
         return (
-            ws.config.centerFocusedColumn === "always" ||
-            (ws.config.alwaysCenterSingleColumn && isSingleColumn())
+            options("center-focused-window") === "always" ||
+            (options("always-center-single-window") && isSingleColumn())
         );
     }
 
@@ -1577,7 +1951,7 @@ export default function create(ws) {
         if (isCentering()) {
             return centeredOffset(targetX, item);
         }
-        if (ws.config.centerFocusedColumn !== "on-overflow" || prev === null || prev === item) {
+        if (options("center-focused-window") !== "on-overflow" || prev === null || prev === item) {
             return fitOffset(targetX, item);
         }
 
@@ -1608,12 +1982,19 @@ export default function create(ws) {
         return total <= workingArea.w ? fitOffset(targetX, item) : centeredOffset(targetX, item);
     }
 
+    /** Moves the camera, unless a swipe is doing it. */
+    function moveCamera(to, opts = {}) {
+        if (!swiping) {
+            ws.camera.move(to, { velocity: cameraVelocity, ...opts });
+        }
+    }
+
     /** Moves the camera to `x`, unless it's going there already. */
     function moveCameraTo(x) {
-        if (Math.abs(x - ws.camera.x) < 1 / ws.view.scale) {
+        if (Math.abs(x - ws.camera.x) < 1 / ws.monitor.scale) {
             return;
         }
-        ws.moveCamera({ x });
+        moveCamera({ x });
     }
 
     /** Scrolls to `item` if it isn't in view, or centers it, depending on the config. */
@@ -1862,6 +2243,11 @@ export default function create(ws) {
         }
 
         items.push(item);
+        finishAdd(item, wasEmpty, how.activate);
+    }
+
+    /** Settles a new item that's on the grid: its mode, and focus and the camera if it activates. */
+    function finishAdd(item, wasEmpty, activate) {
         sync();
 
         // A window that is already fullscreen or maximized pushes the others aside right away.
@@ -1869,23 +2255,61 @@ export default function create(ws) {
             fitToMode(item);
         }
 
-        if (!how.activate) {
+        if (wasEmpty) {
+            // The first window on an empty workspace, focused or not: whatever camera position was
+            // left over doesn't matter, so jump to where it would be for this window.
+            const x = itemX(item);
+            moveCamera({ x: x + viewOffsetFor(x, item, null) }, { animate: false });
+        }
+
+        if (!activate) {
             if (active === null) {
                 active = item;
             }
             return;
         }
 
-        if (wasEmpty) {
-            // The first window on an empty workspace: whatever camera position was left over
-            // doesn't matter, so jump to where it would be for this window.
-            const x = itemX(item);
-            ws.moveCamera({ x: x + viewOffsetFor(x, item, null) }, { animate: false });
-        }
-
         const prev = wasEmpty ? null : { opened: item, prev: active };
         activateItem(item);
         prevOnRemoval = prev;
+    }
+
+    /**
+     * Takes the item of `target`, or the focused one, off the grid for another workspace, with
+     * what `putIn` needs to give it its size and tabs back there.
+     */
+    function takeOut(target) {
+        const item = itemFor(target);
+        if (item === null) {
+            return null;
+        }
+        const out = {
+            windows: [...item.windows],
+            tab: item.active,
+            tabbed: item.tabbed,
+            fullscreen: item.fullscreen,
+            intent: { ...intentOf(item), maximized: item.maximized },
+        };
+        // The group is made again where the item lands.
+        item.group?.dissolve();
+        item.group = null;
+        removeItem(item);
+        return out;
+    }
+
+    /** Puts what `takeOut` took on this grid, right of the focused window, at its size. */
+    function putIn(out, activate) {
+        const item = makeItem(out.windows, out.intent);
+        item.tabbed = out.tabbed;
+        item.active = out.tab;
+        item.fullscreen = out.fullscreen;
+        item.maximized = out.intent.maximized;
+
+        const wasEmpty = items.length === 0;
+        const [cols, rows] = spanFor(item);
+        grid.insertAfter(item, active, cols, rows);
+        items.push(item);
+        finishAdd(item, wasEmpty, activate);
     }
 
     function removeWindow(win, how) {
@@ -2539,7 +2963,7 @@ export default function create(ws) {
             return false;
         }
         const borders = item.windows[0].borders.w;
-        const spans = ws.config.presetColumnWidths.map((preset) => colsForPreset(preset, borders));
+        const spans = options("preset-widths").map((preset) => colsForPreset(preset, borders));
         return resizeItem(item, nextPresetSpan(grid.area(item).cols, spans, forwards), null);
     }
 
@@ -2549,20 +2973,35 @@ export default function create(ws) {
             return false;
         }
         const borders = item.windows[0].borders.h;
-        const spans = ws.config.presetWindowHeights.map((preset) => rowsForPreset(preset, borders));
+        const spans = options("preset-heights").map((preset) => rowsForPreset(preset, borders));
         return resizeItem(item, null, nextPresetSpan(grid.area(item).rows, spans, forwards));
     }
 
-    /** Toggles the focused window between the full view width and the width it had before. */
-    function toggleFullWidth() {
-        if (active === null || modeOf(active) !== "normal") {
+    /** Toggles an item, by default the focused one, between the full view width and its own. */
+    function toggleFullWidth(item = active) {
+        if (item === null || modeOf(item) !== "normal") {
             return false;
         }
 
         // The window keeps its own width while full-width, so it comes back to it.
-        active.fullWidth = !active.fullWidth;
-        resizeItem(active, spanFor(active)[0], null);
+        item.fullWidth = !item.fullWidth;
+        resizeItem(item, spanFor(item)[0], null);
         return true;
+    }
+
+    /** Toggles an item between as tall as the grid and the height it had before. */
+    function toggleFullHeight(item) {
+        if (item === null || modeOf(item) !== "normal") {
+            return false;
+        }
+        const rows = grid.area(item).rows;
+        if (rows < metrics.rows) {
+            item.restoreRows = rows;
+            return resizeItem(item, null, metrics.rows);
+        }
+        const back = item.restoreRows ?? Math.ceil(metrics.rows / 2);
+        item.restoreRows = null;
+        return resizeItem(item, null, back);
     }
 
     /**
@@ -3042,7 +3481,7 @@ export default function create(ws) {
                 snaps.push({ pos, item });
             }
         } else {
-            const onOverflow = ws.config.centerFocusedColumn === "on-overflow";
+            const onOverflow = options("center-focused-window") === "on-overflow";
 
             // Width of the window next to `item` in `dir` on the grid, if any.
             const adjacentWidth = (item, dir) => {
@@ -3145,7 +3584,7 @@ export default function create(ws) {
         active = next;
 
         // bento animates from the speed of the swipe.
-        ws.moveCamera({ x: snap.pos });
+        moveCamera({ x: snap.pos });
         // Deal with things like snapping to the right edge of a window wider than the view.
         cameraToItem(next);
     }
@@ -3170,7 +3609,7 @@ export default function create(ws) {
             sync();
             // Cell size changes move every window, so keep the view on the focused one.
             if (activeX !== null && itemX(active) !== activeX) {
-                ws.moveCamera({ x: ws.camera.x + itemX(active) - activeX }, { animate: false });
+                moveCamera({ x: ws.camera.x + itemX(active) - activeX }, { animate: false });
             }
         }
 
@@ -3500,17 +3939,21 @@ export default function create(ws) {
     }
 
     /**
-     * Takes over windows: from saved state after a reload, or otherwise from where they are, like
-     * when switching from another engine.
+     * Takes over windows that were there when the engine started: from saved state after a
+     * reload, or otherwise from where they were, like when switching from another engine.
+     * `rects` has where each was on the canvas, or `null`.
      */
-    function adopt(windows, focused, state) {
+    function adopt(windows, rects, focused, state) {
         // The grid is a horizontal strip, so the camera stays at the top.
         if (ws.camera.y !== 0) {
-            ws.moveCamera({ y: 0 }, { animate: false });
+            moveCamera({ y: 0 }, { animate: false });
         }
 
         const restored = restoreState(state, windows);
-        adoptWindows(windows.filter((win) => !restored.has(win.id)));
+        adoptWindows(
+            windows.filter((win) => !restored.has(win.id)),
+            rects,
+        );
         sync();
         // Fullscreen and maximized windows push the others aside.
         for (const item of items) {
@@ -3632,22 +4075,23 @@ export default function create(ws) {
      * canvas go to the cells nearest to it at their size, left to right; the others go after
      * them, in order.
      */
-    function adoptWindows(windows) {
+    function adoptWindows(windows, rects) {
         const withRects = sortBy(
-            windows.filter((win) => win.rect),
-            (win) => [win.rect.x, win.rect.y],
+            windows.filter((win) => rects.get(win.id) !== null),
+            (win) => [rects.get(win.id).x, rects.get(win.id).y],
         );
         for (const win of withRects) {
-            const item = makeItem([win], intentForSize(win, win.rect));
+            const rect = rects.get(win.id);
+            const item = makeItem([win], intentForSize(win, rect));
             item.fullscreen = win.mode === "fullscreen";
             item.maximized = win.mode === "maximized";
             const [cols, rows] = spanFor(item);
-            grid.place([[item, areaAt(win.rect.x, win.rect.y, cols, rows)]]);
+            grid.place([[item, areaAt(rect.x, rect.y, cols, rows)]]);
             items.push(item);
         }
 
         let last = null;
-        for (const win of windows.filter((win) => !win.rect)) {
+        for (const win of windows.filter((win) => rects.get(win.id) === null)) {
             const item = makeItem([win], intentForSize(win, win.size));
             item.fullscreen = win.mode === "fullscreen";
             item.maximized = win.mode === "maximized";
@@ -3662,27 +4106,20 @@ export default function create(ws) {
     // Queries
     // ---------------------------------------------------------------------------------------------
 
-    /**
-     * Opens windows at the size of the cells they will cover, as tile sizes like every size in
-     * the API, minus the tab indicator if they open as tabs.
-     */
+    /** Opens windows at the size of the cells they will cover, as tile sizes like every size. */
     function newWindowSize(info) {
         const borders = info.borders;
         const rules = info.rules;
-        const extra =
-            (rules.defaultColumnDisplay ?? ws.config.defaultColumnDisplay) === "tabbed"
-                ? ws.tabIndicatorSpace(1)
-                : { w: 0, h: 0 };
-        const cols = rules.openFullWidth
+        const defaultWidth = rulesWidth(rules);
+        const defaultHeight = rulesHeight(rules);
+        const cols = rules["open-full-width"]
             ? metrics.colsPerView
-            : rules.defaultWidth
-              ? colsForPreset(rules.defaultWidth, borders.w)
+            : defaultWidth
+              ? colsForPreset(defaultWidth, borders.w)
               : null;
-        const width = cols === null ? 0 : cellGeometry(new Area(0, 0, cols, 1)).w - extra.w;
-        const rows = rules.defaultHeight
-            ? rowsForPreset(rules.defaultHeight, borders.h)
-            : metrics.rows;
-        const height = cellGeometry(new Area(0, 0, 1, rows)).h - extra.h;
+        const width = cols === null ? 0 : cellGeometry(new Area(0, 0, cols, 1)).w;
+        const rows = defaultHeight ? rowsForPreset(defaultHeight, borders.h) : metrics.rows;
+        const height = cellGeometry(new Area(0, 0, 1, rows)).h;
         let size = {
             w: width > 0 ? Math.max(1, Math.floor(width)) : 0,
             h: Math.max(1, Math.floor(height)),
@@ -3696,22 +4133,6 @@ export default function create(ws) {
             h: min.h === max.h && min.h > 0 ? limit(size.h, min.h, max.h) : Math.max(size.h, min.h),
         };
         return size;
-    }
-
-    /**
-     * Column and place in the stack, counting from 1: the grid's columns are where windows start,
-     * and a window's stack is the windows and tabs covering the column of cells it starts in.
-     */
-    function ipcPosition(win) {
-        const item = itemOf(win);
-        if (item === null) {
-            return null;
-        }
-        const area = grid.area(item);
-        const column = grid.columnStarts().indexOf(area.col);
-        const tab = item.windows.findIndex((w) => w.id === win.id);
-        const place = stackTiles(area.col).findIndex(([it, t]) => it === item && t === tab);
-        return column === -1 || place === -1 ? null : [column + 1, place + 1];
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -3819,27 +4240,357 @@ export default function create(ws) {
     }
 
     return {
+        has: (win) => itemOf(win) !== null,
+        exposed,
+
         windowAdded: changes(addWindow),
         windowRemoved: changes(removeWindow),
-        adopt: changes(adopt),
+
+        /** Takes over the windows that were here when the engine started, `{ win, rect }`. */
+        adopt(entries, focused, state) {
+            const rects = new Map(entries.map(({ win, rect }) => [win.id, rect ?? null]));
+            changes(() => {
+                adopt(
+                    entries.map(({ win }) => win),
+                    rects,
+                    focused,
+                    state,
+                );
+                // Groups that were already there show as tabbed areas.
+                for (const group of bento.groups) {
+                    matchGroup(group);
+                }
+            })();
+        },
+
         save,
+
+        /** Runs an action; returns whether it did anything. */
         action: changes(runAction),
+
+        /** Focuses the focused item's window, for a space that just became the one shown. */
+        focusActive: () => flush(),
+
         activate: changes(activateWindow),
         modeRequested: changes(requestMode),
+
         // The grid decides window sizes. A window that can't take the size of its cells, like
         // one with a larger minimum size, is drawn at its own size where its cells are.
-        windowChanged() {},
+        windowChanged: () => flush(),
+
+        /** The monitor's size, scale or working area changed, or the workspace moved to another. */
         viewChanged: changes(reconfigure),
         configChanged: changes(reconfigure),
+
+        groupChanged: changes(matchGroup),
+        groupRemoved: changes(dropGroup),
+
         resizeBegin: changes(resizeBegin),
         resizeUpdate: changes(resizeUpdate),
         resizeEnd: changes(resizeEnd),
-        gestureEnd: changes(gestureEnd),
-        // Queries.
-        dropTarget,
+
+        /** A double click on a resize edge: left and right toggle the width, top and bottom the height. */
+        edgeDoubleClick: changes((win, edges) => {
+            const item = itemOf(win);
+            if (item === null) return;
+            stopResizeFor(item);
+            if (edges.left || edges.right) toggleFullWidth(item);
+            if (edges.top || edges.bottom) toggleFullHeight(item);
+        }),
+
+        // Swipes. The camera follows the fingers, and the end snaps it to window edges.
+
+        swipeBegin() {
+            swiping = true;
+        },
+
+        swipeUpdate(delta) {
+            ws.camera.move({ x: ws.camera.x + delta }, { animate: false });
+        },
+
+        swipeEnd(velocity) {
+            swiping = false;
+            const projected = ws.camera.x - velocity / (1000 * Math.log(SWIPE_DECELERATION));
+            cameraVelocity = velocity;
+            try {
+                changes(gestureEnd)(velocity, { x: projected, y: 0 });
+            } finally {
+                cameraVelocity = 0;
+            }
+        },
+
+        // Dragging windows over the workspace.
+
+        dragOver(win, pointer, rect) {
+            showHint("drop", dropTarget(win, pointer, rect));
+        },
+        dragLeave: () => showHint("drop", null),
+
         newWindowSize,
-        ipcPosition,
+
+        // Moving between workspaces.
+
+        takeOut: changes(takeOut),
+        putIn: (out, activate) => changes(putIn)(out, activate),
+
+        /** Takes away what the space drew, for a workspace that's gone. */
+        dispose() {
+            for (const nodes of tabNodes.values()) nodes.forEach((node) => node.remove());
+            tabNodes.clear();
+            hintNode?.remove();
+            dropNode?.remove();
+        },
     };
+}
+
+// The engine: one space for each workspace, and what crosses from one to another.
+
+export default function create(bento) {
+    /** Spaces by workspace id. */
+    const spaces = new Map();
+    /** Windows and groups whose events are followed. */
+    const followed = new WeakSet();
+    /**
+     * Windows that were there when the engine started, by workspace: they come to the engine one
+     * by one, and a space takes them over together, once the last one arrived.
+     */
+    const adopting = new Map();
+
+    const geometryOf = (ws) =>
+        JSON.stringify([ws.monitor?.name, ws.monitor?.size, ws.monitor?.scale, ws.monitor?.workingArea]);
+
+    function spaceOf(ws) {
+        let space = spaces.get(ws.id);
+        if (space === undefined) {
+            space = createSpace(bento, ws);
+            spaces.set(ws.id, space);
+            watchWorkspace(ws, space);
+        }
+        return space;
+    }
+
+    /** The space a window is in, if the engine places it. */
+    function spaceWith(win) {
+        const space = spaces.get(win.workspace?.id);
+        return space?.has(win) ? space : undefined;
+    }
+
+    function watchWorkspace(ws, space) {
+        let geometry = geometryOf(ws);
+        ws.addEventListener("change", () => {
+            // Moving to another monitor lays the grid out again; switching to it doesn't.
+            const now = geometryOf(ws);
+            if (now !== geometry) {
+                geometry = now;
+                space.viewChanged();
+            }
+        });
+        ws.addEventListener("remove", () => {
+            space.dispose();
+            spaces.delete(ws.id);
+            bento.stateChanged();
+        });
+        ws.addEventListener("swipebegin", () => space.swipeBegin());
+        ws.addEventListener("swipeupdate", (e) => space.swipeUpdate(e.delta));
+        ws.addEventListener("swipeend", (e) => space.swipeEnd(e.velocity));
+        ws.addEventListener("dragenter", (e) => space.dragOver(e.window, e.pointer, e.rect));
+        ws.addEventListener("dragmove", (e) => space.dragOver(e.window, e.pointer, e.rect));
+        ws.addEventListener("dragleave", () => space.dragLeave());
+    }
+
+    function watchMonitor(monitor) {
+        monitor.addEventListener("change", () => {
+            for (const ws of monitor.workspaces) spaces.get(ws.id)?.viewChanged();
+        });
+    }
+
+    function watchGroup(group) {
+        if (followed.has(group)) return;
+        followed.add(group);
+        group.addEventListener("change", () => matchGroup(group));
+        group.addEventListener("remove", () => {
+            for (const space of spaces.values()) space.groupRemoved(group);
+        });
+    }
+
+    function matchGroup(group) {
+        spaceWith(group.active)?.groupChanged(group);
+    }
+
+    function watchWindow(win) {
+        if (followed.has(win)) return;
+        followed.add(win);
+        win.addEventListener("remove", (e) => spaceWith(win)?.windowRemoved(win, { reason: e.reason }));
+        win.addEventListener("move", (e) => {
+            // bento moved the window with one of its own actions.
+            const from = spaces.get(e.from.id);
+            if (from?.has(win)) {
+                from.windowRemoved(win, { reason: "move" });
+                spaceOf(e.to).windowAdded(win, {
+                    reason: "move",
+                    activate: e.activate,
+                    rect: null,
+                    pointer: null,
+                    nextTo: null,
+                });
+            }
+        });
+        win.addEventListener("change", () => spaceWith(win)?.windowChanged(win));
+        win.addEventListener("moderequest", (e) => {
+            const space = spaceWith(win);
+            if (space !== undefined) {
+                e.preventDefault();
+                space.modeRequested(win, e.mode, { ...e.request });
+            }
+        });
+        win.addEventListener("activaterequest", () => spaceWith(win)?.activate(win));
+        win.addEventListener("resizebegin", (e) => {
+            // Without the engine's say, bento refuses the resize.
+            const space = spaceWith(win);
+            if (space === undefined || !space.resizeBegin(win, e)) e.preventDefault();
+        });
+        win.addEventListener("resizeupdate", (e) => spaceWith(win)?.resizeUpdate(win, e));
+        win.addEventListener("resizeend", () => spaceWith(win)?.resizeEnd(win));
+        win.addEventListener("edgedoubleclick", (e) =>
+            spaceWith(win)?.edgeDoubleClick(win, e.edges),
+        );
+    }
+
+    // Across spaces.
+
+    /** Moves keyboard focus to a monitor. Returns whether there was one. */
+    function focusMonitor(monitor) {
+        if (monitor === null || monitor === undefined) return false;
+        monitor.focus();
+        const ws = monitor.activeWorkspace;
+        if (ws.focused === null) spaceOf(ws).focusActive();
+        return true;
+    }
+
+    /** Shows a workspace, and focuses its window. Returns whether there was one. */
+    function focusWorkspace(ws) {
+        if (ws === null || ws === undefined) return false;
+        ws.show();
+        ws.monitor.focus();
+        if (ws.focused === null) spaceOf(ws).focusActive();
+        return true;
+    }
+
+    const below = (ws) => ws.monitor.workspaces[ws.index + 1];
+    const above = (ws) => ws.monitor.workspaces[ws.index - 1];
+
+    /** Moves the window of `target`, with its tabs, to a workspace, and focus goes along. */
+    function moveTo(space, target, to) {
+        if (to === null || to === undefined || spaceOf(to) === space) return false;
+        const out = space.takeOut(target);
+        if (out === null) return false;
+        for (const win of out.windows) win.moveTo(to);
+        spaceOf(to).putIn(out, true);
+        focusWorkspace(to);
+        return true;
+    }
+
+    /**
+     * Actions that go on to another monitor or workspace, alone or when the grid can't do what
+     * they say. The others are the space's own. Each gets the workspace, its space, the window
+     * the action is for and the arguments.
+     */
+    const across = {
+        "focus-left-or-monitor": (ws, space, target) =>
+            space.action("focus-left", [], target) || focusMonitor(ws.monitor.left),
+        "focus-right-or-monitor": (ws, space, target) =>
+            space.action("focus-right", [], target) || focusMonitor(ws.monitor.right),
+        "focus-up-or-workspace": (ws, space, target) =>
+            space.action("focus-up", [], target) || focusWorkspace(above(ws)),
+        "focus-down-or-workspace": (ws, space, target) =>
+            space.action("focus-down", [], target) || focusWorkspace(below(ws)),
+
+        "move-left-or-to-monitor": (ws, space, target) =>
+            space.action("move-left", [], target) ||
+            moveTo(space, target, ws.monitor.left?.activeWorkspace),
+        "move-up-or-to-workspace": (ws, space, target) =>
+            space.action("move-up", [], target) || moveTo(space, target, above(ws)),
+        "move-down-or-to-workspace": (ws, space, target) =>
+            space.action("move-down", [], target) || moveTo(space, target, below(ws)),
+
+        "move-to-workspace": (ws, space, target, args) => moveTo(space, target, args[0]),
+        "move-to-monitor": (ws, space, target, args) =>
+            moveTo(space, target, args[0]?.activeWorkspace),
+    };
+
+    // Listening.
+
+    bento.addEventListener("monitoradd", (e) => watchMonitor(e.monitor));
+    bento.addEventListener("workspaceadd", (e) => spaceOf(e.workspace));
+    bento.addEventListener("groupadd", (e) => {
+        watchGroup(e.group);
+        matchGroup(e.group);
+    });
+    bento.addEventListener("configchange", () => {
+        for (const space of spaces.values()) space.configChanged();
+    });
+    bento.addEventListener("newwindowsize", (e) => e.respondWith(spaceOf(e.workspace).newWindowSize(e)));
+
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        watchWindow(win);
+        const ws = win.workspace;
+        const pending = adopting.get(ws.id);
+        if (e.reason === "adopt" && pending !== undefined) {
+            pending.entries.push({ win, rect: e.rect, activate: e.activate });
+            if (pending.entries.length === pending.expected) {
+                adopting.delete(ws.id);
+                const state = bento.savedState?.workspaces?.[ws.id] ?? null;
+                const focused = pending.entries.find((entry) => entry.activate)?.win ?? null;
+                spaceOf(ws).adopt(pending.entries, focused, state);
+            }
+            return;
+        }
+        spaceOf(ws).windowAdded(win, {
+            reason: e.reason,
+            activate: e.activate,
+            rect: e.rect,
+            pointer: e.pointer,
+            nextTo: e.nextTo,
+        });
+    });
+
+    bento.addEventListener("action", (e) => {
+        const ws = e.window?.workspace ?? bento.focusedMonitor?.activeWorkspace;
+        if (ws === null || ws === undefined) return;
+        const space = spaceOf(ws);
+        // An action on a window the engine doesn't place, like a floating one, is for the space.
+        const target = e.window !== null && space.has(e.window) ? e.window : null;
+        const args = [...e.args];
+        if (Object.hasOwn(across, e.name)) {
+            across[e.name](ws, space, target, args);
+        } else {
+            space.action(e.name, args, target);
+        }
+    });
+
+    bento.addEventListener("unload", (e) => {
+        e.saveState({
+            workspaces: Object.fromEntries([...spaces].map(([id, space]) => [id, space.save()])),
+        });
+    });
+
+    bento.exposeState(() => ({
+        workspaces: [...spaces].map(([id, space]) => ({ id, ...space.exposed() })),
+    }));
+
+    // What's there already.
+
+    for (const monitor of bento.monitors) {
+        watchMonitor(monitor);
+        for (const ws of monitor.workspaces) {
+            spaceOf(ws);
+            if (ws.windows.length > 0) {
+                adopting.set(ws.id, { expected: ws.windows.length, entries: [] });
+            }
+        }
+    }
+    for (const group of bento.groups) watchGroup(group);
 }
 
 // =================================================================================================

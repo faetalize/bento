@@ -71,7 +71,7 @@ input {
 }
 
 // You can configure outputs by their name, which you can find
-// by running `bento msg outputs` while inside a bento instance.
+// by running `bento msg monitors` while inside a bento instance.
 // The built-in laptop monitor is usually called "eDP-1".
 // Find more information on the wiki:
 // https://niri-wm.github.io/niri/Configuration:-Outputs
@@ -85,7 +85,7 @@ input {
     // If the refresh rate is omitted, bento will pick the highest refresh rate
     // for the resolution.
     // If the mode is omitted altogether or is invalid, bento will pick one automatically.
-    // Run `bento msg outputs` while inside a bento instance to list all outputs and their modes.
+    // Run `bento msg monitors` while inside a bento instance to list all outputs and their modes.
     mode "1920x1080@120.030"
 
     // You can use integer or fractional scale, for example use 1.5 for 150% scale.
@@ -124,37 +124,6 @@ tiling {
 layout {
     // Set gaps around windows in logical pixels.
     gaps 16
-
-    // When to center a column when changing focus, options are:
-    // - "never", default behavior, focusing an off-screen column will keep at the left
-    //   or right edge of the screen.
-    // - "always", the focused column will always be centered.
-    // - "on-overflow", focusing a column will center it if it doesn't fit
-    //   together with the previously focused column.
-    center-focused-column "never"
-
-    // You can customize the widths that the engine's actions cycle through, like niri's
-    // "switch-preset-column-width" or bento's "cycle-width" (Mod+R).
-    preset-column-widths {
-        // Proportion sets the width as a fraction of the output width, taking gaps into account.
-        // For example, you can perfectly fit four windows sized "proportion 0.25" on an output.
-        // The default preset widths are 1/3, 1/2 and 2/3 of the output.
-        proportion 0.33333
-        proportion 0.5
-        proportion 0.66667
-
-        // Fixed sets the width in logical pixels exactly.
-        // fixed 1920
-    }
-
-    // You can also customize the heights that niri's "switch-preset-window-height" or bento's
-    // "cycle-height" (Mod+Ctrl+Shift+R) cycle through.
-    // preset-window-heights { }
-
-    // You can change the default width of the new windows.
-    default-column-width { proportion 0.5; }
-    // If you leave the brackets empty, the windows themselves will decide their initial width.
-    // default-column-width {}
 
     // By default focus ring and border are rendered as a solid background rectangle
     // behind windows. That is, they will show up through semitransparent windows.
@@ -319,18 +288,10 @@ animations {
 }
 
 // Window rules let you adjust behavior for individual windows.
+// Rules that belong to the layout engine, like the width a window opens with, go in the engine's
+// own file instead: https://github.com/faetalize/bento#layout-engines
 // Find more information on the wiki:
 // https://niri-wm.github.io/niri/Configuration:-Window-Rules
-
-// Work around WezTerm's initial configure bug
-// by setting an empty default-column-width.
-window-rule {
-    // This regular expression is intentionally made as specific as possible,
-    // since this is the default config, and we want no false positives.
-    // You can get away with just app-id="wezterm" if you want.
-    match app-id=r#"^org\.wezfurlong\.wezterm$"#
-    default-column-width {}
-}
 
 // Open the Firefox picture-in-picture player as floating by default.
 window-rule {
@@ -456,6 +417,18 @@ binds {
     Mod+Alt+Ctrl+L     { move-floating-right; }
 
     Mod+Alt+C { center-floating-window; }
+
+    // Windows can be grouped, and the layout engine decides how a group looks. These group the
+    // focused window with the nearest one in a direction, and take it out of its group.
+    Mod+Shift+Alt+Left  { group-window-left; }
+    Mod+Shift+Alt+Down  { group-window-down; }
+    Mod+Shift+Alt+Up    { group-window-up; }
+    Mod+Shift+Alt+Right { group-window-right; }
+    Mod+Shift+Alt+H     { group-window-left; }
+    Mod+Shift+Alt+J     { group-window-down; }
+    Mod+Shift+Alt+K     { group-window-up; }
+    Mod+Shift+Alt+L     { group-window-right; }
+    Mod+Shift+Alt+G     { ungroup-window; }
 
     Mod+Shift+Left  { focus-monitor-left; }
     Mod+Shift+Down  { focus-monitor-down; }

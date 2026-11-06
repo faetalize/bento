@@ -2,10 +2,7 @@ use std::cell::{Cell, OnceCell, RefCell};
 
 use niri_config::utils::Flag;
 use niri_config::workspace::WorkspaceName;
-use niri_config::{
-    CenterFocusedColumn, FloatOrInt, OutputName, Struts, TabIndicatorLength, TabIndicatorPosition,
-    WorkspaceReference,
-};
+use niri_config::{FloatOrInt, OutputName, Struts, WorkspaceReference};
 use proptest::prelude::*;
 use proptest_derive::Arbitrary;
 use smithay::output::{Mode, PhysicalProperties, Subpixel};
@@ -227,8 +224,6 @@ impl LayoutElement for TestWindow {
 
     fn send_pending_configure(&mut self) {}
 
-    fn set_active_in_column(&mut self, _active: bool) {}
-
     fn set_floating(&mut self, _floating: bool) {}
 
     fn sizing_mode(&self) -> SizingMode {
@@ -364,6 +359,17 @@ fn arbitrary_resize_edge() -> impl Strategy<Value = ResizeEdge> {
     ]
 }
 
+fn arbitrary_group_direction() -> impl Strategy<Value = groups::Direction> {
+    use groups::Direction;
+
+    prop_oneof![
+        Just(Direction::Left),
+        Just(Direction::Right),
+        Just(Direction::Up),
+        Just(Direction::Down),
+    ]
+}
+
 fn arbitrary_scale() -> impl Strategy<Value = f64> {
     prop_oneof![Just(1.), Just(1.5), Just(2.),]
 }
@@ -495,7 +501,9 @@ enum Op {
     },
     /// Runs one of the engine's actions by name, like a bind in its file does.
     #[proptest(skip)]
-    LayoutAction(&'static str, Vec<niri_config::TilingOption>),
+    LayoutAction(&'static str, Vec<niri_config::TilingOption>, Option<usize>),
+    GroupWindow(#[proptest(strategy = "arbitrary_group_direction()")] groups::Direction),
+    UngroupWindow,
     ToggleWindowFloating {
         #[proptest(strategy = "proptest::option::of(1..=5usize)")]
         id: Option<usize>,
@@ -794,9 +802,6 @@ impl Op {
                 layout.add_window(
                     win,
                     AddWindowTarget::Auto,
-                    None,
-                    None,
-                    false,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -863,9 +868,6 @@ impl Op {
                 layout.add_window(
                     win,
                     AddWindowTarget::NextTo(&next_to_id),
-                    None,
-                    None,
-                    false,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -937,9 +939,6 @@ impl Op {
                 layout.add_window(
                     win,
                     AddWindowTarget::Workspace(ws_id),
-                    None,
-                    None,
-                    false,
                     is_floating,
                     ActivateWindow::default(),
                 );
@@ -1079,7 +1078,12 @@ impl Op {
 
                 layout.move_workspace_to_output_by_id(old_idx, Some(old_output), &output);
             }
-            Op::LayoutAction(name, args) => layout.layout_action(name, &args),
+            Op::LayoutAction(name, args, id) => {
+                let id = id.filter(|id| layout.has_window(id));
+                layout.layout_action(name, &args, id.as_ref());
+            }
+            Op::GroupWindow(direction) => layout.group_window(direction),
+            Op::UngroupWindow => layout.ungroup_window(),
             Op::MaximizeWindowToEdges { id } => {
                 let id = id.or_else(|| layout.focus().map(|win| *win.id()));
                 let Some(id) = id else {
@@ -2059,8 +2063,8 @@ fn open_right_of_on_different_workspace() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[0].scrolling().active_column_idx(),
-        1,
+        mon.workspaces[0].active_window().map(|win| *win.id()),
+        Some(3),
         "the new window must become active"
     );
 }
@@ -2102,8 +2106,8 @@ fn open_right_of_on_different_workspace_ewaf() {
         "the second workspace must remain active"
     );
     assert_eq!(
-        mon.workspaces[1].scrolling().active_column_idx(),
-        1,
+        mon.workspaces[1].active_window().map(|win| *win.id()),
+        Some(3),
         "the new window must become active"
     );
 }
@@ -3095,23 +3099,6 @@ fn arbitrary_struts() -> impl Strategy<Value = Struts> {
         })
 }
 
-fn arbitrary_center_focused_column() -> impl Strategy<Value = CenterFocusedColumn> {
-    prop_oneof![
-        Just(CenterFocusedColumn::Never),
-        Just(CenterFocusedColumn::OnOverflow),
-        Just(CenterFocusedColumn::Always),
-    ]
-}
-
-fn arbitrary_tab_indicator_position() -> impl Strategy<Value = TabIndicatorPosition> {
-    prop_oneof![
-        Just(TabIndicatorPosition::Left),
-        Just(TabIndicatorPosition::Right),
-        Just(TabIndicatorPosition::Top),
-        Just(TabIndicatorPosition::Bottom),
-    ]
-}
-
 prop_compose! {
     fn arbitrary_focus_ring()(
         off in any::<bool>(),
@@ -3155,52 +3142,21 @@ prop_compose! {
 }
 
 prop_compose! {
-    fn arbitrary_tab_indicator()(
-        off in any::<bool>(),
-        hide_when_single_tab in prop::option::of(any::<bool>().prop_map(Flag)),
-        place_within_column in prop::option::of(any::<bool>().prop_map(Flag)),
-        width in prop::option::of(arbitrary_spacing().prop_map(FloatOrInt)),
-        gap in prop::option::of(arbitrary_spacing_neg().prop_map(FloatOrInt)),
-        length in prop::option::of((0f64..2f64)
-            .prop_map(|x| TabIndicatorLength { total_proportion: Some(x) })),
-        position in prop::option::of(arbitrary_tab_indicator_position()),
-    ) -> niri_config::TabIndicatorPart {
-        niri_config::TabIndicatorPart {
-            off,
-            on: !off,
-            hide_when_single_tab,
-            place_within_column,
-            width,
-            gap,
-            length,
-            position,
-            ..Default::default()
-        }
-    }
-}
-
-prop_compose! {
     fn arbitrary_layout_part()(
         gaps in prop::option::of(arbitrary_spacing().prop_map(FloatOrInt)),
         struts in prop::option::of(arbitrary_struts()),
         focus_ring in prop::option::of(arbitrary_focus_ring()),
         border in prop::option::of(arbitrary_border()),
         shadow in prop::option::of(arbitrary_shadow()),
-        tab_indicator in prop::option::of(arbitrary_tab_indicator()),
-        center_focused_column in prop::option::of(arbitrary_center_focused_column()),
-        always_center_single_column in prop::option::of(any::<bool>().prop_map(Flag)),
         empty_workspace_above_first in prop::option::of(any::<bool>().prop_map(Flag)),
     ) -> niri_config::LayoutPart {
         niri_config::LayoutPart {
             gaps,
             struts,
-            center_focused_column,
-            always_center_single_column,
             empty_workspace_above_first,
             focus_ring,
             border,
             shadow,
-            tab_indicator,
             ..Default::default()
         }
     }

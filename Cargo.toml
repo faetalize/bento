@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "bento-ipc",
     "bento-settings",
     "niri-config",
     "niri-ipc",
@@ -68,6 +69,7 @@ arrayvec = "0.7.8"
 async-channel = "2.5.0"
 async-io = { version = "2.6.0", optional = true }
 atomic = "0.6.1"
+bento-ipc = { version = "26.4.0", path = "bento-ipc" }
 bitflags.workspace = true
 bytemuck = { version = "1.25.2", features = ["derive"] }
 calloop = { version = "0.14.5", features = ["executor", "futures-io", "signals"] }
@@ -86,6 +88,7 @@ keyframe = { version = "1.1.1", default-features = false }
 libc = "0.2.189"
 libdisplay-info = "0.3.0"
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_debug"] }
+miette = { version = "5.10.0", features = ["fancy-no-backtrace"] }
 niri-config = { version = "26.4.0", path = "niri-config" }
 niri-ipc = { version = "26.4.0", path = "niri-ipc", features = ["clap"] }
 ordered-float = "5"
@@ -107,7 +110,7 @@ wayland-scanner = "0.31.11"
 wayland-server = "0.31.14"
 xcursor = "0.3.11"
 zbus = { version = "5", optional = true }
-rquickjs = "0.14"
+rquickjs = { version = "0.14", features = ["loader"] }
 
 [dependencies.smithay]
 workspace = true
@@ -129,7 +132,7 @@ features = [
 
 # rquickjs ships no prebuilt bindings for these targets, so generate them.
 [target.'cfg(any(target_os = "freebsd", target_env = "musl"))'.dependencies]
-rquickjs = { version = "0.14", features = ["bindgen"] }
+rquickjs = { version = "0.14", features = ["bindgen", "loader"] }
 
 [dev-dependencies]
 approx = "0.5.1"

@@ -195,7 +195,6 @@ impl State {
             keymap,
             saved,
         });
-        self.ipc_keyboard_layouts_changed();
     }
 
     /// Switches the seat back from a virtual keyboard's keymap to the configured one, if needed.
@@ -227,7 +226,6 @@ impl State {
         }
 
         self.restore_keyboard_state(active.saved);
-        self.ipc_keyboard_layouts_changed();
     }
 
     /// Returns the configured keymap as XKB_KEYMAP_FORMAT_TEXT_V1.

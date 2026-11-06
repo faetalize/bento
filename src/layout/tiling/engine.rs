@@ -1,14 +1,13 @@
-//! The JS engine that runs tiling layouts.
+//! The JS engine that runs the tiling layout.
 //!
-//! There is one engine per thread, holding the current layout module. Each workspace has its own
-//! instance of the layout in it. bento and the layout talk in JSON through `prelude.js`, see
-//! `resources/layouts/bento-layout.d.ts` for the API.
+//! There is one engine per thread, holding the current layout module and its one instance, which
+//! sees the whole session. bento and the layout talk in JSON through the prelude, see
+//! `resources/layouts/prelude/` for it and `resources/layouts/bento-layout.d.ts` for the API.
 //!
 //! The engine has no access to files, the network or other modules, and every call has a time
 //! limit, so a broken layout can't hang the compositor.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -16,12 +15,42 @@ use anyhow::{anyhow, Context as _};
 use niri_config::{Tiling, TilingLayout, TilingOption};
 use niri_ipc::{
     LayoutEngineAction, LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOption,
-    LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, SizeChange,
+    LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, LayoutEngineWindowRule,
+    SizeChange,
 };
-use rquickjs::{CatchResultExt as _, Context, Function, Module, Object, Persistent, Runtime};
+use rquickjs::loader::{BuiltinLoader, BuiltinResolver, ImportAttributes, Resolver};
+use rquickjs::{CatchResultExt as _, Context, Ctx, Function, Module, Object, Persistent, Runtime};
 use serde::{Deserialize, Deserializer};
+use serde_json::json;
 
-const PRELUDE: &str = include_str!("../../../resources/layouts/prelude.js");
+use crate::layout::groups;
+
+/// The prelude's entry point, which imports the rest.
+const PRELUDE: &str = include_str!("../../../resources/layouts/prelude/index.js");
+
+/// The prelude's other modules, by the name they import each other with.
+const PRELUDE_MODULES: &[(&str, &str)] = &[
+    (
+        "bento:prelude/events.js",
+        include_str!("../../../resources/layouts/prelude/events.js"),
+    ),
+    (
+        "bento:prelude/groups.js",
+        include_str!("../../../resources/layouts/prelude/groups.js"),
+    ),
+    (
+        "bento:prelude/nodes.js",
+        include_str!("../../../resources/layouts/prelude/nodes.js"),
+    ),
+    (
+        "bento:prelude/objects.js",
+        include_str!("../../../resources/layouts/prelude/objects.js"),
+    ),
+    (
+        "bento:prelude/v1.js",
+        include_str!("../../../resources/layouts/prelude/v1.js"),
+    ),
+];
 
 /// Layouts that ship with bento.
 const BUILT_IN: &[(&str, &str)] = &[
@@ -33,49 +62,46 @@ const BUILT_IN: &[(&str, &str)] = &[
 /// The layout used when the configured one fails to load: windows side by side. It has no actions:
 /// the binds in the engine's file are for the engine that failed.
 const FALLBACK: &str = r#"
-export const meta = { api: 1, name: "fallback" };
-export default function create(ws) {
-    const order = [];
-    const layout = () => {
-        const gaps = ws.config.gaps;
-        const area = ws.view.workingArea;
-        const w = Math.max(1, (area.w - gaps) / 2 - gaps);
-        order.forEach((win, i) => {
+export const meta = { api: 2, name: "fallback" };
+export default function create(bento) {
+    const place = (windows) => {
+        windows.forEach((win, i) => {
+            const ws = win.workspace;
+            const gaps = ws.config.gaps;
+            const area = ws.tilingArea;
+            const w = Math.max(1, (area.w - gaps) / 2 - gaps);
             const x = area.x + gaps + i * (w + gaps);
-            ws.place(win, { x, y: area.y + gaps, w, h: area.h - gaps * 2 });
+            win.place({ x, y: area.y + gaps, w, h: area.h - gaps * 2 });
         });
     };
     const show = (win) => {
-        const area = ws.view.workingArea;
+        const ws = win.workspace;
+        const area = ws.tilingArea;
         const rect = win.rect;
         if (rect.x < ws.camera.x + area.x || ws.camera.x + area.x + area.w < rect.x + rect.w) {
-            ws.moveCamera({ x: rect.x - area.x - ws.config.gaps });
+            ws.camera.move({ x: rect.x - area.x - ws.config.gaps });
         }
     };
-    return {
-        windowAdded(win, how) {
-            order.push(win);
-            layout();
-            if (how.activate || ws.focused === null) {
-                ws.focus(win);
-                show(win);
-            }
-        },
-        windowRemoved(win) {
-            const i = order.indexOf(win);
-            order.splice(i, 1);
-            layout();
-            if (ws.focused === null && order.length > 0) {
-                const next = order[Math.min(i, order.length - 1)];
-                ws.focus(next);
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        const ws = win.workspace;
+        place(ws.windows);
+        if (e.activate || ws.focused === null) {
+            win.focus();
+            show(win);
+        }
+        win.addEventListener("remove", () => {
+            const rest = ws.windows.filter((other) => other !== win);
+            const i = ws.windows.indexOf(win);
+            place(rest);
+            // bento may have taken the focus off the window already.
+            if ((ws.focused === win || ws.focused === null) && rest.length > 0) {
+                const next = rest[Math.min(i, rest.length - 1)];
+                next.focus();
                 show(next);
             }
-        },
-        activate(win) {
-            ws.focus(win);
-            show(win);
-        },
-    };
+        });
+    });
 }
 "#;
 
@@ -89,7 +115,6 @@ thread_local! {
     static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
     /// Why the configured layout last failed to load.
     static LOAD_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
-    static NEXT_INSTANCE: Cell<u64> = const { Cell::new(1) };
     static GENERATION: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -101,6 +126,10 @@ pub struct LayoutMeta {
     #[serde(deserialize_with = "deserialize_actions")]
     pub actions: Vec<LayoutEngineAction>,
     pub options: Vec<OptionMeta>,
+    #[serde(rename = "windowRules")]
+    pub window_rules: Vec<OptionMeta>,
+    /// Whether bento's floating layer exists under this layout.
+    pub floating: bool,
 }
 
 impl LayoutMeta {
@@ -134,6 +163,8 @@ enum ArgType {
     String,
     Choice,
     Size,
+    Workspace,
+    Monitor,
 }
 
 fn deserialize_actions<'de, D: Deserializer<'de>>(
@@ -148,6 +179,8 @@ fn deserialize_actions<'de, D: Deserializer<'de>>(
             ArgType::String => LayoutEngineActionArgType::String,
             ArgType::Choice => LayoutEngineActionArgType::Choice,
             ArgType::Size => LayoutEngineActionArgType::Size,
+            ArgType::Workspace => LayoutEngineActionArgType::Workspace,
+            ArgType::Monitor => LayoutEngineActionArgType::Monitor,
         }),
         default: arg.default,
         optional: false,
@@ -181,13 +214,144 @@ pub fn size_arg(value: &TilingOption) -> Option<SizeChange> {
     }
 }
 
-/// An option the layout declares.
+/// An option the layout declares, or a property its window rules can set.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OptionMeta {
     pub name: String,
-    /// Also gives the option's type: the prelude checks that it matches.
-    pub default: LayoutEngineOptionValue,
+    pub r#type: OptionType,
+    /// Whether the value is a list, written as several arguments.
+    #[serde(default)]
+    pub list: bool,
+    /// As written in the layout's file, like `"50%"`, or a list of them. `None` for no value,
+    /// which a size takes to leave it to the window.
+    pub default: Option<LayoutEngineOptionValue>,
+    #[serde(default)]
+    pub choices: Vec<String>,
     pub description: Option<String>,
+}
+
+/// The type of an option's values, spelled like in the layout's `meta`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OptionType {
+    Boolean,
+    Number,
+    String,
+    Choice,
+    Size,
+}
+
+impl OptionType {
+    fn ipc(self) -> LayoutEngineOptionType {
+        match self {
+            Self::Boolean => LayoutEngineOptionType::Boolean,
+            Self::Number => LayoutEngineOptionType::Number,
+            Self::String => LayoutEngineOptionType::String,
+            Self::Choice => LayoutEngineOptionType::Choice,
+            Self::Size => LayoutEngineOptionType::Size,
+        }
+    }
+}
+
+impl OptionMeta {
+    /// The default, as the values it's written with in the layout's file.
+    fn default_values(&self) -> Vec<TilingOption> {
+        match &self.default {
+            None => Vec::new(),
+            Some(LayoutEngineOptionValue::List(values)) => {
+                values.iter().filter_map(scalar_option).collect()
+            }
+            Some(value) => scalar_option(value).into_iter().collect(),
+        }
+    }
+
+    /// Converts values written in the layout's file to what the layout receives: booleans,
+    /// numbers, strings and choices as they are, and sizes as `{ proportion }` or `{ fixed }`. A
+    /// list option gets a list, and a size with no value is `null`: the window decides.
+    pub fn convert(&self, values: &[TilingOption]) -> Result<serde_json::Value, String> {
+        if self.list {
+            let values: Result<Vec<_>, _> = values.iter().map(|v| self.convert_one(v)).collect();
+            return values.map(serde_json::Value::Array);
+        }
+        match values {
+            [] if self.r#type == OptionType::Size => Ok(serde_json::Value::Null),
+            [] => Err(String::from("needs a value")),
+            [value] => self.convert_one(value),
+            values => Err(format!("takes one value, not {}", values.len())),
+        }
+    }
+
+    fn convert_one(&self, value: &TilingOption) -> Result<serde_json::Value, String> {
+        match (self.r#type, value) {
+            (OptionType::Boolean, TilingOption::Bool(value)) => Ok(json!(value)),
+            (OptionType::Number, TilingOption::Number(value)) => Ok(json!(value)),
+            (OptionType::String, TilingOption::String(value)) => Ok(json!(value)),
+            (OptionType::Choice, TilingOption::String(value)) if self.choices.contains(value) => {
+                Ok(json!(value))
+            }
+            (OptionType::Size, value) => match size_arg(value) {
+                Some(SizeChange::SetProportion(percent)) => {
+                    Ok(json!({ "proportion": percent / 100. }))
+                }
+                Some(SizeChange::SetFixed(pixels)) => Ok(json!({ "fixed": pixels })),
+                _ => Err(String::from(r#"must be a size, like "50%" or "800""#)),
+            },
+            (OptionType::Boolean, _) => Err(String::from("must be true or false")),
+            (OptionType::Number, _) => Err(String::from("must be a number")),
+            (OptionType::String, _) => Err(String::from("must be a string")),
+            (OptionType::Choice, _) => Err(format!("must be one of {:?}", self.choices)),
+        }
+    }
+
+    /// The values written for it in `values`, as bento shows them to clients.
+    fn ipc_value(&self, values: &[TilingOption]) -> Option<LayoutEngineOptionValue> {
+        let mut values = values.iter().filter_map(ipc_scalar);
+        if self.list {
+            Some(LayoutEngineOptionValue::List(values.collect()))
+        } else {
+            values.next_back()
+        }
+    }
+}
+
+fn scalar_option(value: &LayoutEngineOptionValue) -> Option<TilingOption> {
+    match value {
+        LayoutEngineOptionValue::Boolean(value) => Some(TilingOption::Bool(*value)),
+        LayoutEngineOptionValue::Number(value) => Some(TilingOption::Number(*value)),
+        LayoutEngineOptionValue::String(value) => Some(TilingOption::String(value.clone())),
+        LayoutEngineOptionValue::List(_) => None,
+    }
+}
+
+fn ipc_scalar(value: &TilingOption) -> Option<LayoutEngineOptionValue> {
+    Some(match value {
+        TilingOption::Bool(value) => LayoutEngineOptionValue::Boolean(*value),
+        TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
+        TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
+    })
+}
+
+/// Checks that the defaults a layout declares are values of the declared types, so that a layout
+/// that loads can always be given them.
+fn check_defaults(meta: &LayoutMeta) -> anyhow::Result<()> {
+    let options = meta.options.iter().map(|option| (option, "option", true));
+    let rules = meta
+        .window_rules
+        .iter()
+        .map(|rule| (rule, "window rule", false));
+    for (option, kind, required) in options.chain(rules) {
+        // A window rule property that has no default is unset for windows no rule sets it for.
+        if option.default.is_none() && !required {
+            continue;
+        }
+        if let Err(problem) = option.convert(&option.default_values()) {
+            return Err(anyhow!(
+                "the layout engine's default for its {kind} {:?} is wrong: it {problem}",
+                option.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct Engine {
@@ -200,17 +364,35 @@ struct Engine {
     /// Source of the layout, to tell whether a reload changed anything.
     source: String,
     meta: LayoutMeta,
-    /// Increases with every load; instances from an older generation are gone.
+    /// Increases with every load; the instance of an older generation is gone.
     generation: u64,
     deadline: Rc<Cell<Option<Instant>>>,
     // Field order matters: the functions have to go before the context and runtime.
     handle: Persistent<Function<'static>>,
     save_all: Persistent<Function<'static>>,
+    exposed_state: Persistent<Function<'static>>,
     context: Context,
     _runtime: Runtime,
-    /// State that instances saved before the previous layout was unloaded, by instance id, with
-    /// the name of the layout that saved it.
-    saved: HashMap<u64, (String, serde_json::Value)>,
+    /// State that the previous layout saved before it was unloaded, with its name.
+    saved: Option<(String, serde_json::Value)>,
+}
+
+/// Lets the prelude's modules import each other, and nothing else import them.
+struct PreludeResolver(BuiltinResolver);
+
+impl Resolver for PreludeResolver {
+    fn resolve<'js>(
+        &mut self,
+        ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        if !base.starts_with("bento:prelude/") {
+            return Err(rquickjs::Error::new_resolving(base, name));
+        }
+        self.0.resolve(ctx, base, name, attributes)
+    }
 }
 
 impl Engine {
@@ -218,6 +400,14 @@ impl Engine {
         let runtime = Runtime::new().context("error creating the JS runtime")?;
         runtime.set_memory_limit(MEMORY_LIMIT);
         runtime.set_max_stack_size(1024 * 1024);
+
+        let mut resolver = BuiltinResolver::default();
+        let mut loader = BuiltinLoader::default();
+        for (module, source) in PRELUDE_MODULES {
+            resolver.add_module(*module);
+            loader.add_module(*module, *source);
+        }
+        runtime.set_loader(PreludeResolver(resolver), loader);
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         let deadline_ = deadline.clone();
@@ -244,8 +434,16 @@ impl Engine {
                 module.namespace().map_err(|err| anyhow!("{err}"))
             };
 
-            let prelude = eval("bento:prelude", PRELUDE).context("error loading the prelude")?;
+            let prelude =
+                eval("bento:prelude/index.js", PRELUDE).context("error loading the prelude")?;
             let layout = eval(name, &source)?;
+
+            // Groups made by the layout get their ids from bento, since bento makes groups too.
+            let set_group_ids: Function = prelude.get("setGroupIdSource")?;
+            set_group_ids
+                .call::<_, ()>((Function::new(ctx.clone(), groups::next_id)?,))
+                .catch(&ctx)
+                .map_err(|err| anyhow!("{err}"))?;
 
             let load: Function = prelude.get("load")?;
             let meta: String = load
@@ -254,6 +452,7 @@ impl Engine {
                 .map_err(|err| anyhow!("{err}"))?;
             let meta: LayoutMeta = serde_json::from_str(&meta)
                 .context("error reading the layout engine's metadata")?;
+            check_defaults(&meta)?;
             // Binds name engine actions and bento's own the same way, so they can't share a name.
             if let Some(action) = meta.actions.iter().find(|a| is_native_action(&a.name)) {
                 return Err(anyhow!(
@@ -264,14 +463,16 @@ impl Engine {
 
             let handle: Function = prelude.get("handle")?;
             let save_all: Function = prelude.get("saveAll")?;
+            let exposed_state: Function = prelude.get("exposedState")?;
             Ok((
                 meta,
                 Persistent::save(&ctx, handle),
                 Persistent::save(&ctx, save_all),
+                Persistent::save(&ctx, exposed_state),
             ))
         });
         deadline.set(None);
-        let (meta, handle, save_all) = res?;
+        let (meta, handle, save_all, exposed_state) = res?;
 
         let generation = GENERATION.get() + 1;
         GENERATION.set(generation);
@@ -286,38 +487,39 @@ impl Engine {
             deadline,
             handle,
             save_all,
+            exposed_state,
             context,
             _runtime: runtime,
-            saved: HashMap::new(),
+            saved: None,
         })
     }
 
-    /// Saves the state of every instance, by instance id.
-    fn save_all(&self) -> HashMap<u64, (String, serde_json::Value)> {
+    /// Calls one of the prelude's functions that take nothing and answer with JSON.
+    fn call_json(
+        &self,
+        function: &Persistent<Function<'static>>,
+    ) -> anyhow::Result<serde_json::Value> {
         self.deadline.set(Some(Instant::now() + CALL_TIME_LIMIT));
         let res = self.context.with(|ctx| {
-            let save_all = self.save_all.clone().restore(&ctx)?;
-            save_all
+            let function = function.clone().restore(&ctx)?;
+            function
                 .call::<_, String>(())
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))
         });
         self.deadline.set(None);
+        serde_json::from_str(&res?).context("error reading the layout's answer")
+    }
 
-        let states: HashMap<u64, serde_json::Value> = match res
-            .and_then(|json| serde_json::from_str(&json).context("error reading saved states"))
-        {
-            Ok(states) => states,
+    /// Saves the layout's state, for the next instance of the same layout.
+    fn save_state(&self) -> Option<(String, serde_json::Value)> {
+        match self.call_json(&self.save_all) {
+            Ok(state) => Some((self.meta.name.clone(), state)),
             Err(err) => {
                 warn!("error saving layout engine state: {err:?}");
-                HashMap::new()
+                None
             }
-        };
-        let name = &self.meta.name;
-        states
-            .into_iter()
-            .map(|(id, state)| (id, (name.clone(), state)))
-            .collect()
+        }
     }
 
     fn call(&self, event: &str) -> anyhow::Result<String> {
@@ -361,7 +563,8 @@ fn read_source(config: &Tiling) -> anyhow::Result<(String, String)> {
 }
 
 /// Makes sure the engine runs the layout from `config`, loading it if it changed, and returns
-/// the engine generation.
+/// the engine generation. The instance of the layout it replaces is gone: whoever keeps the
+/// session's host creates it again when the generation changes.
 ///
 /// If the layout fails to load, keeps the previous one, or falls back to a simple built-in one.
 pub fn ensure_loaded(config: &Tiling) -> u64 {
@@ -385,16 +588,14 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
             Ok(Some(mut new)) => {
                 LOAD_ERROR.set(None);
                 if let Some(old) = engine.take() {
-                    let saved = old.save_all();
-                    new.saved = old.saved;
-                    new.saved.extend(saved);
+                    new.saved = old.save_state().or(old.saved);
                 }
                 info!("loaded layout engine {}", new.meta.name);
                 *engine = Some(new);
             }
             Ok(None) => {
                 LOAD_ERROR.set(None);
-                // Same source: only the options changed, which instances pick up on their own.
+                // Same source: only the options changed, which the host passes on.
                 let engine = engine.as_mut().unwrap();
                 engine.config = config.clone();
                 engine.layout = config.layout.clone();
@@ -406,7 +607,7 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
                 if engine.is_none() {
                     let fallback = Tiling {
                         layout: TilingLayout::BuiltIn(String::from("fallback")),
-                        options: Vec::new(),
+                        ..Tiling::default()
                     };
                     let new = Engine::load(&fallback, String::from(FALLBACK), "fallback")
                         .expect("the fallback layout engine must load");
@@ -427,9 +628,46 @@ pub fn ensure_loaded(config: &Tiling) -> u64 {
     })
 }
 
+/// Runs the fallback layout instead of the current one, which failed while running. The failed
+/// layout loads again once its file or the config changes.
+pub fn fail(error: String) {
+    warn!("{error}, using the fallback layout engine");
+    LOAD_ERROR.set(Some(error));
+    ENGINE.with_borrow_mut(|engine| {
+        let Some(old) = engine.take() else {
+            return;
+        };
+        let fallback = Tiling {
+            layout: TilingLayout::BuiltIn(String::from("fallback")),
+            ..Tiling::default()
+        };
+        let new = Engine::load(&fallback, String::from(FALLBACK), "fallback")
+            .expect("the fallback layout engine must load");
+        *engine = Some(Engine {
+            config: old.config.clone(),
+            mtime: old.mtime,
+            ..new
+        });
+    });
+}
+
 /// Current engine generation, or 0 if no layout is loaded.
 pub fn generation() -> u64 {
     ENGINE.with_borrow(|engine| engine.as_ref().map_or(0, |engine| engine.generation))
+}
+
+/// Name of the current layout, or an empty string if none is loaded.
+pub fn name() -> String {
+    ENGINE.with_borrow(|engine| {
+        engine
+            .as_ref()
+            .map_or_else(String::new, |engine| engine.meta.name.clone())
+    })
+}
+
+/// Whether bento's floating layer exists under the current layout.
+pub fn floating_enabled() -> bool {
+    ENGINE.with_borrow(|engine| engine.as_ref().is_none_or(|engine| engine.meta.floating))
 }
 
 /// Metadata of the current layout.
@@ -456,92 +694,88 @@ pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
         };
 
         let options = meta.options.iter().map(|option| {
-            // Like the engine sees it: the last value wins, and one of the wrong type gives the
-            // default.
-            let value = config
-                .options
-                .iter()
-                .rev()
-                .find(|(name, _)| *name == option.name)
-                .map(|(_, value)| option_value(value))
-                .filter(|value| value.r#type() == option.default.r#type())
-                .unwrap_or_else(|| option.default.clone());
+            // Like the engine sees it: the last value wins, and one that doesn't fit the type
+            // gives the default.
+            let default = option.ipc_value(&option.default_values());
+            let value = configured(config, option)
+                .map(|values| option.ipc_value(values))
+                .unwrap_or_else(|| default.clone());
             LayoutEngineOption {
                 name: option.name.clone(),
-                r#type: option.default.r#type(),
-                default: option.default.clone(),
+                r#type: option.r#type.ipc(),
+                list: option.list,
+                choices: option.choices.clone(),
+                default,
                 description: option.description.clone(),
                 value,
             }
+        });
+        let window_rules = meta.window_rules.iter().map(|rule| LayoutEngineWindowRule {
+            name: rule.name.clone(),
+            r#type: rule.r#type.ipc(),
+            list: rule.list,
+            choices: rule.choices.clone(),
+            default: rule.ipc_value(&rule.default_values()),
+            description: rule.description.clone(),
         });
 
         Some(niri_ipc::LayoutEngine {
             name: meta.name.clone(),
             description: meta.description.clone(),
             source,
+            floating: meta.floating,
             options: options.collect(),
+            window_rules: window_rules.collect(),
             actions: meta.actions.clone(),
+            error: LOAD_ERROR.with_borrow(Clone::clone),
         })
     })
 }
 
-fn option_value(value: &TilingOption) -> LayoutEngineOptionValue {
-    match value {
-        TilingOption::Bool(value) => LayoutEngineOptionValue::Boolean(*value),
-        TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
-        TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
-    }
+/// The values the config writes for `option`, if there are any and they fit its type. The last
+/// one written wins.
+fn configured<'a>(config: &'a Tiling, option: &OptionMeta) -> Option<&'a [TilingOption]> {
+    let (_, values) = config
+        .options
+        .iter()
+        .rev()
+        .find(|(name, _)| *name == option.name)?;
+    option.convert(values).ok().map(|_| values.as_slice())
 }
 
-fn type_name(r#type: LayoutEngineOptionType) -> &'static str {
-    match r#type {
-        LayoutEngineOptionType::Boolean => "boolean",
-        LayoutEngineOptionType::Number => "number",
-        LayoutEngineOptionType::String => "string",
-    }
-}
-
-/// Options for the layout from the config, as JSON.
+/// Options for the layout as JSON: every option it declares, converted by its type, with the
+/// default for the ones the config doesn't set or sets to something that doesn't fit.
 pub fn options_json(config: &Tiling) -> serde_json::Value {
-    let options = config.options.iter().map(|(name, value)| {
-        let value = match value {
-            TilingOption::Bool(value) => serde_json::Value::from(*value),
-            TilingOption::Number(value) => serde_json::Value::from(*value),
-            TilingOption::String(value) => serde_json::Value::from(value.clone()),
+    ENGINE.with_borrow(|engine| {
+        let Some(engine) = engine else {
+            return json!({});
         };
-        (name.clone(), value)
-    });
-    serde_json::Value::Object(options.collect())
+        let options = engine.meta.options.iter().map(|option| {
+            let values = configured(config, option)
+                .map(<[TilingOption]>::to_vec)
+                .unwrap_or_else(|| option.default_values());
+            let value = option.convert(&values).unwrap_or(serde_json::Value::Null);
+            (option.name.clone(), value)
+        });
+        serde_json::Value::Object(options.collect())
+    })
 }
 
-/// Forgets an instance whose workspace is gone, so that the layout engine frees what it kept for
-/// it. Without this, every workspace that comes and goes would add to the engine's memory until
-/// it runs out.
-pub fn destroy(instance: u64, generation: u64) {
-    // Workspaces can go away while bento shuts down, after the engine is gone.
-    let _ = ENGINE.try_with(|engine| {
-        let Ok(mut engine) = engine.try_borrow_mut() else {
-            return;
+/// The properties that the layout's window rules set for one window, as JSON, converted by the
+/// types the layout declares for them. Properties that no rule sets, and ones the layout doesn't
+/// declare, are left out.
+pub fn rules_json(rules: &niri_config::EngineRules) -> serde_json::Value {
+    ENGINE.with_borrow(|engine| {
+        let Some(engine) = engine else {
+            return json!({});
         };
-        let Some(engine) = engine.as_mut() else {
-            return;
-        };
-        engine.saved.remove(&instance);
-        // An engine that reloaded since never knew this instance.
-        if engine.generation == generation {
-            let event = serde_json::json!({ "type": "destroy", "instance": instance });
-            if let Err(err) = engine.call(&event.to_string()) {
-                warn!("error destroying a layout engine instance: {err:?}");
-            }
-        }
-    });
-}
-
-/// A new unique instance id.
-pub fn next_instance() -> u64 {
-    let id = NEXT_INSTANCE.get();
-    NEXT_INSTANCE.set(id + 1);
-    id
+        let properties = engine.meta.window_rules.iter().filter_map(|rule| {
+            let values = rules.get(&rule.name)?;
+            let value = rule.convert(values).ok()?;
+            Some((rule.name.clone(), value))
+        });
+        serde_json::Value::Object(properties.collect())
+    })
 }
 
 /// Sends an event to the layout and returns its answer.
@@ -554,28 +788,29 @@ pub fn call(event: &str) -> anyhow::Result<String> {
     })
 }
 
-/// Keeps state an instance saved, for when it's created again after the layout reloads.
-pub fn save_state(instance: u64, state: serde_json::Value) {
-    ENGINE.with_borrow_mut(|engine| {
-        if let Some(engine) = engine {
-            let name = engine.meta.name.clone();
-            engine.saved.insert(instance, (name, state));
-        }
-    });
-}
-
-/// Takes the state an instance saved, if the current layout is the one that saved it.
-pub fn take_state(instance: u64) -> Option<serde_json::Value> {
+/// Takes the state that the previous layout saved, if the current layout is the one that saved it.
+pub fn take_state() -> Option<serde_json::Value> {
     ENGINE.with_borrow_mut(|engine| {
         let engine = engine.as_mut()?;
-        let (name, state) = engine.saved.remove(&instance)?;
+        let (name, state) = engine.saved.take()?;
         (name == engine.meta.name).then_some(state)
     })
 }
 
+/// The state that the layout exposes with `bento.exposeState()`, which is `null` if it exposes
+/// none.
+pub fn exposed_state() -> anyhow::Result<serde_json::Value> {
+    ENGINE.with_borrow(|engine| {
+        let engine = engine
+            .as_ref()
+            .ok_or_else(|| anyhow!("no layout engine is loaded"))?;
+        engine.call_json(&engine.exposed_state)
+    })
+}
+
 /// Checks the layout engine in `config` and what the config asks of it: that the engine loads,
-/// that the options exist and have the right types, and that binds to the engine's actions name
-/// actions that the engine has, with arguments that fit.
+/// that the options and window rule properties exist and have values of their types, and that
+/// binds to the engine's actions name actions that the engine has, with arguments that fit.
 pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     ensure_loaded(&config.tiling);
     if let Some(err) = LOAD_ERROR.with_borrow(Clone::clone) {
@@ -586,27 +821,39 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     };
 
     let mut problems = Vec::new();
-    for (name, value) in &config.tiling.options {
-        let given = option_value(value).r#type();
+    for (name, values) in &config.tiling.options {
         match meta.options.iter().find(|option| option.name == *name) {
             None => problems.push(format!(
                 "the {} layout engine has no option called {name:?}",
                 meta.name
             )),
-            Some(option) if option.default.r#type() != given => {
-                let expected = type_name(option.default.r#type());
-                let given = type_name(given);
-                problems.push(format!(
-                    "layout engine option {name:?} must be a {expected}, not a {given}"
-                ))
+            Some(option) => {
+                if let Err(problem) = option.convert(values) {
+                    problems.push(format!("layout engine option {name:?} {problem}"));
+                }
             }
-            Some(_) => (),
+        }
+    }
+
+    for rule in &config.tiling.window_rules {
+        for (name, values) in &rule.properties.0 {
+            match meta.window_rules.iter().find(|rule| rule.name == *name) {
+                None => problems.push(format!(
+                    "the {} layout engine has no window rule called {name:?}",
+                    meta.name
+                )),
+                Some(property) => {
+                    if let Err(problem) = property.convert(values) {
+                        problems.push(format!("layout engine window rule {name:?} {problem}"));
+                    }
+                }
+            }
         }
     }
 
     for bind in &config.binds.0 {
         for action in [bind.press_action(), bind.release_action()] {
-            if let Some(niri_config::Action::LayoutAction(name, args)) = action {
+            if let Some(niri_config::Action::LayoutAction(name, args, _)) = action {
                 match meta.action(name) {
                     None => problems.push(format!(
                         "the {} layout engine has no action called {name:?}",
@@ -657,18 +904,24 @@ fn check_args(action: &LayoutEngineAction, args: &[TilingOption], problems: &mut
                 continue
             }
             (LayoutEngineActionArgType::Size, value) if size_arg(value).is_some() => continue,
+            (
+                LayoutEngineActionArgType::Workspace,
+                TilingOption::Number(_) | TilingOption::String(_),
+            )
+            | (LayoutEngineActionArgType::Monitor, TilingOption::String(_)) => continue,
             (LayoutEngineActionArgType::Boolean, _) => String::from("true or false"),
             (LayoutEngineActionArgType::Number, _) => String::from("a number"),
             (LayoutEngineActionArgType::String, _) => String::from("a string"),
             (LayoutEngineActionArgType::Choice, _) => format!("one of {:?}", arg.choices),
             (LayoutEngineActionArgType::Size, _) => String::from(r#"a size, like "50%" or "+10%""#),
+            (LayoutEngineActionArgType::Workspace, _) => {
+                String::from("a workspace, by its index or its name")
+            }
+            (LayoutEngineActionArgType::Monitor, _) => {
+                String::from(r#"a monitor's name, like "DP-2""#)
+            }
             // Only bento's own actions have these, and the config parser checks them.
-            (
-                LayoutEngineActionArgType::Workspace
-                | LayoutEngineActionArgType::Monitor
-                | LayoutEngineActionArgType::Command,
-                _,
-            ) => continue,
+            (LayoutEngineActionArgType::Command, _) => continue,
         };
         problems.push(format!(
             "the {:?} argument of action {name:?} must be {expected}",

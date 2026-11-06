@@ -32,6 +32,7 @@ pub mod actions;
 pub mod animations;
 pub mod appearance;
 pub mod binds;
+pub mod convert;
 pub mod debug;
 pub mod error;
 pub mod gestures;
@@ -60,7 +61,8 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
-    default_engine_config, engine_config_path, Tiling, TilingLayout, TilingOption,
+    default_engine_config, engine_config_path, engine_config_path_in, EngineRules,
+    EngineWindowRule, Tiling, TilingLayout, TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
@@ -503,7 +505,12 @@ where
 
 impl Config {
     pub fn load_default() -> Self {
-        let res = Config::parse_inner(Path::new("default-config.kdl"), DEFAULT_CONFIG, None);
+        let res = Config::parse_inner(
+            Path::new("default-config.kdl"),
+            Path::new(""),
+            DEFAULT_CONFIG,
+            None,
+        );
 
         // Includes in the default config can break its parsing at runtime.
         assert!(
@@ -515,6 +522,11 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> ConfigParseResult<Self, miette::Report> {
+        Self::load_in(path, path.parent().unwrap_or(Path::new("")))
+    }
+
+    /// Loads the config at `path`, with built-in engines' files in `engines/` under `dir`.
+    pub fn load_in(path: &Path, dir: &Path) -> ConfigParseResult<Self, miette::Report> {
         let contents = match fs::read_to_string(path) {
             Ok(x) => x,
             Err(err) => {
@@ -524,7 +536,13 @@ impl Config {
             }
         };
 
-        Self::parse(path, &contents).map_config_res(|res| {
+        Self::parse_inner(
+            path,
+            dir,
+            &contents,
+            Some(Box::new(|path: &Path| fs::read_to_string(path))),
+        )
+        .map_config_res(|res| {
             let config = res.context("error parsing")?;
             debug!("loaded config from {path:?}");
             Ok(config)
@@ -543,11 +561,14 @@ impl Config {
         text: &str,
         read_engine: impl FnOnce(&Path) -> std::io::Result<String>,
     ) -> ConfigParseResult<Self, ConfigIncludeError> {
-        Self::parse_inner(path, text, Some(Box::new(read_engine)))
+        let dir = path.parent().unwrap_or(Path::new(""));
+        Self::parse_inner(path, dir, text, Some(Box::new(read_engine)))
     }
 
+    /// Parses the config at `path`, with built-in engines' files in `engines/` under `dir`.
     fn parse_inner(
         path: &Path,
+        dir: &Path,
         text: &str,
         read_engine: Option<Box<ReadEngine<'_>>>,
     ) -> ConfigParseResult<Self, ConfigIncludeError> {
@@ -587,7 +608,7 @@ impl Config {
 
         // The engine's file goes last, once the main config has said which engine runs.
         if let (Ok(_), Some(read_engine)) = (&part, read_engine) {
-            let engine_path = engine_config_path(path, &config.borrow().tiling.layout);
+            let engine_path = engine_config_path_in(dir, &config.borrow().tiling.layout);
             // Watched even while it doesn't exist, so creating it applies it.
             includes.push(engine_path.clone());
             match read_engine(&engine_path) {
@@ -624,7 +645,7 @@ impl Config {
 
     /// Parses a config that isn't on disk, without an engine file.
     pub fn parse_mem(text: &str) -> Result<Self, ConfigIncludeError> {
-        Self::parse_inner(Path::new("config.kdl"), text, None).config
+        Self::parse_inner(Path::new("config.kdl"), Path::new(""), text, None).config
     }
 
     /// Parses a config that isn't on disk, with `engine` as the running engine's file.
@@ -681,23 +702,22 @@ impl ConfigPath {
         &self,
         result: ConfigParseResult<Config, miette::Report>,
     ) -> ConfigParseResult<Config, miette::Report> {
-        let path = match self {
-            ConfigPath::Explicit(path) => path,
-            ConfigPath::Regular {
-                user_path,
-                system_path,
-            } => {
-                if user_path.exists() {
-                    user_path
-                } else {
-                    system_path
-                }
-            }
-        };
         match &result.config {
-            Ok(config) if tiling::create_engine_config(path, &config.tiling.layout) => self.load(),
+            Ok(config) if tiling::create_engine_config(self.dir(), &config.tiling.layout) => {
+                self.load()
+            }
             _ => result,
         }
+    }
+
+    /// The directory of the user's config, where built-in engines' files are in `engines/`, even
+    /// when bento runs the system config.
+    fn dir(&self) -> &Path {
+        let path = match self {
+            ConfigPath::Explicit(path) => path,
+            ConfigPath::Regular { user_path, .. } => user_path,
+        };
+        path.parent().unwrap_or(Path::new(""))
     }
 
     fn load_inner<'a>(
@@ -722,7 +742,7 @@ impl ConfigPath {
                 }
             }
         };
-        Config::load(path)
+        Config::load_in(path, self.dir())
     }
 
     fn create<'a>(path: &'a Path, created_at: &mut Option<&'a Path>) -> miette::Result<()> {
@@ -1405,27 +1425,6 @@ mod tests {
                     offset x=10 y=-20
                 }
 
-                tab-indicator {
-                    width 10
-                    position "top"
-                }
-
-                preset-column-widths {
-                    proportion 0.25
-                    proportion 0.5
-                    fixed 960
-                    fixed 1280
-                }
-
-                preset-window-heights {
-                    proportion 0.25
-                    proportion 0.5
-                    fixed 960
-                    fixed 1280
-                }
-
-                default-column-width { proportion 0.25; }
-
                 gaps 8
 
                 struts {
@@ -1434,14 +1433,6 @@ mod tests {
                     top 3
                 }
 
-                center-focused-column "on-overflow"
-
-                default-column-display "tabbed"
-
-                insert-hint {
-                    color "rgb(255, 200, 127)"
-                    gradient from="rgba(10, 20, 30, 1.0)" to="#0080ffff" relative-to="workspace-view"
-                }
             }
 
             spawn-at-startup "alacritty" "-e" "fish"
@@ -1507,12 +1498,9 @@ mod tests {
                 exclude is-active=true is-focused=false
 
                 open-on-output "eDP-1"
-                open-maximized true
                 open-fullscreen false
                 open-floating false
                 open-focused true
-                default-window-height { fixed 500; }
-                default-column-display "tabbed"
                 default-floating-position x=100 y=-200 relative-to="bottom-left"
                 on-xdg-activate "ignore"
                 variable-refresh-rate "fullscreen-only"
@@ -1525,10 +1513,6 @@ mod tests {
                 border {
                     on
                     width 8.5
-                }
-
-                tab-indicator {
-                    active-color "#f00"
                 }
 
                 pinch-sensitivity 1.2
@@ -2009,95 +1993,7 @@ mod tests {
                     },
                     inactive_color: None,
                 },
-                tab_indicator: TabIndicator {
-                    off: false,
-                    hide_when_single_tab: false,
-                    place_within_column: false,
-                    gap: 5.0,
-                    width: 10.0,
-                    length: TabIndicatorLength {
-                        total_proportion: Some(
-                            0.5,
-                        ),
-                    },
-                    position: Top,
-                    gaps_between_tabs: 0.0,
-                    corner_radius: 0.0,
-                    active_color: None,
-                    inactive_color: None,
-                    urgent_color: None,
-                    active_gradient: None,
-                    inactive_gradient: None,
-                    urgent_gradient: None,
-                },
-                insert_hint: InsertHint {
-                    off: false,
-                    color: Color {
-                        r: 1.0,
-                        g: 0.78431374,
-                        b: 0.49803922,
-                        a: 1.0,
-                    },
-                    gradient: Some(
-                        Gradient {
-                            from: Color {
-                                r: 0.039215688,
-                                g: 0.078431375,
-                                b: 0.11764706,
-                                a: 1.0,
-                            },
-                            to: Color {
-                                r: 0.0,
-                                g: 0.5019608,
-                                b: 1.0,
-                                a: 1.0,
-                            },
-                            angle: 180,
-                            relative_to: WorkspaceView,
-                            in_: GradientInterpolation {
-                                color_space: Srgb,
-                                hue_interpolation: Shorter,
-                            },
-                        },
-                    ),
-                },
-                preset_column_widths: [
-                    Proportion(
-                        0.25,
-                    ),
-                    Proportion(
-                        0.5,
-                    ),
-                    Fixed(
-                        960,
-                    ),
-                    Fixed(
-                        1280,
-                    ),
-                ],
-                default_column_width: Some(
-                    Proportion(
-                        0.25,
-                    ),
-                ),
-                preset_window_heights: [
-                    Proportion(
-                        0.25,
-                    ),
-                    Proportion(
-                        0.5,
-                    ),
-                    Fixed(
-                        960,
-                    ),
-                    Fixed(
-                        1280,
-                    ),
-                ],
-                center_focused_column: OnOverflow,
-                always_center_single_column: false,
                 empty_workspace_above_first: false,
-                default_column_display: Tabbed,
                 gaps: 8.0,
                 struts: Struts {
                     left: FloatOrInt(
@@ -2132,6 +2028,7 @@ mod tests {
                     "bento",
                 ),
                 options: [],
+                window_rules: [],
             },
             prefer_no_csd: true,
             cursor: Cursor {
@@ -2383,7 +2280,6 @@ mod tests {
                             title: None,
                             is_active: None,
                             is_focused: None,
-                            is_active_in_column: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
@@ -2402,7 +2298,6 @@ mod tests {
                             ),
                             is_active: None,
                             is_focused: None,
-                            is_active_in_column: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
@@ -2417,30 +2312,16 @@ mod tests {
                             is_focused: Some(
                                 false,
                             ),
-                            is_active_in_column: None,
                             is_floating: None,
                             is_window_cast_target: None,
                             is_urgent: None,
                             at_startup: None,
                         },
                     ],
-                    default_column_width: None,
-                    default_window_height: Some(
-                        DefaultPresetSize(
-                            Some(
-                                Fixed(
-                                    500,
-                                ),
-                            ),
-                        ),
-                    ),
                     open_on_output: Some(
                         "eDP-1",
                     ),
                     open_on_workspace: None,
-                    open_maximized: Some(
-                        true,
-                    ),
                     open_maximized_to_edges: None,
                     open_fullscreen: Some(
                         false,
@@ -2498,21 +2379,6 @@ mod tests {
                         color: None,
                         inactive_color: None,
                     },
-                    tab_indicator: TabIndicatorRule {
-                        active_color: Some(
-                            Color {
-                                r: 1.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 1.0,
-                            },
-                        ),
-                        inactive_color: None,
-                        urgent_color: None,
-                        active_gradient: None,
-                        inactive_gradient: None,
-                        urgent_gradient: None,
-                    },
                     draw_border_with_background: None,
                     opacity: None,
                     geometry_corner_radius: None,
@@ -2521,9 +2387,6 @@ mod tests {
                     block_out_from: None,
                     variable_refresh_rate: Some(
                         FullscreenOnly,
-                    ),
-                    default_column_display: Some(
-                        Tabbed,
                     ),
                     default_floating_position: Some(
                         FloatingPosition {
@@ -3199,14 +3062,8 @@ mod tests {
         +        },
         +    ],
 
-        -                0.3333333333333333,
-        +                0.33333,
-
-        -                0.6666666666666666,
-        +                0.66667,
-
         -    bind_files: BindFiles(0),
-        +    bind_files: BindFiles(98),
+        +    bind_files: BindFiles(107),
         "#,
         );
     }

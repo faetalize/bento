@@ -1,11 +1,11 @@
 ---
 source: src/tests/window_opening.rs
-description: "want fullscreen: AU\nconfig:\nwindow-rule {\n    open-floating true\n    default-window-height { fixed 500; }\n    border { on; }\n}"
+description: "want fullscreen: AU\nconfig:\nwindow-rule {\n    open-floating true\n    border { on; }\n}\nengine:\nwindow-rule {\n    default-height \"500\"\n}"
 expression: snapshot
 ---
 initial configure:
-size: 0 × 500, bounds: 1272 × 712, states: []
+size: 0 × 0, bounds: 1272 × 712, states: []
 
 post-map configures:
-size: 0 × 500, bounds: 1272 × 712, states: []
-size: 1 × 500, bounds: 1272 × 712, states: [Activated]
+size: 0 × 0, bounds: 1272 × 712, states: []
+size: 1 × 1, bounds: 1272 × 712, states: [Activated]

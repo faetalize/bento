@@ -1,70 +1,57 @@
 //! The tiling layout, where a layout engine decides where windows go.
 //!
 //! This is the compositor half of bento's scriptable layouts. The space holds the tiled windows
-//! of a workspace and a camera over an unbounded canvas. A layout instance in the JS engine (see
-//! [`engine`]) decides everything else: where each window goes, which one has focus, where the
-//! camera points, and what actions do. The space tells the layout about everything that happens
-//! as events, and carries out what the layout answers: it moves and resizes windows with
-//! animations, moves the camera, renders, and handles input.
+//! of a workspace, a camera over an unbounded canvas and the tree of nodes that the layout draws.
+//! The layout engine (see [`engine`]) runs once for the whole session, and [`host`] talks to it:
+//! the space queues what happens to it as events, and carries out what the layout answers when the
+//! host passes it on: it moves and resizes windows with animations, moves the camera, renders,
+//! and handles input.
 
 use std::iter::zip;
 use std::rc::Rc;
 use std::time::Duration;
 
-use anyhow::Context as _;
 use niri_config::utils::MergeWith as _;
-use niri_config::{CenterFocusedColumn, PresetSize, Struts, TabIndicatorPosition};
-use niri_ipc::{ColumnDisplay, SizeChange, WindowLayout};
+use niri_config::{CornerRadius, Struts};
+use niri_ipc::WindowLayout;
 use serde_json::{json, Value};
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size};
+use smithay::backend::renderer::element::utils::{
+    CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
+};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexProgram};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Serial, Size};
 
-use self::protocol::{Mode, Output, Preset, Rect, Rules, Wh, WindowChange, WindowInfo, Xy};
+use self::protocol::{
+    CameraChange, ConfigInfo, Mode, Rect, Struts as StrutsInfo, ViewInfo, Wh, WindowChange,
+    WindowInfo, WorkspaceInfo, Xy,
+};
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
-use super::insert_hint_element::{InsertHintElement, InsertHintRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
-use super::tab_indicator::{TabIndicator, TabIndicatorRenderElement, TabInfo};
-use super::tile::{Tile, TileRenderElement, TileRenderSnapshot};
+use super::surfaces::{Drawn, NodeTransform, RenderItem, SurfaceRenderElement, Tree, WindowSlot};
+use super::tile::{PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::InteractiveResize;
-use super::{ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile};
+use super::{
+    ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, LayoutElementRenderElement,
+    Options, RemovedTile,
+};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::layout::{RenderLayer, SizingMode};
 use crate::niri_render_elements;
+use crate::render_helpers::clipped_surface::ClippedSurfaceRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
-use crate::utils::id::IdCounter;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
 use crate::utils::ResizeEdge;
 use crate::window::ResolvedWindowRules;
 
-mod actions;
 pub mod engine;
+pub mod host;
 mod protocol;
 
 /// Amount of touchpad movement to scroll the view for the width of one working area.
 const VIEW_GESTURE_WORKING_AREA_MOVEMENT: f64 = 1200.;
-
-static TILE_ID_COUNTER: IdCounter = IdCounter::new();
-
-/// Width of a column, as window rules and moves between workspaces carry it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ColumnWidth {
-    /// Proportion of the working area width.
-    Proportion(f64),
-    /// Fixed width in logical pixels, including borders.
-    Fixed(f64),
-}
-
-impl From<PresetSize> for ColumnWidth {
-    fn from(value: PresetSize) -> Self {
-        match value {
-            PresetSize::Proportion(prop) => Self::Proportion(prop),
-            PresetSize::Fixed(width) => Self::Fixed(f64::from(width.clamp(1, 100000))),
-        }
-    }
-}
 
 /// Space where the tiling layout places windows.
 #[derive(Debug)]
@@ -81,15 +68,14 @@ pub struct TilingSpace<W: LayoutElement> {
     /// Where the view is on the canvas.
     camera: Camera,
 
-    /// Highlight that the layout shows, on the canvas.
-    hint: Option<Rectangle<f64, Logical>>,
+    /// What the layout draws: the windows and everything else.
+    tree: Tree,
 
-    /// Draws `hint`, and where it was last drawn, relative to the view.
-    hint_element: InsertHintElement,
-    hint_loc: Option<Point<f64, Logical>>,
+    /// Where the pointer last was over the layout's nodes, on the canvas.
+    pointer: Point<f64, Logical>,
 
-    /// Tab indicators for windows that the layout shows as tabs.
-    tab_bars: Vec<TabBar>,
+    /// Horizontal swipe that the layout follows.
+    swipe: Option<Swipe>,
 
     /// Where a window that's being dropped goes, for when it's added.
     drop: Option<(W::Id, TiledDrop)>,
@@ -103,21 +89,8 @@ pub struct TilingSpace<W: LayoutElement> {
     /// Windows in the closing animation.
     closing_windows: Vec<ClosingWindow>,
 
-    /// Id of the layout instance for this space in the engine.
-    instance: u64,
-
-    /// Engine generation the instance was created in, or 0 if it doesn't exist.
-    generation: u64,
-
-    /// Generation in which creating the instance failed, to not retry over and over.
-    failed_generation: u64,
-
-    /// Name of the layout, for window data that only that layout gets.
-    layout_name: String,
-
-    /// View and config as last told to the layout.
-    sent_view: Value,
-    sent_config: Value,
+    /// Id of the workspace this space is for, which the layout engine knows it by.
+    id: u64,
 
     /// View size for this space.
     view_size: Size<f64, Logical>,
@@ -141,9 +114,15 @@ pub struct TilingSpace<W: LayoutElement> {
 niri_render_elements! {
     TilingSpaceRenderElement<R> => {
         Tile = TileRenderElement<R>,
+        // A tile that the tree scales or moves.
+        Transformed = RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
+        // A tile that the tree cuts off.
+        Clipped = CropRenderElement<
+            RelocateRenderElement<RescaleRenderElement<TileRenderElement<R>>>,
+        >,
+        // What the layout draws besides windows.
+        Surface = SurfaceRenderElement,
         ClosingWindow = ClosingWindowRenderElement,
-        TabIndicator = TabIndicatorRenderElement,
-        Hint = InsertHintRenderElement,
     }
 }
 
@@ -156,35 +135,11 @@ struct TileData {
     rect: Option<Rectangle<f64, Logical>>,
     /// Whether the layout shows the tile.
     visible: bool,
-    /// Whether the tile is the active one in its column, if the layout engine says; otherwise it's
-    /// whether it shows.
-    active_in_column: Option<bool>,
     /// Sizing mode the layout gave the tile.
     mode: Mode,
     /// Whether the tile was maximized when it went fullscreen, so that leaving fullscreen goes
-    /// back to maximized, like a maximized column in niri.
+    /// back to maximized.
     maximized_under_fullscreen: bool,
-    /// Column and row for IPC.
-    ipc: Option<(usize, usize)>,
-    /// Width the tile came with, as its default width for the layout.
-    default_width: Option<Preset>,
-    /// Whether the window should open as wide as the view.
-    open_full_width: bool,
-    /// What the layout was last told about the window.
-    reported: Option<WindowInfo>,
-}
-
-/// Windows that the layout shows as tabs in one area.
-#[derive(Debug)]
-struct TabBar {
-    key: String,
-    /// Where the tabs are on the canvas.
-    area: Rectangle<f64, Logical>,
-    /// Layout ids of the tabs, in order.
-    windows: Vec<u64>,
-    /// Layout id of the tab that's shown.
-    active: u64,
-    indicator: TabIndicator,
 }
 
 /// Position of the view on the canvas.
@@ -192,7 +147,7 @@ struct TabBar {
 struct Camera {
     x: Axis,
     y: Axis,
-    /// Swipe gesture moving the camera horizontally.
+    /// Drag-and-drop scrolling moving the camera horizontally.
     gesture: Option<CameraGesture>,
 }
 
@@ -209,11 +164,17 @@ struct CameraGesture {
     delta_from_tracker: f64,
     /// Current camera x.
     current: f64,
-    is_touchpad: bool,
-    /// For drag-and-drop scrolling, time of the last event.
+    /// Time of the last event.
     dnd_last_event_time: Option<Duration>,
-    /// For drag-and-drop scrolling, time when the scroll started being non-zero.
+    /// Time when the scroll started being non-zero.
     dnd_nonzero_start_time: Option<Duration>,
+}
+
+/// A swipe along the workspace that the layout follows, which moves nothing by itself.
+#[derive(Debug)]
+struct Swipe {
+    tracker: SwipeTracker,
+    is_touchpad: bool,
 }
 
 /// How to carry out a layout's changes.
@@ -285,16 +246,9 @@ impl Camera {
     }
 }
 
-impl<W: LayoutElement> Drop for TilingSpace<W> {
-    fn drop(&mut self) {
-        if self.generation != 0 {
-            engine::destroy(self.instance, self.generation);
-        }
-    }
-}
-
 impl<W: LayoutElement> TilingSpace<W> {
     pub fn new(
+        id: u64,
         view_size: Size<f64, Logical>,
         parent_area: Rectangle<f64, Logical>,
         scale: f64,
@@ -303,7 +257,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
-        let mut space = Self {
+        Self {
             tiles: Vec::new(),
             data: Vec::new(),
             active: None,
@@ -312,31 +266,21 @@ impl<W: LayoutElement> TilingSpace<W> {
                 y: Axis::Static(0.),
                 gesture: None,
             },
-            hint: None,
-            hint_element: InsertHintElement::new(options.layout.insert_hint),
-            hint_loc: None,
-            tab_bars: Vec::new(),
+            tree: Tree::new(id, clock.clone(), options.animations.clone()),
+            pointer: Point::from((0., 0.)),
+            swipe: None,
             drop: None,
             remove_reason: None,
             interactive_resize: None,
             closing_windows: Vec::new(),
-            instance: engine::next_instance(),
-            generation: 0,
-            failed_generation: 0,
-            layout_name: String::new(),
-            sent_view: Value::Null,
-            sent_config: Value::Null,
+            id,
             view_size,
             working_area,
             parent_area,
             scale,
             clock,
             options,
-        };
-        // Queries, like the size for the first window, need the layout engine's instance, so
-        // create it right away rather than at the first event.
-        space.ensure_instance();
-        space
+        }
     }
 
     pub fn update_config(
@@ -351,49 +295,20 @@ impl<W: LayoutElement> TilingSpace<W> {
         for tile in &mut self.tiles {
             tile.update_config(view_size, scale, options.clone());
         }
-        for bar in &mut self.tab_bars {
-            bar.indicator.update_config(options.layout.tab_indicator);
-        }
-        self.hint_element.update_config(options.layout.insert_hint);
+
+        self.tree.set_animations(options.animations.clone());
 
         self.view_size = view_size;
         self.working_area = working_area;
         self.parent_area = parent_area;
         self.scale = scale;
         self.options = options;
-
-        // A new layout or layout version gets created with the current view and config.
-        if self.generation != engine::ensure_loaded(&self.options.tiling) {
-            self.ensure_instance();
-            return;
-        }
-
-        let view = self.view_json();
-        if view != self.sent_view {
-            self.sent_view = view.clone();
-            self.dispatch(json!({ "type": "view", "view": view }), Apply::default());
-        }
-
-        let config = self.config_json();
-        let options = engine::options_json(&self.options.tiling);
-        let both = json!([config, options]);
-        if both != self.sent_config {
-            self.sent_config = both;
-            self.dispatch(
-                json!({ "type": "config", "config": config, "options": options }),
-                Apply::default(),
-            );
-        }
     }
 
     pub fn update_shaders(&mut self) {
         for tile in &mut self.tiles {
             tile.update_shaders();
         }
-        for bar in &mut self.tab_bars {
-            bar.indicator.update_shaders();
-        }
-        self.hint_element.update_shaders();
     }
 
     pub fn advance_animations(&mut self) {
@@ -403,9 +318,8 @@ impl<W: LayoutElement> TilingSpace<W> {
         for tile in &mut self.tiles {
             tile.advance_animations();
         }
-        for bar in &mut self.tab_bars {
-            bar.indicator.advance_animations();
-        }
+
+        self.tree.advance_animations();
 
         self.closing_windows.retain_mut(|closing| {
             closing.advance_animations();
@@ -416,16 +330,14 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn are_animations_ongoing(&self) -> bool {
         !self.camera.is_static()
             || self.tiles.iter().any(Tile::are_animations_ongoing)
-            || self
-                .tab_bars
-                .iter()
-                .any(|bar| bar.indicator.are_animations_ongoing())
+            || self.tree.are_animations_ongoing()
             || !self.closing_windows.is_empty()
     }
 
     pub fn are_transitions_ongoing(&self) -> bool {
         !self.camera.is_static()
             || self.tiles.iter().any(Tile::are_transitions_ongoing)
+            || self.tree.are_animations_ongoing()
             || !self.closing_windows.is_empty()
     }
 
@@ -445,55 +357,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             let mut tile_view_rect = view_rect;
             tile_view_rect.loc -= pos + tile.render_offset();
             tile.update_render_elements(is_active, tile_view_rect);
-        }
-
-        self.hint_loc = None;
-        if let Some(mut hint) = self.hint.filter(|_| !self.options.layout.insert_hint.off) {
-            hint.loc -= camera;
-            let hint = hint
-                .to_physical_precise_round(self.scale)
-                .to_logical(self.scale);
-            let view_rect = Rectangle::new(hint.loc.upscale(-1.), self.view_size);
-            self.hint_element.update_render_elements(
-                hint.size,
-                view_rect,
-                niri_config::CornerRadius::default(),
-                self.scale,
-            );
-            self.hint_loc = Some(hint.loc);
-        }
-
-        let config = self.options.layout.tab_indicator;
-        for bar in &mut self.tab_bars {
-            let mut area = bar.area;
-            area.loc -= camera;
-            let area_view_rect = Rectangle::new(area.loc.upscale(-1.), self.view_size);
-
-            let tabs = bar.windows.iter().filter_map(|id| {
-                let idx = self.data.iter().position(|data| data.id == *id)?;
-                let tile = &self.tiles[idx];
-                let pos =
-                    self.data[idx].rect.unwrap_or_default().loc - camera + tile.render_offset();
-                let is_urgent = tile.window().is_urgent();
-                Some(TabInfo::from_tile(
-                    tile,
-                    pos,
-                    *id == bar.active,
-                    is_urgent,
-                    &config,
-                ))
-            });
-            let count = tabs.clone().count();
-            let is_active = is_active && active.is_some_and(|id| bar.windows.contains(&id));
-            bar.indicator.update_render_elements(
-                count > 0,
-                area,
-                area_view_rect,
-                count,
-                tabs,
-                is_active,
-                self.scale,
-            );
         }
     }
 
@@ -558,11 +421,8 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> impl Iterator<Item = (&Tile<W>, Point<f64, Logical>, bool)> {
         let scale = self.scale;
         let camera = self.camera.current();
-        zip(&self.tiles, &self.data).map(move |(tile, data)| {
-            let pos = data.rect.unwrap_or_default().loc - camera + tile.render_offset();
-            let pos = pos.to_physical_precise_round(scale).to_logical(scale);
-            (tile, pos, data.visible)
-        })
+        zip(&self.tiles, &self.data)
+            .map(move |(tile, data)| (tile, render_pos(tile, data, camera, scale), data.visible))
     }
 
     pub fn tiles_with_render_positions_mut(
@@ -588,7 +448,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             let pos = data.rect.unwrap_or_default().loc - camera;
             let pos = pos.to_physical_precise_round(scale).to_logical(scale);
             let layout = WindowLayout {
-                pos_in_scrolling_layout: data.ipc,
                 tile_pos_in_workspace_view: Some(pos.into()),
                 ..tile.ipc_layout_template()
             };
@@ -598,50 +457,25 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     pub fn new_window_toplevel_bounds(&self, rules: &ResolvedWindowRules) -> Size<i32, Logical> {
         let border = self.options.layout.border.merged_with(&rules.border);
-        // A window that opens as a tab leaves room for the tab indicator, like in niri.
-        let display = rules
-            .default_column_display
-            .unwrap_or(self.options.layout.default_column_display);
-        let extra = if display == ColumnDisplay::Tabbed {
-            TabIndicator::new(self.options.layout.tab_indicator).extra_size(1, self.scale)
-        } else {
-            Size::from((0., 0.))
-        };
-        toplevel_bounds(
-            border,
-            self.working_area.size,
-            extra,
-            self.options.layout.gaps,
-        )
+        toplevel_bounds(border, self.working_area.size, self.options.layout.gaps)
     }
 
     /// Size to suggest to a new window before it opens, from the layout.
-    pub fn new_window_size(
-        &self,
-        width: Option<PresetSize>,
-        height: Option<PresetSize>,
-        rules: &ResolvedWindowRules,
-    ) -> Size<i32, Logical> {
+    ///
+    /// This asks the layout as it is: what was queued since hasn't reached it.
+    pub fn new_window_size(&self, rules: &ResolvedWindowRules) -> Size<i32, Logical> {
         let border = self.options.layout.border.merged_with(&rules.border);
         let border = if border.off { 0. } else { border.width * 2. };
 
-        let info = json!({
-            "rules": Rules {
-                default_width: width.map(preset),
-                default_height: height.map(preset),
-                default_column_display: display_name(
-                    rules
-                        .default_column_display
-                        .unwrap_or(self.options.layout.default_column_display),
-                ),
-                open_full_width: rules.open_maximized == Some(true),
-            },
+        let event = json!({
+            "type": "newwindowsize",
+            "workspace": self.id,
+            "rules": engine::rules_json(&rules.engine),
             "minSize": Wh { w: 0., h: 0. },
             "maxSize": Wh { w: 0., h: 0. },
             "borders": Wh { w: border, h: border },
         });
-        let size = self
-            .query(json!({ "type": "new-window-size", "info": info }))
+        let size = host::query(event)
             .and_then(|size| serde_json::from_value::<Wh>(size).ok())
             .unwrap_or(Wh { w: 0., h: 0. });
 
@@ -677,23 +511,106 @@ impl<W: LayoutElement> TilingSpace<W> {
         Some(target)
     }
 
-    /// Info about a window for the layout.
-    fn window_info(&self, idx: usize) -> WindowInfo {
-        let tile = &self.tiles[idx];
-        let data = &self.data[idx];
-        let win = tile.window();
+    /// Id of the workspace, which the layout engine knows it by.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 
+    /// What the layout draws on the workspace.
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
+    pub(super) fn tree_mut(&mut self) -> &mut Tree {
+        &mut self.tree
+    }
+
+    /// Id of a window for the layout engine.
+    pub fn engine_id_of(&self, id: &W::Id) -> Option<u64> {
+        self.layout_id(id)
+    }
+
+    /// Id of the window that the layout engine knows by `engine_id`.
+    pub fn window_id_of(&self, engine_id: u64) -> Option<&W::Id> {
+        let idx = self.idx_of_layout_id(engine_id)?;
+        Some(self.tiles[idx].window().id())
+    }
+
+    /// Engine id of the focused window.
+    pub fn active_engine_id(&self) -> Option<u64> {
+        self.active
+    }
+
+    /// Where the layout put a window on the canvas, with its borders.
+    pub fn canvas_rect(&self, id: &W::Id) -> Option<Rectangle<f64, Logical>> {
+        self.data[self.idx_of(id)?].rect
+    }
+
+    /// The visible windows that the layout placed, by engine id, with where it put them.
+    pub(super) fn placed_windows(&self) -> Vec<(u64, Rectangle<f64, Logical>)> {
+        self.data
+            .iter()
+            .filter(|data| data.visible)
+            .filter_map(|data| Some((data.id, data.rect?)))
+            .collect()
+    }
+
+    /// Where the camera is going, if it's moving, or where it is.
+    pub fn camera_target(&self) -> Point<f64, Logical> {
+        self.camera.target()
+    }
+
+    /// What bento tells the layout about the workspace.
+    pub(super) fn workspace_info(
+        &self,
+        name: Option<&String>,
+        monitor: Option<String>,
+        index: usize,
+    ) -> WorkspaceInfo {
+        let Struts {
+            left,
+            right,
+            top,
+            bottom,
+        } = self.options.layout.struts;
+        WorkspaceInfo {
+            id: self.id,
+            name: name.cloned(),
+            monitor,
+            index,
+            view: ViewInfo {
+                size: Wh::from_size(self.view_size),
+                working_area: Rect::from_rect(self.parent_area),
+                scale: self.scale,
+            },
+            camera: Xy::from_point(self.camera.target()),
+            config: ConfigInfo {
+                gaps: self.options.layout.gaps,
+                struts: StrutsInfo {
+                    left: left.0,
+                    right: right.0,
+                    top: top.0,
+                    bottom: bottom.0,
+                },
+            },
+            focused: self.active,
+        }
+    }
+
+    /// Info about a window for the layout, on workspace `workspace`.
+    pub(super) fn window_info_of(tile: &Tile<W>, workspace: u64, layout_name: &str) -> WindowInfo {
+        let win = tile.window();
         let borders = tile.tile_width_for_window_width(0.);
-        let default_height = win.rules().default_height.flatten().map(preset);
-        let display = win
-            .rules()
-            .default_column_display
-            .unwrap_or(self.options.layout.default_column_display);
+        let data = match &tile.layout_data {
+            Some((name, data)) if name == layout_name => data.clone(),
+            _ => Value::Null,
+        };
 
         WindowInfo {
-            id: data.id,
+            id: tile.engine_id,
             app_id: win.app_id(),
             title: win.title(),
+            workspace,
             size: Wh::from_size(tile.tile_size()),
             min_size: Wh::from_size(tile.min_size_nonfullscreen()),
             max_size: Wh::from_size(tile.max_size_nonfullscreen()),
@@ -702,323 +619,130 @@ impl<W: LayoutElement> TilingSpace<W> {
                 h: tile.tile_height_for_window_height(0.),
             },
             mode: mode_of(win.pending_sizing_mode()),
-            rules: Rules {
-                default_width: data.default_width,
-                default_height,
-                default_column_display: display_name(display),
-                open_full_width: data.open_full_width,
-            },
-            is_urgent: win.is_urgent(),
-            data: self.layout_data(tile),
+            urgent: win.is_urgent(),
+            rules: engine::rules_json(&win.rules().engine),
+            data,
             rect: None,
         }
     }
 
-    /// What the current layout stored on a tile.
-    fn layout_data(&self, tile: &Tile<W>) -> Value {
-        match &tile.layout_data {
-            Some((name, data)) if *name == self.layout_name => data.clone(),
-            _ => Value::Null,
-        }
-    }
-
-    fn view_json(&self) -> Value {
-        json!({
-            "size": Wh::from_size(self.view_size),
-            "workingArea": Rect::from_rect(self.parent_area),
-            "scale": self.scale,
-        })
-    }
-
-    fn config_json(&self) -> Value {
-        let layout = &self.options.layout;
-        let Struts {
-            left,
-            right,
-            top,
-            bottom,
-        } = layout.struts;
-        let center = match layout.center_focused_column {
-            CenterFocusedColumn::Never => "never",
-            CenterFocusedColumn::Always => "always",
-            CenterFocusedColumn::OnOverflow => "on-overflow",
-        };
-        let display = display_name(layout.default_column_display);
-        let tabs = &layout.tab_indicator;
-        let tab_position = match tabs.position {
-            TabIndicatorPosition::Left => "left",
-            TabIndicatorPosition::Right => "right",
-            TabIndicatorPosition::Top => "top",
-            TabIndicatorPosition::Bottom => "bottom",
-        };
-        json!({
-            "gaps": layout.gaps,
-            "struts": { "left": left.0, "right": right.0, "top": top.0, "bottom": bottom.0 },
-            "centerFocusedColumn": center,
-            "alwaysCenterSingleColumn": layout.always_center_single_column,
-            "defaultColumnWidth": layout.default_column_width.map(preset),
-            "presetColumnWidths": layout.preset_column_widths.iter().copied().map(preset).collect::<Vec<_>>(),
-            "presetWindowHeights": layout.preset_window_heights.iter().copied().map(preset).collect::<Vec<_>>(),
-            "defaultColumnDisplay": display,
-            "tabIndicator": {
-                "off": tabs.off,
-                "position": tab_position,
-                "width": tabs.width,
-                "gap": tabs.gap,
-                "placeWithinColumn": tabs.place_within_column,
-                "hideWhenSingleTab": tabs.hide_when_single_tab,
-            },
-        })
-    }
-
-    /// Creates the layout instance if the engine doesn't have it, with the windows already here.
-    fn ensure_instance(&mut self) {
-        let generation = engine::ensure_loaded(&self.options.tiling);
-        if self.generation == generation || self.failed_generation == generation {
-            return;
-        }
-        self.generation = generation;
-        self.layout_name = engine::meta().map(|meta| meta.name).unwrap_or_default();
-
-        let windows: Vec<WindowInfo> = (0..self.tiles.len())
+    /// Info about each window for the layout, with where it is, from the bottom to the top.
+    pub(super) fn window_infos(&self, layout_name: &str) -> Vec<WindowInfo> {
+        zip(&self.tiles, &self.data)
             .rev()
-            .map(|idx| WindowInfo {
-                rect: self.data[idx].rect.map(Rect::from_rect),
-                ..self.window_info(idx)
+            .map(|(tile, data)| WindowInfo {
+                rect: data.rect.map(Rect::from_rect),
+                ..Self::window_info_of(tile, self.id, layout_name)
             })
-            .collect();
-        for (data, info) in zip(self.data.iter_mut().rev(), &windows) {
-            data.reported = Some(WindowInfo {
-                rect: None,
-                ..info.clone()
-            });
-        }
-
-        self.sent_view = self.view_json();
-        let config = self.config_json();
-        let options = engine::options_json(&self.options.tiling);
-        self.sent_config = json!([config, options]);
-
-        let camera = self.camera.target();
-        let event = json!({
-            "type": "create",
-            "view": self.sent_view,
-            "camera": Xy::from_point(camera),
-            "config": config,
-            "options": options,
-            "windows": windows,
-            "focused": self.active,
-            "state": engine::take_state(self.instance),
-        });
-        if self.send(event, &Apply::default()).is_none() {
-            self.failed_generation = generation;
-        }
+            .collect()
     }
 
-    /// Sends an event to the layout and carries out what it changed. Returns the result.
-    fn dispatch(&mut self, event: Value, apply: Apply) -> Value {
-        self.ensure_instance();
-        if self.generation != engine::generation() {
-            self.place_unplaced();
-            return Value::Null;
-        }
-        self.send(event, &apply).unwrap_or(Value::Null)
+    /// Starts the tree over for a new layout: only the windows are in it.
+    pub(super) fn reset_tree(&mut self) {
+        let windows = self.data.iter().rev().map(|data| data.id);
+        self.tree.reset(windows);
     }
 
-    fn send(&mut self, mut event: Value, apply: &Apply) -> Option<Value> {
-        event["instance"] = json!(self.instance);
-        let res = engine::call(&event.to_string()).and_then(|out| {
-            serde_json::from_str::<Output>(&out).context("error reading the layout's answer")
-        });
-
-        match res {
-            Ok(out) => {
-                for log in &out.logs {
-                    info!("layout engine: {log}");
-                }
-                if let Some(error) = &out.error {
-                    warn!("error in the layout engine: {error}");
-                }
-                let result = self.apply(out, apply);
-                self.place_unplaced();
-                Some(result)
-            }
-            Err(err) => {
-                warn!("error in the layout engine, starting it over: {err:?}");
-                // Create the instance again next time, from where the windows are now.
-                self.generation = 0;
-                self.place_unplaced();
-                None
-            }
-        }
-    }
-
-    /// Asks the layout something without changing anything.
-    fn query(&self, event: Value) -> Option<Value> {
-        if self.generation == 0 || self.generation != engine::generation() {
-            return None;
-        }
-
-        let mut event = event;
-        event["instance"] = json!(self.instance);
-        let res = engine::call(&event.to_string()).and_then(|out| {
-            serde_json::from_str::<Output>(&out).context("error reading the layout's answer")
-        });
-        match res {
-            Ok(out) => {
-                if let Some(error) = &out.error {
-                    warn!("error in the layout engine: {error}");
-                    return None;
-                }
-                Some(out.result)
-            }
-            Err(err) => {
-                warn!("error in the tiling layout: {err:?}");
-                None
-            }
-        }
-    }
-
-    /// Carries out what a layout call changed.
-    fn apply(&mut self, out: Output, apply: &Apply) -> Value {
+    /// Carries out what a layout call changed here: where windows go and where the camera points.
+    pub(super) fn apply(
+        &mut self,
+        changes: Vec<WindowChange>,
+        camera: Option<&CameraChange>,
+        anim: Option<niri_config::Animation>,
+        transaction: Option<Transaction>,
+    ) {
         // Like in niri, windows that change size together resize in one transaction, so that they
         // show their new sizes in the same frame, and what moves because of a resize, other
         // windows and the view, animates with `window-resize`, in sync with it.
-        let resizing = out.windows.iter().any(|change| self.resizes(change));
-        let apply = &if resizing {
+        let resizing = changes.iter().any(|change| self.resizes(change));
+        let apply = if resizing {
             Apply {
-                transaction: Some(apply.transaction.clone().unwrap_or_else(Transaction::new)),
-                anim: Some(
-                    apply
-                        .anim
-                        .unwrap_or(self.options.animations.window_resize.anim),
-                ),
-                camera_velocity: apply.camera_velocity,
+                transaction: Some(transaction.unwrap_or_else(Transaction::new)),
+                anim: Some(anim.unwrap_or(self.options.animations.window_resize.anim)),
+                camera_velocity: camera.map_or(0., |camera| camera.velocity),
             }
         } else {
-            apply.clone()
+            Apply {
+                transaction,
+                anim,
+                camera_velocity: camera.map_or(0., |camera| camera.velocity),
+            }
         };
 
-        if let Some(order) = out.order {
-            // The layout lists windows bottom to top; tiles are top to bottom.
-            let mut order: Vec<usize> = order
-                .iter()
-                .rev()
-                .filter_map(|id| self.idx_of_layout_id(*id))
-                .collect();
-            order.dedup();
-            for idx in 0..self.tiles.len() {
-                if !order.contains(&idx) {
-                    order.push(idx);
-                }
-            }
-
-            let mut tiles: Vec<_> = self.tiles.drain(..).map(Some).collect();
-            let mut data: Vec<_> = self.data.drain(..).map(Some).collect();
-            for idx in order {
-                self.tiles.push(tiles[idx].take().unwrap());
-                self.data.push(data[idx].take().unwrap());
-            }
-        }
-
-        for change in out.windows {
+        for change in changes {
             let Some(idx) = self.idx_of_layout_id(change.id) else {
                 continue;
             };
             self.data[idx].visible = change.visible;
-            self.data[idx].active_in_column = change.active_in_column;
-            self.place(
-                idx,
-                change.rect.to_rect(),
-                change.mode,
-                change.animate,
-                apply,
-            );
-        }
-
-        if let Some(focused) = out.focused {
-            self.active = focused.filter(|id| self.idx_of_layout_id(*id).is_some());
-        }
-
-        if let Some(data) = out.data {
-            for (id, value) in data {
-                let Some(idx) = self.idx_of_layout_id(id) else {
-                    continue;
-                };
-                self.tiles[idx].layout_data = Some((self.layout_name.clone(), value.clone()));
-                if let Some(reported) = &mut self.data[idx].reported {
-                    reported.data = value;
-                }
+            let rect = change.rect.map(Rect::to_rect).or(self.data[idx].rect);
+            if let Some(rect) = rect {
+                self.place(idx, rect, change.mode, change.animate, &apply);
             }
         }
 
-        // The swipe moves the camera; the layout gets to move it when the swipe ends.
-        let camera = out.camera.filter(|_| self.camera.gesture.is_none());
         if let Some(camera) = camera {
-            let animate = |config: niri_config::Animation, velocity: f64| {
-                camera
-                    .animate
-                    .then(|| (self.clock.clone(), config, velocity))
-            };
-            let config = if resizing {
-                self.options.animations.window_resize.anim
-            } else {
-                self.options.animations.horizontal_view_movement.0
-            };
-            let velocity = apply.camera_velocity;
-            let to = |v: f64| v.clamp(-1e7, 1e7);
-            self.camera
-                .x
-                .move_to(to(camera.x), animate(config, velocity));
-            self.camera.y.move_to(to(camera.y), animate(config, 0.));
+            self.move_camera(camera, resizing, &apply);
+        }
+    }
+
+    /// Moves the camera as the layout says, unless drag-and-drop scrolling is moving it.
+    fn move_camera(&mut self, camera: &CameraChange, resizing: bool, apply: &Apply) {
+        if self.camera.gesture.is_some() {
+            return;
         }
 
-        if let Some(hint) = out.hint {
-            self.hint = hint.map(Rect::to_rect);
+        let animate = |config: niri_config::Animation, velocity: f64| {
+            camera
+                .animate
+                .then(|| (self.clock.clone(), config, velocity))
+        };
+        let config = if resizing {
+            self.options.animations.window_resize.anim
+        } else {
+            self.options.animations.horizontal_view_movement.0
+        };
+        let to = |v: f64| v.clamp(-1e7, 1e7);
+        let x = animate(config, apply.camera_velocity);
+        let y = animate(config, 0.);
+        self.camera.x.move_to(to(camera.x), x);
+        self.camera.y.move_to(to(camera.y), y);
+    }
+
+    /// Focuses a window, as the layout says.
+    pub(super) fn focus(&mut self, id: Option<u64>) {
+        self.active = id.filter(|id| self.idx_of_layout_id(*id).is_some());
+    }
+
+    /// Keeps what the layout stored on a window.
+    pub(super) fn set_window_data(&mut self, id: u64, value: Value, layout_name: &str) {
+        if let Some(idx) = self.idx_of_layout_id(id) {
+            self.tiles[idx].layout_data = Some((layout_name.to_owned(), value));
         }
+    }
 
-        if let Some(tabs) = out.tabs {
-            let mut old = std::mem::take(&mut self.tab_bars);
-            for bar in tabs {
-                let windows: Vec<u64> = bar
-                    .windows
-                    .into_iter()
-                    .filter(|id| self.idx_of_layout_id(*id).is_some())
-                    .collect();
-                if !windows.contains(&bar.active) {
-                    continue;
-                }
-
-                let indicator = match old.iter().position(|old| old.key == bar.key) {
-                    Some(idx) => old.swap_remove(idx).indicator,
-                    None => {
-                        let mut indicator = TabIndicator::new(self.options.layout.tab_indicator);
-                        indicator.start_open_animation(
-                            self.clock.clone(),
-                            self.options.animations.window_movement.0,
-                        );
-                        indicator
-                    }
-                };
-                self.tab_bars.push(TabBar {
-                    key: bar.key,
-                    area: bar.area.to_rect(),
-                    windows,
-                    active: bar.active,
-                    indicator,
-                });
+    /// Stacks the windows as the tree does: the first in the tree is at the bottom.
+    pub(super) fn stack_by_tree(&mut self) {
+        // Tiles are top to bottom.
+        let mut order: Vec<usize> = self
+            .tree
+            .window_order()
+            .iter()
+            .rev()
+            .filter_map(|id| self.idx_of_layout_id(*id))
+            .collect();
+        order.dedup();
+        for idx in 0..self.tiles.len() {
+            if !order.contains(&idx) {
+                order.push(idx);
             }
         }
 
-        if let Some(ipc) = out.ipc {
-            for (id, pos) in ipc {
-                if let Some(idx) = self.idx_of_layout_id(id) {
-                    self.data[idx].ipc = pos;
-                }
-            }
+        let mut tiles: Vec<_> = self.tiles.drain(..).map(Some).collect();
+        let mut data: Vec<_> = self.data.drain(..).map(Some).collect();
+        for idx in order {
+            self.tiles.push(tiles[idx].take().unwrap());
+            self.data.push(data[idx].take().unwrap());
         }
-
-        out.result
     }
 
     /// Whether a change resizes a window that the layout already placed, or changes its mode.
@@ -1026,7 +750,10 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.idx_of_layout_id(change.id).is_some_and(|idx| {
             let data = &self.data[idx];
             data.rect.is_some_and(|prev| {
-                prev.size != change.rect.to_rect().size || data.mode != change.mode
+                change
+                    .rect
+                    .is_some_and(|rect| prev.size != rect.to_rect().size)
+                    || data.mode != change.mode
             })
         })
     }
@@ -1040,6 +767,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         animate: bool,
         apply: &Apply,
     ) {
+        let camera = self.camera.current();
         let tile = &mut self.tiles[idx];
         let data = &mut self.data[idx];
 
@@ -1063,6 +791,18 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
         data.mode = mode;
 
+        // A tile that was moved here animates from where it was now that it knows where it is.
+        if let Some(moved) = tile.pending_move.take() {
+            let pos = rect.loc - camera + tile.render_offset();
+            let config = moved
+                .config
+                .unwrap_or(self.options.animations.window_movement.0);
+            tile.animate_move_from_with_config(moved.from - pos, config);
+            if moved.between_workspaces {
+                tile.set_anim_y_between_workspaces();
+            }
+        }
+
         if resized {
             // Like inactive tabs in niri, hidden windows don't hold up the others.
             let transaction = apply.transaction.clone().filter(|_| data.visible);
@@ -1074,8 +814,9 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
     }
 
-    /// Puts tiles that the layout didn't place in the middle of the view.
-    fn place_unplaced(&mut self) {
+    /// Puts tiles that the layout didn't place in the middle of the view, and focuses a window if
+    /// none has focus.
+    pub(super) fn place_unplaced(&mut self) {
         for idx in 0..self.tiles.len() {
             if self.data[idx].rect.is_some() {
                 continue;
@@ -1110,33 +851,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
     }
 
-    /// Tells the layout about windows whose size, limits or other properties changed.
-    fn report_changes(&mut self, apply: Apply) {
-        let mut changed = Vec::new();
-        for idx in 0..self.tiles.len() {
-            let info = self.window_info(idx);
-            if self.data[idx].reported.as_ref() != Some(&info) {
-                self.data[idx].reported = Some(info.clone());
-                changed.push(info);
-            }
-        }
-        if !changed.is_empty() {
-            self.dispatch(json!({ "type": "change", "windows": changed }), apply);
-        }
-    }
-
     /// Adds a tile, with the layout deciding where it goes.
     pub fn add_tile(
         &mut self,
-        col_idx: Option<usize>,
         tile: Tile<W>,
         activate: bool,
-        width: ColumnWidth,
-        is_full_width: bool,
         anim: Option<niri_config::Animation>,
     ) {
-        let _ = col_idx;
-        self.add_tile_with(tile, activate, width, is_full_width, anim, None, None);
+        self.add_tile_with(tile, activate, anim, None, None);
     }
 
     /// Adds a tile next to the tile of `next_to`, like a dialog next to its parent.
@@ -1145,12 +867,10 @@ impl<W: LayoutElement> TilingSpace<W> {
         next_to: &W::Id,
         tile: Tile<W>,
         activate: bool,
-        width: ColumnWidth,
-        is_full_width: bool,
         anim: Option<niri_config::Animation>,
     ) {
         let next_to = self.layout_id(next_to);
-        self.add_tile_with(tile, activate, width, is_full_width, anim, next_to, None);
+        self.add_tile_with(tile, activate, anim, next_to, None);
     }
 
     /// Adds a tile that stopped floating, last seen at `rect` relative to the view.
@@ -1158,35 +878,20 @@ impl<W: LayoutElement> TilingSpace<W> {
         &mut self,
         tile: Tile<W>,
         activate: bool,
-        width: ColumnWidth,
         rect: Rectangle<f64, Logical>,
     ) {
         let rect = Rectangle::new(rect.loc + self.camera.target(), rect.size);
-        self.add_tile_with(
-            tile,
-            activate,
-            width,
-            false,
-            None,
-            None,
-            Some(("tile", rect)),
-        );
+        self.add_tile_with(tile, activate, None, None, Some(("tile", rect)));
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn add_tile_with(
         &mut self,
         mut tile: Tile<W>,
         activate: bool,
-        width: ColumnWidth,
-        is_full_width: bool,
         anim: Option<niri_config::Animation>,
         next_to: Option<u64>,
         from: Option<(&str, Rectangle<f64, Logical>)>,
     ) {
-        // The layout has to exist before the window, or it would get it twice.
-        self.ensure_instance();
-
         tile.update_config(self.view_size, self.scale, self.options.clone());
 
         let drop = self
@@ -1199,21 +904,19 @@ impl<W: LayoutElement> TilingSpace<W> {
             "drop"
         } else if let Some((reason, _)) = from {
             reason
-        } else if tile.was_tiled {
-            "move"
         } else {
             "open"
         };
-        tile.was_tiled = true;
 
-        // Fixed column widths include borders, but widths in window rules don't.
-        let borders = tile.tile_width_for_window_width(0.);
-        let default_width = match width {
-            ColumnWidth::Proportion(prop) => Preset::Proportion(prop),
-            ColumnWidth::Fixed(width) => Preset::Fixed(f64::max(1., width - borders)),
-        };
+        let moved_from = tile.engine_workspace.filter(|from| *from != self.id);
+        let known = tile.engine_workspace == Some(self.id);
+        tile.engine_workspace = Some(self.id);
 
-        let id = TILE_ID_COUNTER.next();
+        let id = tile.engine_id;
+        match tile.tree_node.take() {
+            Some(node) => self.tree.put_window(node),
+            None => self.tree.add_window(id),
+        }
         self.tiles.insert(0, tile);
         self.data.insert(
             0,
@@ -1221,52 +924,48 @@ impl<W: LayoutElement> TilingSpace<W> {
                 id,
                 rect: None,
                 visible: true,
-                active_in_column: None,
                 mode: Mode::Normal,
                 maximized_under_fullscreen: false,
-                ipc: None,
-                default_width: Some(default_width),
-                open_full_width: is_full_width,
-                reported: None,
             },
         );
 
-        let info = self.window_info(0);
-        self.data[0].reported = Some(info.clone());
-
-        let (rect, pointer) = match (&drop, from) {
-            (Some(drop), _) => (Some(drop.rect), Some(drop.pointer)),
-            (None, Some((_, rect))) => (Some(rect), None),
-            (None, None) => (None, None),
-        };
-        let event = json!({
-            "type": "add",
-            "window": info,
-            "how": {
-                "reason": reason,
-                "activate": activate || self.tiles.len() == 1,
-                "rect": rect.map(Rect::from_rect),
-                "pointer": pointer.map(Xy::from_point),
-                "nextTo": next_to,
-            },
-        });
-        self.dispatch(
-            event,
-            Apply {
+        let activate = activate || self.tiles.len() == 1;
+        if let Some(from) = moved_from {
+            host::queue_with(
+                json!({
+                    "type": "windowmove",
+                    "id": id,
+                    "from": from,
+                    "to": self.id,
+                    "activate": activate,
+                }),
                 anim,
-                ..Apply::default()
-            },
-        );
-
-        // The layout decides focus, but a window added to be focused has to be.
-        if activate {
-            self.active = Some(id);
+            );
+        } else if !known {
+            let (rect, pointer) = match (&drop, from) {
+                (Some(drop), _) => (Some(drop.rect), Some(drop.pointer)),
+                (None, Some((_, rect))) => (Some(rect), None),
+                (None, None) => (None, None),
+            };
+            let window = Self::window_info_of(&self.tiles[0], self.id, &engine::name());
+            host::queue_with(
+                json!({
+                    "type": "windowadd",
+                    "window": window,
+                    "how": {
+                        "reason": reason,
+                        "activate": activate,
+                        "rect": rect.map(Rect::from_rect),
+                        "pointer": pointer.map(Xy::from_point),
+                        "nextTo": next_to,
+                    },
+                }),
+                anim,
+            );
         }
     }
 
     pub fn remove_tile(&mut self, id: &W::Id, transaction: Transaction) -> RemovedTile<W> {
-        // The layout has to exist with the window in it to remove it.
-        self.ensure_instance();
         let idx = self.idx_of(id).unwrap();
         let reason = self
             .remove_reason
@@ -1284,7 +983,6 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     /// Removes a tile because it starts floating.
     pub fn remove_tile_for_floating(&mut self, id: &W::Id) -> RemovedTile<W> {
-        self.ensure_instance();
         let idx = self.idx_of(id).unwrap();
         self.remove_tile_by_idx(idx, "float", None)
     }
@@ -1311,19 +1009,20 @@ impl<W: LayoutElement> TilingSpace<W> {
             self.active = None;
         }
 
-        self.dispatch(
-            json!({ "type": "remove", "id": data.id, "reason": reason }),
-            Apply {
+        // A window that moves to another workspace stays in the layout, and its node goes along.
+        if reason == "move" {
+            tile.tree_node = self.tree.take_window(data.id);
+        } else {
+            self.tree.remove_window(data.id);
+            tile.engine_workspace = None;
+            host::queue_with_transaction(
+                json!({ "type": "windowremove", "id": data.id, "reason": reason }),
                 transaction,
-                ..Apply::default()
-            },
-        );
+            );
+        }
 
-        let width = tile.tile_expected_or_current_size().w;
         RemovedTile {
             tile,
-            width: ColumnWidth::Fixed(width),
-            is_full_width: false,
             is_floating: false,
         }
     }
@@ -1405,8 +1104,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             tile.window_mut().on_commit(serial);
         }
         tile.update_window();
-
-        self.report_changes(Apply::default());
     }
 
     /// How far the view would scroll to focus the window, in working area widths.
@@ -1432,18 +1129,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         amount / area.size.w.max(1.)
     }
 
+    /// Focuses a window, which is what bento does when the layout lets it.
     pub fn activate_window(&mut self, id: &W::Id) -> bool {
         let Some(idx) = self.idx_of(id) else {
             return false;
         };
-        let layout_id = self.data[idx].id;
-        self.dispatch(
-            json!({ "type": "activate", "id": layout_id }),
-            Apply::default(),
-        );
-
-        // Whatever the layout does, the window asked to be focused.
-        self.active = Some(layout_id);
+        self.active = Some(self.data[idx].id);
         true
     }
 
@@ -1484,8 +1175,12 @@ impl<W: LayoutElement> TilingSpace<W> {
         let Some(layout_id) = self.layout_id(id) else {
             return false;
         };
-        let event = json!({ "type": "mode", "id": layout_id, "mode": mode, "request": request });
-        self.dispatch(event, Apply::default());
+        host::queue(json!({
+            "type": "moderequest",
+            "id": layout_id,
+            "mode": mode,
+            "request": request,
+        }));
         true
     }
 
@@ -1518,64 +1213,155 @@ impl<W: LayoutElement> TilingSpace<W> {
             }
         }
 
-        // Draw the layout's highlight and the tab indicators on top of the windows.
-        if layer.is_normal() {
-            if let Some(loc) = self.hint_loc {
-                self.hint_element
-                    .render(ctx.renderer, loc, &mut |elem| push(elem.into()));
-            }
-        }
-        for bar in &self.tab_bars {
-            bar.indicator
-                .render(ctx.renderer, Point::from((0., 0.)), &mut |elem| {
-                    push(elem.into())
-                });
-        }
+        // The tree has the nodes from the bottom to the top, and elements go from the top.
+        let camera = self.camera.current();
+        let mut items = Vec::new();
+        self.tree.render_elements(
+            ctx.renderer,
+            Point::from((-camera.x, -camera.y)),
+            self.scale,
+            &mut |item| items.push(item),
+        );
 
-        let active = self.active;
-        for ((tile, tile_pos, visible), data) in self.tiles_with_render_positions().zip(&self.data)
-        {
-            // Skip tiles belonging to a different render layer.
-            if layer.is_normal() == tile.is_moving_between_workspaces() {
-                continue;
+        for item in items.into_iter().rev() {
+            match item {
+                RenderItem::Element(elem) => {
+                    if layer.is_normal() {
+                        push(elem.into());
+                    }
+                }
+                RenderItem::Window(slot) => {
+                    self.render_window(ctx.r(), &slot, xray_pos, focus_ring, layer, push);
+                }
             }
-
-            // Keep hidden tiles that are fading out visible until they're done.
-            if !visible && tile.alpha_animation.is_none() {
-                continue;
-            }
-
-            let focus_ring = focus_ring && Some(data.id) == active;
-            let xray_pos = xray_pos.offset(tile_pos);
-            tile.render(ctx.r(), tile_pos, xray_pos, focus_ring, &mut |elem| {
-                push(elem.into())
-            });
         }
     }
 
-    pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
-        let camera = self.camera.current();
-        for bar in &self.tab_bars {
-            let mut area = bar.area;
-            area.loc -= camera;
-            let count = bar.windows.len();
-            if let Some(tab) = bar.indicator.hit(area, count, self.scale, pos) {
-                let Some(idx) = self.idx_of_layout_id(bar.windows[tab]) else {
-                    continue;
-                };
-                let hit = HitType::Activate {
-                    is_tab_indicator: true,
-                };
-                return Some((self.tiles[idx].window(), hit));
-            }
+    /// Renders a window where the tree puts it: with its opacity, transform and clip.
+    fn render_window<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        slot: &WindowSlot,
+        xray_pos: XrayPos,
+        focus_ring: bool,
+        layer: RenderLayer,
+        push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
+    ) {
+        let Some(idx) = self.idx_of_layout_id(slot.id) else {
+            return;
+        };
+        let (tile, data) = (&self.tiles[idx], &self.data[idx]);
+
+        // Skip tiles belonging to a different render layer.
+        if layer.is_normal() == tile.is_moving_between_workspaces() {
+            return;
         }
 
+        // Hidden tiles aren't drawn, unless an alpha animation of bento's own, like a dragged
+        // window's, still runs on them. Engines fade windows with their node's opacity.
+        if !data.visible && tile.alpha_animation.is_none() {
+            return;
+        }
+
+        let camera = self.camera.current();
+        let tile_pos = render_pos(tile, data, camera, self.scale);
+        let focus_ring = focus_ring && Some(data.id) == self.active;
+        let xray_pos = xray_pos.offset(tile_pos);
+        let drawn = &slot.drawn;
+        let opacity = drawn.opacity as f32;
+
+        // The tree scales a window around the centre of where the layout placed it.
+        let rect = data.rect.unwrap_or_default();
+        let transform = drawn.transform_around(rect);
+        if transform.scale <= 0. {
+            return;
+        }
+        if transform == NodeTransform::IDENTITY && drawn.clip.is_none() {
+            tile.render_with_opacity(
+                ctx.r(),
+                tile_pos,
+                xray_pos,
+                focus_ring,
+                opacity,
+                &mut |elem| push(elem.into()),
+            );
+            return;
+        }
+
+        let placement = Placement::new(drawn, rect, transform, tile_pos, camera, self.scale);
+        let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+        tile.render_with_opacity(
+            ctx.r(),
+            tile_pos,
+            xray_pos,
+            focus_ring,
+            opacity,
+            &mut |elem| {
+                let elem = placement.round_corners(elem, clip_shader.as_ref());
+                if let Some(elem) = placement.place(elem) {
+                    push(elem);
+                }
+            },
+        );
+    }
+
+    pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
         self.tiles_with_render_positions()
             .filter(|(_, _, visible)| *visible)
             .find_map(|(tile, tile_pos, _)| HitType::hit_tile(tile, tile_pos, pos))
     }
 
-    /// Where a dragged tile would go if dropped with the pointer at `pos`, relative to the view.
+    /// The interactive node that the layout drew under `pos`, relative to the view, with the
+    /// pointer's position on the canvas. A window that's above a node takes the pointer from it.
+    pub fn node_under(&self, pos: Point<f64, Logical>) -> Option<(String, Point<f64, Logical>)> {
+        let camera = self.camera.current();
+        let covers = |window: u64| {
+            let Some(idx) = self.idx_of_layout_id(window) else {
+                return false;
+            };
+            let tile_pos = render_pos(&self.tiles[idx], &self.data[idx], camera, self.scale);
+            self.data[idx].visible && HitType::hit_tile(&self.tiles[idx], tile_pos, pos).is_some()
+        };
+
+        let canvas = pos + camera;
+        let node = self.tree.hit_with(canvas, &covers)?;
+        Some((node, canvas))
+    }
+
+    /// Moves the pointer onto the node `hit` of the layout, with the pointer's position on the
+    /// canvas, or off all of them. Returns the enter and leave events for the nodes it moved
+    /// between, with the pointer's position on the canvas for each.
+    pub(super) fn pointer_over(
+        &mut self,
+        hit: Option<(&str, Point<f64, Logical>)>,
+    ) -> Vec<(String, &'static str, Point<f64, Logical>)> {
+        if let Some((_, pos)) = hit {
+            self.pointer = pos;
+        }
+        let pos = self.pointer;
+        self.tree
+            .pointer_over(hit.map(|(node, _)| node))
+            .into_iter()
+            .map(|(node, event)| (node, event, pos))
+            .collect()
+    }
+
+    /// Where a dragged tile is on the canvas: the pointer at `pos` and the tile at `tile_pos`,
+    /// both relative to the view.
+    pub(super) fn drag_on_canvas(
+        &self,
+        pos: Point<f64, Logical>,
+        tile: &Tile<W>,
+        tile_pos: Point<f64, Logical>,
+    ) -> TiledDrop {
+        let camera = self.camera.current();
+        TiledDrop {
+            pointer: pos + camera,
+            rect: Rectangle::new(tile_pos + camera, tile.tile_size()),
+        }
+    }
+
+    /// Where a dragged tile goes if dropped with the pointer at `pos`, relative to the view.
     ///
     /// `tile_pos` is where the dragged tile is, relative to the view.
     pub(super) fn insert_position(
@@ -1584,62 +1370,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         tile: &Tile<W>,
         tile_pos: Point<f64, Logical>,
     ) -> InsertPosition {
-        let camera = self.camera.current();
-        let pointer = pos + camera;
-        let rect = Rectangle::new(tile_pos + camera, tile.tile_size());
-
-        let borders = tile.tile_width_for_window_width(0.);
-        let window = WindowInfo {
-            id: 0,
-            app_id: None,
-            title: None,
-            size: Wh::from_size(tile.tile_size()),
-            min_size: Wh::from_size(tile.min_size_nonfullscreen()),
-            max_size: Wh::from_size(tile.max_size_nonfullscreen()),
-            borders: Wh {
-                w: borders,
-                h: tile.tile_height_for_window_height(0.),
-            },
-            mode: Mode::Normal,
-            rules: Rules {
-                default_width: Some(Preset::Fixed(tile.window_size().w)),
-                default_height: None,
-                default_column_display: display_name(self.options.layout.default_column_display),
-                open_full_width: false,
-            },
-            is_urgent: false,
-            data: self.layout_data(tile),
-            rect: None,
-        };
-        let hint = self
-            .query(json!({
-                "type": "drop-target",
-                "window": window,
-                "pointer": Xy::from_point(pointer),
-                "rect": Rect::from_rect(rect),
-            }))
-            .and_then(|hint| serde_json::from_value::<Option<Rect>>(hint).ok())
-            .flatten()
-            .map(Rect::to_rect);
-
-        InsertPosition::Tiled(Some(TiledDrop {
-            pointer,
-            rect,
-            hint,
-        }))
-    }
-
-    /// Area of the drop target highlight, relative to the view.
-    pub(super) fn insert_hint_area(
-        &self,
-        position: InsertPosition,
-    ) -> Option<Rectangle<f64, Logical>> {
-        let InsertPosition::Tiled(Some(drop)) = position else {
-            return None;
-        };
-        let mut hint = drop.hint?;
-        hint.loc -= self.camera.current();
-        Some(hint)
+        InsertPosition::Tiled(Some(self.drag_on_canvas(pos, tile, tile_pos)))
     }
 
     /// Makes the window go where it was dropped when it's added next.
@@ -1647,22 +1378,34 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.drop = Some((window, drop));
     }
 
+    /// Sets how a tile that was just added animates to where the layout places it.
+    pub(super) fn set_pending_move(&mut self, id: &W::Id, moved: PendingMove) {
+        if let Some(idx) = self.idx_of(id) {
+            self.tiles[idx].pending_move = Some(moved);
+        }
+    }
+
+    /// Queues an event for the layout about a swipe.
+    fn queue_swipe(&self, kind: &str, delta: f64, velocity: f64, touchpad: bool) {
+        host::queue(json!({
+            "type": kind,
+            "workspace": self.id,
+            "delta": delta,
+            "velocity": velocity,
+            "touchpad": touchpad,
+        }));
+    }
+
     pub fn view_offset_gesture_begin(&mut self, is_touchpad: bool) {
         if self.tiles.is_empty() || self.interactive_resize.is_some() {
             return;
         }
 
-        let current = self.camera.current().x;
-        self.camera.gesture = Some(CameraGesture {
+        self.swipe = Some(Swipe {
             tracker: SwipeTracker::new(),
-            delta_from_tracker: current,
-            current,
             is_touchpad,
-            dnd_last_event_time: None,
-            dnd_nonzero_start_time: None,
         });
-
-        self.dispatch(json!({ "type": "gesture-begin" }), Apply::default());
+        self.queue_swipe("swipebegin", 0., 0., is_touchpad);
     }
 
     pub fn view_offset_gesture_update(
@@ -1671,62 +1414,43 @@ impl<W: LayoutElement> TilingSpace<W> {
         timestamp: Duration,
         is_touchpad: bool,
     ) -> Option<bool> {
-        let gesture = self.camera.gesture.as_mut()?;
-        if gesture.is_touchpad != is_touchpad || gesture.dnd_last_event_time.is_some() {
+        let norm_factor = self.swipe_norm_factor(is_touchpad);
+        let swipe = self.swipe.as_mut()?;
+        if swipe.is_touchpad != is_touchpad {
             return None;
         }
 
-        gesture.tracker.push(delta_x, timestamp);
-
-        let norm_factor = if gesture.is_touchpad {
-            self.working_area.size.w / VIEW_GESTURE_WORKING_AREA_MOVEMENT
-        } else {
-            1.
-        };
-        gesture.current = gesture.tracker.pos() * norm_factor + gesture.delta_from_tracker;
+        swipe.tracker.push(delta_x, timestamp);
+        self.queue_swipe("swipeupdate", delta_x * norm_factor, 0., is_touchpad);
 
         Some(true)
     }
 
     pub fn view_offset_gesture_end(&mut self, is_touchpad: Option<bool>) -> bool {
-        let Some(gesture) = &mut self.camera.gesture else {
+        let Some(swipe) = &mut self.swipe else {
             return false;
         };
-        if is_touchpad.is_some_and(|x| gesture.is_touchpad != x) {
+        if is_touchpad.is_some_and(|x| swipe.is_touchpad != x) {
             return false;
         }
 
         // Take into account any idle time between the last event and now.
         let now = self.clock.now_unadjusted();
-        gesture.tracker.push(0., now);
+        swipe.tracker.push(0., now);
 
-        let norm_factor = if gesture.is_touchpad {
+        let is_touchpad = swipe.is_touchpad;
+        let norm_factor = self.swipe_norm_factor(is_touchpad);
+        let velocity = self.swipe.take().unwrap().tracker.velocity() * norm_factor;
+        self.queue_swipe("swipeend", 0., velocity, is_touchpad);
+        true
+    }
+
+    fn swipe_norm_factor(&self, is_touchpad: bool) -> f64 {
+        if is_touchpad {
             self.working_area.size.w / VIEW_GESTURE_WORKING_AREA_MOVEMENT
         } else {
             1.
-        };
-        let velocity = gesture.tracker.velocity() * norm_factor;
-        let current = gesture.tracker.pos() * norm_factor + gesture.delta_from_tracker;
-        let projected =
-            gesture.tracker.projected_end_pos() * norm_factor + gesture.delta_from_tracker;
-
-        let y = self.camera.y.target();
-        self.camera.gesture = None;
-        self.camera.x = Axis::Static(current);
-
-        self.dispatch(
-            json!({
-                "type": "gesture-end",
-                "camera": Xy { x: current, y },
-                "velocity": Xy { x: velocity, y: 0. },
-                "projected": Xy { x: projected, y },
-            }),
-            Apply {
-                camera_velocity: velocity,
-                ..Apply::default()
-            },
-        );
-        true
+        }
     }
 
     pub fn dnd_scroll_gesture_begin(&mut self) {
@@ -1745,12 +1469,12 @@ impl<W: LayoutElement> TilingSpace<W> {
             tracker: SwipeTracker::new(),
             delta_from_tracker: current,
             current,
-            is_touchpad: false,
             dnd_last_event_time: Some(self.clock.now_unadjusted()),
             dnd_nonzero_start_time: None,
         });
 
-        self.interactive_resize = None;
+        // A drag stops a resize, and the layout hears that it ended.
+        self.interactive_resize_end(None);
     }
 
     pub fn dnd_scroll_gesture_scroll(&mut self, delta: f64) -> bool {
@@ -1808,11 +1532,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         self.camera.gesture = None;
         self.camera.x = Axis::Static(current);
 
-        let camera = Xy::from_point(self.camera.target());
-        self.dispatch(
-            json!({ "type": "camera", "camera": camera }),
-            Apply::default(),
-        );
+        host::queue(json!({ "type": "camerachange", "workspace": self.id }));
     }
 
     /// Range of camera x that keeps some of the windows in view.
@@ -1832,22 +1552,19 @@ impl<W: LayoutElement> TilingSpace<W> {
         )
     }
 
-    pub fn interactive_resize_begin(&mut self, window: W::Id, edges: ResizeEdge) -> bool {
+    /// Starts an interactive resize of a window, before the layout is asked whether it's allowed.
+    ///
+    /// Returns `None` if the window can't be resized, or the engine id to ask the layout about.
+    pub(super) fn interactive_resize_begin(
+        &mut self,
+        window: W::Id,
+        edges: ResizeEdge,
+    ) -> Option<u64> {
         if self.interactive_resize.is_some() {
-            return false;
+            return None;
         }
-        let Some(idx) = self.idx_of(&window) else {
-            return false;
-        };
-
-        let event = json!({
-            "type": "resize-begin",
-            "id": self.data[idx].id,
-            "resize": resize_json(edges, Point::from((0., 0.))),
-        });
-        if self.dispatch(event, Apply::default()) != Value::Bool(true) {
-            return false;
-        }
+        let idx = self.idx_of(&window)?;
+        let id = self.data[idx].id;
 
         let original_window_size = self.tiles[idx].window_size();
         self.interactive_resize = Some(InteractiveResize {
@@ -1856,12 +1573,20 @@ impl<W: LayoutElement> TilingSpace<W> {
             data: InteractiveResizeData { edges },
         });
 
-        // Freeze the view while resizing.
+        // Freeze the view while resizing. A swipe stops, and the layout hears that it ended.
         if let Some(gesture) = self.camera.gesture.take() {
             self.camera.x = Axis::Static(gesture.current);
         }
+        if let Some(swipe) = self.swipe.take() {
+            self.queue_swipe("swipeend", 0., 0., swipe.is_touchpad);
+        }
 
-        true
+        Some(id)
+    }
+
+    /// Takes back an interactive resize that the layout refused.
+    pub(super) fn interactive_resize_cancel(&mut self) {
+        self.interactive_resize = None;
     }
 
     pub fn interactive_resize_update(
@@ -1880,12 +1605,12 @@ impl<W: LayoutElement> TilingSpace<W> {
             return false;
         };
 
-        let event = json!({
-            "type": "resize-update",
+        host::queue(json!({
+            "type": "resizeupdate",
             "id": id,
-            "resize": resize_json(edges, delta),
-        });
-        self.dispatch(event, Apply::default());
+            "edges": edges_json(edges),
+            "delta": Xy::from_point(delta),
+        }));
         true
     }
 
@@ -1902,23 +1627,15 @@ impl<W: LayoutElement> TilingSpace<W> {
         let window = resize.window.clone();
         self.interactive_resize = None;
         if let Some(id) = self.layout_id(&window) {
-            self.dispatch(json!({ "type": "resize-end", "id": id }), Apply::default());
+            host::queue(json!({ "type": "resizeend", "id": id }));
         }
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
-        // After the layout engine reloads, create its instance again before queries come.
-        let generation = engine::generation();
-        if generation != 0 && generation != self.generation && generation != self.failed_generation
-        {
-            self.ensure_instance();
-        }
-
         let active = self.active;
         for (tile, data) in zip(&mut self.tiles, &self.data) {
             let win = tile.window_mut();
 
-            win.set_active_in_column(data.active_in_column.unwrap_or(data.visible));
             win.set_floating(false);
 
             let mut is_active = is_active && Some(data.id) == active;
@@ -1934,17 +1651,9 @@ impl<W: LayoutElement> TilingSpace<W> {
                 .map(|resize| resize.data);
             win.set_interactive_resize(resize_data);
 
-            // Tabs leave room for the tab indicator.
             let border = self.options.layout.border.merged_with(&win.rules().border);
-            let extra = self
-                .tab_bars
-                .iter()
-                .find(|bar| bar.windows.contains(&data.id))
-                .map_or(Size::from((0., 0.)), |bar| {
-                    bar.indicator.extra_size(bar.windows.len(), self.scale)
-                });
             let gaps = self.options.layout.gaps;
-            win.set_bounds(toplevel_bounds(border, self.working_area.size, extra, gaps));
+            win.set_bounds(toplevel_bounds(border, self.working_area.size, gaps));
 
             // If transactions are disabled, also disable combined throttling, for more
             // intuitive behavior.
@@ -1965,43 +1674,26 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
     }
 
-    /// Runs an action on the layout. Returns whether it did anything.
-    pub fn action(&mut self, name: &str, args: Vec<Value>, window: Option<&W::Id>) -> bool {
-        let target = window.and_then(|id| self.layout_id(id));
-        if window.is_some() && target.is_none() {
-            return false;
+    /// Queues an event for the layout about a window of the space.
+    pub(super) fn queue_window_event(&self, window: &W::Id, event: &str, fields: Value) {
+        let Some(id) = self.layout_id(window) else {
+            return;
+        };
+        let mut event = json!({ "type": event, "id": id });
+        if let (Some(event), Value::Object(fields)) = (event.as_object_mut(), fields) {
+            event.extend(fields);
         }
-
-        let event = json!({ "type": "action", "name": name, "args": args, "target": target });
-        let res = self.dispatch(event, Apply::default());
-
-        // Actions on a window end resizing it with the mouse.
-        if let Some(resize) = &self.interactive_resize {
-            if window.is_none_or(|id| id == &resize.window) {
-                let window = resize.window.clone();
-                self.interactive_resize_end(Some(&window));
-            }
-        }
-
-        res == Value::Bool(true)
+        host::queue(event);
     }
 
     /// Whether a swipe or drag-and-drop gesture is moving the camera.
     pub fn is_camera_gesture(&self) -> bool {
-        self.camera.gesture.is_some()
+        self.swipe.is_some() || self.camera.gesture.is_some()
     }
 
     /// Camera x on the canvas, like niri's view position.
     pub fn view_pos(&self) -> f64 {
         self.camera.current().x
-    }
-
-    /// Index of the focused window's column, from the layout's IPC positions.
-    #[cfg(test)]
-    pub fn active_column_idx(&self) -> usize {
-        self.active_idx()
-            .and_then(|idx| self.data[idx].ipc)
-            .map_or(0, |(col, _)| col.saturating_sub(1))
     }
 
     pub fn view_size(&self) -> Size<f64, Logical> {
@@ -2039,11 +1731,19 @@ impl<W: LayoutElement> TilingSpace<W> {
             tile.verify_invariants();
 
             assert!(data.rect.is_some(), "every tile must have a place");
-            assert!(
-                tile.was_tiled,
-                "tiles in the tiling layout must be marked as tiled"
+            assert_eq!(
+                tile.engine_workspace,
+                Some(self.id),
+                "tiles in the tiling layout must be known to the layout engine"
             );
+            assert_eq!(data.id, tile.engine_id);
         }
+
+        let mut windows = self.tree.window_order();
+        windows.sort_unstable();
+        let mut tiles: Vec<_> = self.data.iter().map(|data| data.id).collect();
+        tiles.sort_unstable();
+        assert_eq!(windows, tiles, "every window must have a node in the tree");
 
         if let Some(id) = self.active {
             assert!(
@@ -2063,17 +1763,104 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 }
 
-fn preset(value: PresetSize) -> Preset {
-    match value {
-        PresetSize::Proportion(prop) => Preset::Proportion(prop),
-        PresetSize::Fixed(width) => Preset::Fixed(f64::from(width)),
-    }
+/// Where a tile is drawn relative to the view, rounded to physical pixels.
+fn render_pos<W: LayoutElement>(
+    tile: &Tile<W>,
+    data: &TileData,
+    camera: Point<f64, Logical>,
+    scale: f64,
+) -> Point<f64, Logical> {
+    let pos = data.rect.unwrap_or_default().loc - camera + tile.render_offset();
+    pos.to_physical_precise_round(scale).to_logical(scale)
 }
 
-fn display_name(display: ColumnDisplay) -> &'static str {
-    match display {
-        ColumnDisplay::Normal => "normal",
-        ColumnDisplay::Tabbed => "tabbed",
+/// How the tree puts a tile on the view: the physical pixels that its elements are scaled around,
+/// moved and cut by.
+struct Placement {
+    output_scale: f64,
+    /// The centre of the tile's rect, which the tree scales it around.
+    pivot: Point<i32, Physical>,
+    scale: f64,
+    offset: Point<i32, Physical>,
+    /// What cuts the elements off, if a clip does.
+    crop: Option<Rectangle<i32, Physical>>,
+    /// The rounded corners of the clip, as they are before the transform: the area and radius that
+    /// the elements are clipped to, which the transform then puts where the clip ends up.
+    corners: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+}
+
+impl Placement {
+    fn new(
+        drawn: &Drawn,
+        rect: Rectangle<f64, Logical>,
+        transform: NodeTransform,
+        tile_pos: Point<f64, Logical>,
+        camera: Point<f64, Logical>,
+        output_scale: f64,
+    ) -> Self {
+        let pivot = tile_pos + rect.size.downscale(2.).to_point();
+        let offset = Point::from((transform.x, transform.y));
+
+        let clip = drawn.clip.map(|clip| {
+            (
+                Rectangle::new(clip.rect.loc - camera, clip.rect.size),
+                clip.radius,
+            )
+        });
+        let corners = clip
+            .filter(|(_, radius)| *radius > 0.)
+            .map(|(clip, radius)| {
+                let loc = pivot + (clip.loc - offset - pivot).downscale(transform.scale);
+                let area = Rectangle::new(loc, clip.size.downscale(transform.scale));
+                let radius = CornerRadius::from((radius / transform.scale) as f32)
+                    .fit_to(area.size.w as f32, area.size.h as f32);
+                (area, radius)
+            });
+
+        Self {
+            output_scale,
+            pivot: pivot.to_physical_precise_round(output_scale),
+            scale: transform.scale,
+            offset: offset.to_physical_precise_round(output_scale),
+            crop: clip.map(|(clip, _)| clip.to_physical_precise_round(output_scale)),
+            corners,
+        }
+    }
+
+    /// Gives a window's surface the clip's rounded corners. Borders and shadows are only cut by
+    /// the clip's rectangle.
+    fn round_corners<R: NiriRenderer>(
+        &self,
+        elem: TileRenderElement<R>,
+        shader: Option<&GlesTexProgram>,
+    ) -> TileRenderElement<R> {
+        let (Some((area, radius)), Some(shader)) = (self.corners, shader) else {
+            return elem;
+        };
+        let scale = Scale::from(self.output_scale);
+
+        match elem {
+            TileRenderElement::LayoutElement(LayoutElementRenderElement::Wayland(surface))
+                if ClippedSurfaceRenderElement::will_clip(&surface, scale, area, radius) =>
+            {
+                ClippedSurfaceRenderElement::new(surface, scale, area, shader.clone(), radius)
+                    .into()
+            }
+            elem => elem,
+        }
+    }
+
+    fn place<R: NiriRenderer>(
+        &self,
+        elem: TileRenderElement<R>,
+    ) -> Option<TilingSpaceRenderElement<R>> {
+        let elem = RescaleRenderElement::from_element(elem, self.pivot, self.scale);
+        let elem = RelocateRenderElement::from_element(elem, self.offset, Relocate::Relative);
+        match self.crop {
+            Some(crop) => CropRenderElement::from_element(elem, self.output_scale, crop)
+                .map(TilingSpaceRenderElement::from),
+            None => Some(TilingSpaceRenderElement::from(elem)),
+        }
     }
 }
 
@@ -2085,15 +1872,12 @@ fn mode_of(mode: SizingMode) -> Mode {
     }
 }
 
-fn resize_json(edges: ResizeEdge, delta: Point<f64, Logical>) -> Value {
+fn edges_json(edges: ResizeEdge) -> Value {
     json!({
-        "edges": {
-            "left": edges.contains(ResizeEdge::LEFT),
-            "right": edges.contains(ResizeEdge::RIGHT),
-            "top": edges.contains(ResizeEdge::TOP),
-            "bottom": edges.contains(ResizeEdge::BOTTOM),
-        },
-        "delta": Xy::from_point(delta),
+        "left": edges.contains(ResizeEdge::LEFT),
+        "right": edges.contains(ResizeEdge::RIGHT),
+        "top": edges.contains(ResizeEdge::TOP),
+        "bottom": edges.contains(ResizeEdge::BOTTOM),
     })
 }
 
@@ -2127,28 +1911,16 @@ fn compute_working_area(
     working_area
 }
 
-/// A size change from an action, as the layout gets it.
-fn size_change_json(change: SizeChange) -> Value {
-    let (op, value, unit) = match change {
-        SizeChange::SetFixed(value) => ("set", f64::from(value), "px"),
-        SizeChange::SetProportion(value) => ("set", value, "%"),
-        SizeChange::AdjustFixed(value) => ("adjust", f64::from(value), "px"),
-        SizeChange::AdjustProportion(value) => ("adjust", value, "%"),
-    };
-    json!({ "op": op, "value": value, "unit": unit })
-}
-
 /// Largest size a tiled window can take, which windows get as their configure bounds.
 fn toplevel_bounds(
     border: niri_config::Border,
     working_area: Size<f64, Logical>,
-    extra: Size<f64, Logical>,
     gaps: f64,
 ) -> Size<i32, Logical> {
     let border = if border.off { 0. } else { border.width * 2. };
     Size::from((
-        f64::max(working_area.w - gaps * 2. - extra.w - border, 1.),
-        f64::max(working_area.h - gaps * 2. - extra.h - border, 1.),
+        f64::max(working_area.w - gaps * 2. - border, 1.),
+        f64::max(working_area.h - gaps * 2. - border, 1.),
     ))
     .to_i32_floor()
 }
