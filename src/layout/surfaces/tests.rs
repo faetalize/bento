@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use niri_config::GradientRelativeTo;
 use serde_json::json;
 
 use super::*;
@@ -323,11 +324,70 @@ fn set_changes_only_the_props_it_names() {
     assert_eq!(drawn.opacity, 0.25);
     assert_eq!(
         tree.nodes["n1"].background.current(),
-        Some(Color::from_rgba8_unpremul(0, 0, 0, 255))
+        Some(Paint::Color(Color::from_rgba8_unpremul(0, 0, 0, 255)))
     );
 
     set(&mut tree, "n1", json!({ "background": null }));
     assert_eq!(tree.nodes["n1"].background.current(), None);
+}
+
+#[test]
+fn a_fill_and_a_border_can_be_a_gradient() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({
+            "background": { "from": "#000", "to": "#fff", "angle": 90, "relativeTo": "view" },
+            "border": { "width": 2, "color": { "from": "#f00", "to": "#00f" } },
+        }),
+    );
+
+    let node = &tree.nodes["n1"];
+    let Some(Paint::Gradient(background)) = node.background.current() else {
+        panic!("{:?}", node.background.current());
+    };
+    assert_eq!(background.angle, 90);
+    assert_eq!(background.relative_to, GradientRelativeTo::WorkspaceView);
+    assert!(matches!(node.border.unwrap().color, Paint::Gradient(_)));
+
+    // A colour replaces it.
+    set(&mut tree, "n1", json!({ "background": "#123" }));
+    assert!(matches!(
+        tree.nodes["n1"].background.current(),
+        Some(Paint::Color(_))
+    ));
+
+    let err = error(
+        &mut tree,
+        json!({ "op": "set", "id": "n1", "props": { "background": { "from": "#000" } } }),
+    );
+    assert!(err.contains("op 0") && err.contains("background"), "{err}");
+}
+
+#[test]
+fn a_background_changing_to_a_gradient_animates_its_colours() {
+    let (mut tree, mut clock) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "background": "#000", "transitions": { "background": linear(100) } }),
+    );
+
+    set(
+        &mut tree,
+        "n1",
+        json!({ "background": { "from": "#fff", "to": "#fff", "angle": 90 } }),
+    );
+    clock.set_unadjusted(Duration::from_millis(50));
+    let Some(Paint::Gradient(mid)) = tree.nodes["n1"].background.current() else {
+        panic!("{:?}", tree.nodes["n1"].background.current());
+    };
+    assert!((mid.from.r - 0.5).abs() < 1e-6 && (mid.to.r - 0.5).abs() < 1e-6);
+    // It has the new gradient's direction from the start.
+    assert_eq!(mid.angle, 90);
 }
 
 // Transitions.

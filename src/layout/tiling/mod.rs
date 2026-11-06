@@ -1222,6 +1222,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             ctx.renderer,
             Point::from((-camera.x, -camera.y)),
             self.scale,
+            self.view_size,
             &mut |item| items.push(item),
         );
 

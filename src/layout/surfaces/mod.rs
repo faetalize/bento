@@ -18,7 +18,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use self::animated::Animated;
 pub use self::props::NodeTransform;
-use self::props::{Border, Transitions, Update};
+use self::props::{Border, Paint, Transitions, Update};
 pub use self::render::{RenderItem, SurfaceRenderElement};
 use self::render::{Target, Visuals};
 use crate::animation::Clock;
@@ -82,7 +82,7 @@ struct Node {
     opacity: Animated<f64>,
     transform: Animated<NodeTransform>,
     corner_radius: Animated<f64>,
-    background: Animated<Option<Color>>,
+    background: Animated<Option<Paint>>,
     clip: bool,
     border: Option<Border>,
     text: String,
@@ -788,17 +788,21 @@ impl Tree {
     }
 
     /// Hands what the tree draws to `push`, in draw order, with the canvas' origin at `location`
-    /// on the output, which has `scale`. Windows come as slots, in canvas coordinates.
+    /// on the output, which has `scale`. The workspace's view starts at the output's origin and is
+    /// `view_size` large, which gradients that span the view cover. Windows come as slots, in
+    /// canvas coordinates.
     pub fn render_elements<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         location: Point<f64, Logical>,
         scale: f64,
+        view_size: Size<f64, Logical>,
         push: &mut dyn FnMut(RenderItem),
     ) {
         let target = Target {
             location,
             scale,
+            view: Rectangle::from_size(view_size),
             icon_theme: &self.icon_theme,
             has_border_shader: BorderRenderElement::has_shader(renderer),
         };
