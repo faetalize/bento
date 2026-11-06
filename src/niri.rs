@@ -132,6 +132,8 @@ use crate::dbus::freedesktop_locale1::Locale1ToNiri;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_login1::Login1ToNiri;
 #[cfg(feature = "dbus")]
+use crate::dbus::freedesktop_portal_settings::PortalSettingsToNiri;
+#[cfg(feature = "dbus")]
 use crate::dbus::gnome_shell_introspect::{self, IntrospectToNiri, NiriToIntrospect};
 #[cfg(feature = "dbus")]
 use crate::dbus::gnome_shell_screenshot::{NiriToScreenshot, ScreenshotToNiri};
@@ -184,6 +186,7 @@ use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
+use crate::utils::icon_theme::IconTheme;
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
 use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
 use crate::utils::vblank_throttle::VBlankThrottle;
@@ -377,6 +380,9 @@ pub struct Niri {
 
     /// Most recent XKB settings from org.freedesktop.locale1.
     pub xkb_from_locale1: Option<Xkb>,
+
+    /// The icon theme that apps use, which engines' image nodes look icons up in.
+    pub icon_theme: IconTheme,
 
     /// Virtual keyboard for which the keymap is currently active on the seat,
     /// if any.
@@ -2490,6 +2496,22 @@ impl State {
     }
 
     #[cfg(feature = "dbus")]
+    pub fn on_portal_settings_msg(&mut self, msg: PortalSettingsToNiri) {
+        let PortalSettingsToNiri::IconTheme(theme) = msg;
+
+        trace!("portal icon theme: {theme:?}");
+        self.niri.icon_theme.set_portal(theme);
+        self.apply_icon_theme();
+    }
+
+    /// Gives the layout the icon theme that applies now, so that the engines' images follow it.
+    fn apply_icon_theme(&mut self) {
+        if self.niri.layout.set_icon_theme(self.niri.icon_theme.name()) {
+            self.niri.queue_redraw_all();
+        }
+    }
+
+    #[cfg(feature = "dbus")]
     pub fn on_locale1_msg(&mut self, msg: Locale1ToNiri) {
         let Locale1ToNiri::XkbChanged(xkb) = msg;
 
@@ -2534,7 +2556,9 @@ impl Niri {
         animation_clock.set_rate(rate);
         animation_clock.set_complete_instantly(config_.animations.off);
 
-        let layout = Layout::new(animation_clock.clone(), &config_);
+        let icon_theme = IconTheme::new();
+        let mut layout = Layout::new(animation_clock.clone(), &config_);
+        layout.set_icon_theme(icon_theme.name());
         if let Err(problems) = crate::layout::tiling::engine::check(&config_) {
             for problem in problems {
                 warn!("{problem}");
@@ -2738,6 +2762,18 @@ impl Niri {
             )
             .unwrap();
 
+        // The GTK settings file has no change notification here, unlike the portal.
+        event_loop
+            .insert_source(
+                Timer::from_duration(Duration::from_secs(2)),
+                |_, _, state| {
+                    state.niri.icon_theme.poll();
+                    state.apply_icon_theme();
+                    TimeoutAction::ToDuration(Duration::from_secs(2))
+                },
+            )
+            .unwrap();
+
         let socket_name = create_wayland_socket.then(|| {
             let socket_source = ListeningSocketSource::new_auto().unwrap();
             let socket_name = socket_source.socket_name().to_os_string();
@@ -2885,6 +2921,7 @@ impl Niri {
             is_fdo_idle_inhibited: Arc::new(AtomicBool::new(false)),
             keyboard_shortcuts_inhibiting_surfaces: HashMap::new(),
             xkb_from_locale1: None,
+            icon_theme,
             virtual_keyboard_keymap: None,
             configured_keymap: None,
             cursor_manager,

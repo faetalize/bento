@@ -17,10 +17,10 @@ use serde_json::Value;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use self::animated::Animated;
-use self::props::{Border, Paint, Transitions, Update};
 pub use self::props::{Input, NodeTransform};
+use self::props::{Border, Enter, Paint, Transitions, Update};
+use self::render::{GroupKind, Target, Visuals};
 pub use self::render::{RenderItem, SurfaceRenderElement};
-use self::render::{Target, Visuals};
 use crate::animation::Clock;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
@@ -30,6 +30,7 @@ mod animated;
 mod icons;
 mod props;
 mod render;
+mod svg;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum NodeKind {
@@ -93,6 +94,10 @@ struct Node {
     /// Where pointer input goes, for a window's node.
     input: Input,
     transitions: Transitions,
+    /// What it starts from when it enters a tree, until it does.
+    enter: Option<Enter>,
+    /// Whether it has been in a tree.
+    entered: bool,
     visuals: RefCell<Visuals>,
 }
 
@@ -103,6 +108,10 @@ pub struct Drawn {
     pub rect: Rectangle<f64, Logical>,
     /// Its own opacity times its ancestors'.
     pub opacity: f64,
+    /// The opacity that its own elements are drawn with: its opacity and its ancestors' since the
+    /// nearest one that is drawn as a group, which applies the rest as one. The windows in a group
+    /// are drawn by the caller, not in the group, so they use `opacity`.
+    pub(in crate::layout) local_opacity: f64,
     /// Its own transform after its ancestors', as one: a scale around the centre of `rect`, then
     /// a move.
     pub transform: NodeTransform,
@@ -147,10 +156,38 @@ struct Space {
     scale: f64,
     offset: Point<f64, Logical>,
     opacity: f64,
+    /// The opacity of what's drawn in the current group, see [`Drawn::local_opacity`].
+    local_opacity: f64,
     clip: Option<Clip>,
 }
 
 impl Clip {
+    /// Whether `point` is inside it, not in the cut off corners.
+    fn contains(&self, point: Point<f64, Logical>) -> bool {
+        if !self.rect.contains(point) {
+            return false;
+        }
+
+        // The corner's circle has its centre `radius` in from both edges.
+        let radius = self
+            .radius
+            .min(self.rect.size.w / 2.)
+            .min(self.rect.size.h / 2.);
+        let inner = Rectangle::new(
+            self.rect.loc + Point::from((radius, radius)),
+            Size::from((
+                self.rect.size.w - radius * 2.,
+                self.rect.size.h - radius * 2.,
+            )),
+        );
+        let centre = Point::<f64, Logical>::from((
+            point.x.clamp(inner.loc.x, inner.loc.x + inner.size.w),
+            point.y.clamp(inner.loc.y, inner.loc.y + inner.size.h),
+        ));
+        let (dx, dy) = (point.x - centre.x, point.y - centre.y);
+        dx * dx + dy * dy <= radius * radius
+    }
+
     fn intersect(self, other: Clip) -> Clip {
         let rect = self.rect.intersection(other.rect).unwrap_or_default();
         // The corners that are left are the smaller one's.
@@ -197,34 +234,9 @@ impl Drawn {
 
     /// Whether `point` is on it, and not cut off by a clip.
     pub fn contains(&self, point: Point<f64, Logical>) -> bool {
-        self.bounds().contains(point) && self.clip.is_none_or(|clip| clip.rect.contains(point))
+        self.bounds().contains(point) && self.clip.is_none_or(|clip| clip.contains(point))
     }
 
-    /// Where it's drawn on a view that shows the canvas `zoom` times as large, with `origin` on
-    /// the canvas at its top left: its position is relative to the view, and its sizes are as
-    /// large as they're drawn.
-    pub fn zoomed(&self, zoom: f64, origin: Point<f64, Logical>) -> Drawn {
-        let centre = (center_f64(self.rect) - origin).upscale(zoom);
-        Drawn {
-            rect: Rectangle::new(
-                centre - self.rect.size.to_point().downscale(2.),
-                self.rect.size,
-            ),
-            opacity: self.opacity,
-            transform: NodeTransform {
-                scale: self.transform.scale * zoom,
-                x: self.transform.x * zoom,
-                y: self.transform.y * zoom,
-            },
-            clip: self.clip.map(|clip| Clip {
-                rect: Rectangle::new(
-                    (clip.rect.loc - origin).upscale(zoom),
-                    clip.rect.size.upscale(zoom),
-                ),
-                radius: clip.radius * zoom,
-            }),
-        }
-    }
 }
 
 impl Space {
@@ -233,6 +245,7 @@ impl Space {
             scale: 1.,
             offset: Point::from((0., 0.)),
             opacity: 1.,
+            local_opacity: 1.,
             clip: None,
         }
     }
@@ -255,9 +268,17 @@ impl Space {
             self.scale * b.y + self.offset.y,
         ));
 
+        let own_opacity = node.opacity.current().clamp(0., 1.);
         let drawn = Drawn {
             rect,
-            opacity: self.opacity * node.opacity.current().clamp(0., 1.),
+            opacity: self.opacity * own_opacity,
+            // A node that is drawn as a group is drawn in it at full opacity, and the group gets
+            // its opacity.
+            local_opacity: if node.fades_as_group() {
+                1.
+            } else {
+                self.local_opacity * own_opacity
+            },
             // The same move, as a scale around the centre of the rect and then a translation.
             transform: NodeTransform {
                 scale,
@@ -268,11 +289,7 @@ impl Space {
         };
 
         let mut clip = self.clip;
-        if node.clip {
-            let area = Clip {
-                rect: drawn.bounds(),
-                radius: node.corner_radius.current().max(0.) * scale,
-            };
+        if let Some(area) = node.clip_area(&drawn) {
             clip = Some(clip.map_or(area, |outer| outer.intersect(area)));
         }
 
@@ -280,6 +297,7 @@ impl Space {
             scale,
             offset,
             opacity: drawn.opacity,
+            local_opacity: drawn.local_opacity,
             clip,
         };
         (drawn, inner)
@@ -306,8 +324,24 @@ impl Node {
             interactive: false,
             input: Input::default(),
             transitions: Transitions::default(),
+            enter: None,
+            entered: matches!(kind, NodeKind::Root | NodeKind::Window(_)),
             visuals: RefCell::default(),
         }
+    }
+
+    /// The area its clip cuts its children to, where it ends up.
+    fn clip_area(&self, drawn: &Drawn) -> Option<Clip> {
+        self.clip.then(|| Clip {
+            rect: drawn.bounds(),
+            radius: self.corner_radius.current().max(0.) * drawn.transform.scale,
+        })
+    }
+
+    /// Whether it and what's under it are drawn as one, so that its opacity applies to them
+    /// together and overlapping children don't show through each other.
+    fn fades_as_group(&self) -> bool {
+        self.opacity.current().clamp(0., 1.) < 1. && !self.children.is_empty()
     }
 
     /// Changes properties. Those with a transition animate, unless `animate` is `None`.
@@ -363,6 +397,42 @@ impl Node {
         }
         if let Some(input) = update.input {
             self.input = input;
+        }
+        if let Some(enter) = update.enter {
+            self.enter = Some(enter);
+        }
+    }
+
+    /// Puts it where it starts when it enters a tree, and sets it going to where it is with the
+    /// transitions it has. A property without a transition doesn't start anywhere else.
+    fn start_entering(&mut self, clock: &Clock, animations: &Animations) {
+        self.entered = true;
+        let Some(enter) = self.enter.take() else {
+            return;
+        };
+
+        let start = |transition: &Option<props::Transition>| {
+            Some((clock, transition.as_ref()?.resolve(animations)?))
+        };
+
+        if let Some(rect) = enter.rect {
+            self.rect.start_from(rect, start(&self.transitions.rect));
+        }
+        if let Some(opacity) = enter.opacity {
+            self.opacity
+                .start_from(opacity, start(&self.transitions.opacity));
+        }
+        if let Some(transform) = enter.transform {
+            self.transform
+                .start_from(transform, start(&self.transitions.transform));
+        }
+        if let Some(radius) = enter.corner_radius {
+            self.corner_radius
+                .start_from(radius, start(&self.transitions.corner_radius));
+        }
+        if let Some(background) = enter.background {
+            self.background
+                .start_from(background, start(&self.transitions.background));
         }
     }
 
@@ -476,7 +546,7 @@ impl Tree {
     /// Applies ops, in order:
     ///
     /// - `{"op":"create","id":"n4","kind":"box"|"text"|"image","props":{...}}` makes a node, which
-    ///   is drawn once it's added to the tree;
+    ///   is drawn once it's added to the tree. Its `enter` prop is where it starts from then;
     /// - `{"op":"set","id":"n4","props":{...}}` changes properties, and those with a transition
     ///   animate;
     /// - `{"op":"append","parent":"r2","child":"n4","before":"w7"|null}` puts a node in the tree,
@@ -542,8 +612,15 @@ impl Tree {
             return Err("the root can't be changed".into());
         }
         check_props(node.kind, &props)?;
+        if props.enter.is_some() && node.entered {
+            return Err(format!(
+                "`enter` is for before `{id}` is added to a tree, which it already was"
+            ));
+        }
 
-        node.update(props, Some((&self.clock, &self.animations)));
+        // What changes before a node is in a tree isn't seen, so it doesn't animate.
+        let animate = node.entered.then_some((&self.clock, &self.animations));
+        node.update(props, animate);
         Ok(())
     }
 
@@ -570,7 +647,28 @@ impl Tree {
 
         self.detach(child);
         self.attach(parent, child, before);
+
+        self.enter_subtree(child);
         Ok(())
+    }
+
+    /// Whether a node is under the root.
+    fn in_tree(&self, id: &str) -> bool {
+        self.path(id).last() == Some(&self.root)
+    }
+
+    /// Starts the nodes under `id` that weren't in a tree before, if it's in one, where their
+    /// `enter` says.
+    fn enter_subtree(&mut self, id: &str) {
+        if !self.in_tree(id) {
+            return;
+        }
+
+        for id in self.subtree_ids(id) {
+            if let Some(node) = self.nodes.get_mut(&id).filter(|node| !node.entered) {
+                node.start_entering(&self.clock, &self.animations);
+            }
+        }
     }
 
     fn remove(&mut self, id: &str) -> Result<(), String> {
@@ -748,6 +846,7 @@ impl Tree {
                 && self.nodes.get(*before).and_then(|n| n.parent.as_deref()) == Some(parent)
         });
         self.attach(parent, &id, before);
+        self.enter_subtree(&id);
     }
 
     /// How placing a window animates, if the engine gave the window's node a `rect` transition.
@@ -851,38 +950,126 @@ impl Tree {
     }
 
     /// Hands what the tree draws to `push`, in draw order, with the canvas' origin at `location`
-    /// on the output, which has `scale`, and the canvas drawn `zoom` times as large around the
-    /// output's origin. The workspace's view starts at the output's origin and is `view_size`
-    /// large, which gradients that span the view cover. Windows come as slots, in canvas
-    /// coordinates, for the caller to zoom.
+    /// on the output, which has `scale`. The workspace's view starts at the output's origin and is
+    /// `view_size` large, which gradients that span the view cover. Windows come as slots, in
+    /// canvas coordinates. The camera's zoom is the caller's to apply, to all of it.
+    ///
+    /// A node with children and an opacity below 1 is drawn to a texture with them and the
+    /// texture is drawn with the opacity, so that overlapping children don't show through each
+    /// other. A node that clips with a corner radius does the same for its children, and the
+    /// texture is cut to the rounded corners. Windows are drawn by the caller, so a group draws
+    /// the nodes between two windows as one texture, and the window gets the group's opacity and
+    /// clip from its slot.
     pub fn render_elements<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         location: Point<f64, Logical>,
         scale: f64,
-        zoom: f64,
         view_size: Size<f64, Logical>,
         push: &mut dyn FnMut(RenderItem),
     ) {
-        // What's drawn is already placed on the zoomed view, so its nodes aren't moved again.
         let target = Target {
-            location: Point::from((0., 0.)),
+            location,
             scale,
             view: Rectangle::from_size(view_size),
             icon_theme: &self.icon_theme,
             has_border_shader: BorderRenderElement::has_shader(renderer),
         };
-        let origin = Point::from((-location.x, -location.y));
 
-        self.walk(&mut |_, node, drawn| {
-            if let NodeKind::Window(id) = node.kind {
-                if drawn.opacity > 0. {
-                    push(RenderItem::Window(WindowSlot { id, drawn: *drawn }));
-                }
-            } else {
-                render::draw(renderer, node, &drawn.zoomed(zoom, origin), &target, push);
+        let mut items = Vec::new();
+        self.draw_node(&self.root, &Space::root(), renderer, &target, &mut items);
+        for item in items {
+            push(item);
+        }
+    }
+
+    /// Draws a node and what's under it into `out`, bottom to top.
+    fn draw_node<R: NiriRenderer>(
+        &self,
+        id: &str,
+        space: &Space,
+        renderer: &mut R,
+        target: &Target,
+        out: &mut Vec<RenderItem>,
+    ) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+
+        let (drawn, inner) = space.enter(node);
+        // Nothing under a node that isn't seen is.
+        if drawn.opacity <= 0. {
+            return;
+        }
+
+        if !node.fades_as_group() {
+            render::release_group(node, GroupKind::Fade);
+            self.draw_content(node, &drawn, inner, renderer, target, out);
+            return;
+        }
+
+        let mut items = Vec::new();
+        self.draw_content(node, &drawn, inner, renderer, &target.canvas(), &mut items);
+        let alpha = space.local_opacity * node.opacity.current().clamp(0., 1.);
+        render::group(
+            renderer,
+            node,
+            GroupKind::Fade,
+            items,
+            alpha,
+            None,
+            drawn.clip,
+            target,
+            out,
+        );
+    }
+
+    /// Draws a node itself and its children, which are in `inner`'s space.
+    fn draw_content<R: NiriRenderer>(
+        &self,
+        node: &Node,
+        drawn: &Drawn,
+        mut inner: Space,
+        renderer: &mut R,
+        target: &Target,
+        out: &mut Vec<RenderItem>,
+    ) {
+        if let NodeKind::Window(id) = node.kind {
+            out.push(RenderItem::Window(WindowSlot { id, drawn: *drawn }));
+        } else {
+            render::draw(renderer, node, drawn, target, &mut |item| out.push(item));
+        }
+
+        let rounded = node
+            .clip_area(drawn)
+            .filter(|clip| clip.radius > 0. && !node.children.is_empty())
+            .filter(|_| render::can_round_clips(renderer));
+        let Some(clip) = rounded else {
+            render::release_group(node, GroupKind::Clip);
+            for child in &node.children {
+                self.draw_node(child, &inner, renderer, target, out);
             }
-        });
+            return;
+        };
+
+        // The children are drawn to a texture at full opacity, which gets this node's.
+        inner.local_opacity = 1.;
+        let canvas = target.canvas();
+        let mut items = Vec::new();
+        for child in &node.children {
+            self.draw_node(child, &inner, renderer, &canvas, &mut items);
+        }
+        render::group(
+            renderer,
+            node,
+            GroupKind::Clip,
+            items,
+            drawn.local_opacity,
+            Some(clip),
+            drawn.clip,
+            target,
+            out,
+        );
     }
 
     /// The topmost interactive node at `point` on the canvas. Windows aren't hit.

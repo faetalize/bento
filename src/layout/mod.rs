@@ -415,6 +415,8 @@ pub struct Options {
     pub gestures: niri_config::Gestures,
     pub overview: niri_config::Overview,
     pub blur: niri_config::Blur,
+    /// The icon theme that image nodes look icons up in.
+    pub icon_theme: String,
     // Debug flags.
     pub disable_resize_throttling: bool,
     pub disable_transactions: bool,
@@ -693,6 +695,7 @@ impl Default for Options {
             gestures: Default::default(),
             overview: Default::default(),
             blur: Default::default(),
+            icon_theme: crate::utils::icon_theme::DEFAULT.to_owned(),
             disable_resize_throttling: false,
             disable_transactions: false,
             deactivate_unfocused_windows: false,
@@ -709,6 +712,7 @@ impl Options {
             gestures: config.gestures,
             overview: config.overview,
             blur: config.blur,
+            icon_theme: crate::utils::icon_theme::DEFAULT.to_owned(),
             disable_resize_throttling: config.debug.disable_resize_throttling,
             disable_transactions: config.debug.disable_transactions,
             deactivate_unfocused_windows: config.debug.deactivate_unfocused_windows,
@@ -2662,7 +2666,27 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        self.update_options(Options::from_config(config));
+        // The icon theme isn't in the config.
+        let icon_theme = self.options.icon_theme.clone();
+        self.update_options(Options {
+            icon_theme,
+            ..Options::from_config(config)
+        });
+    }
+
+    /// Sets the icon theme that image nodes look icons up in. Returns whether it changed.
+    pub fn set_icon_theme(&mut self, theme: &str) -> bool {
+        if self.options.icon_theme == theme {
+            return false;
+        }
+
+        let options = Options {
+            icon_theme: theme.to_owned(),
+            ..Options::clone(&self.options)
+        };
+        self.update_options(options);
+        self.flush_engine();
+        true
     }
 
     fn update_options(&mut self, options: Options) {

@@ -128,6 +128,8 @@ niri_render_elements! {
         >,
         // What the layout draws besides windows.
         Surface = SurfaceRenderElement,
+        // What the layout draws besides windows, seen through the camera's zoom.
+        ZoomedSurface = RescaleRenderElement<SurfaceRenderElement>,
         ClosingWindow = ClosingWindowRenderElement,
         // A closing window, seen through the camera's zoom.
         ZoomedClosingWindow = RescaleRenderElement<ClosingWindowRenderElement>,
@@ -267,6 +269,9 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
+        let mut tree = Tree::new(id, clock.clone(), options.animations.clone());
+        tree.set_icon_theme(&options.icon_theme);
+
         Self {
             tiles: Vec::new(),
             data: Vec::new(),
@@ -277,7 +282,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 zoom: Axis::Static(1.),
                 gesture: None,
             },
-            tree: Tree::new(id, clock.clone(), options.animations.clone()),
+            tree,
             pointer: Point::from((0., 0.)),
             swipe: None,
             drop: None,
@@ -308,6 +313,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
 
         self.tree.set_animations(options.animations.clone());
+        self.tree.set_icon_theme(&options.icon_theme);
 
         self.view_size = view_size;
         self.working_area = working_area;
@@ -1301,20 +1307,25 @@ impl<W: LayoutElement> TilingSpace<W> {
         // The tree has the nodes from the bottom to the top, and elements go from the top.
         let camera = self.camera.current();
         let mut items = Vec::new();
+        // The tree draws the canvas as it is, and the zoom scales that around the view's origin,
+        // so the tree draws as much of the canvas as the zoomed view shows.
         self.tree.render_elements(
             ctx.renderer,
             Point::from((-camera.x, -camera.y)),
             self.scale,
-            zoom,
-            self.view_size,
+            self.view_size.downscale(zoom),
             &mut |item| items.push(item),
         );
 
+        let origin = Point::<i32, Physical>::from((0, 0));
         for item in items.into_iter().rev() {
             match item {
                 RenderItem::Element(elem) => {
-                    if layer.is_normal() {
+                    if !layer.is_normal() {
+                    } else if zoom == 1. {
                         push(elem.into());
+                    } else {
+                        push(RescaleRenderElement::from_element(elem, origin, zoom).into());
                     }
                 }
                 RenderItem::Window(slot) => {
@@ -2249,6 +2260,7 @@ mod tests {
         Drawn {
             rect,
             opacity: 1.,
+            local_opacity: 1.,
             transform,
             clip,
         }

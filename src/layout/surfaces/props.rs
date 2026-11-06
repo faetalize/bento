@@ -116,6 +116,17 @@ pub struct Transitions {
     pub background: Option<Transition>,
 }
 
+/// The properties a node starts from when it enters a tree, the ones that can have a transition.
+/// What's left out starts as the node's own value.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Enter {
+    pub rect: Option<Rectangle<f64, Logical>>,
+    pub opacity: Option<f64>,
+    pub transform: Option<NodeTransform>,
+    pub corner_radius: Option<f64>,
+    pub background: Option<Option<Paint>>,
+}
+
 /// Properties to change on a node. What's left out stays as it is.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(try_from = "RawProps")]
@@ -134,6 +145,58 @@ pub struct Update {
     pub interactive: Option<bool>,
     pub input: Option<Input>,
     pub transitions: Option<Transitions>,
+    pub enter: Option<Enter>,
+}
+
+impl TryFrom<Update> for Enter {
+    type Error = String;
+
+    fn try_from(update: Update) -> Result<Self, String> {
+        // Every property is named, so that a new one has to be sorted into one of the two.
+        let Update {
+            rect,
+            opacity,
+            transform,
+            corner_radius,
+            background,
+            clip,
+            border,
+            text,
+            font,
+            color,
+            image,
+            interactive,
+            input,
+            transitions,
+            enter,
+        } = update;
+
+        let others = clip.is_some()
+            || border.is_some()
+            || text.is_some()
+            || font.is_some()
+            || color.is_some()
+            || image.is_some()
+            || interactive.is_some()
+            || input.is_some()
+            || transitions.is_some()
+            || enter.is_some();
+        if others {
+            return Err(
+                "`enter` takes only `rect`, `opacity`, `transform`, `cornerRadius` and \
+                 `background`"
+                    .into(),
+            );
+        }
+
+        Ok(Enter {
+            rect,
+            opacity,
+            transform,
+            corner_radius,
+            background,
+        })
+    }
 }
 
 /// Looks up an animation of the config by the name it has there.
@@ -224,6 +287,7 @@ struct RawProps {
     interactive: Option<bool>,
     input: Option<Input>,
     transitions: Option<HashMap<String, RawTransition>>,
+    enter: Option<Box<RawProps>>,
 }
 
 /// Tells a property that is `null` apart from one that's left out.
@@ -408,6 +472,14 @@ impl TryFrom<RawProps> for Update {
             interactive: raw.interactive,
             input: raw.input,
             transitions: raw.transitions.map(Transitions::from_raw).transpose()?,
+            enter: raw
+                .enter
+                .map(|enter| {
+                    Update::try_from(*enter)
+                        .and_then(Enter::try_from)
+                        .map_err(|err| format!("`enter`: {err}"))
+                })
+                .transpose()?,
         })
     }
 }
@@ -589,6 +661,60 @@ mod tests {
             json!({ "input": true }),
             // Text has a colour, not a gradient.
             json!({ "color": { "from": "#000", "to": "#fff" } }),
+        ] {
+            assert!(parse(bad.clone()).is_err(), "{bad} should be invalid");
+        }
+    }
+
+    #[test]
+    fn enter_takes_the_props_that_transition() {
+        let update = parse(json!({
+            "enter": {
+                "opacity": 0,
+                "transform": { "scale": 0.5, "y": 10 },
+                "rect": { "x": 1, "y": 2, "w": 3, "h": 4 },
+                "cornerRadius": 6,
+                "background": null,
+            }
+        }))
+        .unwrap();
+
+        let enter = update.enter.unwrap();
+        assert_eq!(enter.opacity, Some(0.));
+        assert_eq!(
+            enter.transform,
+            Some(NodeTransform {
+                scale: 0.5,
+                x: 0.,
+                y: 10.
+            })
+        );
+        assert_eq!(
+            enter.rect,
+            Some(Rectangle::new(Point::from((1., 2.)), Size::from((3., 4.))))
+        );
+        assert_eq!(enter.corner_radius, Some(6.));
+        assert_eq!(enter.background, Some(None));
+
+        // What's left out starts as the node's own value.
+        assert_eq!(
+            parse(json!({ "enter": {} })).unwrap().enter,
+            Some(Enter::default())
+        );
+        assert_eq!(parse(json!({})).unwrap().enter, None);
+    }
+
+    #[test]
+    fn enter_refuses_props_that_dont_transition_and_bad_values() {
+        for bad in [
+            json!({ "enter": { "clip": true } }),
+            json!({ "enter": { "border": null } }),
+            json!({ "enter": { "text": "hi" } }),
+            json!({ "enter": { "transitions": { "opacity": "window-open" } } }),
+            json!({ "enter": { "enter": {} } }),
+            json!({ "enter": { "bogus": 1 } }),
+            json!({ "enter": { "transform": { "scale": -1 } } }),
+            json!({ "enter": 5 }),
         ] {
             assert!(parse(bad.clone()).is_err(), "{bad} should be invalid");
         }

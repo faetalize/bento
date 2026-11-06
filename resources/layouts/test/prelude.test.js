@@ -860,6 +860,39 @@ test("a removed node is dropped, and created again when it comes back", () => {
     assert.equal(h.tree().node(nodes.box.id).props.background, "#000");
 });
 
+test("a node's enter props reach bento with its creation, and again when it comes back", () => {
+    const enter = { opacity: 0, transform: { scale: 0.5 } };
+    const { h, nodes } = drawing((_bento, nodes) => {
+        nodes.box.set({ enter, transitions: { opacity: "window-open" } });
+    });
+    h.action("draw");
+    assert.deepEqual(h.tree().node(nodes.box.id).props.enter, enter);
+
+    h.action("hide");
+    h.action("draw");
+    assert.deepEqual(h.tree().node(nodes.box.id).props.enter, enter);
+});
+
+test("enter can change until the node is in a tree, and can be set again as it is", () => {
+    const { h, nodes } = drawing();
+    nodes.box.set({ enter: { opacity: 0 } });
+    nodes.box.set({ enter: { opacity: 0.25 } });
+    h.action("draw");
+
+    // The same value is no change, like when an engine sets everything it read back.
+    nodes.box.set({ ...nodes.box.props });
+    assert.throws(() => nodes.box.set({ enter: { opacity: 0.5 } }), /before a node is added to a tree/);
+    assert.deepEqual(h.tree().node(nodes.box.id).props.enter, { opacity: 0.25 });
+});
+
+test("enter takes only the properties that can transition", () => {
+    const { nodes } = drawing();
+    assert.throws(() => nodes.box.set({ enter: { clip: true } }), /takes only/);
+    assert.throws(() => nodes.box.set({ enter: { enter: {} } }), /can't have an `enter`/);
+    assert.throws(() => nodes.box.set({ enter: { opacity: "no" } }), /invalid opacity/);
+    assert.throws(() => nodes.box.set({ enter: 5 }), /must be an object/);
+});
+
 test("a node can go before another", () => {
     const { h, nodes } = drawing();
     h.action("under");

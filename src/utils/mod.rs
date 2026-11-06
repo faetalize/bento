@@ -37,6 +37,7 @@ use wayland_backend::server::Credentials;
 use crate::handlers::KdeDecorationsModeState;
 use crate::niri::ClientState;
 
+pub mod icon_theme;
 pub mod id;
 pub mod region;
 pub mod scale;
