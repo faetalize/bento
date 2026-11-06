@@ -1519,6 +1519,43 @@ describe("layout API", () => {
         );
     });
 
+    test("a window that keeps a size of its own gets the cells it took", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        const win = host.windows.get(1);
+        const areas = () => exposed(host).items.map((item) => [item.windows, item.area]);
+
+        // Window 1 takes 300 px when it's given 100, like an app that doesn't say how small it
+        // can be: it gets six cells, and window 2 goes after it.
+        win.stubborn = { w: 300, h: cellRect(0, 0, 2, 12).h };
+        host.flush();
+        assert.deepEqual(areas(), [
+            [[1], at(0, 0, 6, 12)],
+            [[2], at(6, 0, 2, 12)],
+        ]);
+
+        // Asking it to be narrower again doesn't overlap window 2 either.
+        host.actionOn(1, "set-width", { op: "set", value: 100, unit: "px" });
+        assert.deepEqual(areas(), [
+            [[1], at(0, 0, 6, 12)],
+            [[2], at(6, 0, 2, 12)],
+        ]);
+
+        // Once it takes the sizes it's given, it narrows.
+        delete win.stubborn;
+        host.actionOn(1, "set-width", { op: "set", value: 100, unit: "px" });
+        assert.deepEqual(areas()[0], [[1], at(0, 0, 2, 12)]);
+    });
+
+    test("a window's area fits its minimum height", async () => {
+        const host = await setup();
+        host.open({ minSize: { w: 0, h: 400 } });
+        halfHeight(host, 1);
+        // Six rows are 336 px and seven 395 px, so 400 px take eight.
+        assert.deepEqual(exposed(host).items[0].area, at(0, 0, 2, 8));
+    });
+
     test("a window whose minimum width grows widens its area", async () => {
         const host = await setup();
         host.open();

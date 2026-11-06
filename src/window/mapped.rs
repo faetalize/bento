@@ -1225,6 +1225,15 @@ impl LayoutElement for Mapped {
         self.toplevel().with_pending_state(|state| state.size)
     }
 
+    fn settled(&self) -> bool {
+        let unsent = with_toplevel_role(self.toplevel(), |role| {
+            role.server_pending
+                .as_ref()
+                .is_some_and(|pending| pending.size != role.current_server_state().size)
+        });
+        !unsent && with_toplevel_last_uncommitted_configure(self.toplevel(), |c| c.is_none())
+    }
+
     fn expected_size(&self) -> Option<Size<i32, Logical>> {
         // We can only use current size if it's not maximized or fullscreen.
         let current_size = (self.sizing_mode().is_normal()).then(|| self.window.geometry().size);

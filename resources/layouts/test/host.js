@@ -261,6 +261,8 @@ export class TestHost {
             title: win.title,
             workspace: win.workspace,
             size: win.size,
+            // Windows here answer their placements at once.
+            settled: true,
             minSize: win.minSize,
             maxSize: win.maxSize,
             // The border isn't there for a window that bento draws none around.
@@ -507,7 +509,16 @@ export class TestHost {
         for (const change of out.windows ?? []) {
             const win = this.windows.get(change.id);
             if (win === undefined) continue;
-            if (change.rect !== null) win.rect = change.rect;
+            if (change.rect !== null) {
+                // Like in bento, the window hasn't answered a new size until it settles, which
+                // the next sync tells, even when the window keeps its old size.
+                const told = this.told.windows.get(change.id);
+                const resized = win.rect?.w !== change.rect.w || win.rect?.h !== change.rect.h;
+                if (told !== undefined && resized) {
+                    this.told.windows.set(change.id, { ...told, settled: false });
+                }
+                win.rect = change.rect;
+            }
             win.visible = change.visible;
             win.mode = change.mode;
             win.animate = change.animate;

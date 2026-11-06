@@ -650,6 +650,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             title: win.title(),
             workspace,
             size: Wh::from_size(tile.tile_size()),
+            settled: win.settled(),
             min_size: Wh::from_size(tile.min_size_nonfullscreen()),
             max_size: Wh::from_size(tile.max_size_nonfullscreen()),
             borders: Wh {

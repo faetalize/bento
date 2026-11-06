@@ -57,6 +57,12 @@ request is valid as the engine sees it. If bento then refuses one, for example b
 workspace went away, the engine gets the event that undoes it, like the window's `move` back, so
 its own state stays right.
 
+Windows answer the sizes they're placed at, and can take another, often by keeping their old
+size, without ever having said they would. Engines hear each answer: once a window has answered
+its placement, `win.settled` is true and `win.size` is the size it took, even when it didn't
+change, and `change` fires when it settles. Engines can tell a window that refused a size from
+one that hasn't answered yet, and make room for it.
+
 The objects, as an engine sees them:
 
 ```js
@@ -106,6 +112,7 @@ class Window {
     get workspace() {}
     get rect() {}                // where the engine last placed it
     get size() {}                // the size it actually took
+    get settled() {}             // whether it has answered its placement's size
     get minSize() {}
     get maxSize() {}
     get borders() {}

@@ -87,6 +87,9 @@ pub struct WindowInfo {
     /// Id of the workspace the window is on.
     pub workspace: u64,
     pub size: Wh,
+    /// Whether the window has answered the size it was asked to take, see
+    /// `LayoutElement::settled`.
+    pub settled: bool,
     pub min_size: Wh,
     pub max_size: Wh,
     pub borders: Wh,

@@ -1470,27 +1470,42 @@ function createSpace(bento, ws) {
      */
     function spanFor(item) {
         const [cols, rows] = spanOf(item, item.windows[0].borders);
-        return [Math.max(cols, minCols(item)), rows];
+        return [Math.max(cols, minCols(item)), Math.max(rows, minRows(item))];
     }
 
     /**
-     * Fewest columns the windows of `item` fit in, from their minimum width, with the slits of a
+     * The size `win` needs, borders included: its minimum size, and once it has answered its
+     * placement, the size it took if that's more than it was given, since some windows refuse
+     * sizes without saying how small they can be.
+     */
+    function neededSize(win) {
+        let w = win.minSize.w > 0 ? win.minSize.w + win.borders.w : 0;
+        let h = win.minSize.h > 0 ? win.minSize.h + win.borders.h : 0;
+        if (win.settled && win.rect !== null && win.mode === "normal") {
+            if (win.size.w > win.rect.w) w = Math.max(w, win.size.w);
+            if (win.size.h > win.rect.h) h = Math.max(h, win.size.h);
+        }
+        return { w, h };
+    }
+
+    /** Fewest cells, each `cell` long with `gap` between, that `length` fits in, from 1. */
+    function cellsFor(length, cell, gap) {
+        // A hair under, so that a length that fits exactly doesn't round up a cell.
+        return Math.max(1, Math.ceil((length + gap) / (cell + gap) - 1e-6));
+    }
+
+    /**
+     * Fewest columns the windows of `item` fit in, from the width they need, with the slits of a
      * group beside its active window.
      */
     function minCols(item) {
-        const width = Math.max(
-            0,
-            ...item.windows.map((win) => (win.minSize.w > 0 ? win.minSize.w + win.borders.w : 0)),
-        );
+        const width = Math.max(0, ...item.windows.map((win) => neededSize(win).w));
         if (width === 0) {
             return 1;
         }
         const others = item.windows.length - 1;
         const slits = others * (SLIT_WIDTH + pixel(ws.config.gaps / 2));
-        const m = metrics;
-        // A hair under, so that a width that fits exactly doesn't round up a column.
-        const cols = Math.ceil((width + slits + m.gap) / (m.cellW + m.gap) - 1e-6);
-        return clamp(cols, 1, MAX_COLS);
+        return Math.min(cellsFor(width + slits, metrics.cellW, metrics.gap), MAX_COLS);
     }
 
     /**
@@ -1607,10 +1622,18 @@ function createSpace(bento, ws) {
             if (modeOf(item) !== "normal") {
                 continue;
             }
-            // Windows that can't be as narrow as their area widen it, pushing the others right.
-            const min = minCols(item);
-            if (grid.area(item).cols < min) {
-                grid.setArea(item, grid.area(item).with({ cols: min }), Right);
+            // Windows that can't be as small as their area grow it, pushing the others aside.
+            const fewestCols = minCols(item);
+            if (grid.area(item).cols < fewestCols) {
+                grid.setArea(item, grid.area(item).with({ cols: fewestCols }), Right);
+            }
+            const fewestRows = minRows(item);
+            const narrow = grid.area(item);
+            if (narrow.rows < fewestRows) {
+                // Down, or up from the bottom of the grid.
+                const row = Math.min(narrow.row, metrics.rows - fewestRows);
+                const dir = narrow.row === row ? Down : Up;
+                grid.setArea(item, narrow.with({ row, rows: fewestRows }), dir);
             }
             const area = grid.area(item);
             const [cols, rows] = spanFor(item);
@@ -3045,10 +3068,10 @@ function createSpace(bento, ws) {
         return g.place([[item, resized], ...moved], dir);
     }
 
-    /** Fewest rows the windows of `item` fit in, from their minimum height. */
+    /** Fewest rows the windows of `item` fit in, from the height they need. */
     function minRows(item) {
-        const height = Math.max(0, ...item.windows.map((win) => win.minSize.h));
-        return height > 0 ? rowsForHeight(height) : 1;
+        const height = Math.max(0, ...item.windows.map((win) => neededSize(win).h));
+        return Math.min(cellsFor(height, metrics.cellH, metrics.gap), metrics.rows);
     }
 
     function isSizeChange(change) {
