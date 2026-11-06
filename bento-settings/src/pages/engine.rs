@@ -2,17 +2,18 @@
 //!
 //! Which engine to run comes from the config. What it offers comes from the running engine over
 //! IPC, since an engine declares its options and actions itself. Each option gets the field of its
-//! declared type: a switch, a number, text, a choice, a size, or a list of those.
+//! declared type: a switch, a number, text, a choice, a size, a color, a gradient, or a list of
+//! those.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
-use gtk::glib;
-use niri_config::{Action, TilingLayout};
+use gtk::{gdk, glib};
+use niri_config::{Action, Color, TilingLayout};
 use niri_ipc::{
-    LayoutEngine, LayoutEngineOption, LayoutEngineOptionType as Type,
+    LayoutEngine, LayoutEngineGradient, LayoutEngineOption, LayoutEngineOptionType as Type,
     LayoutEngineOptionValue as OptionValue, SizeChange,
 };
 
@@ -21,7 +22,7 @@ use crate::ipc;
 use crate::kdl::{self, Value};
 use crate::model::Category;
 use crate::page::PageContext;
-use crate::store::{option_values, tilde, File};
+use crate::store::{option_properties, option_values, tilde, File};
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
@@ -292,7 +293,7 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
                 if value == default {
                     doc.remove(&parts);
                 } else {
-                    doc.set(&parts, option_values(&value));
+                    doc.set_node(&parts, option_values(&value), option_properties(&value));
                 }
             });
         })
@@ -441,8 +442,147 @@ impl Field<'_> {
                 });
                 (row.clone().upcast(), show_text(row))
             }
+            Type::Color => {
+                let button = color_button();
+                let row = adw::ActionRow::builder()
+                    .title(title)
+                    .subtitle(subtitle)
+                    .build();
+                row.add_suffix(&button);
+                row.set_activatable_widget(Some(&button));
+                button.connect_rgba_notify(move |button| {
+                    notify(Some(OptionValue::String(hex(&button.rgba()))))
+                });
+                let show = move |value: &Option<OptionValue>| {
+                    if let Some(OptionValue::String(x)) = value {
+                        show_color(&button, x);
+                    }
+                };
+                (row.upcast(), Box::new(show))
+            }
+            Type::Gradient => gradient_row(title, subtitle, notify),
         }
     }
+}
+
+/// A button that picks a color with its opacity.
+fn color_button() -> gtk::ColorDialogButton {
+    let dialog = gtk::ColorDialog::builder().with_alpha(true).build();
+    let button = gtk::ColorDialogButton::new(Some(dialog));
+    button.set_valign(gtk::Align::Center);
+    button
+}
+
+/// A color as the `#rrggbb` or `#rrggbbaa` that engines take.
+fn hex(rgba: &gdk::RGBA) -> String {
+    let byte = |x: f32| (x.clamp(0., 1.) * 255.).round() as u8;
+    let (r, g, b, a) = (
+        byte(rgba.red()),
+        byte(rgba.green()),
+        byte(rgba.blue()),
+        byte(rgba.alpha()),
+    );
+    if a == 255 {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    } else {
+        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+    }
+}
+
+/// Shows a color written `#rgb`, `#rrggbb` or `#rrggbbaa` in a button.
+fn show_color(button: &gtk::ColorDialogButton, text: &str) {
+    if let Ok(color) = Color::from_hex(text) {
+        let [r, g, b, a] = color.to_array_unpremul();
+        button.set_rgba(&gdk::RGBA::new(r, g, b, a));
+    }
+}
+
+/// A gradient: a row with a button for each of its colors, the angle it runs at, and a button to
+/// take it away. Where it spans and the color space it's mixed in are kept as they're written.
+fn gradient_row(
+    title: &str,
+    subtitle: &str,
+    notify: impl Fn(Option<OptionValue>) + 'static,
+) -> (gtk::Widget, ShowValue) {
+    let from = color_button();
+    from.set_tooltip_text(Some("Start Color"));
+    let to = color_button();
+    to.set_tooltip_text(Some("End Color"));
+    let angle = gtk::SpinButton::with_range(-360., 360., 1.);
+    angle.set_valign(gtk::Align::Center);
+    angle.set_tooltip_text(Some("Angle in Degrees"));
+    let clear = gtk::Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text("No Gradient")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .build();
+    for widget in [
+        clear.upcast_ref::<gtk::Widget>(),
+        from.upcast_ref(),
+        to.upcast_ref(),
+    ] {
+        row.add_suffix(widget);
+    }
+    row.add_suffix(&angle);
+
+    // The properties that the row has no field for, from the gradient it shows.
+    let kept = Rc::new(RefCell::new((None::<String>, None::<String>)));
+    let notify = Rc::new(notify);
+    let write: Rc<dyn Fn()> = {
+        let (from, to, angle, kept, notify) = (
+            from.clone(),
+            to.clone(),
+            angle.clone(),
+            kept.clone(),
+            notify.clone(),
+        );
+        Rc::new(move || {
+            let (relative_to, color_space) = kept.borrow().clone();
+            notify(Some(OptionValue::Gradient(LayoutEngineGradient {
+                from: hex(&from.rgba()),
+                to: hex(&to.rgba()),
+                angle: Some(angle.value()),
+                relative_to,
+                color_space,
+            })));
+        })
+    };
+    {
+        let write = write.clone();
+        from.connect_rgba_notify(move |_| write());
+    }
+    {
+        let write = write.clone();
+        to.connect_rgba_notify(move |_| write());
+    }
+    angle.connect_value_changed(move |_| write());
+    clear.connect_clicked(move |_| notify(None));
+
+    let show = move |value: &Option<OptionValue>| match value {
+        Some(OptionValue::Gradient(gradient)) => {
+            show_color(&from, &gradient.from);
+            show_color(&to, &gradient.to);
+            // niri's default direction, top to bottom.
+            angle.set_value(gradient.angle.unwrap_or(180.));
+            kept.replace((gradient.relative_to.clone(), gradient.color_space.clone()));
+            clear.set_sensitive(true);
+        }
+        _ => {
+            // What a new gradient starts from.
+            show_color(&from, "#000000");
+            show_color(&to, "#ffffff");
+            angle.set_value(180.);
+            kept.replace((None, None));
+            clear.set_sensitive(false);
+        }
+    };
+    (row.upcast(), Box::new(show))
 }
 
 fn entry_row(title: &str, hint: &str) -> adw::EntryRow {
@@ -624,6 +764,15 @@ impl ListRow {
             Type::String => OptionValue::String(String::new()),
             Type::Choice => OptionValue::String(self.choices.first().cloned().unwrap_or_default()),
             Type::Size => OptionValue::String(String::from("50%")),
+            Type::Color => OptionValue::String(String::from("#ffffff")),
+            // A gradient can't be a list: it's written with the properties of its one node.
+            Type::Gradient => OptionValue::Gradient(LayoutEngineGradient {
+                from: String::from("#000000"),
+                to: String::from("#ffffff"),
+                angle: None,
+                relative_to: None,
+                color_space: None,
+            }),
         }
     }
 }
@@ -633,6 +782,7 @@ fn summarize(value: &OptionValue) -> String {
         OptionValue::Boolean(x) => String::from(if *x { "on" } else { "off" }),
         OptionValue::Number(x) => x.to_string(),
         OptionValue::String(x) => x.clone(),
+        OptionValue::Gradient(x) => format!("{} to {}", x.from, x.to),
         OptionValue::List(items) => items.iter().map(summarize).collect::<Vec<_>>().join(", "),
     }
 }

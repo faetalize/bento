@@ -419,7 +419,8 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-/// A plain value for a layout engine option or action argument, or `None` for a list.
+/// A plain value for a layout engine option or action argument, or `None` for a list or a
+/// gradient, which is written with [`option_properties`].
 pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Option<Value> {
     use niri_ipc::LayoutEngineOptionValue as OptionValue;
 
@@ -428,12 +429,12 @@ pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Option<Value> 
         OptionValue::Number(x) if x.fract() == 0. => Value::Int(*x as i64),
         OptionValue::Number(x) => Value::Float(*x),
         OptionValue::String(x) => Value::Str(x.clone()),
-        OptionValue::List(_) => return None,
+        OptionValue::Gradient(_) | OptionValue::List(_) => return None,
     })
 }
 
 /// The values an option is written with: one for a plain option, one each for a list, none for a
-/// size left to the window.
+/// size left to the window or a gradient.
 pub fn option_values(value: &Option<niri_ipc::LayoutEngineOptionValue>) -> Vec<Value> {
     use niri_ipc::LayoutEngineOptionValue as OptionValue;
 
@@ -442,6 +443,38 @@ pub fn option_values(value: &Option<niri_ipc::LayoutEngineOptionValue>) -> Vec<V
         Some(OptionValue::List(items)) => items.iter().filter_map(option_value).collect(),
         Some(value) => option_value(value).into_iter().collect(),
     }
+}
+
+/// The properties an option is written with, which only a gradient has: `from`, `to`, and the
+/// other properties it sets.
+pub fn option_properties(
+    value: &Option<niri_ipc::LayoutEngineOptionValue>,
+) -> Vec<(String, Value)> {
+    use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
+    let Some(OptionValue::Gradient(gradient)) = value else {
+        return Vec::new();
+    };
+    let text = |text: &String| Value::Str(text.clone());
+    let mut properties = vec![
+        (String::from("from"), text(&gradient.from)),
+        (String::from("to"), text(&gradient.to)),
+    ];
+    if let Some(angle) = gradient.angle {
+        let angle = if angle.fract() == 0. {
+            Value::Int(angle as i64)
+        } else {
+            Value::Float(angle)
+        };
+        properties.push((String::from("angle"), angle));
+    }
+    if let Some(relative_to) = &gradient.relative_to {
+        properties.push((String::from("relative-to"), text(relative_to)));
+    }
+    if let Some(space) = &gradient.color_space {
+        properties.push((String::from("in"), text(space)));
+    }
+    properties
 }
 
 #[cfg(test)]
@@ -558,6 +591,72 @@ mod tests {
                 vec![niri_config::TilingOption::Bool(true)]
             )]
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn gradients_are_written_as_properties_and_colors_as_strings() {
+        use niri_ipc::{LayoutEngineGradient, LayoutEngineOptionValue as OptionValue};
+
+        let dir = std::env::temp_dir().join(format!("bento-settings-paint-{}", std::process::id()));
+        fs::create_dir_all(dir.join("engines")).unwrap();
+        let config_path = dir.join("config.kdl");
+        fs::write(&config_path, "tiling {\n    layout \"niri\"\n}\n").unwrap();
+        let engine_path = dir.join("engines").join("niri.kdl");
+        fs::write(
+            &engine_path,
+            "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n",
+        )
+        .unwrap();
+
+        let store = Store::load_from(config_path);
+        let gradient = Some(OptionValue::Gradient(LayoutEngineGradient {
+            from: String::from("#80c8ff"),
+            to: String::from("#c7ff7f80"),
+            angle: Some(45.),
+            relative_to: Some(String::from("view")),
+            color_space: None,
+        }));
+        let color = Some(OptionValue::String(String::from("#112233")));
+        let (gradient_, color_) = (gradient.clone(), color.clone());
+        store.edit_in(
+            File::Engine,
+            "options.tab-indicator-active-gradient",
+            move |doc| {
+                doc.set_node(
+                    &["options", "tab-indicator-active-gradient"],
+                    option_values(&gradient_),
+                    option_properties(&gradient_),
+                )
+            },
+        );
+        store.edit_in(
+            File::Engine,
+            "options.tab-indicator-active-color",
+            move |doc| {
+                doc.set(
+                    &["options", "tab-indicator-active-color"],
+                    option_values(&color_),
+                )
+            },
+        );
+        store.flush();
+
+        let text = fs::read_to_string(&engine_path).unwrap();
+        assert_eq!(
+            text,
+            "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n\noptions {\n    tab-indicator-active-gradient from=\"#80c8ff\" to=\"#c7ff7f80\" angle=45 relative-to=\"view\"\n    tab-indicator-active-color \"#112233\"\n}\n"
+        );
+
+        // The file is what bento reads, and the output's options stay.
+        let config = store.config();
+        assert_eq!(config.tiling.options.len(), 2);
+        assert_eq!(config.tiling.output_options.len(), 1);
+        drop(config);
+        assert!(option_properties(&color).is_empty());
+        assert!(option_values(&gradient).is_empty());
+        assert!(option_properties(&None).is_empty());
 
         fs::remove_dir_all(&dir).unwrap();
     }

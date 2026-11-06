@@ -23,6 +23,21 @@ pub enum Value {
     Str(String),
 }
 
+/// What follows a node's name: its arguments, then its properties.
+#[derive(Clone, Copy)]
+struct Values<'a> {
+    args: &'a [Value],
+    properties: &'a [(String, Value)],
+}
+
+impl Values<'_> {
+    /// A node that is only a section.
+    const NONE: Values<'static> = Values {
+        args: &[],
+        properties: &[],
+    };
+}
+
 /// Sections that a later copy replaces as a whole, instead of merging into. Only the last copy of
 /// one of these is what bento uses.
 const WHOLE_SECTIONS: &[&str] = &[
@@ -92,8 +107,18 @@ impl Document {
 
     /// Sets the arguments of the node at `path`, adding it and its sections if they're missing.
     pub fn set(&mut self, path: &[&str], args: Vec<Value>) {
+        self.set_node(path, args, Vec::new());
+    }
+
+    /// Sets the arguments and properties of the node at `path`, like a gradient's
+    /// `from="#000" to="#fff"`, adding it and its sections if they're missing.
+    pub fn set_node(&mut self, path: &[&str], args: Vec<Value>, properties: Vec<(String, Value)>) {
         let nodes = self.nodes();
-        let head = head_text(path[path.len() - 1], &args);
+        let values = Values {
+            args: &args,
+            properties: &properties,
+        };
+        let head = head_text(path[path.len() - 1], values);
 
         if let Some(node) = find(&nodes, path, "").last() {
             self.text.replace_range(node.start..node.head_end, &head);
@@ -103,7 +128,7 @@ impl Document {
         // Add it to the deepest section that exists, creating the ones in between.
         for depth in (1..path.len()).rev() {
             if let Some(parent) = find(&nodes, &path[..depth], "").last() {
-                self.insert_child(parent, &path[depth..], &args);
+                self.insert_child(parent, &path[depth..], values);
                 return;
             }
         }
@@ -115,7 +140,7 @@ impl Document {
             }
             self.text.push('\n');
         }
-        self.text.push_str(&block(path, &args, ""));
+        self.text.push_str(&block(path, values, ""));
         self.text.push('\n');
     }
 
@@ -133,14 +158,14 @@ impl Document {
         !ranges.is_empty()
     }
 
-    fn insert_child(&mut self, parent: &Node, rest: &[&str], args: &[Value]) {
+    fn insert_child(&mut self, parent: &Node, rest: &[&str], values: Values) {
         let parent_indent = indent_at(&self.text, parent.start).to_owned();
         let Some((_, close)) = parent.braces else {
             // A node without a block, like `border`: give it one.
             let child_indent = format!("{parent_indent}    ");
             let text = format!(
                 " {{\n{}\n{parent_indent}}}",
-                block(rest, args, &child_indent)
+                block(rest, values, &child_indent)
             );
             self.text.insert_str(parent.head_end, &text);
             return;
@@ -153,7 +178,7 @@ impl Document {
                 Some(child) => indent_at(&self.text, child.start).to_owned(),
                 None => format!("{parent_indent}    "),
             };
-            let text = format!("{}\n", block(rest, args, &child_indent));
+            let text = format!("{}\n", block(rest, values, &child_indent));
             self.text.insert_str(close_line, &text);
         } else {
             // A block on one line, like `touchpad { tap; }`: keep it on one line.
@@ -162,7 +187,7 @@ impl Document {
             } else {
                 " "
             };
-            let text = format!("{space}{}; ", inline(rest, args));
+            let text = format!("{space}{}; ", inline(rest, values));
             self.text.insert_str(close, &text);
         }
     }
@@ -502,35 +527,45 @@ fn removal_range(text: &str, node: &Node) -> (usize, usize) {
     }
 }
 
-fn head_text(name: &str, args: &[Value]) -> String {
+fn head_text(name: &str, values: Values) -> String {
     let mut out = String::new();
     write_ident(&mut out, name);
-    for arg in args {
+    for arg in values.args {
         out.push(' ');
         write_value(&mut out, arg);
+    }
+    for (name, value) in values.properties {
+        out.push(' ');
+        write_ident(&mut out, name);
+        out.push('=');
+        write_value(&mut out, value);
     }
     out
 }
 
 /// A path as nested sections, one node per line.
-fn block(path: &[&str], args: &[Value], indent: &str) -> String {
+fn block(path: &[&str], values: Values, indent: &str) -> String {
     match path {
         [] => String::new(),
-        [leaf] => format!("{indent}{}", head_text(leaf, args)),
+        [leaf] => format!("{indent}{}", head_text(leaf, values)),
         [first, rest @ ..] => format!(
             "{indent}{} {{\n{}\n{indent}}}",
-            head_text(first, &[]),
-            block(rest, args, &format!("{indent}    "))
+            head_text(first, Values::NONE),
+            block(rest, values, &format!("{indent}    "))
         ),
     }
 }
 
 /// A path as nested sections on one line.
-fn inline(path: &[&str], args: &[Value]) -> String {
+fn inline(path: &[&str], values: Values) -> String {
     match path {
         [] => String::new(),
-        [leaf] => head_text(leaf, args),
-        [first, rest @ ..] => format!("{} {{ {}; }}", head_text(first, &[]), inline(rest, args)),
+        [leaf] => head_text(leaf, values),
+        [first, rest @ ..] => format!(
+            "{} {{ {}; }}",
+            head_text(first, Values::NONE),
+            inline(rest, values)
+        ),
     }
 }
 
@@ -713,6 +748,54 @@ mod tests {
             doc.set(&split("cursor.xcursor-size"), vec![Value::Int(32)])
         });
         assert_eq!(out, "// Nothing yet.\n\ncursor {\n    xcursor-size 32\n}\n");
+    }
+
+    #[test]
+    fn writes_properties_after_the_arguments() {
+        let gradient = vec![
+            (String::from("from"), Value::Str(String::from("#000000"))),
+            (String::from("to"), Value::Str(String::from("#ffffff"))),
+            (String::from("angle"), Value::Int(45)),
+            (
+                String::from("relative-to"),
+                Value::Str(String::from("view")),
+            ),
+            (String::from("in"), Value::Str(String::from("oklab"))),
+        ];
+        let path = split("options.insert-hint-gradient");
+
+        // A node that's added, in a section that exists and in one that doesn't.
+        let out = edit("options {\n    insert-hint true\n}\n", |doc| {
+            doc.set_node(&path, Vec::new(), gradient.clone())
+        });
+        assert_eq!(
+            out,
+            "options {\n    insert-hint true\n    insert-hint-gradient from=\"#000000\" to=\"#ffffff\" angle=45 relative-to=\"view\" in=\"oklab\"\n}\n"
+        );
+        let out = edit("", |doc| doc.set_node(&path, Vec::new(), gradient.clone()));
+        assert!(out.starts_with("options {\n    insert-hint-gradient from="));
+
+        // One that's replaced loses the properties it had.
+        let text =
+            "options {\n    insert-hint-gradient from=\"#111\" to=\"#222\" angle=90 // mine\n}\n";
+        let out = edit(text, |doc| {
+            doc.set_node(
+                &path,
+                Vec::new(),
+                vec![
+                    (String::from("from"), Value::Str(String::from("#000000"))),
+                    (String::from("to"), Value::Str(String::from("#ffffff"))),
+                ],
+            )
+        });
+        assert_eq!(
+            out,
+            "options {\n    insert-hint-gradient from=\"#000000\" to=\"#ffffff\" // mine\n}\n"
+        );
+
+        // Without properties it's a bare node again.
+        let out = edit(text, |doc| doc.set(&path, Vec::new()));
+        assert_eq!(out, "options {\n    insert-hint-gradient // mine\n}\n");
     }
 
     #[test]
