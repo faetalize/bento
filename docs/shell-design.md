@@ -28,6 +28,40 @@ Effects that use what's behind the shell, like blur, frosted or liquid glass and
 bento's: no program can see what's under its own surfaces. The shell asks bento for them on its
 surfaces, in the shapes it gives, the way windows ask for background blur.
 
+## The bar floats along the top
+
+The shell's bar runs along the top of each output, always on screen. It floats: it's inset from
+the screen's edges by bento's gaps and rounded like the windows, so it sits in the layout as one
+more tile rather than a strip glued to the edge.
+
+The bar shows the output's workspaces, the clock, the status icons (network, sound, battery and
+the like) and the tray of apps' status icons. It doesn't show the focused window or a taskbar.
+Workspaces show as their numbers, or names when they have one, with the current one highlighted.
+
+## The shell is made of glass
+
+The shell's surfaces, the bar, its popovers, the launcher and notifications, are glass: bento
+blurs and refracts what's behind them, and they have a light edge highlight. Text and icons sit
+on a tinted layer so they read on any wallpaper or window.
+
+The glass is tinted light or dark with the system style, and the shell's highlights use
+libadwaita's accent colour, so the shell matches the settings app and GTK apps.
+
+## The bar morphs into its panels
+
+Opening something from the bar, like quick settings or the calendar, grows the part of the bar
+that was clicked down into its panel, as one piece of glass, and closing it shrinks it back. The
+bar and its open panel are one surface, whose glass shape the shell gives bento as it changes.
+The motion is restrained, with no overshoot.
+
+Notifications and on-screen indicators, like volume and brightness, morph out of the bar the same
+way, so everything the shell shows comes from the bar and moves alike.
+
+## The launcher is a centred palette
+
+The launcher is a glass search field with its results, in the middle of the screen, apart from
+the bar. It's keyboard first: typing finds apps.
+
 ## bento starts the shell the config names
 
 The config names the shell's command, and bento starts it. bento hands that process a private
