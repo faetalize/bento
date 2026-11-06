@@ -32,6 +32,8 @@ function setScoped(by, name, options) {
 }
 const MAX_ROUNDS = 8;
 
+const ALL_DECORATIONS = { border: true, focusRing: true, shadow: true };
+
 export class TestHost {
     /**
      * Loads a layout engine's module and creates it for an empty session.
@@ -80,6 +82,8 @@ export class TestHost {
         this.verdicts = [];
         /** Ops that bento refuses, like a move when the target can't take the window. */
         this.refused = new Set();
+        /** The pointer move or resize that the engine began in the last press, until it's taken. */
+        this.grab = null;
 
         let x = 0;
         for (const given of opts.monitors ?? [{ name: "DP-1" }]) {
@@ -215,7 +219,9 @@ export class TestHost {
             size: win.size,
             minSize: win.minSize,
             maxSize: win.maxSize,
-            borders: win.borders,
+            // The border isn't there for a window that bento draws none around.
+            borders: win.decorations.border ? win.borders : { w: 0, h: 0 },
+            decorations: win.decorations,
             mode: win.mode,
             urgent: win.urgent,
             rules: win.rules,
@@ -407,6 +413,12 @@ export class TestHost {
                 default:
                     throw new Error(`unknown op: ${op.op}`);
             }
+        }
+        for (const [id, decorations] of out.decorations ?? []) {
+            this.windows.get(id).decorations = { ...decorations };
+        }
+        if (out.grab !== undefined) {
+            this.grab = out.grab;
         }
         for (const change of out.windows ?? []) {
             const win = this.windows.get(change.id);
@@ -606,6 +618,7 @@ export class TestHost {
             minSize: opts.minSize ?? { w: 0, h: 0 },
             maxSize: opts.maxSize ?? { w: 0, h: 0 },
             borders: opts.borders ?? { w: 0, h: 0 },
+            decorations: { ...ALL_DECORATIONS },
             mode: opts.mode ?? "normal",
             urgent: false,
             rules: opts.rules ?? {},
@@ -644,6 +657,8 @@ export class TestHost {
     close(id, reason = "close") {
         this.flush();
         const win = this.windows.get(id);
+        // What the engine turned off around a window that leaves it comes back on.
+        win.decorations = { ...ALL_DECORATIONS };
         this.leaveGroup(id);
         this.windows.delete(id);
         this.told.windows.delete(id);
@@ -802,10 +817,10 @@ export class TestHost {
     /** Drags a window over a workspace: `positions` are where its pointer goes, then drops it. */
     drag(id, workspace, positions, drop = true) {
         const win = this.windows.get(id);
-        const info = this.windowInfo(win);
         const from = win.workspace;
         const rect = (pointer) => ({ x: pointer.x - 10, y: pointer.y - 10, w: 20, h: 20 });
         this.close(id, "drag");
+        const info = this.windowInfo(win);
         this.windows.set(id, win);
         positions.forEach((pointer, i) => {
             this.send({
@@ -873,6 +888,7 @@ export class TestHost {
 
     /** Sends a pointer event to a node, like a click on what the engine drew. */
     pointer(node, event = "click", init = {}) {
+        if (event === "pointerdown") this.grab = null;
         this.send({
             type: "pointer",
             node,
@@ -885,11 +901,25 @@ export class TestHost {
     }
 
     /**
+     * The pointer move or resize that the engine began in the last press, as `{ kind: "move",
+     * window }` or `{ kind: "resize", window, edges }`, or null. Taking it is what the input code
+     * does to start the grab.
+     */
+    takeGrab() {
+        const grab = this.grab;
+        this.grab = null;
+        return grab;
+    }
+
+    /**
      * Saves the engine's state and creates the engine again, like reloading its file. With
      * `{ state: false }` the engine starts without saved state, like a different engine took over.
      */
     reload({ state: keep = true } = {}) {
         const state = keep ? JSON.parse(prelude.saveAll()) : null;
+        // What the old instance turned off around windows comes back on, since what it drew is gone.
+        for (const win of this.windows.values()) win.decorations = { ...ALL_DECORATIONS };
+        this.grab = null;
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
         this.toldOptions = null;

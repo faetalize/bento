@@ -4,6 +4,7 @@ use std::rc::Rc;
 use niri_config::utils::MergeWith as _;
 use niri_config::{Color, CornerRadius, GradientInterpolation};
 use niri_ipc::WindowLayout;
+use serde::{Deserialize, Serialize};
 use smithay::backend::renderer::element::{Element, Kind};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
@@ -50,6 +51,26 @@ pub(super) struct PendingMove {
     pub between_workspaces: bool,
 }
 
+/// Which of bento's decorations around a window are drawn: a tiling layout turns them off to draw
+/// its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Decorations {
+    pub border: bool,
+    pub focus_ring: bool,
+    pub shadow: bool,
+}
+
+impl Default for Decorations {
+    fn default() -> Self {
+        Self {
+            border: true,
+            focus_ring: true,
+            shadow: true,
+        }
+    }
+}
+
 /// Toplevel window with decorations.
 #[derive(Debug)]
 pub struct Tile<W: LayoutElement> {
@@ -64,6 +85,9 @@ pub struct Tile<W: LayoutElement> {
 
     /// The shadow around the window.
     shadow: Shadow,
+
+    /// What the tiling layout turned off of the border, focus ring and shadow.
+    pub(super) decorations: Decorations,
 
     /// This tile's current sizing mode.
     ///
@@ -228,6 +252,7 @@ impl<W: LayoutElement> Tile<W> {
             border: FocusRing::new(border_config.into()),
             focus_ring: FocusRing::new(focus_ring_config),
             shadow: Shadow::new(shadow_config),
+            decorations: Decorations::default(),
             sizing_mode,
             fullscreen_backdrop: SolidColorBuffer::new((0., 0.), fullscreen_backdrop_color),
             restore_to_floating: false,
@@ -267,12 +292,21 @@ impl<W: LayoutElement> Tile<W> {
         self.fullscreen_backdrop
             .set_color(self.options.layout.fullscreen_backdrop_color);
 
+        self.update_decoration_config();
+
+        self.window.update_config(self.options.blur);
+    }
+
+    /// Sets the border, focus ring and shadow from the options and the window's rules, less what
+    /// the tiling layout turned off.
+    fn update_decoration_config(&mut self) {
         let round_max1 = |logical| round_logical_in_physical_max1(self.scale, logical);
 
         let rules = self.window.rules();
 
         let mut border_config = self.options.layout.border.merged_with(&rules.border);
         border_config.width = round_max1(border_config.width);
+        border_config.off |= !self.decorations.border;
         self.border.update_config(border_config.into());
 
         let mut focus_ring_config = self
@@ -281,12 +315,21 @@ impl<W: LayoutElement> Tile<W> {
             .focus_ring
             .merged_with(&rules.focus_ring);
         focus_ring_config.width = round_max1(focus_ring_config.width);
+        focus_ring_config.off |= !self.decorations.focus_ring;
         self.focus_ring.update_config(focus_ring_config);
 
-        let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
+        let mut shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
+        shadow_config.on &= self.decorations.shadow;
         self.shadow.update_config(shadow_config);
+    }
 
-        self.window.update_config(self.options.blur);
+    /// Turns the border, focus ring and shadow on or off. Returns whether the border changed,
+    /// which changes how large the window is within the tile.
+    pub(super) fn set_decorations(&mut self, decorations: Decorations) -> bool {
+        let border_changed = self.decorations.border != decorations.border;
+        self.decorations = decorations;
+        self.update_decoration_config();
+        border_changed
     }
 
     pub fn update_shaders(&mut self) {
@@ -418,23 +461,7 @@ impl<W: LayoutElement> Tile<W> {
             }
         }
 
-        let round_max1 = |logical| round_logical_in_physical_max1(self.scale, logical);
-
-        let rules = self.window.rules();
-        let mut border_config = self.options.layout.border.merged_with(&rules.border);
-        border_config.width = round_max1(border_config.width);
-        self.border.update_config(border_config.into());
-
-        let mut focus_ring_config = self
-            .options
-            .layout
-            .focus_ring
-            .merged_with(&rules.focus_ring);
-        focus_ring_config.width = round_max1(focus_ring_config.width);
-        self.focus_ring.update_config(focus_ring_config);
-
-        let shadow_config = self.options.layout.shadow.merged_with(&rules.shadow);
-        self.shadow.update_config(shadow_config);
+        self.update_decoration_config();
 
         let window_size = self.window_size();
         let radius = self
@@ -1087,12 +1114,27 @@ impl<W: LayoutElement> Tile<W> {
         Point::from((0., y))
     }
 
+    /// The window's own opacity, from its rules, which goes fully opaque in fullscreen.
+    fn window_alpha(&self) -> f32 {
+        if self.window.is_ignoring_opacity_window_rule() {
+            return 1.;
+        }
+
+        let alpha = self.window.rules().opacity.unwrap_or(1.).clamp(0., 1.);
+
+        // Interpolate towards alpha = 1. at fullscreen.
+        let p = self.fullscreen_progress() as f32;
+        alpha * (1. - p) + 1. * p
+    }
+
+    /// Renders the tile, with the window's popups if `popups`.
     fn render_inner<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
         mut xray_pos: XrayPos,
         focus_ring: bool,
+        popups: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
@@ -1101,15 +1143,7 @@ impl<W: LayoutElement> Tile<W> {
         let fullscreen_progress = self.fullscreen_progress();
         let expanded_progress = self.expanded_progress();
 
-        let win_alpha = if self.window.is_ignoring_opacity_window_rule() {
-            1.
-        } else {
-            let alpha = self.window.rules().opacity.unwrap_or(1.).clamp(0., 1.);
-
-            // Interpolate towards alpha = 1. at fullscreen.
-            let p = fullscreen_progress as f32;
-            alpha * (1. - p) + 1. * p
-        };
+        let win_alpha = self.window_alpha();
 
         // This is here rather than in render_offset() because render_offset() is currently assumed
         // by the code to be temporary. So, for example, interactive move will try to "grab" the
@@ -1141,14 +1175,16 @@ impl<W: LayoutElement> Tile<W> {
             .scaled_by(1. - expanded_progress as f32);
 
         // Popups go on top, whether it's resize or not.
-        self.window.render_popups(
-            ctx.r(),
-            window_render_loc,
-            scale,
-            win_alpha,
-            xray_pos,
-            &mut |elem| push(elem.into()),
-        );
+        if popups {
+            self.window.render_popups(
+                ctx.r(),
+                window_render_loc,
+                scale,
+                win_alpha,
+                xray_pos,
+                &mut |elem| push(elem.into()),
+            );
+        }
 
         // If we're resizing, try to render a shader, or a fallback.
         let mut pushed_resize = false;
@@ -1388,12 +1424,44 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
-        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., push);
+        self.render_with_opacity(ctx, location, xray_pos, focus_ring, 1., true, push);
+    }
+
+    /// Renders only the window's popups, as [`Tile::render_with_opacity`] does with the whole
+    /// tile, for a caller that draws them apart from the rest of the tile.
+    ///
+    /// They're not drawn into a buffer with the rest, so they go translucent themselves.
+    pub fn render_popups<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        location: Point<f64, Logical>,
+        xray_pos: XrayPos,
+        opacity: f32,
+        push: &mut dyn FnMut(TileRenderElement<R>),
+    ) {
+        let alpha = self
+            .alpha_animation
+            .as_ref()
+            .map_or(1., |alpha| alpha.anim.clamped_value()) as f32
+            * opacity
+            * self.window_alpha();
+
+        let bob_offset = self.bob_offset();
+        let window_loc = self.window_loc();
+        self.window.render_popups(
+            ctx.r(),
+            location + bob_offset + window_loc,
+            Scale::from(self.scale),
+            alpha,
+            xray_pos.offset(bob_offset).offset(window_loc),
+            &mut |elem| push(elem.into()),
+        );
     }
 
     /// Renders the tile as translucent as `opacity` says, on top of its own opacity animation.
     /// The whole tile is drawn into one buffer first, so what overlaps in it doesn't show
-    /// through.
+    /// through. The window's popups are left out unless `popups`.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_with_opacity<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
@@ -1401,6 +1469,7 @@ impl<W: LayoutElement> Tile<W> {
         xray_pos: XrayPos,
         focus_ring: bool,
         opacity: f32,
+        popups: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render");
@@ -1424,6 +1493,7 @@ impl<W: LayoutElement> Tile<W> {
                 Point::new(0., 0.),
                 xray_pos,
                 focus_ring,
+                popups,
                 &mut |elem| elements.push(elem),
             );
             match open.render(
@@ -1455,6 +1525,7 @@ impl<W: LayoutElement> Tile<W> {
                 Point::new(0., 0.),
                 xray_pos,
                 focus_ring,
+                popups,
                 &mut |elem| elements.push(elem),
             );
             match offscreen.render(ctx.renderer, scale, &elements) {
@@ -1473,7 +1544,9 @@ impl<W: LayoutElement> Tile<W> {
         }
 
         if !pushed {
-            self.render_inner(ctx, location, xray_pos, focus_ring, &mut |elem| push(elem));
+            self.render_inner(ctx, location, xray_pos, focus_ring, popups, &mut |elem| {
+                push(elem)
+            });
         }
     }
 

@@ -37,7 +37,7 @@ use smithay::input::{tablet, SeatHandler};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, Rectangle, Transform, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point, Rectangle, Serial, Transform, SERIAL_COUNTER};
 use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitor;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardDevice;
@@ -52,6 +52,7 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::floating::FloatingSpace;
 use crate::layout::groups::Direction;
+use crate::layout::tiling::host::NodeGrab;
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, Niri, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -2386,6 +2387,47 @@ impl State {
         find_configured_bind(bindings, mod_key, trigger, mods)
     }
 
+    /// Starts the move or resize that the tiling layout began while it handled a press on one of
+    /// its nodes, like it was a client's request. The press belongs to the grab from then on, so
+    /// the node gets no release or click for it.
+    fn start_node_grab(&mut self, button_code: u32, serial: Serial) {
+        let Some(grab) = self.niri.layout.take_node_grab() else {
+            return;
+        };
+
+        let pointer = self.niri.seat.get_pointer().unwrap();
+        let start_data = AnyStartData::Pointer(PointerGrabStartData {
+            focus: None,
+            button: button_code,
+            location: pointer.current_location(),
+        });
+
+        match grab {
+            NodeGrab::Move(window) => {
+                // The drag only moves the window: it doesn't turn into scrolling the view.
+                let Some(grab) = MoveGrab::new(self, start_data, window, false, None) else {
+                    return;
+                };
+                pointer.set_grab(self, grab, serial, Focus::Clear);
+            }
+            NodeGrab::Resize { window, edges } => {
+                if !self
+                    .niri
+                    .layout
+                    .interactive_resize_begin(window.clone(), edges)
+                {
+                    return;
+                }
+                let grab = ResizeGrab::new(start_data, window);
+                pointer.set_grab(self, grab, serial, Focus::Clear);
+                self.niri
+                    .cursor_manager
+                    .set_cursor_image(CursorImageStatus::Named(edges.cursor_icon()));
+            }
+        }
+        self.niri.node_press = None;
+    }
+
     fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
         let pointer = self.niri.seat.get_pointer().unwrap();
 
@@ -2498,6 +2540,7 @@ impl State {
             if !is_overview_open && !pointer.is_grabbed() {
                 if let Some(number) = node_button(button) {
                     if self.niri.node_button_pressed(number, button_code) {
+                        self.start_node_grab(button_code, serial);
                         self.niri.queue_redraw_all();
                         return;
                     }

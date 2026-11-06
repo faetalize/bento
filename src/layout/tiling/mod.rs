@@ -30,7 +30,7 @@ use super::monitor::{InsertPosition, TiledDrop};
 use super::surfaces::{
     Drawn, Input, RenderItem, SurfaceRenderElement, Tree, WindowHit, WindowSlot,
 };
-use super::tile::{PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
+use super::tile::{Decorations, PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{resize_edges_in_tile, InteractiveResize};
 use super::{
     ConfigureIntent, HitType, InteractiveResizeData, LayoutElement, LayoutElementRenderElement,
@@ -650,6 +650,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 w: borders,
                 h: tile.tile_height_for_window_height(0.),
             },
+            decorations: tile.decorations,
             mode: mode_of(win.pending_sizing_mode()),
             urgent: win.is_urgent(),
             rules: engine::rules_json(&win.rules().engine),
@@ -756,6 +757,33 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
     }
 
+    /// Turns the border, focus ring and shadow around a window on or off, as the layout says.
+    pub(super) fn set_decorations(&mut self, id: u64, decorations: Decorations) {
+        let Some(idx) = self.idx_of_layout_id(id) else {
+            return;
+        };
+
+        let tile = &mut self.tiles[idx];
+        if !tile.set_decorations(decorations) {
+            return;
+        }
+
+        // The border is part of the size that the window is asked for, so with it gone or back
+        // the window is asked again, even if the layout places it where it already is.
+        let data = &self.data[idx];
+        if let (Some(rect), Mode::Normal) = (data.rect, data.mode) {
+            tile.request_tile_size(rect.size, true, None);
+        }
+    }
+
+    /// Turns bento's border, focus ring and shadow back on around every window.
+    pub(super) fn reset_decorations(&mut self) {
+        let ids: Vec<u64> = self.data.iter().map(|data| data.id).collect();
+        for id in ids {
+            self.set_decorations(id, Decorations::default());
+        }
+    }
+
     /// Stacks the windows as the tree does: the first in the tree is at the bottom.
     pub(super) fn stack_by_tree(&mut self) {
         // Tiles are top to bottom.
@@ -807,10 +835,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         let tile = &mut self.tiles[idx];
         let data = &mut self.data[idx];
 
+        // A window whose node has a `rect` transition moves as that says, instead of with the
+        // configured window movement.
+        let transition = self.tree.window_rect_transition(data.id);
+
         if let Some(prev) = data.rect {
             if animate && prev.loc != rect.loc {
-                let config = apply
-                    .anim
+                let config = transition
+                    .or(apply.anim)
                     .unwrap_or(self.options.animations.window_movement.0);
                 tile.animate_move_from_with_config(prev.loc - rect.loc, config);
             }
@@ -832,6 +864,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             let pos = rect.loc - camera + tile.render_offset();
             let config = moved
                 .config
+                .or(transition)
                 .unwrap_or(self.options.animations.window_movement.0);
             tile.animate_move_from_with_config(moved.from - pos, config);
             if moved.between_workspaces {
@@ -1057,6 +1090,9 @@ impl<W: LayoutElement> TilingSpace<W> {
         } else {
             self.tree.remove_window(data.id);
             tile.engine_workspace = None;
+            // What the layout turned off around the window is its own drawing's business, which
+            // the window leaves.
+            tile.set_decorations(Decorations::default());
             host::queue_with_transaction(
                 json!({ "type": "windowremove", "id": data.id, "reason": reason }),
                 transaction,
@@ -1334,12 +1370,26 @@ impl<W: LayoutElement> TilingSpace<W> {
                 xray_pos,
                 focus_ring,
                 opacity,
+                true,
                 &mut |elem| push(elem.into()),
             );
             return;
         }
 
         let placement = Placement::new(&map, self.scale);
+
+        // Popups belong above the window, so a clip that cuts the window doesn't cut them. They
+        // still go where the window goes.
+        let clipped = drawn.clip.is_some();
+        if clipped {
+            let uncut = placement.uncropped();
+            tile.render_popups(ctx.r(), tile_pos, xray_pos, opacity, &mut |elem| {
+                if let Some(elem) = uncut.place(elem) {
+                    push(elem);
+                }
+            });
+        }
+
         let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
         tile.render_with_opacity(
             ctx.r(),
@@ -1347,6 +1397,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             xray_pos,
             focus_ring,
             opacity,
+            !clipped,
             &mut |elem| {
                 let elem = placement.round_corners(elem, clip_shader.as_ref());
                 if let Some(elem) = placement.place(elem) {
@@ -1808,6 +1859,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
         let active = self.active;
         for (tile, data) in zip(&mut self.tiles, &self.data) {
+            let decorations = tile.decorations;
             let win = tile.window_mut();
 
             win.set_floating(false);
@@ -1825,7 +1877,8 @@ impl<W: LayoutElement> TilingSpace<W> {
                 .map(|resize| resize.data);
             win.set_interactive_resize(resize_data);
 
-            let border = self.options.layout.border.merged_with(&win.rules().border);
+            let mut border = self.options.layout.border.merged_with(&win.rules().border);
+            border.off |= !decorations.border;
             let gaps = self.options.layout.gaps;
             win.set_bounds(toplevel_bounds(border, self.working_area.size, gaps));
 
@@ -2023,6 +2076,7 @@ impl TileMap {
 
 /// How a tile is put on the view: the physical pixels that its elements are scaled around, moved
 /// and cut by.
+#[derive(Clone, Copy)]
 struct Placement {
     output_scale: f64,
     /// The centre of the tile's rect, which the tile is scaled around.
@@ -2081,6 +2135,15 @@ impl Placement {
                     .into()
             }
             elem => elem,
+        }
+    }
+
+    /// The same placement without the clip.
+    fn uncropped(self) -> Self {
+        Self {
+            crop: None,
+            corners: None,
+            ..self
         }
     }
 
@@ -2301,5 +2364,30 @@ mod tests {
         let map = TileMap::new(&tree, placed, point(0., 0.), point(0., 0.), 1.);
         assert_eq!(map.to_tile(point(5., 5.)), None);
         assert!(!map.contains(point(5., 5.), placed));
+    }
+
+    #[test]
+    fn popups_are_placed_like_the_window_without_its_clip() {
+        let placed = rect(0., 0., 200., 100.);
+        let clip = Clip {
+            rect: rect(10., 10., 50., 50.),
+            radius: 8.,
+        };
+        let transform = NodeTransform {
+            scale: 0.5,
+            x: 20.,
+            y: 0.,
+        };
+        let tree = drawn(placed, transform, Some(clip));
+        let map = TileMap::new(&tree, placed, point(100., 50.), point(0., 0.), 1.);
+        let placement = Placement::new(&map, 1.);
+        assert!(placement.crop.is_some() && placement.corners.is_some());
+
+        let popups = placement.uncropped();
+        assert!(popups.crop.is_none() && popups.corners.is_none());
+        // They still go where the window goes.
+        assert_eq!(popups.pivot, placement.pivot);
+        assert_eq!(popups.scale, placement.scale);
+        assert_eq!(popups.offset, placement.offset);
     }
 }

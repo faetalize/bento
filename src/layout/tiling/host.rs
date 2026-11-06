@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use smithay::utils::{Logical, Point, Rectangle};
 
 use super::protocol::{
-    CameraChange, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SyncInfo, TreeOp,
+    CameraChange, Grab, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SyncInfo, TreeOp,
     Verdict, Wh, WindowChange, Xy,
 };
 use super::{engine, TilingSpace};
@@ -127,6 +127,14 @@ pub fn query(event: Value) -> Option<Value> {
     }
 }
 
+/// A move or resize with the pointer that the layout asked for while handling a press on one of
+/// its nodes, for the input code that delivered the press to start.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeGrab<Id> {
+    Move(Id),
+    Resize { window: Id, edges: ResizeEdge },
+}
+
 /// A drag over a workspace's canvas, as the layout last heard.
 #[derive(Debug)]
 struct Drag {
@@ -161,6 +169,8 @@ pub struct Host {
     /// Whether the layout's exposed state changed since it was last asked for.
     state_changed: bool,
     drag: Option<Drag>,
+    /// What the layout asked to start with the pointer, until the input code takes it.
+    grab: Option<Grab>,
     /// Whether events are being sent, which carrying out what the layout answers doesn't start
     /// again.
     flushing: bool,
@@ -179,6 +189,7 @@ impl Host {
         self.resend_workspaces.clear();
         self.resend_windows.clear();
         self.drag = None;
+        self.grab = None;
     }
 }
 
@@ -490,6 +501,12 @@ impl<W: LayoutElement> Layout<W> {
         self.host.reset();
         self.host.generation = generation;
 
+        // What the previous instance turned off around windows comes back on, since what it drew
+        // in its place is gone too.
+        for ws in self.workspaces_mut() {
+            ws.scrolling_mut().reset_decorations();
+        }
+
         let snapshot = self.snapshot(true);
         let windows = snapshot.windows.clone();
         let focused = self.focused_engine_window();
@@ -690,6 +707,21 @@ impl<W: LayoutElement> Layout<W> {
             self.apply_op(op);
         }
 
+        // What's drawn goes first: windows move as the transitions of their nodes say, and as
+        // the decorations around them leave room.
+        let mut stacked = self.apply_tree_ops(out.tree);
+        for (id, decorations) in out.decorations {
+            if let Some(ws) = self
+                .workspace_of_window(id)
+                .and_then(|ws| self.workspace_mut(ws))
+            {
+                ws.scrolling_mut().set_decorations(id, decorations);
+            }
+        }
+        if out.grab.is_some() {
+            self.host.grab = out.grab;
+        }
+
         // Group what concerns each workspace.
         let mut changes: HashMap<u64, Vec<WindowChange>> = HashMap::new();
         for change in out.windows {
@@ -721,7 +753,6 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        let mut stacked = self.apply_tree_ops(out.tree);
         for (ws_id, window) in out.focus {
             self.host.resend_workspaces.insert(ws_id);
             if let Some(ws) = self.workspace_mut(ws_id) {
@@ -1183,6 +1214,9 @@ impl<W: LayoutElement> Layout<W> {
     /// Delivers a pointer event to a node that the layout draws, which bubbles to its parents.
     /// `pointer` is on the workspace's canvas, `button` is 1, 2 or 3 for the left, middle and right
     /// button, and 0 for events that aren't about one.
+    ///
+    /// A press can make the layout begin a move or resize, which the caller takes afterwards with
+    /// [`Layout::take_node_grab`].
     #[allow(clippy::too_many_arguments)]
     pub fn node_pointer_event(
         &mut self,
@@ -1193,6 +1227,9 @@ impl<W: LayoutElement> Layout<W> {
         modifiers: [bool; 4],
         delta: Point<f64, Logical>,
     ) {
+        if event == "pointerdown" {
+            self.host.grab = None;
+        }
         let [shift, ctrl, alt, logo] = modifiers;
         self.engine_event(json!({
             "type": "pointer",
@@ -1203,6 +1240,19 @@ impl<W: LayoutElement> Layout<W> {
             "modifiers": { "shift": shift, "ctrl": ctrl, "alt": alt, "super": logo },
             "delta": Xy::from_point(delta),
         }));
+    }
+
+    /// The move or resize that the layout began while it handled the last press on one of its
+    /// nodes, if it did. The input code starts the same grab as for a client's request, and the
+    /// layout hears about it as for any move or resize with the pointer.
+    pub fn take_node_grab(&mut self) -> Option<NodeGrab<W::Id>> {
+        match self.host.grab.take()? {
+            Grab::Move { window } => Some(NodeGrab::Move(self.window_by_engine_id(window)?)),
+            Grab::Resize { window, edges } => Some(NodeGrab::Resize {
+                window: self.window_by_engine_id(window)?,
+                edges: edges.to_resize_edge(),
+            }),
+        }
     }
 
     /// Tells the layout that the pointer is on the node `hit`, or on none, so that the nodes it

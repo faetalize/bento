@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
+use crate::layout::tile::Decorations;
+use crate::utils::ResizeEdge;
+
 /// Largest coordinate or size bento accepts from a layout, to keep arithmetic sane.
 const MAX_COORD: f64 = 1e7;
 
@@ -86,6 +89,8 @@ pub struct WindowInfo {
     pub min_size: Wh,
     pub max_size: Wh,
     pub borders: Wh,
+    /// Which of bento's border, focus ring and shadow the layout left on.
+    pub decorations: Decorations,
     pub mode: Mode,
     pub urgent: bool,
     /// The layout's window rules that match the window, resolved.
@@ -241,6 +246,12 @@ pub struct Output {
     pub focus: Vec<(u64, Option<u64>)>,
     #[serde(default)]
     pub cameras: Vec<CameraChange>,
+    /// What the layout turned on or off around windows.
+    #[serde(default)]
+    pub decorations: Vec<(u64, Decorations)>,
+    /// The pointer move or resize that the layout began, while handling a press.
+    #[serde(default)]
+    pub grab: Option<Grab>,
     /// The monitor that has keyboard focus.
     #[serde(default, rename = "monitorFocus")]
     pub monitor_focus: Option<String>,
@@ -295,6 +306,33 @@ pub enum Op {
     DissolveGroup {
         group: u64,
     },
+}
+
+/// A move or resize with the pointer that the layout asks for, from a press on one of its nodes.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Grab {
+    Move { window: u64 },
+    Resize { window: u64, edges: Edges },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Edges {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+    pub bottom: bool,
+}
+
+impl Edges {
+    pub fn to_resize_edge(self) -> ResizeEdge {
+        let mut edges = ResizeEdge::empty();
+        edges.set(ResizeEdge::LEFT, self.left);
+        edges.set(ResizeEdge::RIGHT, self.right);
+        edges.set(ResizeEdge::TOP, self.top);
+        edges.set(ResizeEdge::BOTTOM, self.bottom);
+        edges
+    }
 }
 
 /// A change to a workspace's tree of drawn nodes, see `prelude/nodes.js`.

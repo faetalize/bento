@@ -1522,3 +1522,324 @@ fn bento_keeps_the_zoom_in_a_sane_range() {
     zoom_to(&mut layout, 1e6, 0., false);
     assert_eq!(zoom(&layout), 100.);
 }
+
+/// An engine that draws a title bar node, n1, on the first window, whose press begins a move with
+/// the left button and a resize from the right edge with the right one. It tells what it sees of
+/// the window, and what its press began.
+const TITLE_BARS: &str = r#"
+export const meta = { api: 2, name: "title-bars", floating: false };
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => log);
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        log.push(["windowadd", e.reason, win.decorations.shadow]);
+        win.place({ x: 0, y: 0, w: 200, h: 100 });
+        win.focus();
+        // Something to tell that it comes back on after the window left the engine.
+        win.setDecorations({ shadow: false });
+        for (const type of ["remove", "resizebegin", "resizeupdate", "resizeend"]) {
+            win.addEventListener(type, (r) => log.push([type, r.reason ?? null]));
+        }
+        const bar = bento.createNode("box", { rect: { x: 0, y: 0, w: 200, h: 20 }, interactive: true });
+        win.workspace.tree.append(bar);
+        bar.addEventListener("pointerdown", (p) => {
+            const began = p.button === 1 ? win.beginMove() : win.beginResize({ right: true });
+            log.push(["pointerdown", p.button, began]);
+        });
+    });
+}
+"#;
+
+fn press(layout: &mut Layout<TestWindow>, button: u8) {
+    layout.node_pointer_event(
+        "n1",
+        "pointerdown",
+        Point::from((10., 10.)),
+        button,
+        [false; 4],
+        Point::from((0., 0.)),
+    );
+}
+
+#[test]
+fn a_press_on_a_node_can_begin_a_move_that_the_engine_sees_like_any() {
+    use crate::layout::tiling::host::NodeGrab;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("title-move", TITLE_BARS), ops);
+
+    press(&mut layout, 1);
+    assert_eq!(layout.take_node_grab(), Some(NodeGrab::Move(1)));
+    // The input code takes it once.
+    assert_eq!(layout.take_node_grab(), None);
+
+    // The input code starts bento's move, which the engine hears about as for any other.
+    let mut ops = vec![
+        Op::InteractiveMoveBegin {
+            window: 1,
+            output_idx: 1,
+            px: 10.,
+            py: 10.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 1,
+            dx: 300.,
+            dy: 0.,
+            output_idx: 1,
+            px: 310.,
+            py: 10.,
+        },
+        Op::InteractiveMoveEnd { window: 1 },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    drop(layout);
+
+    // The window left, and came back as bento draws it: with its shadow, which the engine turned
+    // off for the window it had before.
+    let log = crate::layout::tiling::engine::exposed_state().unwrap();
+    let log = log.as_array().unwrap();
+    assert_eq!(log[0], serde_json::json!(["windowadd", "open", true]));
+    assert_eq!(log[1], serde_json::json!(["pointerdown", 1, true]));
+    assert_eq!(log[2], serde_json::json!(["remove", "drag"]));
+    assert_eq!(log[3], serde_json::json!(["windowadd", "drop", true]));
+}
+
+#[test]
+fn a_press_on_a_node_can_begin_a_resize_that_the_engine_sees_like_any() {
+    use crate::layout::tiling::host::NodeGrab;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("title-resize", TITLE_BARS), ops);
+
+    press(&mut layout, 3);
+    assert_eq!(
+        layout.take_node_grab(),
+        Some(NodeGrab::Resize {
+            window: 1,
+            edges: ResizeEdge::RIGHT
+        })
+    );
+
+    let mut ops = vec![
+        Op::InteractiveResizeBegin {
+            window: 1,
+            edges: ResizeEdge::RIGHT,
+        },
+        Op::InteractiveResizeUpdate {
+            window: 1,
+            dx: 12.,
+            dy: 0.,
+        },
+        Op::InteractiveResizeEnd { window: 1 },
+    ];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    drop(layout);
+
+    let log = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        log.as_array().unwrap()[1..],
+        [
+            serde_json::json!(["pointerdown", 3, true]),
+            serde_json::json!(["resizebegin", null]),
+            serde_json::json!(["resizeupdate", null]),
+            serde_json::json!(["resizeend", null]),
+        ]
+    );
+}
+
+#[test]
+fn only_a_press_can_begin_a_move_or_resize() {
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("title-other", TITLE_BARS), ops);
+
+    // The engine's listeners only begin one from a press.
+    let at = Point::from((10., 10.));
+    for event in ["pointerup", "click", "pointermove"] {
+        layout.node_pointer_event("n1", event, at, 1, [false; 4], Point::from((0., 0.)));
+        assert_eq!(layout.take_node_grab(), None);
+    }
+
+    // A grab that nobody took isn't left for a later press to find.
+    press(&mut layout, 1);
+    layout.node_pointer_event(
+        "n99",
+        "pointerdown",
+        at,
+        1,
+        [false; 4],
+        Point::from((0., 0.)),
+    );
+    assert_eq!(layout.take_node_grab(), None);
+}
+
+/// An engine that places windows 300 × 200 and has actions that turn decorations off and on.
+const DECORATED: &str = r#"
+export const meta = {
+    api: 2,
+    name: "decorated",
+    floating: false,
+    actions: { plain: {}, dressed: {}, "no-border": {} },
+};
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => log);
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 0, y: 0, w: 300, h: 200 });
+        e.window.focus();
+        log.push(["windowadd", e.window.borders.w]);
+    });
+    bento.addEventListener("action", (e) => {
+        const win = e.window;
+        if (e.name === "plain") win.setDecorations({ focusRing: false, shadow: false });
+        if (e.name === "dressed") win.setDecorations({ border: true, focusRing: true, shadow: true });
+        if (e.name === "no-border") win.setDecorations({ border: false });
+        log.push([e.name, win.borders.w]);
+    });
+}
+"#;
+
+/// The window size and the tile size of the first window, and whether its border, focus ring and
+/// shadow are drawn.
+fn window_and_tile(
+    layout: &Layout<TestWindow>,
+) -> (Size<f64, Logical>, Size<f64, Logical>, [bool; 3]) {
+    let ws = layout.active_workspace().unwrap();
+    let tile = ws.tiles_with_render_positions().next().unwrap().0;
+    let decorations = [
+        !tile.border().is_off(),
+        !tile.focus_ring().is_off(),
+        tile.decorations.shadow,
+    ];
+    (tile.window_size(), tile.tile_size(), decorations)
+}
+
+#[test]
+fn a_window_without_a_border_gets_the_whole_rect() {
+    let mut options = options_for_source("decorated", DECORATED);
+    options.layout.border.off = false;
+    options.layout.border.width = 4.;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options, ops);
+
+    // The border is in the rect that the engine placed, so the window is smaller than it.
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(
+        (window, tile),
+        (Size::from((292., 192.)), Size::from((300., 200.)))
+    );
+    assert_eq!(drawn, [true, true, true]);
+
+    // Without it the window takes the rect, though the engine places nothing again.
+    let mut ops = vec![Op::LayoutAction("no-border", vec![], None)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(
+        (window, tile),
+        (Size::from((300., 200.)), Size::from((300., 200.)))
+    );
+    assert_eq!(drawn, [false, true, true]);
+
+    // And with it back, the window leaves room for it again.
+    let mut ops = vec![Op::LayoutAction("dressed", vec![], None)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(
+        (window, tile),
+        (Size::from((292., 192.)), Size::from((300., 200.)))
+    );
+    assert_eq!(drawn, [true, true, true]);
+    drop(layout);
+
+    // The engine saw the border go and come back.
+    let log = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        log,
+        serde_json::json!([["windowadd", 8], ["no-border", 0], ["dressed", 8]])
+    );
+}
+
+#[test]
+fn the_focus_ring_and_shadow_can_be_turned_off_on_their_own() {
+    let mut options = options_for_source("plain", DECORATED);
+    options.layout.border.off = false;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options, ops);
+    assert_eq!(window_and_tile(&layout).2, [true, true, true]);
+
+    let mut ops = vec![Op::LayoutAction("plain", vec![], None)];
+    ops.extend(settle());
+    check_ops_on_layout(&mut layout, ops);
+    // The border is still there, and so is the window's room for it.
+    let (window, tile, drawn) = window_and_tile(&layout);
+    assert_eq!(drawn, [true, false, false]);
+    assert_eq!(
+        (window, tile),
+        (Size::from((292., 192.)), Size::from((300., 200.)))
+    );
+}
+
+/// An engine that places two windows apart, and moves them 300 px to the right with an action. The
+/// first one's node has a `rect` transition.
+const SLIDERS: &str = r#"
+export const meta = { api: 2, name: "sliders", floating: false, actions: { slide: {} } };
+export default function create(bento) {
+    let count = 0;
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        win.place({ x: count * 400, y: 0, w: 200, h: 100 });
+        win.focus();
+        if (count++ === 0) {
+            win.node.set({ transitions: { rect: { duration: 1000, curve: "linear" } } });
+        }
+    });
+    bento.addEventListener("action", () => {
+        for (const win of bento.windows) {
+            win.place({ ...win.rect, x: win.rect.x + 300 });
+        }
+    });
+}
+"#;
+
+#[test]
+fn a_window_node_with_a_rect_transition_moves_as_it_says() {
+    // Windows would move instantly, if their nodes didn't say otherwise.
+    let mut options = options_for_source("sliders", SLIDERS);
+    options.animations.window_movement.0.off = true;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options, ops);
+
+    check_ops_on_layout(
+        &mut layout,
+        [
+            Op::LayoutAction("slide", vec![], None),
+            Op::AdvanceAnimations { msec_delta: 500 },
+        ],
+    );
+
+    let ws = layout.active_workspace().unwrap();
+    let offset = |id: usize| {
+        ws.tiles_with_render_positions()
+            .map(|(tile, _, _)| tile)
+            .find(|tile| tile.window().0.id == id)
+            .unwrap()
+            .render_offset()
+    };
+    // Half a second into the first window's second, it's halfway from where it was. The second
+    // window's node says nothing, so it moved as the configuration says, at once.
+    assert!((offset(1).x + 150.).abs() < 1e-6, "{:?}", offset(1));
+    assert_eq!(offset(2), Point::from((0., 0.)));
+}

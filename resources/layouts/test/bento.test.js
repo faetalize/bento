@@ -1564,6 +1564,7 @@ describe("layout API", () => {
             minSize: { w: 0, h: 0 },
             maxSize: { w: 0, h: 0 },
             borders: { w: 0, h: 0 },
+            decorations: { border: true, focusRing: true, shadow: true },
             mode: "normal",
             urgent: false,
             rules: {},
