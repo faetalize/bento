@@ -1103,3 +1103,28 @@ fn a_swipe_that_a_resize_cuts_short_still_ends() {
         serde_json::json!(["swipebegin", "swipeend", "resizebegin"])
     );
 }
+
+#[test]
+fn a_float_request_says_the_size_of_the_window() {
+    let source = r#"
+        export const meta = { api: 2, name: "sizes", floating: false };
+        export default function create(bento) {
+            const sizes = [];
+            bento.exposeState(() => sizes);
+            bento.addEventListener("windowadd", (e) => {
+                e.window.place({ x: 0, y: 0, w: 300, h: 200 });
+                e.window.addEventListener("floatrequest", (f) => sizes.push(f.size));
+            });
+        }
+    "#;
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        Op::Communicate(1),
+        Op::ToggleWindowFloating { id: Some(1) },
+    ];
+    let layout = check_ops_with_options(options_for_source("sizes", source), ops);
+    drop(layout);
+    let sizes = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(sizes, serde_json::json!([{ "w": 300, "h": 200 }]));
+}

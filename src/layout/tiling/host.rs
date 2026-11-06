@@ -1139,7 +1139,6 @@ impl<W: LayoutElement> Layout<W> {
         window: &W::Id,
         reason: &str,
         parent: Option<&W::Id>,
-        size: Option<(i32, i32)>,
     ) {
         let Some(ws) = self
             .workspaces()
@@ -1149,6 +1148,14 @@ impl<W: LayoutElement> Layout<W> {
             return;
         };
         let parent = parent.and_then(|parent| self.engine_id_of(parent));
+        // The size the window has, which for one that just opened is the size it asked for.
+        let size = ws
+            .scrolling()
+            .tiles()
+            .find(|tile| tile.window().id() == window)
+            .map(|tile| tile.window().size())
+            .filter(|size| size.w > 0 && size.h > 0)
+            .map(|size| (size.w, size.h));
         ws.scrolling().queue_window_event(
             window,
             "floatrequest",

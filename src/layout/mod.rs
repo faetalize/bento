@@ -1149,7 +1149,7 @@ impl<W: LayoutElement> Layout<W> {
 
         if float_request {
             let reason = if parent.is_some() { "dialog" } else { "rule" };
-            self.queue_float_request(&id, reason, parent.as_ref(), None);
+            self.queue_float_request(&id, reason, parent.as_ref());
         }
         self.flush_engine();
 
@@ -2782,7 +2782,7 @@ impl<W: LayoutElement> Layout<W> {
             ws.active_window().map(|win| win.id().clone())
         });
         if let Some(id) = id {
-            self.queue_float_request(&id, "action", None, None);
+            self.queue_float_request(&id, "action", None);
         }
     }
 
