@@ -52,6 +52,7 @@ use self::spatial_movement_grab::SpatialMovementGrab;
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::floating::FloatingSpace;
 use crate::layout::groups::Direction;
+use crate::layout::tiling::host::{KeyboardOwner, KeyboardRelease};
 use crate::layout::{ActivateWindow, LayoutElement as _};
 use crate::niri::{CastTarget, Niri, PointerVisibility, State};
 use crate::ui::mru::{WindowMru, WindowMruUi};
@@ -62,6 +63,7 @@ use crate::window::Mapped;
 
 pub mod backend_ext;
 pub mod click_grab;
+mod engine_grab;
 pub mod move_grab;
 pub mod pick_color_grab;
 pub mod pick_window_grab;
@@ -472,6 +474,9 @@ impl State {
             if let Some(token) = self.niri.bind_repeat_timer.take() {
                 self.niri.event_loop.remove(token);
             }
+            if let Some(token) = self.niri.engine_key_repeat_timer.take() {
+                self.niri.event_loop.remove(token);
+            }
         }
 
         if pressed {
@@ -479,6 +484,16 @@ impl State {
         }
 
         let is_inhibiting_shortcuts = self.is_inhibiting_shortcuts();
+
+        // While the layout engine holds the keyboard, the filter counts it as inhibiting shortcuts,
+        // see `engine_grab`. The lock screen takes the keyboard from the engine right away.
+        if self.niri.is_locked() {
+            self.niri
+                .layout
+                .set_keyboard_owner(KeyboardOwner::LockScreen);
+        }
+        let engine_grabbed = self.niri.layout.keyboard_grabbed();
+        let mut engine_key = None;
 
         // Accessibility modifier grabs should override XKB state changes (e.g. Caps Lock), so we
         // need to process them before keyboard.input() below.
@@ -686,6 +701,7 @@ impl State {
 
                 let is_locked = this.niri.is_locked();
                 let is_in_screenshot = this.niri.screenshot_ui.is_open();
+                let engine_info = engine_grabbed.then(|| engine_grab::key_info(&keysym));
                 let res = {
                     let config = this.niri.config.borrow();
                     let bindings = make_binds_iter(
@@ -708,11 +724,25 @@ impl State {
                         pressed,
                         modifiers,
                         this.niri.config.borrow().input.disable_power_key_handling,
-                        is_inhibiting_shortcuts,
+                        is_inhibiting_shortcuts || engine_grabbed,
                         is_locked,
                         is_in_screenshot,
                     )
                 };
+
+                let (res, to_engine) = engine_grab::route(
+                    res,
+                    engine_grabbed,
+                    pressed,
+                    key_code,
+                    &mut this.niri.engine_keys,
+                    &this.niri.pending_release_binds,
+                );
+                if let (true, Some(key), Some((text, repeats))) = (to_engine, modified, engine_info)
+                {
+                    let key = engine_grab::engine_key(key, text, mods, pressed);
+                    engine_key = Some((key, repeats));
+                }
 
                 if matches!(
                     res,
@@ -728,6 +758,13 @@ impl State {
         ) else {
             return;
         };
+
+        if let Some((key, repeats)) = engine_key {
+            self.send_engine_key(key, repeats);
+        }
+        if mods_changed {
+            self.update_engine_modifiers();
+        }
 
         // Forward the event to the client, unless the key was intercepted.
         match &result {
@@ -2432,6 +2469,17 @@ impl State {
 
         if ButtonState::Pressed == button_state {
             self.niri.cancel_interrupted_release_binds();
+
+            // A press outside what the layout engine draws takes the keyboard back from it.
+            if self.niri.layout.keyboard_grabbed()
+                && self
+                    .niri
+                    .contents_under(pointer.current_location())
+                    .node
+                    .is_none()
+            {
+                self.niri.layout.release_keyboard(KeyboardRelease::Click);
+            }
 
             let mut is_mru_open = false;
             if let Some(mru_output) = self.niri.window_mru_ui.output() {

@@ -26,6 +26,11 @@ const MAX_TIMERS = 128;
 
 const NO_MODIFIERS = Object.freeze({ shift: false, ctrl: false, alt: false, super: false });
 
+/** The modifiers held as engines read them, always with the same properties in the same order. */
+export function heldModifiers(modifiers) {
+    return Object.freeze({ ...NO_MODIFIERS, ...modifiers });
+}
+
 /** Timer ids, which are never reused across instances, so a late timer of an old one can't fire. */
 let nextTimerId = 1;
 
@@ -671,7 +676,7 @@ export class Session {
     }
 
     setModifiers(modifiers) {
-        this.modifiers = Object.freeze({ ...NO_MODIFIERS, ...modifiers });
+        this.modifiers = heldModifiers(modifiers);
     }
 
     /**

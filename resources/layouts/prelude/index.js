@@ -12,7 +12,7 @@
 import { BentoEvent, QueryEvent, UnloadEvent, dispatch, listenerCount, response, setErrorSink } from "./events.js";
 import { setGroupIdSource } from "./groups.js";
 import { dispatchPointer } from "./nodes.js";
-import { Session } from "./objects.js";
+import { Session, heldModifiers } from "./objects.js";
 import { V1Adapter } from "./v1.js";
 
 export { setGroupIdSource };
@@ -535,7 +535,7 @@ function deliver(event) {
                 new BentoEvent(event.type, bento, {
                     key: event.key,
                     text: event.text,
-                    modifiers: Object.freeze({ ...event.modifiers }),
+                    modifiers: heldModifiers(event.modifiers),
                     repeat: event.repeat,
                 }),
             );
