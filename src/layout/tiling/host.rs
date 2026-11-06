@@ -396,6 +396,14 @@ impl<W: LayoutElement> Layout<W> {
         // Windows that the layout doesn't know are added by events, and windows that are gone
         // were removed by them. The layout knows a window added by a queued event once it
         // handles the event, and gets what changed about it after that.
+        // A window that a queued `windowmove` moves keeps its workspace in the sync, so that the
+        // event is what moves it; the layout takes a window moving in a sync as bento refusing a
+        // move that the layout made.
+        let moving: HashSet<u64> = queued
+            .iter()
+            .filter(|queued| queued.event["type"] == "windowmove")
+            .filter_map(|queued| queued.event["id"].as_u64())
+            .collect();
         let mut seen = HashSet::new();
         for info in snapshot.windows {
             let id = info["id"].as_u64().unwrap_or_default();
@@ -404,7 +412,11 @@ impl<W: LayoutElement> Layout<W> {
                 continue;
             };
             if host.resend_windows.contains(&id) || *told != info {
-                sync.windows.push(info.clone());
+                let mut sent = info.clone();
+                if moving.contains(&id) {
+                    sent["workspace"] = told["workspace"].clone();
+                }
+                sync.windows.push(sent);
                 host.windows.insert(id, info);
             }
         }

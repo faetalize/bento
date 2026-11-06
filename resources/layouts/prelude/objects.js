@@ -763,6 +763,7 @@ export class Session {
             d.focused = info.focused;
         }
 
+        const relocated = [];
         for (const info of sync.windows ?? []) {
             const d = this.windows.get(info.id);
             if (d === undefined) {
@@ -771,6 +772,8 @@ export class Session {
             this.updateWindow(d, info);
             const ws = this.workspaces.get(info.workspace);
             if (ws !== undefined && d.workspace !== info.workspace) {
+                // bento refused a move that the engine made: the window is back where it was.
+                relocated.push([d, this.workspaces.get(d.workspace), ws]);
                 this.relocateWindow(d, ws);
             }
         }
@@ -813,6 +816,11 @@ export class Session {
             const d = this.windows.get(info.id);
             if (d !== undefined && before.has(d) && before.get(d) !== windowKey(d)) {
                 fire.push(event(d.facade, "change"));
+            }
+        }
+        for (const [d, from, to] of relocated) {
+            if (from !== undefined) {
+                fire.push(event(d.facade, "move", { from: from.facade, to: to.facade, activate: false }));
             }
         }
         if (sync.groups !== undefined) {

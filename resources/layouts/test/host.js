@@ -58,6 +58,8 @@ export class TestHost {
         this.exposed = null;
         /** Results of cancelable events, in order. */
         this.verdicts = [];
+        /** Ops that bento refuses, like a move when the target can't take the window. */
+        this.refused = new Set();
 
         let x = 0;
         for (const given of opts.monitors ?? [{ name: "DP-1" }]) {
@@ -346,6 +348,13 @@ export class TestHost {
             this.toldGroups = null;
         }
         for (const op of out.ops ?? []) {
+            if (this.refused.has(op.op)) {
+                // Like bento, tell the engine everything again, which undoes what it did.
+                for (const map of [this.told.windows, this.told.workspaces]) {
+                    for (const key of map.keys()) map.set(key, null);
+                }
+                continue;
+            }
             switch (op.op) {
                 case "show":
                     this.monitors.get(this.workspaces.get(op.workspace).monitor).active = op.workspace;
@@ -629,6 +638,8 @@ export class TestHost {
         this.flush();
         const from = this.windows.get(id).workspace;
         this.moveWindow(id, workspace);
+        // Like bento, the event moves the window, not the sync.
+        this.told.windows.set(id, this.windowInfo(this.windows.get(id)));
         this.cleanUpWorkspaces();
         this.sendNow({ type: "windowmove", id, from, to: workspace, activate });
     }

@@ -501,6 +501,29 @@ test("a window moved off a workspace that goes away is told before the workspace
     ]);
 });
 
+test("a move that bento refuses comes back as a move event", () => {
+    const moves = [];
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("windowadd", (e) => {
+                const win = e.window;
+                win.addEventListener("move", (m) => moves.push([m.from.index, m.to.index]));
+            });
+            bento.addEventListener("action", (e) => {
+                e.window.moveTo(bento.monitors[0].workspaces[1]);
+            });
+        },
+        {},
+        { actions: { send: {} } },
+    );
+    const a = h.open();
+    h.refused.add("moveWindow");
+    h.action("send");
+    assert.deepEqual(moves, [[1, 0]]);
+    assert.equal(h.windows.get(a).workspace, h.workspace(0).id);
+});
+
 test("workspaces can be shown, renamed and moved", () => {
     const h = host(
         (bento) => {
