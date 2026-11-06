@@ -123,12 +123,9 @@ export const meta = {
         "unstack": {
             description: "Take the focused window out of its stack or its group, to the right.",
         },
-        "toggle-group": {
-            description: "Group the focused window with its stack, or split its group into a stack.",
-        },
-        "set-group": {
-            description: "Group the focused window with its stack, or with false, split its group into a stack.",
-            args: [{ name: "grouped", type: "boolean" }],
+        "group": {
+            description:
+                "Pick the focused window to group, or unpick it. Letting go of the keys held groups the picked windows where the first one is; one picked window leaves its group.",
         },
         "center": { description: "Center the focused window in the view." },
         "center-visible": {
@@ -1191,6 +1188,24 @@ const SLIT_CORNER_RADIUS = 12;
 const ACTIVE_CLIP_MARGIN = 64;
 /** Corner radius of the hints. */
 const HINT_CORNER_RADIUS = 8;
+/** Diameter of the dots that split a window, and of the one under the pointer. */
+const TARGET_DOT = 20;
+const TARGET_DOT_ACTIVE = 28;
+/** Thickness of the pills of seams and groups, and of the one picked or under the pointer. */
+const TARGET_PILL = 8;
+const TARGET_PILL_ACTIVE = 12;
+/** Shortest and longest pill, which is otherwise a third of the edge it's on. */
+const TARGET_PILL_MIN = 48;
+const TARGET_PILL_MAX = 160;
+/** How far inside a window the dots that split it are from its edges, at most. */
+const TARGET_INSET = 40;
+/** How close the pointer has to be to a target for a window to drop on it. */
+const TARGET_REACH = 32;
+/** Opacity of the targets that aren't picked or under the pointer. */
+const TARGET_IDLE_OPACITY = 0.6;
+const TARGET_OUTLINE = "#00000059";
+/** How targets grow, shrink and fade: quickly, without overshooting. */
+const TARGET_MOTION = { duration: 150, curve: "ease-out-cubic" };
 /** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
 const SWIPE_DECELERATION = 0.997;
 
@@ -1245,6 +1260,24 @@ function createSpace(bento, ws) {
     /** The nodes that highlight a picked window, and where a dragged window would land. */
     let hintNode = null;
     let dropNode = null;
+    /** The targets drawn for stuffing or a drag, by key, see `drawTargets`. */
+    const targetNodes = new Map();
+    /** The targets for the window being dragged over the workspace, and the one it's over. */
+    let dragging = null;
+    /** Windows picked for grouping, see `pickToGroup`, and the nodes that highlight them. */
+    let groupPicks = [];
+    const groupPickNodes = new Map();
+    /**
+     * What's drawn above the windows, in layers: the hints, the picks for grouping, then the
+     * targets. It stays last in the tree, see `raiseOverlay`.
+     */
+    const overlay = bento.createNode("box");
+    const hintLayer = bento.createNode("box");
+    const pickLayer = bento.createNode("box");
+    const targetLayer = bento.createNode("box");
+    overlay.append(hintLayer);
+    overlay.append(pickLayer);
+    overlay.append(targetLayer);
     /** What the space told the outside about itself last, see `exposed()`. */
     let lastExposed = null;
     /** Size of windows that left to float or to be dragged, by window id, for when they're back. */
@@ -1611,8 +1644,17 @@ function createSpace(bento, ws) {
         if (slot === "pick") hintNode = box;
         else dropNode = box;
         box.set({ rect, background: options("hint-color") });
-        // Last, so it's above the windows.
-        ws.tree.append(box);
+        if (box.parent !== hintLayer) {
+            hintLayer.append(box);
+        }
+        raiseOverlay();
+    }
+
+    /** Keeps what's drawn above the windows above them, and above windows that opened since. */
+    function raiseOverlay() {
+        if (ws.tree.children.at(-1) !== overlay) {
+            ws.tree.append(overlay);
+        }
     }
 
     /**
@@ -1654,9 +1696,8 @@ function createSpace(bento, ws) {
             if (carousel === undefined) {
                 carousel = { container: bento.createNode("box"), clips: new Map() };
                 carousels.set(key, carousel);
-                // Below the hints, which are above the windows.
-                const hint = ws.tree.children.find((node) => node === hintNode || node === dropNode);
-                ws.tree.append(carousel.container, hint);
+                // Below what's drawn above the windows.
+                ws.tree.append(carousel.container, overlay.parent === ws.tree ? overlay : undefined);
             }
             const { container, clips } = carousel;
             for (const [id, clip] of clips) {
@@ -1778,6 +1819,87 @@ function createSpace(bento, ws) {
     // ---------------------------------------------------------------------------------------------
     // Groups
     // ---------------------------------------------------------------------------------------------
+    //
+    // The `group` action picks windows while the keys held for it stay down, see `pickToGroup`
+    // in the engine, and the space highlights the ones on its workspace and groups them.
+
+    /** Where `win` of `item` shows: its slit, or the item's rect. */
+    function shownRect(item, win) {
+        const rect = windowRect(item);
+        if (item.windows.length < 2 || modeOf(item) !== "normal") {
+            return rect;
+        }
+        return carouselLayout(item, rect)[item.windows.indexOf(win)].slot;
+    }
+
+    /** Highlights the windows picked for grouping, where they show. */
+    function drawGroupPicks() {
+        const ids = new Set();
+        for (const win of groupPicks) {
+            const item = itemOf(win);
+            if (item === null) continue;
+            ids.add(win.id);
+            let node = groupPickNodes.get(win.id);
+            if (node === undefined) {
+                node = bento.createNode("box", {
+                    cornerRadius: HINT_CORNER_RADIUS,
+                    transitions: { rect: "window-movement", opacity: TARGET_MOTION },
+                    enter: { opacity: 0 },
+                });
+                groupPickNodes.set(win.id, node);
+                pickLayer.append(node);
+            }
+            node.set({ rect: shownRect(item, win), background: options("hint-color") });
+        }
+        for (const [id, node] of groupPickNodes) {
+            if (!ids.has(id)) {
+                node.remove();
+                groupPickNodes.delete(id);
+            }
+        }
+        raiseOverlay();
+    }
+
+    /**
+     * Groups `others` with `first`, where `first` is: they join its group, or make one with it,
+     * after its windows, leaving their own. The focused window stays focused.
+     */
+    function gather(first, others) {
+        const into = itemOf(first);
+        const joining = others.filter((win) => {
+            const item = itemOf(win);
+            return item !== null && item !== into && modeOf(item) === "normal";
+        });
+        if (into === null || modeOf(into) !== "normal" || joining.length === 0) {
+            return false;
+        }
+        const focused = active?.windows[active.active] ?? null;
+        return changeGrid(() => {
+            for (const win of joining) {
+                const item = itemOf(win);
+                if (item.windows.length > 1) {
+                    removeMember(item, win);
+                } else {
+                    takeItem(item);
+                }
+                into.windows.push(win);
+            }
+            if (focused !== null && into.windows.includes(focused)) {
+                into.active = into.windows.indexOf(focused);
+                active = into;
+            }
+            return true;
+        });
+    }
+
+    /** Takes `win` out of its group, beside it to the right. */
+    function leaveGroup(win) {
+        const item = itemOf(win);
+        if (item === null || item.windows.length < 2) {
+            return false;
+        }
+        return changeGrid(() => expelMember(item, item.windows.indexOf(win), Right));
+    }
     //
     // The windows of an item are a group in bento, so that native group actions and the engine's
     // own grouping are the same thing.
@@ -1908,16 +2030,9 @@ function createSpace(bento, ws) {
             picking = null;
         }
         if (picking?.action === "stuff") {
-            checkSeam();
+            checkTarget();
         }
-        showHint(
-            "pick",
-            picking === null
-                ? null
-                : picking.action === "stuff"
-                  ? stuffPreview(picking.first, picking.seam)
-                  : itemRect(picking.first),
-        );
+        showHint("pick", picking === null ? null : itemRect(picking.first));
 
         // Groups show as a carousel, except while they cover the view.
         const groups = new Map();
@@ -1945,6 +2060,14 @@ function createSpace(bento, ws) {
             });
         }
         syncGroups();
+
+        // What's drawn above the windows follows them.
+        const stuffing = picking?.action === "stuff" ? picking : null;
+        drawTargets(
+            dragging?.targets ?? (stuffing === null ? [] : stuffTargets(stuffing.first)),
+            dragging?.current ?? stuffing?.target ?? null,
+        );
+        drawGroupPicks();
 
         const focus = active ? active.windows[active.active] : null;
         if (focus !== null && ws.focused !== focus) {
@@ -2333,8 +2456,17 @@ function createSpace(bento, ws) {
         const wasEmpty = items.length === 0;
         const [cols, rows] = spanFor(item);
 
-        if (how.reason === "drop" && how.rect) {
-            // Where the pointer dropped it, after pushing and gravity, see `dropTarget`.
+        const target = how.reason === "drop" ? dropTargetAt(grid, how.pointer) : null;
+        if (target?.kind === "member") {
+            // Into the group, where it was dropped.
+            joinGroup(win, target, how.activate);
+            return;
+        }
+        const stuffed = target?.kind === "seam" ? stuffPlan(grid, item, target.seam) : null;
+        if (stuffed !== null) {
+            grid.place(stuffed);
+        } else if (how.reason === "drop" && how.rect) {
+            // Where the pointer dropped it, after pushing and gravity, see `landing`.
             const plan = dropPlan(grid, how.pointer, how.rect);
             const areas = [[item, plan.area]];
             if (plan.split !== null) {
@@ -2354,6 +2486,22 @@ function createSpace(bento, ws) {
 
         items.push(item);
         finishAdd(item, wasEmpty, how.activate);
+    }
+
+    /** Adds `win` to the group of a `"member"` target, at its place among the group's windows. */
+    function joinGroup(win, target, activate) {
+        const { item, index } = target;
+        item.windows.splice(index, 0, win);
+        if (activate) {
+            item.active = index;
+            active = item;
+        } else if (index <= item.active) {
+            item.active += 1;
+        }
+        sync();
+        if (activate) {
+            cameraToItem(item);
+        }
     }
 
     /** Settles a new item that's on the grid: its mode, and focus and the camera if it activates. */
@@ -2756,64 +2904,6 @@ function createSpace(bento, ws) {
         if (wasActive) {
             active = added;
         }
-        return true;
-    }
-
-    /**
-     * Makes the focused item a group or not.
-     *
-     * Grouping gathers the windows stacked right above and below it in exactly the same columns of
-     * cells into its area. Ungrouping splits its windows back into a stack, sharing the area's
-     * rows.
-     */
-    function setGrouped(grouped) {
-        if (active === null || isGroup(active) === grouped || modeOf(active) !== "normal") {
-            return false;
-        }
-        const item = active;
-        return changeGrid(() => (grouped ? groupStack(item) : splitGroup(item)));
-    }
-
-    function groupStack(item) {
-        const area = grid.area(item);
-        const inSameColumns = (other) => other.col === area.col && other.cols === area.cols;
-
-        // Nearest first.
-        const above = [];
-        let top = area;
-        for (;;) {
-            const next = grid.items.find(({ area: a }) => inSameColumns(a) && a.bottom === top.row);
-            if (!next) break;
-            above.push(next.key);
-            top = next.area;
-        }
-        const below = [];
-        let bottom = area;
-        for (;;) {
-            const next = grid.items.find(
-                ({ area: a }) => inSameColumns(a) && a.row === bottom.bottom,
-            );
-            if (!next) break;
-            below.push(next.key);
-            bottom = next.area;
-        }
-
-        if (above.length === 0 && below.length === 0) {
-            return false;
-        }
-        for (const other of above) {
-            takeItem(other);
-            item.windows.unshift(...other.windows);
-            item.active += other.windows.length;
-        }
-        for (const other of below) {
-            takeItem(other);
-            item.windows.push(...other.windows);
-        }
-
-        const merged = area.with({ row: top.row, rows: bottom.bottom - top.row });
-        grid.setArea(item, merged, Down);
-        active = item;
         return true;
     }
 
@@ -3315,75 +3405,234 @@ function createSpace(bento, ws) {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Stuffing a window between two others
+    // Targets
     // ---------------------------------------------------------------------------------------------
     //
-    // A seam is where two windows touch, side by side or stacked. Stuffing a window into a seam
-    // splits the span of the two windows in three: they keep their outer edges and shrink towards
-    // each other, and the window takes the middle third, along the part of the seam they share.
-
-    /** First and last-plus-one columns of cells in view. */
-    function visibleColumns() {
-        const m = metrics;
-        const first = round((ws.camera.x + workingArea.x + m.gap) / (m.cellW + m.gap));
-        return [first, first + m.colsPerView];
-    }
+    // Stuffing and dragging show where a window can go as targets drawn on the windows: a pill on
+    // each seam it can be stuffed into, a pill between two windows of a group it can join, and
+    // while dragging, a dot near each edge of a window it can split. Pills sit on the windows'
+    // edges and dots inside them, never only in the gaps, so that they work without gaps too.
+    //
+    // A target is `{ key, kind, at }`, with `at` its middle on the canvas, and for a pill,
+    // `vertical` and `length`. What else it has depends on its kind:
+    //
+    // - `"seam"`: `seam`, to stuff the window into, see below.
+    // - `"member"`: `item` and `index`, to join the group `item` at `index` in its windows.
+    // - `"split"`: `item` and `dir`, to split `item`, taking the half of its cells towards `dir`.
 
     /**
-     * Seams in view that `item` could go into: `{ a, b, vertical }`, with `a` left of or above
-     * `b`, and `vertical` for side by side.
+     * Seams on `g` that `item` could go into, leaving out its own: `{ a, b, vertical }`, with `a`
+     * left of or above `b`, and `vertical` for side by side.
      */
-    function seamsFor(item) {
-        const [first, end] = visibleColumns();
-        const others = items.filter((other) => other !== item && modeOf(other) === "normal");
+    function seamsOn(g, item) {
+        const others = g.items.filter(({ key }) => key !== item && modeOf(key) === "normal");
         const seams = [];
-        for (const a of others) {
-            const ra = grid.area(a);
-            for (const b of others) {
-                const rb = grid.area(b);
+        for (const { key: a, area: ra } of others) {
+            for (const { key: b, area: rb } of others) {
                 if (a === b) continue;
                 const rows = Math.min(ra.bottom, rb.bottom) - Math.max(ra.row, rb.row);
                 if (ra.right === rb.col && rows > 0 && ra.cols + rb.cols >= 3) {
-                    if (first < rb.col && rb.col < end) seams.push({ a, b, vertical: true });
+                    seams.push({ a, b, vertical: true });
                 }
-                const left = Math.max(ra.col, rb.col);
-                const right = Math.min(ra.right, rb.right);
-                if (ra.bottom === rb.row && left < right && ra.rows + rb.rows >= 3) {
-                    if (left < end && first < right) seams.push({ a, b, vertical: false });
+                const cols = Math.min(ra.right, rb.right) - Math.max(ra.col, rb.col);
+                if (ra.bottom === rb.row && cols > 0 && ra.rows + rb.rows >= 3) {
+                    seams.push({ a, b, vertical: false });
                 }
             }
         }
         return seams;
     }
 
-    /** Middle of a seam, in cells. */
-    function seamPoint(seam) {
-        const ra = grid.area(seam.a);
-        const rb = grid.area(seam.b);
+    /** A pill target at `at`, as long as a part of `span`. */
+    function pill(key, at, vertical, span, what) {
+        const length = clamp(span * 0.3, Math.min(TARGET_PILL_MIN, span), TARGET_PILL_MAX);
+        return { key, at, vertical, length, ...what };
+    }
+
+    /** The pill for stuffing into `seam` on `g`: on the middle of the edge the two windows share. */
+    function seamTarget(g, seam) {
+        const ra = areaRect(g.area(seam.a));
+        const rb = areaRect(g.area(seam.b));
+        const key = `seam:${seam.a.key}:${seam.b.key}:${seam.vertical ? "v" : "h"}`;
         if (seam.vertical) {
-            return { x: rb.col, y: (Math.max(ra.row, rb.row) + Math.min(ra.bottom, rb.bottom)) / 2 };
+            const top = Math.max(ra.y, rb.y);
+            const bottom = Math.min(ra.y + ra.h, rb.y + rb.h);
+            const at = { x: (ra.x + ra.w + rb.x) / 2, y: (top + bottom) / 2 };
+            return pill(key, at, true, bottom - top, { kind: "seam", seam });
         }
-        return { x: (Math.max(ra.col, rb.col) + Math.min(ra.right, rb.right)) / 2, y: rb.row };
+        const left = Math.max(ra.x, rb.x);
+        const right = Math.min(ra.x + ra.w, rb.x + rb.w);
+        const at = { x: (left + right) / 2, y: (ra.y + ra.h + rb.y) / 2 };
+        return pill(key, at, false, right - left, { kind: "seam", seam });
     }
 
-    function sameSeam(a, b) {
-        return a.a === b.a && a.b === b.b && a.vertical === b.vertical;
+    /** The pills for joining the group `item`, between each two of its windows. */
+    function memberTargets(item) {
+        if (item.windows.length < 2 || modeOf(item) !== "normal") {
+            return [];
+        }
+        const area = windowRect(item);
+        const places = carouselLayout(item, area);
+        return places.slice(1).map(({ slot }, i) => {
+            const before = places[i].slot;
+            const at = { x: (before.x + before.w + slot.x) / 2, y: area.y + area.h / 2 };
+            return pill(`member:${item.key}:${i + 1}`, at, true, area.h, {
+                kind: "member",
+                item,
+                index: i + 1,
+            });
+        });
     }
 
-    /** The seam nearest to `point` among `seams`, or `null`. */
-    function nearestSeam(seams, point) {
-        let best = null;
-        let bestDist = Infinity;
-        for (const seam of seams) {
-            const p = seamPoint(seam);
-            const dist = Math.hypot(p.x - point.x, p.y - point.y);
-            if (dist < bestDist) {
-                best = seam;
-                bestDist = dist;
+    /**
+     * The dots for splitting `item` on `g`, inside each edge it can split along. A group's are
+     * around its active window, clear of the pills between its windows.
+     */
+    function splitTargets(g, item) {
+        if (modeOf(item) !== "normal") {
+            return [];
+        }
+        const area = g.area(item);
+        const r =
+            item.windows.length > 1
+                ? carouselLayout(item, areaRect(area))[item.active].slot
+                : areaRect(area);
+        const ix = Math.min(TARGET_INSET, r.w / 4);
+        const iy = Math.min(TARGET_INSET, r.h / 4);
+        const cx = r.x + r.w / 2;
+        const cy = r.y + r.h / 2;
+        return [
+            [Left, area.cols, { x: r.x + ix, y: cy }],
+            [Right, area.cols, { x: r.x + r.w - ix, y: cy }],
+            [Up, area.rows, { x: cx, y: r.y + iy }],
+            [Down, area.rows, { x: cx, y: r.y + r.h - iy }],
+        ]
+            .filter(([, span]) => span >= 2)
+            .map(([dir, , at]) => ({ key: `split:${item.key}:${dir}`, kind: "split", item, dir, at }));
+    }
+
+    /**
+     * Targets in view for stuffing `item`: the seams it can go into, and if it's one window, the
+     * groups it can join.
+     */
+    function stuffTargets(item) {
+        const inView = ({ at }) => ws.camera.x <= at.x && at.x <= ws.camera.x + viewSize.w;
+        const seams = seamsOn(grid, item).map((seam) => seamTarget(grid, seam));
+        const members =
+            item.windows.length === 1
+                ? items.filter((other) => other !== item).flatMap(memberTargets)
+                : [];
+        return [...seams, ...members].filter(inView);
+    }
+
+    /**
+     * Targets on `g` for a window dragged with the pointer at `pointer`: those of the windows
+     * under it or close by, and the seams around them.
+     */
+    function dragTargets(g, pointer) {
+        const near = g.items
+            .filter(({ key, area }) => {
+                const r = areaRect(area);
+                const reach = TARGET_REACH;
+                return (
+                    modeOf(key) === "normal" &&
+                    r.x - reach <= pointer.x &&
+                    pointer.x < r.x + r.w + reach &&
+                    r.y - reach <= pointer.y &&
+                    pointer.y < r.y + r.h + reach
+                );
+            })
+            .map(({ key }) => key);
+        const seams = seamsOn(g, null).filter(({ a, b }) => near.includes(a) || near.includes(b));
+        return [
+            ...near.flatMap((item) => splitTargets(g, item)),
+            ...near.flatMap(memberTargets),
+            ...seams.map((seam) => seamTarget(g, seam)),
+        ];
+    }
+
+    /** How far `point` is from `target`: from a dot's middle, or from a pill's line. */
+    function distanceTo(target, point) {
+        const dx = point.x - target.at.x;
+        const dy = point.y - target.at.y;
+        if (target.kind === "split") {
+            return Math.hypot(dx, dy);
+        }
+        const along = Math.max(0, Math.abs(target.vertical ? dy : dx) - target.length / 2);
+        return Math.hypot(along, target.vertical ? dx : dy);
+    }
+
+    /** The target within reach of `point`, the nearest if several are, or `null`. */
+    function targetAt(targets, point) {
+        const reached = targets.filter((target) => distanceTo(target, point) < TARGET_REACH);
+        return minBy(reached, (target) => [distanceTo(target, point)]);
+    }
+
+    /** The target nearest to `point`, however far, or `null`. */
+    function nearestTarget(targets, point) {
+        return minBy(targets, ({ at }) => [Math.hypot(at.x - point.x, at.y - point.y)]);
+    }
+
+    /** Where a target is drawn, larger when it's the one picked or under the pointer. */
+    function targetRect(target, current) {
+        let w;
+        let h;
+        if (target.kind === "split") {
+            w = h = current ? TARGET_DOT_ACTIVE : TARGET_DOT;
+        } else {
+            const thickness = current ? TARGET_PILL_ACTIVE : TARGET_PILL;
+            [w, h] = target.vertical ? [thickness, target.length] : [target.length, thickness];
+        }
+        return { x: pixel(target.at.x - w / 2), y: pixel(target.at.y - h / 2), w, h };
+    }
+
+    /** Draws `targets`, with `current` stood out, and takes away the ones drawn before. */
+    function drawTargets(targets, current) {
+        const color = opaque(options("hint-color"));
+        const keys = new Set();
+        for (const target of targets) {
+            keys.add(target.key);
+            let node = targetNodes.get(target.key);
+            if (node === undefined) {
+                node = bento.createNode("box", {
+                    transitions: {
+                        rect: TARGET_MOTION,
+                        opacity: TARGET_MOTION,
+                        cornerRadius: TARGET_MOTION,
+                    },
+                    enter: { opacity: 0 },
+                });
+                targetNodes.set(target.key, node);
+                targetLayer.append(node);
+            }
+            const on = target.key === current?.key;
+            const rect = targetRect(target, on);
+            node.set({
+                rect,
+                cornerRadius: Math.min(rect.w, rect.h) / 2,
+                background: color,
+                // So that it shows on windows of its own color.
+                border: { width: 1, color: TARGET_OUTLINE },
+                opacity: on ? 1 : TARGET_IDLE_OPACITY,
+            });
+        }
+        for (const [key, node] of targetNodes) {
+            if (!keys.has(key)) {
+                node.remove();
+                targetNodes.delete(key);
             }
         }
-        return best;
+        raiseOverlay();
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Stuffing a window between two others
+    // ---------------------------------------------------------------------------------------------
+    //
+    // A seam is where two windows touch, side by side or stacked. Stuffing a window into a seam
+    // splits the span of the two windows in three: they keep their outer edges and shrink towards
+    // each other, and the window takes the middle third, along the part of the seam they share.
+    // A window can also be stuffed between two windows of a group, which it joins.
 
     /**
      * New areas for stuffing `item` into `seam` on `g`, with `item` already out of it: pairs for
@@ -3415,80 +3664,89 @@ function createSpace(bento, ws) {
         ];
     }
 
-    /** Where `item` would end up stuffed into `seam`, after pushing and gravity, or `null`. */
-    function stuffPreview(item, seam) {
-        const g = grid.clone();
-        g.remove(item);
-        const plan = stuffPlan(g, item, seam);
-        if (plan === null) return null;
-        g.place(plan);
-        return areaRect(g.area(item));
+    /** Middle of an item on the canvas. */
+    function middleOf(item) {
+        const r = itemRect(item);
+        return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     }
 
-    /** Keeps the seam picked for `stuff` valid as windows change, or cancels. */
-    function checkSeam() {
-        const seams = seamsFor(picking.first);
-        if (!seams.some((seam) => sameSeam(seam, picking.seam))) {
-            const seam = nearestSeam(seams, centerOf(grid.area(picking.first)));
-            picking = seam === null ? null : { ...picking, seam };
-        }
+    /** Keeps the target picked for `stuff` where it is as windows change, or cancels. */
+    function checkTarget() {
+        const targets = stuffTargets(picking.first);
+        const target =
+            targets.find(({ key }) => key === picking.target.key) ??
+            nearestTarget(targets, middleOf(picking.first));
+        picking = target === null ? null : { ...picking, target };
     }
 
-    /** Moves the seam picked for `stuff` to the nearest one in `dir`. */
-    function moveSeam(dir) {
-        const from = seamPoint(picking.seam);
-        const ahead = seamsFor(picking.first).filter((seam) => {
-            const p = seamPoint(seam);
-            return { [Left]: p.x < from.x, [Right]: p.x > from.x, [Up]: p.y < from.y, [Down]: p.y > from.y }[dir];
+    /** Moves the target picked for `stuff` to the nearest one in `dir`. */
+    function moveTarget(dir) {
+        const from = picking.target.at;
+        const ahead = stuffTargets(picking.first).filter(({ at }) => {
+            return { [Left]: at.x < from.x, [Right]: at.x > from.x, [Up]: at.y < from.y, [Down]: at.y > from.y }[dir];
         });
-        // Prefer seams straight ahead over ones off to the side.
-        let best = null;
-        let bestScore = Infinity;
-        for (const seam of ahead) {
-            const p = seamPoint(seam);
-            const along = isHorizontal(dir) ? Math.abs(p.x - from.x) : Math.abs(p.y - from.y);
-            const across = isHorizontal(dir) ? Math.abs(p.y - from.y) : Math.abs(p.x - from.x);
-            const score = along + across * 2;
-            if (score < bestScore) {
-                best = seam;
-                bestScore = score;
-            }
-        }
+        // Prefer targets straight ahead over ones off to the side.
+        const best = minBy(ahead, ({ at }) => {
+            const along = isHorizontal(dir) ? Math.abs(at.x - from.x) : Math.abs(at.y - from.y);
+            const across = isHorizontal(dir) ? Math.abs(at.y - from.y) : Math.abs(at.x - from.x);
+            return [along + across * 2];
+        });
         if (best !== null) {
-            picking = { ...picking, seam: best };
+            picking = { ...picking, target: best };
         }
     }
 
     /**
-     * Starts picking a seam for the focused window, starting with the nearest one, or puts the
-     * window into the picked seam.
+     * Starts picking a target for the focused window, starting with the nearest one, or puts the
+     * window there.
      */
     function stuff() {
         if (picking?.action === "stuff") {
-            const { first, seam } = picking;
+            const { first, target } = picking;
             picking = null;
-            const g = grid.clone();
-            g.remove(first);
-            const plan = stuffPlan(g, first, seam);
-            return (
-                plan !== null &&
-                changeGrid(() => {
-                    grid.remove(first);
-                    grid.place(plan);
-                    return true;
-                })
-            );
+            return stuffInto(first, target);
         }
 
         if (active === null || modeOf(active) !== "normal") {
             return false;
         }
-        const seam = nearestSeam(seamsFor(active), centerOf(grid.area(active)));
-        if (seam === null) {
+        const target = nearestTarget(stuffTargets(active), middleOf(active));
+        if (target === null) {
             return false;
         }
-        picking = { action: "stuff", first: active, seam };
+        picking = { action: "stuff", first: active, target };
         return true;
+    }
+
+    /** Puts `item` where `target` says: into a seam, or into a group. */
+    function stuffInto(item, target) {
+        if (target.kind === "member") {
+            const { item: into, index } = target;
+            if (!items.includes(into) || index > into.windows.length) return false;
+            return changeGrid(() => {
+                const wasActive = active === item;
+                takeItem(item);
+                into.windows.splice(index, 0, ...item.windows);
+                if (wasActive) {
+                    into.active = index;
+                    active = into;
+                } else if (index <= into.active) {
+                    into.active += item.windows.length;
+                }
+                return true;
+            });
+        }
+        const g = grid.clone();
+        g.remove(item);
+        const plan = stuffPlan(g, item, target.seam);
+        return (
+            plan !== null &&
+            changeGrid(() => {
+                grid.remove(item);
+                grid.place(plan);
+                return true;
+            })
+        );
     }
 
     /** Swaps the cells of two windows, so that each takes the other's place and size. */
@@ -3806,18 +4064,19 @@ function createSpace(bento, ws) {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Where a window dragged to `rect` with the pointer at `pointer` drops on grid `g`, as
-     * `{ area, split }`.
+     * Where a window dragged to `rect` with the pointer at `pointer` drops on grid `g`, when it
+     * isn't on a target for a seam or a group, as `{ area, split }`.
      *
-     * Holding the pointer close to an edge of another window splits that window: the dropped
-     * window takes the half of its cells on that side, and `split` is `[item, area]` with the
-     * other half. Otherwise the window goes to the cells nearest to its top-left corner, at its
-     * size, and `area` is where it lands after pushing and gravity.
+     * On the dot near an edge of another window, it splits that window: the dropped window takes
+     * the half of its cells on that side, and `split` is `[item, area]` with the other half.
+     * Otherwise the window goes to the cells nearest to its top-left corner, at its size, and
+     * `area` is where it lands after pushing and gravity.
      */
     function dropPlan(g, pointer, rect) {
-        const split = pointer ? splitAt(g, pointer) : null;
-        if (split !== null) {
-            return split;
+        const target = dropTargetAt(g, pointer);
+        if (target?.kind === "split") {
+            const [dropped, kept] = splitAreas(g.area(target.item), target.dir);
+            return { area: dropped, split: [target.item, kept] };
         }
 
         const m = metrics;
@@ -3832,42 +4091,9 @@ function createSpace(bento, ws) {
         return { area: preview.area(probe), split: null };
     }
 
-    /**
-     * The split for a window dropped with the pointer at `pointer`: over another window, close to
-     * one of its edges.
-     *
-     * The edges are a cell deep, or a quarter of the window for small windows, so that dropping
-     * in the middle always drops normally. A window one cell wide or tall can't be split that way.
-     */
-    function splitAt(g, pointer) {
-        const { x, y } = pointer;
-        const m = metrics;
-
-        const under = g.items.find(({ area }) => {
-            const r = areaRect(area);
-            return r.x <= x && x < r.x + r.w && r.y <= y && y < r.y + r.h;
-        });
-        if (!under || modeOf(under.key) !== "normal") {
-            return null;
-        }
-
-        const { key: item, area } = under;
-        const r = areaRect(area);
-        const zoneW = Math.min(r.w / 4, m.cellW);
-        const zoneH = Math.min(r.h / 4, m.cellH);
-        const edges = [
-            { dir: Left, dist: x - r.x, zone: zoneW, span: area.cols },
-            { dir: Right, dist: r.x + r.w - x, zone: zoneW, span: area.cols },
-            { dir: Up, dist: y - r.y, zone: zoneH, span: area.rows },
-            { dir: Down, dist: r.y + r.h - y, zone: zoneH, span: area.rows },
-        ].filter((e) => e.span >= 2 && e.dist < e.zone);
-        const edge = minBy(edges, (e) => [e.dist / e.zone]);
-        if (edge === null) {
-            return null;
-        }
-
-        const [dropped, kept] = splitAreas(area, edge.dir);
-        return { area: dropped, split: [item, kept] };
+    /** The target that a window dragged with the pointer at `pointer` is on, on `g`, or `null`. */
+    function dropTargetAt(g, pointer) {
+        return pointer ? targetAt(dragTargets(g, pointer), pointer) : null;
     }
 
     /**
@@ -3901,29 +4127,52 @@ function createSpace(bento, ws) {
         }
     }
 
-    /** The cells a dragged window would land on, to highlight them. */
-    function dropTarget(win, pointer, rect) {
-        // The dragged window doesn't count, in case it's still in the layout.
+    /** The grid without `win`, which is being dragged, in case it's still in the layout. */
+    function gridWithout(win) {
         const g = grid.clone();
         const own = itemOf(win);
         if (own !== null) {
             g.remove(own);
         }
+        return g;
+    }
 
+    /**
+     * Shows where a window dragged to `rect` with the pointer at `pointer` can go: the targets
+     * around the pointer, the one it's on stood out, and when it's on none, the cells it lands on.
+     */
+    function dragOver(win, pointer, rect) {
+        const g = gridWithout(win);
+        const targets = pointer ? dragTargets(g, pointer) : [];
+        const current = pointer ? targetAt(targets, pointer) : null;
+        dragging = { targets, current };
+        drawTargets(targets, current);
+        showHint("drop", current === null ? landing(win, pointer, rect) : null);
+    }
+
+    function dragLeave() {
+        dragging = null;
+        drawTargets([], null);
+        showHint("drop", null);
+    }
+
+    /** The cells a dragged window would land on, to highlight them. */
+    function landing(win, pointer, rect) {
+        const g = gridWithout(win);
         const plan = dropPlan(g, pointer, rect);
         const probe = {};
         g.place([[probe, plan.area], ...(plan.split ? [plan.split] : [])]);
-        const landing = areaRect(g.area(probe));
+        const cells = areaRect(g.area(probe));
 
         if (g.length > 1) {
-            return landing;
+            return cells;
         }
 
         // The first window on an empty workspace moves the camera, see `addWindow`. Show the
         // highlight where the window will be on screen then.
         const fit = isCentering() ? computeCentered : computeFit;
-        const camera = landing.x + fit(landing.x, landing.x, landing.w, "normal");
-        return { ...landing, x: landing.x - camera + ws.camera.x };
+        const camera = cells.x + fit(cells.x, cells.x, cells.w, "normal");
+        return { ...cells, x: cells.x - camera + ws.camera.x };
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -4251,8 +4500,6 @@ function createSpace(bento, ws) {
                 ? changeGrid(() => expelMember(item, item.active, Right))
                 : changeGrid(() => expel(item, Right));
         },
-        "toggle-group": () => active !== null && setGrouped(!isGroup(active)),
-        "set-group": ([grouped]) => setGrouped(grouped === true),
 
         "center": () => centerColumn(),
         "center-visible": () => centerVisibleColumns(),
@@ -4285,7 +4532,7 @@ function createSpace(bento, ws) {
                 "focus-down": Down,
             }[name];
             if (dir !== undefined) {
-                moveSeam(dir);
+                moveTarget(dir);
                 return true;
             }
             picking = null;
@@ -4378,10 +4625,16 @@ function createSpace(bento, ws) {
 
         // Dragging windows over the workspace.
 
-        dragOver(win, pointer, rect) {
-            showHint("drop", dropTarget(win, pointer, rect));
+        dragOver,
+        dragLeave,
+
+        // Grouping, see `pickToGroup`.
+        showGroupPicks(wins) {
+            groupPicks = wins.filter((win) => itemOf(win) !== null);
+            flush();
         },
-        dragLeave: () => showHint("drop", null),
+        gather: changes(gather),
+        leaveGroup: changes(leaveGroup),
 
         newWindowSize,
 
@@ -4547,12 +4800,74 @@ export default function create(bento) {
         return true;
     }
 
+    // Grouping. The `group` action picks the focused window, or unpicks it, while the keys held
+    // for it stay down, so that more can be picked by focusing them and pressing the key again.
+    // Letting go of the keys groups the picked windows where the first one is, and a single
+    // picked window leaves its group. Without keys held, like from the command line, it happens
+    // at once.
+
+    /** `{ mods, windows }`: the keys held for the first pick, and the windows picked, in order. */
+    let grouping = null;
+
+    /** Whether any of the keys in `mods` is still held in `now`. */
+    const stillHeld = (mods, now) => Object.keys(mods).some((key) => mods[key] && now[key]);
+
+    function pickToGroup(win) {
+        if (win === null || win === undefined || spaceWith(win) === undefined) {
+            return false;
+        }
+        grouping ??= { mods: { ...bento.modifiers }, windows: [] };
+        const at = grouping.windows.indexOf(win);
+        if (at === -1) {
+            grouping.windows.push(win);
+        } else {
+            grouping.windows.splice(at, 1);
+        }
+        if (stillHeld(grouping.mods, bento.modifiers)) {
+            showGroupPicks();
+        } else {
+            finishGrouping();
+        }
+        return true;
+    }
+
+    function finishGrouping() {
+        const picked = grouping.windows.filter((win) => spaceWith(win) !== undefined);
+        grouping = null;
+        showGroupPicks();
+        const [first, ...others] = picked;
+        if (first === undefined) {
+            return;
+        }
+        // Windows on other workspaces stay where they are.
+        const space = spaceWith(first);
+        if (others.length === 0) {
+            space.leaveGroup(first);
+        } else {
+            space.gather(first, others.filter((win) => spaceWith(win) === space));
+        }
+    }
+
+    function showGroupPicks() {
+        const picked = grouping?.windows ?? [];
+        for (const space of spaces.values()) {
+            space.showGroupPicks(picked);
+        }
+    }
+
+    bento.addEventListener("modifierschange", (e) => {
+        if (grouping !== null && !stillHeld(grouping.mods, e.modifiers)) {
+            finishGrouping();
+        }
+    });
+
     /**
      * Actions that go on to another monitor or workspace, alone or when the grid can't do what
      * they say. The others are the space's own. Each gets the workspace, its space, the window
      * the action is for and the arguments.
      */
     const across = {
+        group: (ws, space, target) => pickToGroup(target ?? ws.focused),
         "focus-left-or-monitor": (ws, space, target) =>
             space.action("focus-left", [], target) || focusMonitor(ws.monitor.left),
         "focus-right-or-monitor": (ws, space, target) =>
@@ -4686,6 +5001,11 @@ function computeNewViewOffset(curX, viewWidth, newColX, newColWidth, gaps) {
 /** Middle of an area, in cells. */
 function centerOf(area) {
     return { x: area.col + area.cols / 2, y: area.row + area.rows / 2 };
+}
+
+/** `color` without its alpha, if it has one. */
+function opaque(color) {
+    return color.length === 9 ? color.slice(0, 7) : color.length === 5 ? color.slice(0, 4) : color;
 }
 
 /** Splits `total` cells in three, as evenly as possible, giving the middle the extra cell first. */

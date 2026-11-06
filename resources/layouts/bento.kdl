@@ -134,8 +134,10 @@ binds {
     Mod+Shift+Minus { set-height "-10%"; }
     Mod+Shift+Equal { set-height "+10%"; }
 
-    // Group the focused window with its stack, or split its group into a stack.
-    Mod+W { toggle-group; }
+    // While holding Mod, each press picks the focused window, or unpicks it; letting go of Mod
+    // groups the picked windows where the first one is. Picking one window of a group alone
+    // takes it out.
+    Mod+W { group; }
 
     // Actions on two windows. Each takes two presses: the first picks the focused window, then
     // focus another window and press again.
@@ -145,8 +147,9 @@ binds {
     // Swap two windows.
     Mod+X { swap; }
 
-    // Squeeze the focused window between two others. While it shows where the window would
-    // go, focusing in a direction picks another place, and pressing again puts it there.
+    // Squeeze the focused window between two others, or into a group between two of its
+    // windows. It shows the places it can go, one picked; focusing in a direction picks another,
+    // and pressing again puts it there.
     Mod+G { stuff; }
 
     // These go on like the focus actions above, and where the grid ends, on to the monitor to

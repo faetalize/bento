@@ -516,8 +516,7 @@ Window sizes snap to whole cells.
 Its actions are named for what they do on the grid, and `bento msg engine` lists them all with what each does.
 `focus-left`, `focus-right`, `focus-up` and `focus-down` go to the nearest window that way, even diagonally, and `move-left` and the rest move the focused window one cell, swapping with a window in the way.
 In a group, `focus-left` and `focus-right` first go through its windows, and `move-left` and `move-right` reorder them.
-A window's stack is the windows covering the same column of cells: `stack-from-right` stacks the window on the right under the focused one and `unstack` takes the focused one out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-group` makes it a group.
-Stacking never groups windows: only grouping does.
+A window's stack is the windows covering the same column of cells: `stack-from-right` stacks the window on the right under the focused one and `unstack` takes the focused one out, `focus-stack-top` and `focus-in-stack N` move within it, and stacking never groups windows.
 `set-width`, `set-height`, `cycle-width` and `cycle-height` size the focused window in whole cells.
 Actions like `focus-index N` count the places where windows start, from left to right starting at 1.
 
@@ -538,12 +537,17 @@ The engine's other options are in its file too, written at their defaults.
 `hint-color` is the color of the hints.
 Its window rules set `default-width`, `default-height` and `open-full-width`.
 
-`toggle-group` makes the windows of a stack one bento group, which shares their area as a carousel: the active window takes most of it, and the others show as slits of their middle beside it, in order, half of the gaps apart.
+`group` groups windows, as a bento group: while you hold the keys of its bind, each press picks the focused window, or unpicks it, and letting go of them groups the picked windows where the first one is.
+Picking one window of a group alone takes it out, and picking windows of other groups moves them.
+A group shares its area as a carousel: the active window takes most of it, and the others show as slits of their middle beside it, in order, half of the gaps apart.
 Every window of a group is as large as the active one, so that activating one only moves it.
 An area is always wide enough for the smallest width its windows accept, with a group's slits beside it, and pushes the windows after it out of the way.
 Pointing at a slit widens it, and clicking it activates its window.
 A group made by bento's own group actions shows as a carousel in the area of its active window, and while a group is fullscreen or maximized, only its active window shows.
-Dragging a window shows where it would land, and double-clicking the left or right edge of a window toggles its full width, and the top or bottom edge its full height.
+Dragging a window shows the targets around the pointer: a round dot inside each edge of a window, which splits it and gives the dragged window the half on that side, a pill on each edge two windows share, which stuffs the dragged window between them, and a pill between two windows of a group, which it joins there.
+Targets sit on the windows rather than in the gaps, so they work without gaps too.
+Away from them, it shows the cells the window would land on.
+Double-clicking the left or right edge of a window toggles its full width, and the top or bottom edge its full height.
 Swiping sideways scrolls the view, and snaps it to window edges when the fingers lift.
 
 It also has actions for two windows at a time:
@@ -557,9 +561,9 @@ The first press picks the focused window and highlights it with a node the engin
 Then focus another window as usual, and press again.
 Pressing again on the window you picked first cancels.
 
-`stuff` puts the focused window between two windows that touch, side by side or stacked.
-The first press highlights where the window would go, at the seam nearest to it.
-While the highlight is up, `focus-left`, `focus-right`, `focus-up` and `focus-down` move it to the next seam in that direction, and any other action cancels.
+`stuff` puts the focused window between two windows that touch, side by side or stacked, or between two windows of a group, which it joins.
+The first press highlights the window and shows a pill on each place it can go, the one nearest to it picked.
+`focus-left`, `focus-right`, `focus-up` and `focus-down` pick the next place in that direction, and any other action cancels.
 The second press puts the window there.
 
 Where the grid ends, actions go on to the monitor or workspace beside it:
