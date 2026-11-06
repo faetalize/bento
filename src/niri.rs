@@ -6786,6 +6786,9 @@ impl Niri {
 
         info!("locking session");
 
+        // The lock screen has the keyboard, not a search of windows.
+        self.layout.search_cancel();
+
         // If we have outputs, we need to redraw them before locking. But before we do that,
         // let's wait for the lock surfaces.
         //
