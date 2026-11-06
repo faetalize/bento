@@ -448,7 +448,6 @@ fn target_size() {
     // * default-width
     // * default-height
     // * border
-    // * default-tabs
 
     let open_fullscreen = [None, Some("false"), Some("true")];
     let want_fullscreen = [
@@ -474,7 +473,6 @@ fn target_size() {
         Some(DefaultSize::Fixed("500")),
     ];
     let border = [false, true];
-    let tabbed = [false, true];
 
     let mut powerset = Vec::new();
     for fs in open_fullscreen {
@@ -484,9 +482,7 @@ fn target_size() {
                     for dw in default_column_width {
                         for dh in default_window_height {
                             for b in border {
-                                for t in tabbed {
-                                    powerset.push((fs, wfs, om, of, dw, dh, b, t));
-                                }
+                                powerset.push((fs, wfs, om, of, dw, dh, b));
                             }
                         }
                     }
@@ -497,8 +493,8 @@ fn target_size() {
 
     powerset
         .into_par_iter()
-        .for_each(|(fs, wfs, om, of, dw, dh, b, t)| {
-            check_target_size(fs, wfs, om, of, dw, dh, b, t);
+        .for_each(|(fs, wfs, om, of, dw, dh, b)| {
+            check_target_size(fs, wfs, om, of, dw, dh, b);
         });
 }
 
@@ -511,7 +507,6 @@ fn check_target_size(
     default_width: Option<DefaultSize>,
     default_height: Option<DefaultSize>,
     border: bool,
-    tabbed: bool,
 ) {
     let mut snapshot_desc = Vec::new();
     let mut snapshot_suffix = Vec::new();
@@ -573,10 +568,6 @@ window-rule {
         snapshot_suffix.push(String::from("b"));
     }
 
-    if tabbed {
-        writeln!(engine, "    default-tabs true").unwrap();
-    }
-
     config.push('}');
     engine.push('}');
 
@@ -586,10 +577,6 @@ window-rule {
             snapshot_desc.push(format!("want fullscreen: {x}"));
             snapshot_suffix.push(format!("wfs{x}"));
         }
-    }
-
-    if tabbed {
-        snapshot_suffix.push(String::from("t"));
     }
 
     snapshot_desc.push(format!("config:{config}"));

@@ -14,10 +14,10 @@
 //    `Grid`, `Area` and `CellMetrics` are exported so that tests can check them on
 //    their own.
 // 2. The engine: it runs once for the whole session and keeps a space for each workspace, with
-//    one item on its grid per window, or per tabbed area of several windows, and maps the grid
-//    onto window rects, focus, the camera and actions. Actions that cross from one workspace or
-//    monitor to another are handled between spaces. Tabbed areas are bento groups, and the tab
-//    bars and hints are drawn with nodes.
+//    one item on its grid per window, or per group of several windows sharing an area, and maps
+//    the grid onto window rects, focus, the camera and actions. Actions that cross from one
+//    workspace or monitor to another are handled between spaces. Groups are bento groups, drawn
+//    as a carousel, and the carousels and hints are drawn with nodes.
 //
 // Coordinates: column 0 of the grid starts at x = 0 on the canvas, and the camera's x is where
 // the left edge of the view is, so a window in column 0 shows at the left edge of the view when
@@ -45,8 +45,12 @@ export const meta = {
     // Every action, bound by name in engines/bento.kdl. A window's stack is the windows covering
     // the same column of cells, and places are where windows start, counting from the left.
     actions: {
-        "focus-left": { description: "Focus the nearest window to the left." },
-        "focus-right": { description: "Focus the nearest window to the right." },
+        "focus-left": {
+            description: "Focus the window to the left in the focused group, or the nearest window to the left.",
+        },
+        "focus-right": {
+            description: "Focus the window to the right in the focused group, or the nearest window to the right.",
+        },
         "focus-first": { description: "Focus the leftmost window in the row." },
         "focus-last": { description: "Focus the rightmost window in the row." },
         "focus-right-or-first": {
@@ -64,10 +68,10 @@ export const meta = {
             args: INDEX,
         },
         "focus-down": {
-            description: "Focus the next tab down, or the nearest window below, even diagonally.",
+            description: "Focus the nearest window below, even diagonally.",
         },
         "focus-up": {
-            description: "Focus the next tab up, or the nearest window above, even diagonally.",
+            description: "Focus the nearest window above, even diagonally.",
         },
         "focus-down-or-left": {
             description: "Focus the window right below, or the nearest window to the left.",
@@ -92,10 +96,10 @@ export const meta = {
             description: "Focus the window right above, or the bottom of the stack from the top.",
         },
         "move-left": {
-            description: "Move the focused window one cell left, swapping with a window in the way.",
+            description: "Move the focused window left in its group, or one cell left, swapping with a window in the way.",
         },
         "move-right": {
-            description: "Move the focused window one cell right, swapping with a window in the way.",
+            description: "Move the focused window right in its group, or one cell right, swapping with a window in the way.",
         },
         "move-first": {
             description: "Move the focused window to the start of its rows, pushing others right.",
@@ -108,29 +112,20 @@ export const meta = {
             args: INDEX,
         },
         "move-down": {
-            description: "Move the focused window one cell down, or its tab down among its tabs.",
+            description: "Move the focused window one cell down.",
         },
         "move-up": {
-            description: "Move the focused window one cell up, or its tab up among its tabs.",
-        },
-        "stack-left": {
-            description: "Stack the window under the one to its left, or take it out of its stack.",
-        },
-        "stack-right": {
-            description: "Stack the window under the one to its right, or take it out of its stack.",
+            description: "Move the focused window one cell up.",
         },
         "stack-from-right": {
             description: "Stack the window to the right under the focused one.",
         },
         "unstack": {
-            description: "Take the focused window out of its stack or its tabs, to the right.",
+            description: "Take the focused window out of its stack or its group, to the right.",
         },
-        "toggle-tabs": {
-            description: "Switch the focused window's area between tabs and a single window.",
-        },
-        "set-tabs": {
-            description: "Show the focused window's area as tabs or not.",
-            args: [{ name: "tabbed", type: "boolean" }],
+        "group": {
+            description:
+                "Pick the focused window to group, or unpick it. Letting go of the keys held groups the picked windows where the first one is; one picked window leaves its group.",
         },
         "center": { description: "Center the focused window in the view." },
         "center-visible": {
@@ -188,7 +183,7 @@ export const meta = {
             description: "Move the focused window one cell down, or to the workspace below when it can't.",
         },
         "move-to-workspace": {
-            description: "Move the focused window, with its tabs, to a workspace of the focused monitor.",
+            description: "Move the focused window, with its group, to a workspace of the focused monitor.",
             args: [
                 {
                     name: "workspace",
@@ -198,7 +193,7 @@ export const meta = {
             ],
         },
         "move-to-monitor": {
-            description: "Move the focused window, with its tabs, to the active workspace of a monitor.",
+            description: "Move the focused window, with its group, to the active workspace of a monitor.",
             args: [{ name: "monitor", type: "monitor", description: "A connector name, like DP-2." }],
         },
 
@@ -245,41 +240,6 @@ export const meta = {
             default: ["33.333%", "50%", "66.667%"],
             description: "The heights that cycling heights goes through.",
         },
-        "default-tabs": {
-            type: "boolean",
-            default: false,
-            description: "Open new windows as the tabs of an area of their own.",
-        },
-        "tab-bar": {
-            type: "boolean",
-            default: true,
-            description: "Draw a tab bar along tabbed areas.",
-        },
-        "tab-bar-width": {
-            type: "number",
-            default: 4,
-            description: "How thick the tab bar is.",
-        },
-        "tab-bar-gap": {
-            type: "number",
-            default: 5,
-            description: "The space between the tab bar and its area.",
-        },
-        "tab-bar-active-color": {
-            type: "color",
-            default: "#7fc8ff",
-            description: "The color of the tab that shows.",
-        },
-        "tab-bar-inactive-color": {
-            type: "color",
-            default: "#505050",
-            description: "The color of the other tabs.",
-        },
-        "tab-bar-urgent-color": {
-            type: "color",
-            default: "#9b0000",
-            description: "The color of a tab whose window is urgent.",
-        },
         "hint-color": {
             type: "color",
             default: "#7fc8ff80",
@@ -296,11 +256,6 @@ export const meta = {
             type: "size",
             default: null,
             description: "The height the window opens with. Left out, as tall as the grid.",
-        },
-        "default-tabs": {
-            type: "boolean",
-            default: false,
-            description: "Open the window as the tabs of an area of its own.",
         },
         "open-full-width": {
             type: "boolean",
@@ -1221,10 +1176,36 @@ export function nextPresetSpan(current, spans, forwards) {
 
 /** How many windows that left to float or be dragged elsewhere to remember the size of. */
 const REMEMBERED_WINDOWS = 64;
-/** Space between the tabs of a tab bar, in logical pixels. */
-const TAB_SPACING = 2;
+/** Width of the windows of a group that aren't active, which show as slits of their middle. */
+const SLIT_WIDTH = 40;
+/** How much wider a slit gets under the pointer, towards the active window. */
+const SLIT_PEEK = 16;
+const SLIT_CORNER_RADIUS = 12;
+/**
+ * How far past its window the active window of a group is clipped, so that its border and shadow,
+ * which bento draws outside the window, aren't cut off.
+ */
+const ACTIVE_CLIP_MARGIN = 64;
 /** Corner radius of the hints. */
 const HINT_CORNER_RADIUS = 8;
+/** Diameter of the dots that split a window, and of the one under the pointer. */
+const TARGET_DOT = 20;
+const TARGET_DOT_ACTIVE = 28;
+/** Thickness of the pills of seams and groups, and of the one picked or under the pointer. */
+const TARGET_PILL = 8;
+const TARGET_PILL_ACTIVE = 12;
+/** Shortest and longest pill, which is otherwise a third of the edge it's on. */
+const TARGET_PILL_MIN = 48;
+const TARGET_PILL_MAX = 160;
+/** How far inside a window the dots that split it are from its edges, at most. */
+const TARGET_INSET = 40;
+/** How close the pointer has to be to a target for a window to drop on it. */
+const TARGET_REACH = 32;
+/** Opacity of the targets that aren't picked or under the pointer. */
+const TARGET_IDLE_OPACITY = 0.6;
+const TARGET_OUTLINE = "#00000059";
+/** How targets grow, shrink and fade: quickly, without overshooting. */
+const TARGET_MOTION = { duration: 150, curve: "ease-out-cubic" };
 /** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
 const SWIPE_DECELERATION = 0.997;
 
@@ -1237,8 +1218,8 @@ function createSpace(bento, ws) {
     // State
     // ---------------------------------------------------------------------------------------------
 
-    // Every window is an item on the grid of its own, except for tabs: a tabbed area is one item
-    // with several windows, of which one shows. Items are the keys of the grid.
+    // Every window is an item on the grid of its own, except for groups: a group is one item with
+    // several windows, which share its area as a carousel. Items are the keys of the grid.
     //
     // An item also keeps the size the user or window rules chose, which carries over to grids
     // with different cells, like on another monitor:
@@ -1249,7 +1230,7 @@ function createSpace(bento, ws) {
     //   from a window rule, or `{ cells: n, of }` when the window was resized on a grid that was
     //   `of` cells across. `null` follows the width, or takes the full height.
 
-    /** Cell grid, with one item per window or tabbed area. */
+    /** Cell grid, with one item per window or group. */
     let grid = new Grid(DEFAULT_ROWS);
     /** Items sorted top-left first by their place on the grid, see `sync`. */
     let items = [];
@@ -1267,11 +1248,39 @@ function createSpace(bento, ws) {
     let swiping = false;
     /** Speed to continue into the camera's animation, in px/s, while a swipe ends. */
     let cameraVelocity = 0;
-    /** The nodes that draw each tabbed area's tab bar, by item key. */
-    const tabNodes = new Map();
+    /**
+     * The nodes that draw each group's carousel, by item key: `{ container, clips }`, with a box
+     * that clips each window of the group, by window id, in the container.
+     */
+    const carousels = new Map();
+    /** Id of the window whose slit is under the pointer. */
+    let peeked = null;
+    /** Boxes of carousels that are gone, which wait for the windows closing in them, see `drop`. */
+    const leftovers = new Set();
     /** The nodes that highlight a picked window, and where a dragged window would land. */
     let hintNode = null;
     let dropNode = null;
+    /** The targets drawn for stuffing or a drag, by key, see `drawTargets`. */
+    const targetNodes = new Map();
+    /**
+     * The window being dragged over the workspace, by id, with what `dragOver` works out once
+     * for it, the targets it shows and the one it's on.
+     */
+    let dragging = null;
+    /** Windows picked for grouping, see `pickToGroup`, and the nodes that highlight them. */
+    let groupPicks = [];
+    const groupPickNodes = new Map();
+    /**
+     * What's drawn above the windows, in layers: the hints, the picks for grouping, then the
+     * targets. It stays last in the tree, see `raiseOverlay`.
+     */
+    const overlay = bento.createNode("box");
+    const hintLayer = bento.createNode("box");
+    const pickLayer = bento.createNode("box");
+    const targetLayer = bento.createNode("box");
+    overlay.append(hintLayer);
+    overlay.append(pickLayer);
+    overlay.append(targetLayer);
     /** What the space told the outside about itself last, see `exposed()`. */
     let lastExposed = null;
     /** Size of windows that left to float or to be dragged, by window id, for when they're back. */
@@ -1317,15 +1326,13 @@ function createSpace(bento, ws) {
 
     function makeItem(windows, intent) {
         return {
-            /** Key of the item's tab bar, see `flush`. */
+            /** Key of the item's carousel, see `flush`. */
             key: `area-${nextItemId++}`,
             windows,
             /** The bento group of the windows, when there are several, see `syncGroups`. */
             group: null,
-            /** Index of the tab that shows. */
+            /** Index of the active window. */
             active: 0,
-            // Like niri, the window rules can make a new area tabbed.
-            tabbed: displayOf(windows[0]) === "tabbed",
             width: intent.width,
             fullWidth: intent.fullWidth,
             cols: intent.cols,
@@ -1345,11 +1352,10 @@ function createSpace(bento, ws) {
     const rulesWidth = (rules) =>
         rules["default-width"] !== undefined ? rules["default-width"] : options("default-width");
     const rulesHeight = (rules) => rules["default-height"] ?? null;
-    const rulesTabs = (rules) => rules["default-tabs"] ?? options("default-tabs");
 
-    /** Whether a new area of `win` is tabbed: its window rule, or the option. */
-    function displayOf(win) {
-        return win !== undefined && win !== null && rulesTabs(win.rules) ? "tabbed" : "normal";
+    /** Whether `item` is a group: several windows sharing its area. */
+    function isGroup(item) {
+        return item.windows.length > 1;
     }
 
     function intentOf(item) {
@@ -1461,9 +1467,48 @@ function createSpace(bento, ws) {
         return [cols, rows];
     }
 
-    /** Grid size `[cols, rows]` that an item should have, from the size of its window. */
+    /**
+     * Grid size `[cols, rows]` that an item should have, from the size of its window, and at
+     * least as wide as its windows need.
+     */
     function spanFor(item) {
-        return spanOf(item, item.windows[0].borders);
+        const [cols, rows] = spanOf(item, item.windows[0].borders);
+        return [Math.max(cols, minCols(item)), Math.max(rows, minRows(item))];
+    }
+
+    /**
+     * The size `win` needs, borders included: its minimum size, and once it has answered its
+     * placement, the size it took if that's more than it was given, since some windows refuse
+     * sizes without saying how small they can be.
+     */
+    function neededSize(win) {
+        let w = win.minSize.w > 0 ? win.minSize.w + win.borders.w : 0;
+        let h = win.minSize.h > 0 ? win.minSize.h + win.borders.h : 0;
+        if (win.settled && win.rect !== null && win.mode === "normal") {
+            if (win.size.w > win.rect.w) w = Math.max(w, win.size.w);
+            if (win.size.h > win.rect.h) h = Math.max(h, win.size.h);
+        }
+        return { w, h };
+    }
+
+    /** Fewest cells, each `cell` long with `gap` between, that `length` fits in, from 1. */
+    function cellsFor(length, cell, gap) {
+        // A hair under, so that a length that fits exactly doesn't round up a cell.
+        return Math.max(1, Math.ceil((length + gap) / (cell + gap) - 1e-6));
+    }
+
+    /**
+     * Fewest columns the windows of `item` fit in, from the width they need, with the slits of a
+     * group beside its active window.
+     */
+    function minCols(item) {
+        const width = Math.max(0, ...item.windows.map((win) => neededSize(win).w));
+        if (width === 0) {
+            return 1;
+        }
+        const others = item.windows.length - 1;
+        const slits = others * (SLIT_WIDTH + pixel(ws.config.gaps / 2));
+        return Math.min(cellsFor(width + slits, metrics.cellW, metrics.gap), MAX_COLS);
     }
 
     /**
@@ -1540,12 +1585,12 @@ function createSpace(bento, ws) {
         }
     }
 
-    /** Width of an item on screen, which the camera keeps in view, tab indicator included. */
+    /** Width of an item on screen, which the camera keeps in view. */
     function itemWidth(item) {
         return itemRect(item).w;
     }
 
-    /** Rect of the windows of an item. Tabs share the item's rect. */
+    /** Rect of the windows of an item. A group's windows share it, see `carouselLayout`. */
     function windowRect(item) {
         return itemRect(item);
     }
@@ -1580,6 +1625,19 @@ function createSpace(bento, ws) {
             if (modeOf(item) !== "normal") {
                 continue;
             }
+            // Windows that can't be as small as their area grow it, pushing the others aside.
+            const fewestCols = minCols(item);
+            if (grid.area(item).cols < fewestCols) {
+                grid.setArea(item, grid.area(item).with({ cols: fewestCols }), Right);
+            }
+            const fewestRows = minRows(item);
+            const narrow = grid.area(item);
+            if (narrow.rows < fewestRows) {
+                // Down, or up from the bottom of the grid.
+                const row = Math.min(narrow.row, metrics.rows - fewestRows);
+                const dir = narrow.row === row ? Down : Up;
+                grid.setArea(item, narrow.with({ row, rows: fewestRows }), dir);
+            }
             const area = grid.area(item);
             const [cols, rows] = spanFor(item);
             if (area.cols !== cols) {
@@ -1612,66 +1670,174 @@ function createSpace(bento, ws) {
         if (slot === "pick") hintNode = box;
         else dropNode = box;
         box.set({ rect, background: options("hint-color") });
-        // Last, so it's above the windows.
-        ws.tree.append(box);
+        if (box.parent !== hintLayer) {
+            hintLayer.append(box);
+        }
+        raiseOverlay();
+    }
+
+    /** Keeps what's drawn above the windows above them, and above windows that opened since. */
+    function raiseOverlay() {
+        if (ws.tree.children.at(-1) !== overlay) {
+            ws.tree.append(overlay);
+        }
     }
 
     /**
-     * Draws the tab bars of the areas in `bars`, `{ item, rect }` by item key, a segment for each
-     * tab along the left of the area, and takes away those of areas that don't have one.
+     * Where the windows of a group with several go, in their order: the active one as wide as the
+     * area leaves after the slits of the others, which show their middle. Gives `{ slot, rect }`
+     * for each, with `slot` the part of the area it shows in and `rect` the window's own, which is
+     * the same size for every window of the group, so that activating one only moves it.
      */
-    function drawTabBars(bars) {
-        const width = options("tab-bar-width");
-        const gap = options("tab-bar-gap");
-        for (const [key, { item, rect }] of bars) {
-            let nodes = tabNodes.get(key);
-            if (nodes === undefined) {
-                nodes = [];
-                tabNodes.set(key, nodes);
+    function carouselLayout(item, area) {
+        const others = item.windows.length - 1;
+        const gap = pixel(ws.config.gaps / 2);
+        // Slits take at most half of the area.
+        const slit = Math.max(0, Math.min(SLIT_WIDTH, pixel(area.w / 2 / others - gap)));
+        const width = area.w - others * (slit + gap);
+        let x = area.x;
+        return item.windows.map((_, i) => {
+            const slot = { x, y: area.y, w: i === item.active ? width : slit, h: area.h };
+            x += slot.w + gap;
+            // A slit shows the middle of its window.
+            const left = i === item.active ? slot.x : pixel(slot.x + (slit - width) / 2);
+            return { slot, rect: { x: left, y: area.y, w: width, h: area.h } };
+        });
+    }
+
+    /**
+     * Draws the carousels of the groups in `groups`, `{ item, area, places }` by item key, with
+     * `places` from `carouselLayout`, or `null` while the group covers the view and only its
+     * active window shows. Each window goes in a box that clips it to its slot, and windows whose
+     * group is gone go back to the tree's root. Runs before the windows are placed, so that a box
+     * can start from where its window was.
+     */
+    function drawCarousels(groups) {
+        for (const box of leftovers) {
+            drop(box);
+        }
+
+        for (const [key, { item, area, places }] of groups) {
+            let carousel = carousels.get(key);
+            if (carousel === undefined) {
+                carousel = { container: bento.createNode("box"), clips: new Map() };
+                carousels.set(key, carousel);
+                // Below what's drawn above the windows.
+                ws.tree.append(carousel.container, overlay.parent === ws.tree ? overlay : undefined);
             }
-            const count = item.windows.length;
-            while (nodes.length > count) nodes.pop().remove();
-            while (nodes.length < count) {
-                const index = nodes.length;
-                const node = bento.createNode("box", {
-                    interactive: true,
-                    cornerRadius: 2,
-                    transitions: { rect: "window-movement" },
-                });
-                node.addEventListener("click", () => clickTab(key, index));
-                nodes.push(node);
-                ws.tree.append(node);
+            const { container, clips } = carousel;
+            for (const [id, clip] of clips) {
+                if (!item.windows.some((win) => win.id === id)) {
+                    drop(clip);
+                    clips.delete(id);
+                }
             }
-            const step = rect.h / count;
+
             item.windows.forEach((win, i) => {
-                nodes[i].set({
-                    rect: {
-                        x: rect.x - gap - width,
-                        y: rect.y + i * step,
-                        w: width,
-                        h: Math.max(0, step - TAB_SPACING),
-                    },
-                    background: win.urgent
-                        ? options("tab-bar-urgent-color")
-                        : i === item.active
-                          ? options("tab-bar-active-color")
-                          : options("tab-bar-inactive-color"),
-                });
+                let clip = clips.get(win.id);
+                if (clip === undefined) {
+                    clip = bento.createNode("box", {
+                        clip: true,
+                        transitions: { rect: "window-movement", cornerRadius: "window-movement" },
+                        // From where the window was, so that it moves into its slot.
+                        enter: win.rect === null ? {} : { rect: win.rect, cornerRadius: 0 },
+                    });
+                    clip.addEventListener("click", () => clickSlit(win));
+                    clip.addEventListener("pointerenter", () => peek(win, true));
+                    clip.addEventListener("pointerleave", () => peek(win, false));
+                    clips.set(win.id, clip);
+                    container.append(clip);
+                }
+                clip.append(win.node);
+
+                const isActive = i === item.active;
+                if (isActive || places === null) {
+                    // Its border and shadow aren't cut, and it's below the slits that peek over it.
+                    const shown = places === null ? area : places[i].slot;
+                    const m = ACTIVE_CLIP_MARGIN;
+                    clip.set({
+                        rect: { x: shown.x - m, y: shown.y - m, w: shown.w + 2 * m, h: shown.h + 2 * m },
+                        cornerRadius: 0,
+                        interactive: false,
+                    });
+                    if (isActive && container.children[0] !== clip) {
+                        container.append(clip, container.children[0]);
+                    }
+                } else {
+                    const slot = { ...places[i].slot };
+                    if (win.id === peeked) {
+                        slot.w += SLIT_PEEK;
+                        if (i > item.active) slot.x -= SLIT_PEEK;
+                    }
+                    clip.set({ rect: slot, cornerRadius: SLIT_CORNER_RADIUS, interactive: true });
+                }
+                // Clicks on a slit are the engine's, which activates its window.
+                win.node.set({ input: isActive || places === null ? "app" : "engine" });
             });
         }
-        for (const [key, nodes] of tabNodes) {
-            if (!bars.has(key)) {
-                nodes.forEach((node) => node.remove());
-                tabNodes.delete(key);
+
+        for (const [key, { container }] of carousels) {
+            if (!groups.has(key)) {
+                drop(container);
+                carousels.delete(key);
             }
         }
     }
 
-    /** Clicking a tab activates its window. */
-    function clickTab(key, index) {
-        const win = items.find((item) => item.key === key)?.windows[index];
-        if (win !== undefined) {
+    /**
+     * Takes away a box of a carousel, putting the windows in it back in the tree's root, where the
+     * carousel is. A window that's closing is still in it until the engine has been told, and
+     * bento takes its node away, so the box waits in `leftovers` until then.
+     */
+    function drop(box) {
+        const windows = (node) =>
+            node.kind === "window" ? [node] : node.children.flatMap((child) => windows(child));
+        let closing = false;
+        for (const node of windows(box)) {
+            if (itemOf(node.window) === null) {
+                closing = true;
+            } else {
+                unclip(node.window);
+            }
+        }
+        if (closing) {
+            // It mustn't take clicks meanwhile.
+            box.set({ interactive: false });
+            for (const child of box.children) {
+                if (child.kind === "box") child.set({ interactive: false });
+            }
+            leftovers.add(box);
+        } else {
+            leftovers.delete(box);
+            box.remove();
+        }
+    }
+
+    /** Puts a window that's in a carousel back in the tree's root, where its carousel is. */
+    function unclip(win) {
+        const clip = win.node.parent;
+        if (clip === ws.tree || clip === null) {
+            return;
+        }
+        win.node.set({ input: "app" });
+        const carousel = clip.parent;
+        ws.tree.append(win.node, carousel?.parent === ws.tree ? carousel : undefined);
+    }
+
+    /** Clicking a slit activates its window. */
+    function clickSlit(win) {
+        if (itemOf(win) !== null) {
+            peeked = null;
             activateWindow(win);
+            flush();
+        }
+    }
+
+    /** The pointer went over a slit, or off it, which then shows more of its window. */
+    function peek(win, over) {
+        const now = over ? win.id : peeked === win.id ? null : peeked;
+        if (now !== peeked) {
+            peeked = now;
             flush();
         }
     }
@@ -1680,10 +1846,91 @@ function createSpace(bento, ws) {
     // Groups
     // ---------------------------------------------------------------------------------------------
     //
-    // The windows of a tabbed area are a group in bento, so that native group actions and tabbed
-    // areas are the same thing.
+    // The `group` action picks windows while the keys held for it stay down, see `pickToGroup`
+    // in the engine, and the space highlights the ones on its workspace and groups them.
 
-    /** Makes bento's groups match the areas with tabs: one group for the windows of each. */
+    /** Where `win` of `item` shows: its slit, or the item's rect. */
+    function shownRect(item, win) {
+        const rect = windowRect(item);
+        if (item.windows.length < 2 || modeOf(item) !== "normal") {
+            return rect;
+        }
+        return carouselLayout(item, rect)[item.windows.indexOf(win)].slot;
+    }
+
+    /** Highlights the windows picked for grouping, where they show. */
+    function drawGroupPicks() {
+        const ids = new Set();
+        for (const win of groupPicks) {
+            const item = itemOf(win);
+            if (item === null) continue;
+            ids.add(win.id);
+            let node = groupPickNodes.get(win.id);
+            if (node === undefined) {
+                node = bento.createNode("box", {
+                    cornerRadius: HINT_CORNER_RADIUS,
+                    transitions: { rect: "window-movement", opacity: TARGET_MOTION },
+                    enter: { opacity: 0 },
+                });
+                groupPickNodes.set(win.id, node);
+                pickLayer.append(node);
+            }
+            node.set({ rect: shownRect(item, win), background: options("hint-color") });
+        }
+        for (const [id, node] of groupPickNodes) {
+            if (!ids.has(id)) {
+                node.remove();
+                groupPickNodes.delete(id);
+            }
+        }
+        raiseOverlay();
+    }
+
+    /**
+     * Groups `others` with `first`, where `first` is: they join its group, or make one with it,
+     * after its windows, leaving their own. The focused window stays focused.
+     */
+    function gather(first, others) {
+        const into = itemOf(first);
+        const joining = others.filter((win) => {
+            const item = itemOf(win);
+            return item !== null && item !== into && modeOf(item) === "normal";
+        });
+        if (into === null || modeOf(into) !== "normal" || joining.length === 0) {
+            return false;
+        }
+        const focused = active?.windows[active.active] ?? null;
+        return changeGrid(() => {
+            for (const win of joining) {
+                const item = itemOf(win);
+                if (item.windows.length > 1) {
+                    removeMember(item, win);
+                } else {
+                    takeItem(item);
+                }
+                into.windows.push(win);
+            }
+            if (focused !== null && into.windows.includes(focused)) {
+                into.active = into.windows.indexOf(focused);
+                active = into;
+            }
+            return true;
+        });
+    }
+
+    /** Takes `win` out of its group, beside it to the right. */
+    function leaveGroup(win) {
+        const item = itemOf(win);
+        if (item === null || item.windows.length < 2) {
+            return false;
+        }
+        return changeGrid(() => expelMember(item, item.windows.indexOf(win), Right));
+    }
+    //
+    // The windows of an item are a group in bento, so that native group actions and the engine's
+    // own grouping are the same thing.
+
+    /** Makes bento's groups match the items with several windows: one group for each. */
     function syncGroups() {
         for (const item of items) {
             const wins = item.windows;
@@ -1704,7 +1951,7 @@ function createSpace(bento, ws) {
             }
             item.group = group;
         }
-        // Groups that aren't one area's tabs end, if all of their windows are on this grid.
+        // Groups that aren't one item's windows end, if all of their windows are on this grid.
         const wanted = new Set(items.map((item) => item.group).filter((group) => group !== null));
         for (const item of items) {
             for (const win of item.windows) {
@@ -1721,8 +1968,8 @@ function createSpace(bento, ws) {
     }
 
     /**
-     * Makes the grid show `group` the way it is: its windows as the tabs of one area, the one of
-     * its active window, with the group's active window shown. Returns whether anything changed.
+     * Makes the grid show `group` the way it is: its windows as one item, the one of its active
+     * window, with the group's active window active. Returns whether anything changed.
      */
     function matchGroup(group) {
         const item = itemOf(group.active);
@@ -1734,16 +1981,16 @@ function createSpace(bento, ws) {
             return false;
         }
 
-        const before = JSON.stringify([item.windows.map((win) => win.id), item.active, item.tabbed]);
+        const before = JSON.stringify([item.windows.map((win) => win.id), item.active]);
         const same =
             item.windows.length === wins.length && item.windows.every((win) => wins.includes(win));
         if (!same) {
-            // Windows of the group that are elsewhere join this area as tabs.
+            // Windows of the group that are elsewhere join this item.
             for (const win of wins) {
                 if (item.windows.includes(win)) continue;
                 const other = itemOf(win);
                 if (other.windows.length > 1) {
-                    removeTab(other, win);
+                    removeMember(other, win);
                 } else {
                     const wasActive = other === active;
                     takeItem(other);
@@ -1754,14 +2001,12 @@ function createSpace(bento, ws) {
             // Windows that left the group go beside the area, in areas of their own.
             for (const win of [...item.windows]) {
                 if (wins.includes(win)) continue;
-                const tab = item.windows.indexOf(win);
-                expelTab(item, tab, Right);
+                expelMember(item, item.windows.indexOf(win), Right);
             }
         }
-        item.tabbed = true;
         item.group = group;
         item.active = item.windows.indexOf(group.active);
-        const after = JSON.stringify([item.windows.map((win) => win.id), item.active, item.tabbed]);
+        const after = JSON.stringify([item.windows.map((win) => win.id), item.active]);
         if (before === after) {
             return false;
         }
@@ -1773,7 +2018,7 @@ function createSpace(bento, ws) {
         return true;
     }
 
-    /** A group went away: its area stops having tabs, unless it was down to one. */
+    /** A group went away: its windows split into a stack, unless it was down to one. */
     function dropGroup(group) {
         const item = items.find((other) => other.group === group);
         if (item === undefined) {
@@ -1783,10 +2028,10 @@ function createSpace(bento, ws) {
         if (item.windows.length < 2 || item.windows.some((win) => win.group !== null)) {
             return false;
         }
-        // Splitting the tabs makes the area with the shown tab the focused one; keep the focus.
+        // Splitting the group focuses the area of its active window; keep the focus.
         const focused = active;
         stopResizeFor(item);
-        untab(item);
+        splitGroup(item);
         if (focused !== null && focused !== item) {
             active = focused;
         }
@@ -1811,34 +2056,48 @@ function createSpace(bento, ws) {
             picking = null;
         }
         if (picking?.action === "stuff") {
-            checkSeam();
+            checkTarget();
         }
-        showHint(
-            "pick",
-            picking === null
-                ? null
-                : picking.action === "stuff"
-                  ? stuffPreview(picking.first, picking.seam)
-                  : itemRect(picking.first),
-        );
+        showHint("pick", picking === null ? null : itemRect(picking.first));
 
-        const bars = new Map();
+        // Groups show as a carousel, except while they cover the view.
+        const groups = new Map();
+        for (const item of items) {
+            if (item.windows.length > 1) {
+                const area = windowRect(item);
+                const places = modeOf(item) === "normal" ? carouselLayout(item, area) : null;
+                groups.set(item.key, { item, area, places });
+            }
+        }
+        drawCarousels(groups);
+
         for (const item of items) {
             const rect = windowRect(item);
             const mode = modeOf(item);
+            const places = groups.get(item.key)?.places ?? null;
             item.windows.forEach((win, i) => {
+                // A window that was a slit on another workspace takes the pointer again.
+                if (!groups.has(item.key) && win.node.props.input === "engine") {
+                    win.node.set({ input: "app" });
+                }
                 win.setMode(mode);
-                win.setVisible(!item.tabbed || i === item.active);
-                win.place(rect, { animate });
+                win.setVisible(places !== null || i === item.active);
+                win.place(places?.[i].rect ?? rect, { animate });
             });
-
-            // Tabbed areas get a tab bar, except while they cover the view.
-            if (options("tab-bar") && item.tabbed && mode === "normal") {
-                bars.set(item.key, { item, rect });
-            }
         }
-        drawTabBars(bars);
         syncGroups();
+
+        // What's drawn above the windows follows them. A drag works out its targets again on its
+        // next move, since the layout may have changed.
+        if (dragging !== null) {
+            dragging.all = null;
+        }
+        const stuffing = picking?.action === "stuff" ? picking : null;
+        drawTargets(
+            dragging?.targets ?? (stuffing === null ? [] : stuffTargets(stuffing.first)),
+            dragging?.current ?? stuffing?.target ?? null,
+        );
+        drawGroupPicks();
 
         const focus = active ? active.windows[active.active] : null;
         if (focus !== null && ws.focused !== focus) {
@@ -1865,7 +2124,7 @@ function createSpace(bento, ws) {
                 windows: item.windows.map((win) => win.id),
                 active: item.windows[item.active].id,
                 area: grid.area(item).toJSON(),
-                tabbed: item.tabbed,
+                grouped: isGroup(item),
                 mode: modeOf(item),
             })),
         };
@@ -2021,7 +2280,7 @@ function createSpace(bento, ws) {
         stopResize();
     }
 
-    function activateTab(item, idx) {
+    function activateMember(item, idx) {
         if (item.active === idx) {
             return false;
         }
@@ -2034,7 +2293,7 @@ function createSpace(bento, ws) {
         if (item === null) {
             return;
         }
-        activateTab(
+        activateMember(
             item,
             item.windows.findIndex((w) => w.id === win.id),
         );
@@ -2087,15 +2346,18 @@ function createSpace(bento, ws) {
         return true;
     }
 
-    /** Focuses the next tab down, or up, of the focused item if it's tabbed. */
-    function focusTab(down) {
-        if (active === null || !active.tabbed) {
+    /** Activates the window of the focused group towards `dir`, left or right, if there's one. */
+    function focusMember(dir) {
+        if (active === null) {
             return false;
         }
-        const idx = down
-            ? Math.min(active.active + 1, active.windows.length - 1)
-            : Math.max(active.active - 1, 0);
-        return activateTab(active, idx);
+        const idx = active.active + (dir === Right ? 1 : -1);
+        return idx >= 0 && idx < active.windows.length && activateMember(active, idx);
+    }
+
+    /** Focuses the window towards `dir`, left or right: in the focused group, or on the grid. */
+    function focusSideways(dir) {
+        return focusMember(dir) || focusGrid(dir);
     }
 
     /**
@@ -2104,11 +2366,11 @@ function createSpace(bento, ws) {
      * else when there's no window below.
      */
     function focusDownAdjacent() {
-        return focusTab(true) || focusGrid(Down, true);
+        return focusGrid(Down, true);
     }
 
     function focusUpAdjacent() {
-        return focusTab(false) || focusGrid(Up, true);
+        return focusGrid(Up, true);
     }
 
     /** Focuses `target`, travelling along `row` and `col` where it covers them. */
@@ -2143,16 +2405,16 @@ function createSpace(bento, ws) {
     }
 
     /**
-     * Windows in the stack along column of cells `col`, top to bottom, with tabs in order, as
-     * `[item, tab index]`.
+     * Windows in the stack along column of cells `col`, top to bottom, with a group's in order, as
+     * `[item, index in the item]`.
      */
     function stackTiles(col) {
-        return grid.stack(col).flatMap((item) => item.windows.map((_, tab) => [item, tab]));
+        return grid.stack(col).flatMap((item) => item.windows.map((_, idx) => [item, idx]));
     }
 
     /**
      * Focuses a window in the stack along the column of cells that focus is travelling along,
-     * counting tabs, at the index that `pick` returns for the stack's length.
+     * counting a group's windows, at the index that `pick` returns for the stack's length.
      */
     function focusInStack(pick) {
         const lines = focusLines();
@@ -2164,11 +2426,11 @@ function createSpace(bento, ws) {
             return false;
         }
 
-        const [target, tab] = stack[pick(stack.length)];
+        const [target, idx] = stack[pick(stack.length)];
         const before = active.windows[active.active];
         const area = grid.area(target);
         focusGridWindow(target, clamp(lines.row, area.row, area.bottom - 1), lines.col);
-        activateTab(active, tab);
+        activateMember(active, idx);
         return active.windows[active.active] !== before;
     }
 
@@ -2224,8 +2486,17 @@ function createSpace(bento, ws) {
         const wasEmpty = items.length === 0;
         const [cols, rows] = spanFor(item);
 
-        if (how.reason === "drop" && how.rect) {
-            // Where the pointer dropped it, after pushing and gravity, see `dropTarget`.
+        const target = how.reason === "drop" ? dropTargetAt(grid, how.pointer) : null;
+        if (target?.kind === "member") {
+            // Into the group, where it was dropped.
+            joinGroup(win, target, how.activate);
+            return;
+        }
+        const stuffed = target?.kind === "seam" ? stuffPlan(grid, item, target.seam) : null;
+        if (stuffed !== null) {
+            grid.place(stuffed);
+        } else if (how.reason === "drop" && how.rect) {
+            // Where the pointer dropped it, after pushing and gravity, see `landing`.
             const plan = dropPlan(grid, how.pointer, how.rect);
             const areas = [[item, plan.area]];
             if (plan.split !== null) {
@@ -2245,6 +2516,22 @@ function createSpace(bento, ws) {
 
         items.push(item);
         finishAdd(item, wasEmpty, how.activate);
+    }
+
+    /** Adds `win` to the group of a `"member"` target, at its place among the group's windows. */
+    function joinGroup(win, target, activate) {
+        const { item, index } = target;
+        item.windows.splice(index, 0, win);
+        if (activate) {
+            item.active = index;
+            active = item;
+        } else if (index <= item.active) {
+            item.active += 1;
+        }
+        sync();
+        if (activate) {
+            cameraToItem(item);
+        }
     }
 
     /** Settles a new item that's on the grid: its mode, and focus and the camera if it activates. */
@@ -2277,7 +2564,7 @@ function createSpace(bento, ws) {
 
     /**
      * Takes the item of `target`, or the focused one, off the grid for another workspace, with
-     * what `putIn` needs to give it its size and tabs back there.
+     * what `putIn` needs to give it its size and group back there.
      */
     function takeOut(target) {
         const item = itemFor(target);
@@ -2286,12 +2573,12 @@ function createSpace(bento, ws) {
         }
         const out = {
             windows: [...item.windows],
-            tab: item.active,
-            tabbed: item.tabbed,
+            member: item.active,
             fullscreen: item.fullscreen,
             intent: { ...intentOf(item), maximized: item.maximized },
         };
-        // The group is made again where the item lands.
+        // The group is made again where the item lands, and so is its carousel.
+        item.windows.forEach(unclip);
         item.group?.dissolve();
         item.group = null;
         removeItem(item);
@@ -2301,8 +2588,7 @@ function createSpace(bento, ws) {
     /** Puts what `takeOut` took on this grid, right of the focused window, at its size. */
     function putIn(out, activate) {
         const item = makeItem(out.windows, out.intent);
-        item.tabbed = out.tabbed;
-        item.active = out.tab;
+        item.active = out.member;
         item.fullscreen = out.fullscreen;
         item.maximized = out.intent.maximized;
 
@@ -2328,7 +2614,7 @@ function createSpace(bento, ws) {
         }
 
         if (item.windows.length > 1) {
-            removeTab(item, win);
+            removeMember(item, win);
         } else {
             removeItem(item);
         }
@@ -2342,8 +2628,8 @@ function createSpace(bento, ws) {
         }
     }
 
-    /** Removes a tab from a tabbed area, which keeps its cells, so nothing else moves. */
-    function removeTab(item, win) {
+    /** Removes a window from a group, which keeps its cells, so nothing else moves. */
+    function removeMember(item, win) {
         const idx = item.windows.findIndex((w) => w.id === win.id);
         item.windows.splice(idx, 1);
         if (idx < item.active || item.active === item.windows.length) {
@@ -2451,8 +2737,6 @@ function createSpace(bento, ws) {
     /** Adds a new item with `win`, sized like `from`, at `area` on the grid, pushing others. */
     function putItem(win, from, area) {
         const item = makeItem([win], intentOf(from));
-        // It was a tab, and is a window of its own now.
-        item.tabbed = false;
         items.push(item);
         grid.insert(item, area);
         return item;
@@ -2477,22 +2761,19 @@ function createSpace(bento, ws) {
         return true;
     }
 
-    /** Moves the focused window up or down; tabs reorder within their area instead. */
-    function moveVertical(dir) {
+    /** Moves the focused window towards `dir`, left or right, among the windows of its group. */
+    function moveMember(dir) {
         if (active === null) {
             return false;
         }
-        if (active.tabbed && active.windows.length > 1) {
-            const from = active.active;
-            const to = clamp(from + (dir === Down ? 1 : -1), 0, active.windows.length - 1);
-            if (from === to) {
-                return false;
-            }
-            [active.windows[from], active.windows[to]] = [active.windows[to], active.windows[from]];
-            active.active = to;
-            return true;
+        const from = active.active;
+        const to = from + (dir === Right ? 1 : -1);
+        if (to < 0 || to >= active.windows.length) {
+            return false;
         }
-        return moveGrid(dir);
+        [active.windows[from], active.windows[to]] = [active.windows[to], active.windows[from]];
+        active.active = to;
+        return true;
     }
 
     /**
@@ -2555,40 +2836,12 @@ function createSpace(bento, ws) {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Consume and expel, tabs
+    // Consume and expel, groups
     // ---------------------------------------------------------------------------------------------
     //
     // On the grid, a column of windows is a stack: windows on top of each other in the same
-    // columns of cells. Consuming splits rows, expelling gives them back, and tabbed areas are
+    // columns of cells. Consuming splits rows, expelling gives them back, and groups are
     // single items with several windows.
-
-    /**
-     * Expels `target` (or the focused window) from its stack towards `dir`, or if it's not
-     * stacked with other windows, consumes it into the stack of the window beside it towards
-     * `dir`.
-     */
-    function consumeOrExpel(target, dir) {
-        const item = itemFor(target);
-        if (item === null) {
-            return false;
-        }
-        const area = grid.area(item);
-
-        // A tab leaves its tabbed area.
-        if (item.windows.length > 1) {
-            const tab = target ? item.windows.findIndex((w) => w.id === target.id) : item.active;
-            return changeGrid(() => expelTab(item, tab, dir));
-        }
-
-        const stacked = [Up, Down].some((d) => grid.adjacent(item, d, null) !== null);
-        if (stacked) {
-            return changeGrid(() => expel(item, dir));
-        }
-
-        const row = anchor?.item === item ? anchor.row : area.row;
-        const into = grid.adjacent(item, dir, row);
-        return into !== null && changeGrid(() => consume(item, into));
-    }
 
     /**
      * Puts `item` in the column of cells of `into`, which keeps the top half of its rows, giving
@@ -2598,11 +2851,6 @@ function createSpace(bento, ws) {
         // Fullscreen and maximized windows keep their place until they're back to normal.
         if (item === into || modeOf(item) !== "normal" || modeOf(into) !== "normal") {
             return false;
-        }
-
-        // A tabbed area takes the window as another tab.
-        if (into.tabbed) {
-            return consumeAsTab(item, into);
         }
 
         if (grid.area(into).rows < 2) {
@@ -2668,34 +2916,17 @@ function createSpace(bento, ws) {
     }
 
     /**
-     * Moves the windows of `item` into the tabbed `into` as tabs after its own, focusing the first
-     * of them if `item` was focused.
+     * Takes the window at `idx` out of the group `item`, putting it beside the area towards `dir`
+     * at the same size, and focusing it if it was focused.
      */
-    function consumeAsTab(item, into) {
-        const wasActive = active === item;
-        takeItem(item);
-
-        const first = into.windows.length;
-        into.windows.push(...item.windows);
-        if (wasActive) {
-            into.active = first;
-            active = into;
-        }
-        return true;
-    }
-
-    /**
-     * Takes the tab at `tab` out of the tabbed `item`, putting it beside the area towards `dir` at
-     * the same size, and focusing it if it was focused.
-     */
-    function expelTab(item, tab, dir) {
+    function expelMember(item, idx, dir) {
         if (modeOf(item) !== "normal") {
             return false;
         }
         const area = grid.area(item);
-        const wasActive = item === active && tab === item.active;
-        const [win] = item.windows.splice(tab, 1);
-        if (tab < item.active || item.active === item.windows.length) {
+        const wasActive = item === active && idx === item.active;
+        const [win] = item.windows.splice(idx, 1);
+        if (idx < item.active || item.active === item.windows.length) {
             item.active -= 1;
         }
 
@@ -2707,70 +2938,16 @@ function createSpace(bento, ws) {
     }
 
     /**
-     * Switches the focused item between tabbed and normal display.
-     *
-     * Going tabbed gathers the windows stacked right above and below it in exactly the same
-     * columns of cells into its area as tabs. Going normal splits the tabs back into a stack,
-     * sharing the area's rows.
+     * Splits the windows of the group `item` into a stack sharing its rows. Windows without a row
+     * go after it.
      */
-    function setDisplay(tabbed) {
-        if (active === null || active.tabbed === tabbed || modeOf(active) !== "normal") {
-            return false;
-        }
-        const item = active;
-        return changeGrid(() => (tabbed ? tabStack(item) : untab(item)));
-    }
-
-    function tabStack(item) {
-        const area = grid.area(item);
-        const inSameColumns = (other) => other.col === area.col && other.cols === area.cols;
-
-        // Nearest first.
-        const above = [];
-        let top = area;
-        for (;;) {
-            const next = grid.items.find(({ area: a }) => inSameColumns(a) && a.bottom === top.row);
-            if (!next) break;
-            above.push(next.key);
-            top = next.area;
-        }
-        const below = [];
-        let bottom = area;
-        for (;;) {
-            const next = grid.items.find(
-                ({ area: a }) => inSameColumns(a) && a.row === bottom.bottom,
-            );
-            if (!next) break;
-            below.push(next.key);
-            bottom = next.area;
-        }
-
-        item.tabbed = true;
-        for (const other of above) {
-            takeItem(other);
-            item.windows.unshift(...other.windows);
-            item.active += other.windows.length;
-        }
-        for (const other of below) {
-            takeItem(other);
-            item.windows.push(...other.windows);
-        }
-
-        const merged = area.with({ row: top.row, rows: bottom.bottom - top.row });
-        grid.setArea(item, merged, Down);
-        active = item;
-        return true;
-    }
-
-    /** Splits the tabs of `item` into a stack sharing its rows. Tabs without a row go after it. */
-    function untab(item) {
+    function splitGroup(item) {
         const area = grid.area(item);
         const count = item.windows.length;
-        const activeTab = item.active;
+        const activeIdx = item.active;
 
-        const tabs = item.windows.splice(1);
+        const rest = item.windows.splice(1);
         item.active = 0;
-        item.tabbed = false;
 
         // Split the rows as evenly as possible, giving the remainder to the top ones.
         const stacked = Math.min(count, area.rows);
@@ -2791,9 +2968,9 @@ function createSpace(bento, ws) {
 
         grid.setArea(item, slices[0], Down);
         let focused = item;
-        tabs.forEach((win, i) => {
+        rest.forEach((win, i) => {
             const added = putItem(win, item, slices[i + 1]);
-            if (i + 1 === activeTab) {
+            if (i + 1 === activeIdx) {
                 focused = added;
             }
         });
@@ -2898,10 +3075,10 @@ function createSpace(bento, ws) {
         return g.place([[item, resized], ...moved], dir);
     }
 
-    /** Fewest rows the windows of `item` fit in, from their minimum height. */
+    /** Fewest rows the windows of `item` fit in, from the height they need. */
     function minRows(item) {
-        const height = Math.max(0, ...item.windows.map((win) => win.minSize.h));
-        return height > 0 ? rowsForHeight(height) : 1;
+        const height = Math.max(0, ...item.windows.map((win) => neededSize(win).h));
+        return Math.min(cellsFor(height, metrics.cellH, metrics.gap), metrics.rows);
     }
 
     function isSizeChange(change) {
@@ -3258,75 +3435,245 @@ function createSpace(bento, ws) {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Stuffing a window between two others
+    // Targets
     // ---------------------------------------------------------------------------------------------
     //
-    // A seam is where two windows touch, side by side or stacked. Stuffing a window into a seam
-    // splits the span of the two windows in three: they keep their outer edges and shrink towards
-    // each other, and the window takes the middle third, along the part of the seam they share.
-
-    /** First and last-plus-one columns of cells in view. */
-    function visibleColumns() {
-        const m = metrics;
-        const first = round((ws.camera.x + workingArea.x + m.gap) / (m.cellW + m.gap));
-        return [first, first + m.colsPerView];
-    }
+    // Stuffing and dragging show where a window can go as targets drawn on the windows: a pill on
+    // each seam it can be stuffed into, a pill between two windows of a group it can join, and
+    // while dragging, a dot near each edge of a window it can split. Pills sit on the windows'
+    // edges and dots inside them, never only in the gaps, so that they work without gaps too.
+    //
+    // A target is `{ key, kind, at }`, with `at` its middle on the canvas, and for a pill,
+    // `vertical` and `length`. What else it has depends on its kind:
+    //
+    // - `"seam"`: `seam`, to stuff the window into, see below.
+    // - `"member"`: `item` and `index`, to join the group `item` at `index` in its windows.
+    // - `"split"`: `item` and `dir`, to split `item`, taking the half of its cells towards `dir`.
 
     /**
-     * Seams in view that `item` could go into: `{ a, b, vertical }`, with `a` left of or above
-     * `b`, and `vertical` for side by side.
+     * Seams on `g` that `item` could go into, leaving out its own: `{ a, b, vertical }`, with `a`
+     * left of or above `b`, and `vertical` for side by side.
      */
-    function seamsFor(item) {
-        const [first, end] = visibleColumns();
-        const others = items.filter((other) => other !== item && modeOf(other) === "normal");
+    function seamsOn(g, item) {
+        const others = g.items.filter(({ key }) => key !== item && modeOf(key) === "normal");
         const seams = [];
-        for (const a of others) {
-            const ra = grid.area(a);
-            for (const b of others) {
-                const rb = grid.area(b);
+        for (const { key: a, area: ra } of others) {
+            for (const { key: b, area: rb } of others) {
                 if (a === b) continue;
                 const rows = Math.min(ra.bottom, rb.bottom) - Math.max(ra.row, rb.row);
                 if (ra.right === rb.col && rows > 0 && ra.cols + rb.cols >= 3) {
-                    if (first < rb.col && rb.col < end) seams.push({ a, b, vertical: true });
+                    seams.push({ a, b, vertical: true });
                 }
-                const left = Math.max(ra.col, rb.col);
-                const right = Math.min(ra.right, rb.right);
-                if (ra.bottom === rb.row && left < right && ra.rows + rb.rows >= 3) {
-                    if (left < end && first < right) seams.push({ a, b, vertical: false });
+                const cols = Math.min(ra.right, rb.right) - Math.max(ra.col, rb.col);
+                if (ra.bottom === rb.row && cols > 0 && ra.rows + rb.rows >= 3) {
+                    seams.push({ a, b, vertical: false });
                 }
             }
         }
         return seams;
     }
 
-    /** Middle of a seam, in cells. */
-    function seamPoint(seam) {
-        const ra = grid.area(seam.a);
-        const rb = grid.area(seam.b);
+    /** A pill target at `at`, as long as a part of `span`. */
+    function pill(key, at, vertical, span, what) {
+        const length = clamp(span * 0.3, Math.min(TARGET_PILL_MIN, span), TARGET_PILL_MAX);
+        return { key, at, vertical, length, ...what };
+    }
+
+    /** The pill for stuffing into `seam` on `g`: on the middle of the edge the two windows share. */
+    function seamTarget(g, seam) {
+        const ra = areaRect(g.area(seam.a));
+        const rb = areaRect(g.area(seam.b));
+        const key = `seam:${seam.a.key}:${seam.b.key}:${seam.vertical ? "v" : "h"}`;
         if (seam.vertical) {
-            return { x: rb.col, y: (Math.max(ra.row, rb.row) + Math.min(ra.bottom, rb.bottom)) / 2 };
+            const top = Math.max(ra.y, rb.y);
+            const bottom = Math.min(ra.y + ra.h, rb.y + rb.h);
+            const at = { x: (ra.x + ra.w + rb.x) / 2, y: (top + bottom) / 2 };
+            return pill(key, at, true, bottom - top, { kind: "seam", seam });
         }
-        return { x: (Math.max(ra.col, rb.col) + Math.min(ra.right, rb.right)) / 2, y: rb.row };
+        const left = Math.max(ra.x, rb.x);
+        const right = Math.min(ra.x + ra.w, rb.x + rb.w);
+        const at = { x: (left + right) / 2, y: (ra.y + ra.h + rb.y) / 2 };
+        return pill(key, at, false, right - left, { kind: "seam", seam });
     }
 
-    function sameSeam(a, b) {
-        return a.a === b.a && a.b === b.b && a.vertical === b.vertical;
+    /** The pills for joining the group `item`, between each two of its windows. */
+    function memberTargets(item) {
+        if (item.windows.length < 2 || modeOf(item) !== "normal") {
+            return [];
+        }
+        const area = windowRect(item);
+        const places = carouselLayout(item, area);
+        return places.slice(1).map(({ slot }, i) => {
+            const before = places[i].slot;
+            const at = { x: (before.x + before.w + slot.x) / 2, y: area.y + area.h / 2 };
+            return pill(`member:${item.key}:${i + 1}`, at, true, area.h, {
+                kind: "member",
+                item,
+                index: i + 1,
+            });
+        });
     }
 
-    /** The seam nearest to `point` among `seams`, or `null`. */
-    function nearestSeam(seams, point) {
-        let best = null;
-        let bestDist = Infinity;
-        for (const seam of seams) {
-            const p = seamPoint(seam);
-            const dist = Math.hypot(p.x - point.x, p.y - point.y);
-            if (dist < bestDist) {
-                best = seam;
-                bestDist = dist;
+    /**
+     * The dots for splitting `item` on `g`, inside each edge it can split along. A group's are
+     * around its active window, clear of the pills between its windows.
+     */
+    function splitTargets(g, item) {
+        if (modeOf(item) !== "normal") {
+            return [];
+        }
+        const area = g.area(item);
+        const r =
+            item.windows.length > 1
+                ? carouselLayout(item, areaRect(area))[item.active].slot
+                : areaRect(area);
+        const ix = Math.min(TARGET_INSET, r.w / 4);
+        const iy = Math.min(TARGET_INSET, r.h / 4);
+        const cx = r.x + r.w / 2;
+        const cy = r.y + r.h / 2;
+        return [
+            [Left, area.cols, { x: r.x + ix, y: cy }],
+            [Right, area.cols, { x: r.x + r.w - ix, y: cy }],
+            [Up, area.rows, { x: cx, y: r.y + iy }],
+            [Down, area.rows, { x: cx, y: r.y + r.h - iy }],
+        ]
+            .filter(([, span]) => span >= 2)
+            .map(([dir, , at]) => ({ key: `split:${item.key}:${dir}`, kind: "split", item, dir, at }));
+    }
+
+    /**
+     * Targets in view for stuffing `item`: the seams it can go into, and if it's one window, the
+     * groups it can join.
+     */
+    function stuffTargets(item) {
+        const inView = ({ at }) => ws.camera.x <= at.x && at.x <= ws.camera.x + viewSize.w;
+        const seams = seamsOn(grid, item).map((seam) => seamTarget(grid, seam));
+        const members =
+            item.windows.length === 1
+                ? items.filter((other) => other !== item).flatMap(memberTargets)
+                : [];
+        return [...seams, ...members].filter(inView);
+    }
+
+    /**
+     * Every target on `g` for a dragged window, by the windows they're for: `{ items, seams }`,
+     * with `items` each window's rect and own targets, and `seams` the pills with the two windows
+     * they're between. A drag works them out once, see `dragOver`.
+     */
+    function dragTargetsOn(g) {
+        const items = g.items
+            .filter(({ key }) => modeOf(key) === "normal")
+            .map(({ key, area }) => ({
+                key,
+                rect: areaRect(area),
+                targets: [...splitTargets(g, key), ...memberTargets(key)],
+            }));
+        const seams = seamsOn(g, null).map((seam) => ({ ...seam, target: seamTarget(g, seam) }));
+        return { items, seams };
+    }
+
+    /**
+     * The targets among `all` for a window dragged with the pointer at `pointer`: those of the
+     * windows under it or close by, and the seams around them.
+     */
+    function targetsNear(all, pointer) {
+        const reach = TARGET_REACH;
+        const near = all.items.filter(
+            ({ rect: r }) =>
+                r.x - reach <= pointer.x &&
+                pointer.x < r.x + r.w + reach &&
+                r.y - reach <= pointer.y &&
+                pointer.y < r.y + r.h + reach,
+        );
+        const keys = new Set(near.map(({ key }) => key));
+        return [
+            ...near.flatMap(({ targets }) => targets),
+            ...all.seams.filter(({ a, b }) => keys.has(a) || keys.has(b)).map(({ target }) => target),
+        ];
+    }
+
+    /** How far `point` is from `target`: from a dot's middle, or from a pill's line. */
+    function distanceTo(target, point) {
+        const dx = point.x - target.at.x;
+        const dy = point.y - target.at.y;
+        if (target.kind === "split") {
+            return Math.hypot(dx, dy);
+        }
+        const along = Math.max(0, Math.abs(target.vertical ? dy : dx) - target.length / 2);
+        return Math.hypot(along, target.vertical ? dx : dy);
+    }
+
+    /** The target within reach of `point`, the nearest if several are, or `null`. */
+    function targetAt(targets, point) {
+        const reached = targets.filter((target) => distanceTo(target, point) < TARGET_REACH);
+        return minBy(reached, (target) => [distanceTo(target, point)]);
+    }
+
+    /** The target nearest to `point`, however far, or `null`. */
+    function nearestTarget(targets, point) {
+        return minBy(targets, ({ at }) => [Math.hypot(at.x - point.x, at.y - point.y)]);
+    }
+
+    /** Where a target is drawn, larger when it's the one picked or under the pointer. */
+    function targetRect(target, current) {
+        let w;
+        let h;
+        if (target.kind === "split") {
+            w = h = current ? TARGET_DOT_ACTIVE : TARGET_DOT;
+        } else {
+            const thickness = current ? TARGET_PILL_ACTIVE : TARGET_PILL;
+            [w, h] = target.vertical ? [thickness, target.length] : [target.length, thickness];
+        }
+        return { x: pixel(target.at.x - w / 2), y: pixel(target.at.y - h / 2), w, h };
+    }
+
+    /** Draws `targets`, with `current` stood out, and takes away the ones drawn before. */
+    function drawTargets(targets, current) {
+        const color = opaque(options("hint-color"));
+        const keys = new Set();
+        for (const target of targets) {
+            keys.add(target.key);
+            let node = targetNodes.get(target.key);
+            if (node === undefined) {
+                node = bento.createNode("box", {
+                    transitions: {
+                        rect: TARGET_MOTION,
+                        opacity: TARGET_MOTION,
+                        cornerRadius: TARGET_MOTION,
+                    },
+                    enter: { opacity: 0 },
+                });
+                targetNodes.set(target.key, node);
+                targetLayer.append(node);
+            }
+            const on = target.key === current?.key;
+            const rect = targetRect(target, on);
+            node.set({
+                rect,
+                cornerRadius: Math.min(rect.w, rect.h) / 2,
+                background: color,
+                // So that it shows on windows of its own color.
+                border: { width: 1, color: TARGET_OUTLINE },
+                opacity: on ? 1 : TARGET_IDLE_OPACITY,
+            });
+        }
+        for (const [key, node] of targetNodes) {
+            if (!keys.has(key)) {
+                node.remove();
+                targetNodes.delete(key);
             }
         }
-        return best;
+        raiseOverlay();
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Stuffing a window between two others
+    // ---------------------------------------------------------------------------------------------
+    //
+    // A seam is where two windows touch, side by side or stacked. Stuffing a window into a seam
+    // splits the span of the two windows in three: they keep their outer edges and shrink towards
+    // each other, and the window takes the middle third, along the part of the seam they share.
+    // A window can also be stuffed between two windows of a group, which it joins.
 
     /**
      * New areas for stuffing `item` into `seam` on `g`, with `item` already out of it: pairs for
@@ -3358,80 +3705,89 @@ function createSpace(bento, ws) {
         ];
     }
 
-    /** Where `item` would end up stuffed into `seam`, after pushing and gravity, or `null`. */
-    function stuffPreview(item, seam) {
-        const g = grid.clone();
-        g.remove(item);
-        const plan = stuffPlan(g, item, seam);
-        if (plan === null) return null;
-        g.place(plan);
-        return areaRect(g.area(item));
+    /** Middle of an item on the canvas. */
+    function middleOf(item) {
+        const r = itemRect(item);
+        return { x: r.x + r.w / 2, y: r.y + r.h / 2 };
     }
 
-    /** Keeps the seam picked for `stuff` valid as windows change, or cancels. */
-    function checkSeam() {
-        const seams = seamsFor(picking.first);
-        if (!seams.some((seam) => sameSeam(seam, picking.seam))) {
-            const seam = nearestSeam(seams, centerOf(grid.area(picking.first)));
-            picking = seam === null ? null : { ...picking, seam };
-        }
+    /** Keeps the target picked for `stuff` where it is as windows change, or cancels. */
+    function checkTarget() {
+        const targets = stuffTargets(picking.first);
+        const target =
+            targets.find(({ key }) => key === picking.target.key) ??
+            nearestTarget(targets, middleOf(picking.first));
+        picking = target === null ? null : { ...picking, target };
     }
 
-    /** Moves the seam picked for `stuff` to the nearest one in `dir`. */
-    function moveSeam(dir) {
-        const from = seamPoint(picking.seam);
-        const ahead = seamsFor(picking.first).filter((seam) => {
-            const p = seamPoint(seam);
-            return { [Left]: p.x < from.x, [Right]: p.x > from.x, [Up]: p.y < from.y, [Down]: p.y > from.y }[dir];
+    /** Moves the target picked for `stuff` to the nearest one in `dir`. */
+    function moveTarget(dir) {
+        const from = picking.target.at;
+        const ahead = stuffTargets(picking.first).filter(({ at }) => {
+            return { [Left]: at.x < from.x, [Right]: at.x > from.x, [Up]: at.y < from.y, [Down]: at.y > from.y }[dir];
         });
-        // Prefer seams straight ahead over ones off to the side.
-        let best = null;
-        let bestScore = Infinity;
-        for (const seam of ahead) {
-            const p = seamPoint(seam);
-            const along = isHorizontal(dir) ? Math.abs(p.x - from.x) : Math.abs(p.y - from.y);
-            const across = isHorizontal(dir) ? Math.abs(p.y - from.y) : Math.abs(p.x - from.x);
-            const score = along + across * 2;
-            if (score < bestScore) {
-                best = seam;
-                bestScore = score;
-            }
-        }
+        // Prefer targets straight ahead over ones off to the side.
+        const best = minBy(ahead, ({ at }) => {
+            const along = isHorizontal(dir) ? Math.abs(at.x - from.x) : Math.abs(at.y - from.y);
+            const across = isHorizontal(dir) ? Math.abs(at.y - from.y) : Math.abs(at.x - from.x);
+            return [along + across * 2];
+        });
         if (best !== null) {
-            picking = { ...picking, seam: best };
+            picking = { ...picking, target: best };
         }
     }
 
     /**
-     * Starts picking a seam for the focused window, starting with the nearest one, or puts the
-     * window into the picked seam.
+     * Starts picking a target for the focused window, starting with the nearest one, or puts the
+     * window there.
      */
     function stuff() {
         if (picking?.action === "stuff") {
-            const { first, seam } = picking;
+            const { first, target } = picking;
             picking = null;
-            const g = grid.clone();
-            g.remove(first);
-            const plan = stuffPlan(g, first, seam);
-            return (
-                plan !== null &&
-                changeGrid(() => {
-                    grid.remove(first);
-                    grid.place(plan);
-                    return true;
-                })
-            );
+            return stuffInto(first, target);
         }
 
         if (active === null || modeOf(active) !== "normal") {
             return false;
         }
-        const seam = nearestSeam(seamsFor(active), centerOf(grid.area(active)));
-        if (seam === null) {
+        const target = nearestTarget(stuffTargets(active), middleOf(active));
+        if (target === null) {
             return false;
         }
-        picking = { action: "stuff", first: active, seam };
+        picking = { action: "stuff", first: active, target };
         return true;
+    }
+
+    /** Puts `item` where `target` says: into a seam, or into a group. */
+    function stuffInto(item, target) {
+        if (target.kind === "member") {
+            const { item: into, index } = target;
+            if (!items.includes(into) || index > into.windows.length) return false;
+            return changeGrid(() => {
+                const wasActive = active === item;
+                takeItem(item);
+                into.windows.splice(index, 0, ...item.windows);
+                if (wasActive) {
+                    into.active = index;
+                    active = into;
+                } else if (index <= into.active) {
+                    into.active += item.windows.length;
+                }
+                return true;
+            });
+        }
+        const g = grid.clone();
+        g.remove(item);
+        const plan = stuffPlan(g, item, target.seam);
+        return (
+            plan !== null &&
+            changeGrid(() => {
+                grid.remove(item);
+                grid.place(plan);
+                return true;
+            })
+        );
     }
 
     /** Swaps the cells of two windows, so that each takes the other's place and size. */
@@ -3749,68 +4105,42 @@ function createSpace(bento, ws) {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Where a window dragged to `rect` with the pointer at `pointer` drops on grid `g`, as
-     * `{ area, split }`.
+     * Where a window dragged to `rect` with the pointer at `pointer` drops on grid `g`, when it
+     * isn't on a target for a seam or a group, as `{ area, split }`.
      *
-     * Holding the pointer close to an edge of another window splits that window: the dropped
-     * window takes the half of its cells on that side, and `split` is `[item, area]` with the
-     * other half. Otherwise the window goes to the cells nearest to its top-left corner, at its
-     * size, and `area` is where it lands after pushing and gravity.
+     * On the dot near an edge of another window, it splits that window: the dropped window takes
+     * the half of its cells on that side, and `split` is `[item, area]` with the other half.
+     * Otherwise the window goes to the cells nearest to its top-left corner, at its size, and
+     * `area` is where it lands after pushing and gravity.
      */
     function dropPlan(g, pointer, rect) {
-        const split = pointer ? splitAt(g, pointer) : null;
-        if (split !== null) {
-            return split;
+        const target = dropTargetAt(g, pointer);
+        if (target?.kind === "split") {
+            const [dropped, kept] = splitAreas(g.area(target.item), target.dir);
+            return { area: dropped, split: [target.item, kept] };
         }
+        return { area: landingOn(g, freeArea(rect)), split: null };
+    }
 
+    /** The cells nearest to a window dropped at `rect` away from targets, at its size. */
+    function freeArea(rect) {
         const m = metrics;
         const cols = clamp(round((rect.w + m.gap) / (m.cellW + m.gap)), 1, MAX_COLS);
         const rows = clamp(round((rect.h + m.gap) / (m.cellH + m.gap)), 1, m.rows);
-        const area = areaAt(rect.x, rect.y, cols, rows);
+        return areaAt(rect.x, rect.y, cols, rows);
+    }
 
-        // Where it lands after pushing and gravity.
+    /** Where a window put at `area` on `g` lands, after pushing and gravity. */
+    function landingOn(g, area) {
         const preview = g.clone();
         const probe = {};
         preview.insert(probe, area);
-        return { area: preview.area(probe), split: null };
+        return preview.area(probe);
     }
 
-    /**
-     * The split for a window dropped with the pointer at `pointer`: over another window, close to
-     * one of its edges.
-     *
-     * The edges are a cell deep, or a quarter of the window for small windows, so that dropping
-     * in the middle always drops normally. A window one cell wide or tall can't be split that way.
-     */
-    function splitAt(g, pointer) {
-        const { x, y } = pointer;
-        const m = metrics;
-
-        const under = g.items.find(({ area }) => {
-            const r = areaRect(area);
-            return r.x <= x && x < r.x + r.w && r.y <= y && y < r.y + r.h;
-        });
-        if (!under || modeOf(under.key) !== "normal") {
-            return null;
-        }
-
-        const { key: item, area } = under;
-        const r = areaRect(area);
-        const zoneW = Math.min(r.w / 4, m.cellW);
-        const zoneH = Math.min(r.h / 4, m.cellH);
-        const edges = [
-            { dir: Left, dist: x - r.x, zone: zoneW, span: area.cols },
-            { dir: Right, dist: r.x + r.w - x, zone: zoneW, span: area.cols },
-            { dir: Up, dist: y - r.y, zone: zoneH, span: area.rows },
-            { dir: Down, dist: r.y + r.h - y, zone: zoneH, span: area.rows },
-        ].filter((e) => e.span >= 2 && e.dist < e.zone);
-        const edge = minBy(edges, (e) => [e.dist / e.zone]);
-        if (edge === null) {
-            return null;
-        }
-
-        const [dropped, kept] = splitAreas(area, edge.dir);
-        return { area: dropped, split: [item, kept] };
+    /** The target that a window dragged with the pointer at `pointer` is on, on `g`, or `null`. */
+    function dropTargetAt(g, pointer) {
+        return pointer ? targetAt(targetsNear(dragTargetsOn(g), pointer), pointer) : null;
     }
 
     /**
@@ -3844,29 +4174,62 @@ function createSpace(bento, ws) {
         }
     }
 
-    /** The cells a dragged window would land on, to highlight them. */
-    function dropTarget(win, pointer, rect) {
-        // The dragged window doesn't count, in case it's still in the layout.
+    /** The grid without `win`, which is being dragged, in case it's still in the layout. */
+    function gridWithout(win) {
         const g = grid.clone();
         const own = itemOf(win);
         if (own !== null) {
             g.remove(own);
         }
+        return g;
+    }
 
-        const plan = dropPlan(g, pointer, rect);
-        const probe = {};
-        g.place([[probe, plan.area], ...(plan.split ? [plan.split] : [])]);
-        const landing = areaRect(g.area(probe));
+    /**
+     * Shows where a window dragged to `rect` with the pointer at `pointer` can go: the targets
+     * around the pointer, the one it's on stood out, and when it's on none, the cells it lands on.
+     *
+     * A drag moves often, so what doesn't depend on the pointer is worked out once and kept in
+     * `dragging` until the layout changes, see `flush`: the grid without the dragged window, its
+     * targets, and the cells a window lands on from each place it can be put.
+     */
+    function dragOver(win, pointer, rect) {
+        if (dragging?.win !== win.id || dragging.all === null) {
+            const g = gridWithout(win);
+            dragging = { win: win.id, g, all: dragTargetsOn(g), landings: new Map() };
+        }
+        const targets = pointer ? targetsNear(dragging.all, pointer) : [];
+        const current = pointer ? targetAt(targets, pointer) : null;
+        dragging.targets = targets;
+        dragging.current = current;
+        drawTargets(targets, current);
+        showHint("drop", current === null ? landing(rect) : null);
+    }
 
-        if (g.length > 1) {
-            return landing;
+    function dragLeave() {
+        dragging = null;
+        drawTargets([], null);
+        showHint("drop", null);
+    }
+
+    /** The cells a window dragged to `rect` away from targets would land on, to highlight them. */
+    function landing(rect) {
+        const { g, landings } = dragging;
+        const area = freeArea(rect);
+        const key = `${area.col},${area.row},${area.cols},${area.rows}`;
+        let cells = landings.get(key);
+        if (cells === undefined) {
+            cells = areaRect(landingOn(g, area));
+            landings.set(key, cells);
+        }
+        if (g.length > 0) {
+            return cells;
         }
 
         // The first window on an empty workspace moves the camera, see `addWindow`. Show the
         // highlight where the window will be on screen then.
         const fit = isCentering() ? computeCentered : computeFit;
-        const camera = landing.x + fit(landing.x, landing.x, landing.w, "normal");
-        return { ...landing, x: landing.x - camera + ws.camera.x };
+        const camera = cells.x + fit(cells.x, cells.x, cells.w, "normal");
+        return { ...cells, x: cells.x - camera + ws.camera.x };
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -3913,7 +4276,6 @@ function createSpace(bento, ws) {
                 key: item.key,
                 windows: item.windows.map((win) => win.id),
                 active: item.active,
-                tabbed: item.tabbed,
                 area: grid.area(item).toJSON(),
                 ...intentOf(item),
                 fullscreen: item.fullscreen,
@@ -3965,7 +4327,7 @@ function createSpace(bento, ws) {
 
         const focusedItem = itemOf(focused);
         if (focusedItem !== null) {
-            activateTab(
+            activateMember(
                 focusedItem,
                 focusedItem.windows.findIndex((w) => w.id === focused.id),
             );
@@ -4003,13 +4365,12 @@ function createSpace(bento, ws) {
             }
 
             const item = makeItem(wins, intent);
-            // Keep the tab bar's key, so that bento keeps its animations.
+            // Keep the item's key, so that bento keeps its animations.
             const id = /^area-(\d+)$/.exec(saved.key ?? "")?.[1];
             if (id !== undefined && !placed.some(([other]) => other.key === saved.key)) {
                 item.key = saved.key;
                 nextItemId = Math.max(nextItemId, Number(id) + 1);
             }
-            item.tabbed = saved.tabbed === true;
             item.active = clamp(toInt(saved.active), 0, wins.length - 1);
             item.fullscreen = saved.fullscreen === true;
             item.maximized = saved.maximized === true;
@@ -4143,24 +4504,25 @@ function createSpace(bento, ws) {
     // The actions by name, as `meta.actions` declares them. Each returns whether it did anything.
 
     const actions = {
-        "focus-left": () => focusGrid(Left),
-        "focus-right": () => focusGrid(Right),
+        // Left and right go through the windows of a group first.
+        "focus-left": () => focusSideways(Left),
+        "focus-right": () => focusSideways(Right),
         "focus-first": () => focusGridEnd(false),
         "focus-last": () => focusGridEnd(true),
-        "focus-right-or-first": () => focusGrid(Right) || focusGridEnd(false),
-        "focus-left-or-last": () => focusGrid(Left) || focusGridEnd(true),
+        "focus-right-or-first": () => focusSideways(Right) || focusGridEnd(false),
+        "focus-left-or-last": () => focusSideways(Left) || focusGridEnd(true),
         "focus-index": ([index]) => focusColumn(index),
 
         // Up and down can reach the nearest window further down or up, even diagonally. Actions
         // that fall back to something else only count windows sharing columns of cells.
-        "focus-down": () => focusTab(true) || focusGrid(Down),
-        "focus-up": () => focusTab(false) || focusGrid(Up),
-        "focus-down-or-left": () => focusDownAdjacent() || focusGrid(Left),
-        "focus-down-or-right": () => focusDownAdjacent() || focusGrid(Right),
-        "focus-up-or-left": () => focusUpAdjacent() || focusGrid(Left),
-        "focus-up-or-right": () => focusUpAdjacent() || focusGrid(Right),
+        "focus-down": () => focusGrid(Down),
+        "focus-up": () => focusGrid(Up),
+        "focus-down-or-left": () => focusDownAdjacent() || focusSideways(Left),
+        "focus-down-or-right": () => focusDownAdjacent() || focusSideways(Right),
+        "focus-up-or-left": () => focusUpAdjacent() || focusSideways(Left),
+        "focus-up-or-right": () => focusUpAdjacent() || focusSideways(Right),
 
-        // Within the stack: the windows covering the same column of cells, tabs in order.
+        // Within the stack: the windows covering the same column of cells, a group's in order.
         "focus-stack-top": () => focusInStack(() => 0),
         "focus-stack-bottom": () => focusInStack((n) => n - 1),
         "focus-down-or-top": () => focusDownAdjacent() || focusInStack(() => 0),
@@ -4168,10 +4530,11 @@ function createSpace(bento, ws) {
         "focus-in-stack": ([index]) =>
             focusInStack((n) => clamp((Number.isFinite(index) ? toInt(index) : 1) - 1, 0, n - 1)),
 
-        "move-left": () => moveGrid(Left),
-        "move-right": () => moveGrid(Right),
-        "move-down": () => moveVertical(Down),
-        "move-up": () => moveVertical(Up),
+        // A group's windows reorder, and at its ends, the group moves.
+        "move-left": () => moveMember(Left) || moveGrid(Left),
+        "move-right": () => moveMember(Right) || moveGrid(Right),
+        "move-down": () => moveGrid(Down),
+        "move-up": () => moveGrid(Up),
         // Go to the start of the strip in the window's own rows, pushing others right, or past
         // its end.
         "move-first": () => moveToColumn(() => [0, Right]),
@@ -4181,8 +4544,6 @@ function createSpace(bento, ws) {
         },
         "move-to-index": ([index]) => moveToIndex(index),
 
-        "stack-left": (args, target) => consumeOrExpel(target, Left),
-        "stack-right": (args, target) => consumeOrExpel(target, Right),
         // Brings the window on the right under the focused one.
         "stack-from-right": () => {
             const lines = focusLines();
@@ -4193,11 +4554,9 @@ function createSpace(bento, ws) {
             if (active === null) return false;
             const item = active;
             return item.windows.length > 1
-                ? changeGrid(() => expelTab(item, item.active, Right))
+                ? changeGrid(() => expelMember(item, item.active, Right))
                 : changeGrid(() => expel(item, Right));
         },
-        "toggle-tabs": () => active !== null && setDisplay(!active.tabbed),
-        "set-tabs": ([tabbed]) => setDisplay(tabbed === true),
 
         "center": () => centerColumn(),
         "center-visible": () => centerVisibleColumns(),
@@ -4230,7 +4589,7 @@ function createSpace(bento, ws) {
                 "focus-down": Down,
             }[name];
             if (dir !== undefined) {
-                moveSeam(dir);
+                moveTarget(dir);
                 return true;
             }
             picking = null;
@@ -4257,7 +4616,7 @@ function createSpace(bento, ws) {
                     focused,
                     state,
                 );
-                // Groups that were already there show as tabbed areas.
+                // Groups that were already there show as carousels.
                 for (const group of bento.groups) {
                     matchGroup(group);
                 }
@@ -4277,7 +4636,8 @@ function createSpace(bento, ws) {
 
         // The grid decides window sizes. A window that can't take the size of its cells, like
         // one with a larger minimum size, is drawn at its own size where its cells are.
-        windowChanged: () => flush(),
+        // Its minimum size can change.
+        windowChanged: changes(sync),
 
         /** The monitor's size, scale or working area changed, or the workspace moved to another. */
         viewChanged: changes(reconfigure),
@@ -4322,10 +4682,16 @@ function createSpace(bento, ws) {
 
         // Dragging windows over the workspace.
 
-        dragOver(win, pointer, rect) {
-            showHint("drop", dropTarget(win, pointer, rect));
+        dragOver,
+        dragLeave,
+
+        // Grouping, see `pickToGroup`.
+        showGroupPicks(wins) {
+            groupPicks = wins.filter((win) => itemOf(win) !== null);
+            flush();
         },
-        dragLeave: () => showHint("drop", null),
+        gather: changes(gather),
+        leaveGroup: changes(leaveGroup),
 
         newWindowSize,
 
@@ -4336,8 +4702,8 @@ function createSpace(bento, ws) {
 
         /** Takes away what the space drew, for a workspace that's gone. */
         dispose() {
-            for (const nodes of tabNodes.values()) nodes.forEach((node) => node.remove());
-            tabNodes.clear();
+            for (const { container } of carousels.values()) drop(container);
+            carousels.clear();
             hintNode?.remove();
             dropNode?.remove();
         },
@@ -4480,7 +4846,7 @@ export default function create(bento) {
     const below = (ws) => ws.monitor.workspaces[ws.index + 1];
     const above = (ws) => ws.monitor.workspaces[ws.index - 1];
 
-    /** Moves the window of `target`, with its tabs, to a workspace, and focus goes along. */
+    /** Moves the window of `target`, with its group, to a workspace, and focus goes along. */
     function moveTo(space, target, to) {
         if (to === null || to === undefined || spaceOf(to) === space) return false;
         const out = space.takeOut(target);
@@ -4491,12 +4857,74 @@ export default function create(bento) {
         return true;
     }
 
+    // Grouping. The `group` action picks the focused window, or unpicks it, while the keys held
+    // for it stay down, so that more can be picked by focusing them and pressing the key again.
+    // Letting go of the keys groups the picked windows where the first one is, and a single
+    // picked window leaves its group. Without keys held, like from the command line, it happens
+    // at once.
+
+    /** `{ mods, windows }`: the keys held for the first pick, and the windows picked, in order. */
+    let grouping = null;
+
+    /** Whether any of the keys in `mods` is still held in `now`. */
+    const stillHeld = (mods, now) => Object.keys(mods).some((key) => mods[key] && now[key]);
+
+    function pickToGroup(win) {
+        if (win === null || win === undefined || spaceWith(win) === undefined) {
+            return false;
+        }
+        grouping ??= { mods: { ...bento.modifiers }, windows: [] };
+        const at = grouping.windows.indexOf(win);
+        if (at === -1) {
+            grouping.windows.push(win);
+        } else {
+            grouping.windows.splice(at, 1);
+        }
+        if (stillHeld(grouping.mods, bento.modifiers)) {
+            showGroupPicks();
+        } else {
+            finishGrouping();
+        }
+        return true;
+    }
+
+    function finishGrouping() {
+        const picked = grouping.windows.filter((win) => spaceWith(win) !== undefined);
+        grouping = null;
+        showGroupPicks();
+        const [first, ...others] = picked;
+        if (first === undefined) {
+            return;
+        }
+        // Windows on other workspaces stay where they are.
+        const space = spaceWith(first);
+        if (others.length === 0) {
+            space.leaveGroup(first);
+        } else {
+            space.gather(first, others.filter((win) => spaceWith(win) === space));
+        }
+    }
+
+    function showGroupPicks() {
+        const picked = grouping?.windows ?? [];
+        for (const space of spaces.values()) {
+            space.showGroupPicks(picked);
+        }
+    }
+
+    bento.addEventListener("modifierschange", (e) => {
+        if (grouping !== null && !stillHeld(grouping.mods, e.modifiers)) {
+            finishGrouping();
+        }
+    });
+
     /**
      * Actions that go on to another monitor or workspace, alone or when the grid can't do what
      * they say. The others are the space's own. Each gets the workspace, its space, the window
      * the action is for and the arguments.
      */
     const across = {
+        group: (ws, space, target) => pickToGroup(target ?? ws.focused),
         "focus-left-or-monitor": (ws, space, target) =>
             space.action("focus-left", [], target) || focusMonitor(ws.monitor.left),
         "focus-right-or-monitor": (ws, space, target) =>
@@ -4630,6 +5058,11 @@ function computeNewViewOffset(curX, viewWidth, newColX, newColWidth, gaps) {
 /** Middle of an area, in cells. */
 function centerOf(area) {
     return { x: area.col + area.cols / 2, y: area.row + area.rows / 2 };
+}
+
+/** `color` without its alpha, if it has one. */
+function opaque(color) {
+    return color.length === 9 ? color.slice(0, 7) : color.length === 5 ? color.slice(0, 4) : color;
 }
 
 /** Splits `total` cells in three, as evenly as possible, giving the middle the extra cell first. */

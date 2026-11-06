@@ -325,7 +325,7 @@ Where several rules match a window, later ones win, as in the main config.
 ### Actions
 
 Moving around and resizing tiled windows is the engine's: each engine has its own actions, named for what they do in it.
-The `niri` engine has niri's, like `focus-column-left` or `consume-or-expel-window-left`, and the `bento` engine has its own, like `focus-left` or `stack-left`.
+The `niri` engine has niri's, like `focus-column-left` or `consume-or-expel-window-left`, and the `bento` engine has its own, like `focus-left` or `stack-from-right`.
 Bind them in the engine's file by name, followed by any arguments:
 
 ```kdl
@@ -339,7 +339,7 @@ binds {
 The main config can't bind them, so its binds work whichever engine runs.
 Everything else is bento's own and bound in the main config: spawning, screenshots, workspaces, monitors, the overview, and floating windows, which have their own actions like `focus-floating-left` and `move-floating-left`.
 
-Grouping is bento's too. A group is a set of windows and which one is active; how it looks is up to the engine, which can show tabs, a carousel or anything else.
+Grouping is bento's too. A group is a set of windows that engines can address together, and which one is active, nothing more: it doesn't mean tabs, or one place in the layout, or that only one of its windows shows. How it looks is up to the engine, which can show tabs, a carousel or anything else.
 `group-window-left`, `group-window-right`, `group-window-up` and `group-window-down` group the focused window with the nearest one in that direction, by where the engine put them, and `ungroup-window` takes it out.
 Engines can group windows too, and read the groups, through `bento.groups` and `bento.createGroup`.
 Floating windows can't be in a group, and a window that closes, floats or is dragged out leaves its group.
@@ -455,7 +455,7 @@ In short:
 
 - **Objects** are what the engine reads and changes: monitors, their workspaces, windows, each workspace's camera, and groups. Properties are read-only, and every change is a method call that says whether it worked, like `win.place(rect)`, `win.focus()`, `win.moveTo(workspace)` or `workspace.camera.move({ x })`.
 - **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes and drags over a workspace, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
-- **Groups** are bento's own: a set of windows and which one is active. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
+- **Groups** are bento's own: a set of windows that engines can address together, and which one is active. Its windows stay ordinary windows. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
 - **Search** is bento's own: `bento.search(scope)` starts it, and the engine gets a `Search` with the query, the matching windows best first, and the field to place in a tree, and hears `change` and `end`.
 - **Nodes** are what the engine draws: boxes, text and images in a tree for each workspace, which also holds the windows. Tab bars, hints and drop targets are nodes. bento renders the tree and runs the transitions the engine describes, so no engine code runs per frame.
 - **State** can be exposed with `bento.exposeState`, so that the shell, bento Settings and scripts can read it through bento's socket, and `unload` can keep state for the next instance of the engine when it reloads.
@@ -515,7 +515,8 @@ Window sizes snap to whole cells.
 
 Its actions are named for what they do on the grid, and `bento msg engine` lists them all with what each does.
 `focus-left`, `focus-right`, `focus-up` and `focus-down` go to the nearest window that way, even diagonally, and `move-left` and the rest move the focused window one cell, swapping with a window in the way.
-A window's stack is the windows covering the same column of cells: `stack-left` and `stack-right` stack a window under its neighbour or take it out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-tabs` shows it as tabs.
+In a group, `focus-left` and `focus-right` first go through its windows, and `move-left` and `move-right` reorder them.
+A window's stack is the windows covering the same column of cells: `stack-from-right` stacks the window on the right under the focused one and `unstack` takes the focused one out, `focus-stack-top` and `focus-in-stack N` move within it, and stacking never groups windows.
 `set-width`, `set-height`, `cycle-width` and `cycle-height` size the focused window in whole cells.
 Actions like `focus-index N` count the places where windows start, from left to right starting at 1.
 
@@ -533,13 +534,20 @@ The grid also has no left edge then, so windows can be pushed or moved further l
 
 The engine's other options are in its file too, written at their defaults.
 `center-focused-window` and `always-center-single-window` say when the view centers the focused window, `default-width` is the width new windows open with, and `preset-widths` and `preset-heights` are what `cycle-width` and `cycle-height` go through.
-`default-tabs` opens new windows as tabs, and `tab-bar` with its `-width`, `-gap` and `-active-color`, `-inactive-color` and `-urgent-color` styles the tab bar.
 `hint-color` is the color of the hints.
-Its window rules set `default-width`, `default-height`, `default-tabs` and `open-full-width`.
+Its window rules set `default-width`, `default-height` and `open-full-width`.
 
-Tabs are groups.
-`toggle-tabs` makes the windows of an area one bento group, drawn as a tab bar of clickable segments along the area, and a group made by bento's own group actions shows as tabs in the area of its active window.
-Dragging a window shows where it would land, and double-clicking the left or right edge of a window toggles its full width, and the top or bottom edge its full height.
+`group` groups windows, as a bento group: while you hold the keys of its bind, each press picks the focused window, or unpicks it, and letting go of them groups the picked windows where the first one is.
+Picking one window of a group alone takes it out, and picking windows of other groups moves them.
+A group shares its area as a carousel: the active window takes most of it, and the others show as slits of their middle beside it, in order, half of the gaps apart.
+Every window of a group is as large as the active one, so that activating one only moves it.
+An area is always wide enough for the smallest width its windows accept, with a group's slits beside it, and pushes the windows after it out of the way.
+Pointing at a slit widens it, and clicking it activates its window.
+A group made by bento's own group actions shows as a carousel in the area of its active window, and while a group is fullscreen or maximized, only its active window shows.
+Dragging a window shows the targets around the pointer: a round dot inside each edge of a window, which splits it and gives the dragged window the half on that side, a pill on each edge two windows share, which stuffs the dragged window between them, and a pill between two windows of a group, which it joins there.
+Targets sit on the windows rather than in the gaps, so they work without gaps too.
+Away from them, it shows the cells the window would land on.
+Double-clicking the left or right edge of a window toggles its full width, and the top or bottom edge its full height.
 Swiping sideways scrolls the view, and snaps it to window edges when the fingers lift.
 
 It also has actions for two windows at a time:
@@ -553,19 +561,19 @@ The first press picks the focused window and highlights it with a node the engin
 Then focus another window as usual, and press again.
 Pressing again on the window you picked first cancels.
 
-`stuff` puts the focused window between two windows that touch, side by side or stacked.
-The first press highlights where the window would go, at the seam nearest to it.
-While the highlight is up, `focus-left`, `focus-right`, `focus-up` and `focus-down` move it to the next seam in that direction, and any other action cancels.
+`stuff` puts the focused window between two windows that touch, side by side or stacked, or between two windows of a group, which it joins.
+The first press highlights the window and shows a pill on each place it can go, the one nearest to it picked.
+`focus-left`, `focus-right`, `focus-up` and `focus-down` pick the next place in that direction, and any other action cancels.
 The second press puts the window there.
 
 Where the grid ends, actions go on to the monitor or workspace beside it:
 
 - `focus-left-or-monitor` and `focus-right-or-monitor` focus the monitor to the left or right, and `focus-up-or-workspace` and `focus-down-or-workspace` the workspace above or below, when there is no window that way.
 - `move-left-or-to-monitor` moves a window to the monitor to the left once it can't move left, and `move-up-or-to-workspace` and `move-down-or-to-workspace` to the workspace above or below once it can't move up or down. The grid has no end to the right, so there is no such action for that side.
-- `move-to-workspace N` and `move-to-monitor "DP-2"` move the focused window, with its tabs, to a workspace of the focused monitor or the active workspace of a monitor.
+- `move-to-workspace N` and `move-to-monitor "DP-2"` move the focused window, with its group, to a workspace of the focused monitor or the active workspace of a monitor.
 
 Focus goes along with what moves.
-bento's own `move-window-to-workspace` actions move one window and leave its tabs.
+bento's own `move-window-to-workspace` actions move one window and leave its group.
 The engine's file binds the moves on `Mod+Ctrl+Shift`, which the main config leaves free, and has the focus actions as examples to bind on your focus keys.
 
 ## The niri engine

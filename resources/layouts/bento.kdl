@@ -51,26 +51,13 @@ options {
     // The heights that "cycle-height" goes through.
     preset-heights "33.333%" "50%" "66.667%"
 
-    // Open new windows as the tabs of an area of their own, instead of as a window.
-    default-tabs false
-
-    // The tab bar of tabbed areas: a segment for each tab, on the left of the area. Colors are
-    // written "#rgb", "#rrggbb" or "#rrggbbaa".
-    tab-bar true
-    // How thick it is, and how far from the area, in logical pixels.
-    tab-bar-width 4
-    tab-bar-gap 5
-    tab-bar-active-color "#7fc8ff"
-    tab-bar-inactive-color "#505050"
-    tab-bar-urgent-color "#9b0000"
-
     // The hints that show the window picked for swap, split and stuff, and where a dragged
-    // window would land.
+    // window would land. Colors are written "#rgb", "#rrggbb" or "#rrggbbaa".
     hint-color "#7fc8ff80"
 }
 
 // Window rules have the same match and exclude as the ones in config.kdl, and set what the
-// engine declares: default-width, default-height, default-tabs and open-full-width. See
+// engine declares: default-width, default-height and open-full-width. See
 // "bento msg engine" for their types. For example, to open dialogs at half the height:
 //
 // window-rule {
@@ -117,13 +104,9 @@ binds {
     Mod+Ctrl+Shift+WheelScrollDown { move-right; }
     Mod+Ctrl+Shift+WheelScrollUp   { move-left; }
 
-    // Stack the window under the one beside it, or take it out of its stack.
-    Mod+BracketLeft  { stack-left; }
-    Mod+BracketRight { stack-right; }
-
     // Stack the window to the right under the focused one.
     Mod+Comma  { stack-from-right; }
-    // Take the focused window out of its stack, to the right.
+    // Take the focused window out of its stack or its group, to the right.
     Mod+Period { unstack; }
 
     // Cycle the focused window through the preset widths, and back.
@@ -151,8 +134,10 @@ binds {
     Mod+Shift+Minus { set-height "-10%"; }
     Mod+Shift+Equal { set-height "+10%"; }
 
-    // Switch the focused window's area between tabs and a single window.
-    Mod+W { toggle-tabs; }
+    // While holding Mod, each press picks the focused window, or unpicks it; letting go of Mod
+    // groups the picked windows where the first one is. Picking one window of a group alone
+    // takes it out.
+    Mod+W { group; }
 
     // Actions on two windows. Each takes two presses: the first picks the focused window, then
     // focus another window and press again.
@@ -162,8 +147,9 @@ binds {
     // Swap two windows.
     Mod+X { swap; }
 
-    // Squeeze the focused window between two others. While it shows where the window would
-    // go, focusing in a direction picks another place, and pressing again puts it there.
+    // Squeeze the focused window between two others, or into a group between two of its
+    // windows. It shows the places it can go, one picked; focusing in a direction picks another,
+    // and pressing again puts it there.
     Mod+G { stuff; }
 
     // These go on like the focus actions above, and where the grid ends, on to the monitor to
@@ -174,7 +160,7 @@ binds {
     // Mod+Up    { focus-up-or-workspace; }
     // Mod+Right { focus-right-or-monitor; }
 
-    // Move the focused window, with its tabs, down or up in the grid, and to the workspace below
+    // Move the focused window, with its group, down or up in the grid, and to the workspace below
     // or above once it can't. The binds on Ctrl and Page_Down or Page_Up in config.kdl move one
     // window to another workspace.
     Mod+Ctrl+Shift+Page_Down { move-down-or-to-workspace; }

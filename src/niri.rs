@@ -5191,6 +5191,9 @@ impl Niri {
         // Freeze the clock at the target time.
         self.clock.set_unadjusted(target_presentation_time);
 
+        // The layout hears where a dragged window moved to once a frame, before it's drawn.
+        self.layout.send_drag_move();
+
         self.update_render_elements(Some(output));
 
         let mut res = RenderResult::Skipped;

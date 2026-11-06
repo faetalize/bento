@@ -650,6 +650,7 @@ impl<W: LayoutElement> TilingSpace<W> {
             title: win.title(),
             workspace,
             size: Wh::from_size(tile.tile_size()),
+            settled: win.settled(),
             min_size: Wh::from_size(tile.min_size_nonfullscreen()),
             max_size: Wh::from_size(tile.max_size_nonfullscreen()),
             borders: Wh {
@@ -2150,6 +2151,15 @@ impl Placement {
                 ClippedSurfaceRenderElement::new(surface, scale, area, shader.clone(), radius)
                     .into()
             }
+            // A window clipped to its own rounded corners, by clip-to-geometry, is clipped to
+            // where they and the clip's overlap.
+            TileRenderElement::ClippedSurface(clipped) => {
+                let (surface, own_area, own_radius) = clipped.into_parts();
+                let (area, radius) = rounded_overlap((own_area, own_radius), (area, radius))
+                    .unwrap_or((own_area, own_radius));
+                ClippedSurfaceRenderElement::new(surface, scale, area, shader.clone(), radius)
+                    .into()
+            }
             elem => elem,
         }
     }
@@ -2248,10 +2258,73 @@ fn toplevel_bounds(
     .to_i32_floor()
 }
 
+/// Where two rounded rectangles overlap, as one rounded rectangle. Each corner of the overlap is
+/// rounded like the corner of either rectangle that it's at, less how far it's inset from that
+/// corner, so that a corner one of them rounds close by stays rounded. Corners that both round
+/// take the rounder.
+fn rounded_overlap(
+    a: (Rectangle<f64, Logical>, CornerRadius),
+    b: (Rectangle<f64, Logical>, CornerRadius),
+) -> Option<(Rectangle<f64, Logical>, CornerRadius)> {
+    let area = a.0.intersection(b.0)?;
+    let corner = |at: fn(Rectangle<f64, Logical>) -> Point<f64, Logical>,
+                  radius: fn(CornerRadius) -> f32| {
+        [a, b]
+            .into_iter()
+            .map(|(rect, radii)| {
+                let (p, q) = (at(area), at(rect));
+                let inset = f64::max((p.x - q.x).abs(), (p.y - q.y).abs());
+                f32::max(radius(radii) - inset as f32, 0.)
+            })
+            .fold(0., f32::max)
+    };
+    let radius = CornerRadius {
+        top_left: corner(|r| r.loc, |c| c.top_left),
+        top_right: corner(|r| r.loc + Point::from((r.size.w, 0.)), |c| c.top_right),
+        bottom_right: corner(|r| r.loc + r.size.to_point(), |c| c.bottom_right),
+        bottom_left: corner(|r| r.loc + Point::from((0., r.size.h)), |c| c.bottom_left),
+    };
+    Some((area, radius.fit_to(area.size.w as f32, area.size.h as f32)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::surfaces::{Clip, NodeTransform};
+
+    #[test]
+    fn rounded_overlap_rounds_a_slit_of_a_rounded_window() {
+        // A slit through the middle of a window inset by a 4 px border: the slit's corners are
+        // rounded, less the border, and the window's own corners are too far away to count.
+        let window = (rect(0., 4., 568., 680.), CornerRadius::from(15.));
+        let slit = (rect(276., 0., 40., 688.), CornerRadius::from(12.));
+        assert_eq!(
+            rounded_overlap(window, slit),
+            Some((rect(276., 4., 40., 680.), CornerRadius::from(8.)))
+        );
+    }
+
+    #[test]
+    fn rounded_overlap_keeps_the_rounder_corners() {
+        // A clip around the whole window keeps the window's corners where they're rounder.
+        let window = (rect(10., 10., 100., 100.), CornerRadius::from(15.));
+        let clip = (rect(0., 0., 120., 120.), CornerRadius::from(20.));
+        assert_eq!(
+            rounded_overlap(window, clip),
+            Some((window.0, CornerRadius::from(15.)))
+        );
+        assert_eq!(
+            rounded_overlap(clip, window),
+            Some((window.0, CornerRadius::from(15.)))
+        );
+    }
+
+    #[test]
+    fn rounded_overlap_of_apart_rectangles_is_none() {
+        let a = (rect(0., 0., 10., 10.), CornerRadius::from(2.));
+        let b = (rect(20., 0., 10., 10.), CornerRadius::from(2.));
+        assert_eq!(rounded_overlap(a, b), None);
+    }
 
     fn point(x: f64, y: f64) -> Point<f64, Logical> {
         Point::from((x, y))

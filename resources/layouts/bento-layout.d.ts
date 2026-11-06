@@ -573,6 +573,12 @@ export interface Window extends EventTarget<WindowEvents> {
     readonly rect: Rect | null;
     /** The size it actually took. Windows don't always take the size they're given. */
     readonly size: Size;
+    /**
+     * Whether the window has answered the size it was last given: `size` is then the size it
+     * took for it, even when that's its old size because it refused. A placement at a new size
+     * makes it false until the window answers, and `change` fires when it does.
+     */
+    readonly settled: boolean;
     /** Smallest size it accepts; 0 means no limit. */
     readonly minSize: Size;
     /** Largest size it accepts; 0 means no limit. */

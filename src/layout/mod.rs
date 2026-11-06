@@ -291,6 +291,14 @@ pub trait LayoutElement {
         Some(requested)
     }
 
+    /// Whether the window has answered the sizes asked of it: none is waiting to be sent, and it
+    /// has committed to every configure sent. Its size is then the one it took for them.
+    ///
+    /// The default impl is for testing only, where windows answer at once.
+    fn settled(&self) -> bool {
+        true
+    }
+
     fn is_windowed_fullscreen(&self) -> bool {
         false
     }

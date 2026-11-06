@@ -98,7 +98,7 @@ function configKey(d) {
 }
 
 function windowKey(d) {
-    return JSON.stringify([d.appId, d.title, d.size, d.minSize, d.maxSize, d.urgent, d.rules]);
+    return JSON.stringify([d.appId, d.title, d.size, d.settled, d.minSize, d.maxSize, d.urgent, d.rules]);
 }
 
 /**
@@ -378,6 +378,10 @@ export class Window extends EventTarget {
         return this.#d.size;
     }
 
+    get settled() {
+        return this.#d.settled;
+    }
+
     get minSize() {
         return this.#d.minSize;
     }
@@ -439,6 +443,10 @@ export class Window extends EventTarget {
         const accepted = fits(rect.w, d.minSize.w, d.maxSize.w) && fits(rect.h, d.minSize.h, d.maxSize.h);
         if (this.#s.querying || sameRect(d.rect, rect)) {
             return accepted;
+        }
+        // A new size is one the window hasn't answered yet.
+        if (d.rect === null || d.rect.w !== rect.w || d.rect.h !== rect.h) {
+            d.settled = false;
         }
         d.rect = freezeRect(rect);
         this.#s.markPlaced(d, opts.animate ?? true);
@@ -927,6 +935,7 @@ export class Session {
         d.appId = info.appId;
         d.title = info.title;
         d.size = freezeSize(info.size);
+        d.settled = info.settled ?? true;
         d.minSize = freezeSize(info.minSize);
         d.maxSize = freezeSize(info.maxSize);
         d.borders = freezeSize(info.borders);
