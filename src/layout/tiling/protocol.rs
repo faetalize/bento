@@ -137,6 +137,14 @@ pub struct Struts {
     pub bottom: f64,
 }
 
+/// Where a workspace's camera is going, if it's moving, or where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct CameraInfo {
+    pub x: f64,
+    pub y: f64,
+    pub zoom: f64,
+}
+
 /// What bento tells the layout about a workspace.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,8 +156,7 @@ pub struct WorkspaceInfo {
     /// Place in the monitor's stack, from the top.
     pub index: usize,
     pub view: ViewInfo,
-    /// Where the camera is going, if it's moving.
-    pub camera: Xy,
+    pub camera: CameraInfo,
     pub config: ConfigInfo,
     /// The engine's options for the workspace: the top-level ones with its output's and its own on
     /// top.
@@ -328,6 +335,7 @@ pub struct CameraChange {
     pub workspace: u64,
     pub x: f64,
     pub y: f64,
+    pub zoom: f64,
     pub animate: bool,
     /// Initial velocity of the animation, after a swipe.
     #[serde(default)]

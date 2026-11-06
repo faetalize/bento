@@ -3491,8 +3491,13 @@ impl<W: LayoutElement> Layout<W> {
 
         let tile_pos = ws_geo.loc + tile_offset.upscale(zoom);
 
-        let pointer_offset_within_window =
-            start_pos_within_output - tile_pos - window_offset.upscale(zoom);
+        // A tile that the layout draws moved, scaled or zoomed is grabbed where it's drawn.
+        let pos_within_workspace = (start_pos_within_output - ws_geo.loc).downscale(zoom);
+        let pointer_offset_within_window = match ws.pos_within_tile(&window_id, pos_within_workspace)
+        {
+            Some(pos_within_tile) => (pos_within_tile - window_offset).upscale(zoom),
+            None => start_pos_within_output - tile_pos - window_offset.upscale(zoom),
+        };
         let window_size = tile.window_size().upscale(zoom);
         let pointer_ratio_within_window = (
             f64::clamp(pointer_offset_within_window.x / window_size.w, 0., 1.),

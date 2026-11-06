@@ -1148,6 +1148,62 @@ fn starting_over_keeps_only_the_windows_given() {
     assert!(tree.pointer_left().is_empty());
 }
 
+// Zoom.
+
+#[test]
+fn a_zoomed_node_is_placed_on_the_zoomed_view() {
+    let (mut tree, _) = tree();
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({
+            "rect": props_rect(100., 50., 40., 20.),
+            "transform": { "scale": 2, "x": 10, "y": -5 },
+            "clip": true,
+            "cornerRadius": 4,
+        }),
+    );
+    add(
+        &mut tree,
+        "n2",
+        "n1",
+        json!({ "rect": props_rect(100., 50., 10., 10.) }),
+    );
+    let canvas = tree.drawn("n2").unwrap();
+
+    // The view's top left is at (80, 30) on the canvas, and it shows it half as large.
+    let zoomed = canvas.zoomed(0.5, point(80., 30.));
+    let at = |drawn: &Drawn| drawn.bounds();
+    let before = at(&canvas);
+    assert_eq!(
+        at(&zoomed),
+        rect(
+            (before.loc.x - 80.) * 0.5,
+            (before.loc.y - 30.) * 0.5,
+            before.size.w * 0.5,
+            before.size.h * 0.5,
+        )
+    );
+    assert_eq!(zoomed.transform.scale, canvas.transform.scale * 0.5);
+    assert_eq!(zoomed.opacity, canvas.opacity);
+
+    let (clip, zoomed_clip) = (canvas.clip.unwrap(), zoomed.clip.unwrap());
+    assert_eq!(
+        zoomed_clip.rect,
+        rect(
+            (clip.rect.loc.x - 80.) * 0.5,
+            (clip.rect.loc.y - 30.) * 0.5,
+            clip.rect.size.w * 0.5,
+            clip.rect.size.h * 0.5,
+        )
+    );
+    assert_eq!(zoomed_clip.radius, clip.radius * 0.5);
+
+    // No zoom and no origin leaves it where it is.
+    assert_eq!(canvas.zoomed(1., point(0., 0.)), canvas);
+}
+
 // Hit testing with windows.
 
 #[test]
@@ -1170,11 +1226,18 @@ fn a_window_over_a_node_takes_the_pointer_from_it() {
     // The window doesn't cover anything unless the caller says so.
     assert_eq!(tree.hit(point(50., 50.)).as_deref(), Some("n1"));
     assert_eq!(
-        tree.hit_with(point(50., 50.), &|_| false).as_deref(),
+        tree.hit_with(point(50., 50.), &|_| WindowHit::Through)
+            .as_deref(),
         Some("n1")
     );
 
-    let covers = |window: u64| window == 7;
+    let covers = |window: u64| {
+        if window == 7 {
+            WindowHit::Covers
+        } else {
+            WindowHit::Through
+        }
+    };
     assert_eq!(tree.hit_with(point(50., 50.), &covers), None);
     // What's drawn on the window is above it.
     assert_eq!(
@@ -1194,10 +1257,80 @@ fn a_window_under_a_node_does_not_take_the_pointer_from_it() {
         json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
     );
     assert_eq!(
-        tree.hit_with(point(50., 50.), &|window| window == 7)
+        tree.hit_with(point(50., 50.), &|_| WindowHit::Covers)
             .as_deref(),
         Some("n1")
     );
+}
+
+#[test]
+fn a_window_whose_input_goes_to_the_engine_is_hit_like_a_node() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(
+        &mut tree,
+        "n1",
+        "r1",
+        json!({ "rect": props_rect(0., 0., 100., 100.), "interactive": true }),
+    );
+    tree.add_window(8);
+
+    let node = |window: u64| {
+        if window == 8 {
+            WindowHit::Node
+        } else {
+            WindowHit::Through
+        }
+    };
+    // The window is above the node, and the caller says where the window is.
+    assert_eq!(tree.hit_with(point(50., 50.), &node).as_deref(), Some("w8"));
+
+    // A window that isn't hit leaves what's below it.
+    assert_eq!(
+        tree.hit_with(point(50., 50.), &|_| WindowHit::Through)
+            .as_deref(),
+        Some("n1")
+    );
+
+    // The pointer can be on it: it's in the path of events, with the nodes it's in.
+    set(&mut tree, "w8", json!({ "input": "engine" }));
+    assert_eq!(
+        tree.pointer_over(Some("w8")),
+        [("w8".to_owned(), "pointerenter")]
+    );
+}
+
+#[test]
+fn only_a_window_node_has_input() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(&mut tree, "n1", "r1", json!({}));
+
+    assert_eq!(tree.window_input(7), Input::App);
+    set(&mut tree, "w7", json!({ "input": "none" }));
+    assert_eq!(tree.window_input(7), Input::None);
+    set(&mut tree, "w7", json!({ "input": "engine" }));
+    assert_eq!(tree.window_input(7), Input::Engine);
+    set(&mut tree, "w7", json!({ "input": "app" }));
+    assert_eq!(tree.window_input(7), Input::App);
+
+    assert_eq!(
+        error(
+            &mut tree,
+            json!({ "op": "set", "id": "n1", "props": { "input": "none" } })
+        ),
+        "op 0: `input` is only for window nodes"
+    );
+    assert_eq!(
+        error(
+            &mut tree,
+            json!({ "op": "create", "id": "n2", "kind": "box", "props": { "input": "none" } })
+        ),
+        "op 0: `input` is only for window nodes"
+    );
+    // A window that's gone has the default.
+    tree.remove_window(7);
+    assert_eq!(tree.window_input(7), Input::App);
 }
 
 #[test]

@@ -9,6 +9,7 @@ use std::fmt::Write as _;
 use insta::assert_snapshot;
 
 use super::*;
+use crate::utils::ResizeEdge;
 
 fn options_for(layout: &str) -> Options {
     Options {
@@ -1222,4 +1223,302 @@ fn a_float_request_says_the_size_of_the_window() {
     drop(layout);
     let sizes = crate::layout::tiling::engine::exposed_state().unwrap();
     assert_eq!(sizes, serde_json::json!([{ "w": 300, "h": 200 }]));
+}
+
+/// An engine with a big window drawn at half its size, and a second window beside it. The windows
+/// are named by the order they opened.
+const SCALED: &str = r#"
+export const meta = { api: 2, name: "scaled", floating: false };
+export default function create(bento) {
+    let count = 0;
+    bento.addEventListener("windowadd", (e) => {
+        count++;
+        if (count === 1) {
+            // Scaled around its middle, it's drawn at 100, 100 and 200 × 200.
+            e.window.place({ x: 0, y: 0, w: 400, h: 400 });
+            e.window.node.set({ transform: { scale: 0.5 } });
+        } else {
+            e.window.place({ x: 300, y: 0, w: 200, h: 200 });
+        }
+        e.window.focus();
+    });
+}
+"#;
+
+fn scaled_layout() -> Layout<TestWindow> {
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    check_ops_with_options(options_for_source("scaled", SCALED), ops)
+}
+
+/// The id of the window that the app gets the pointer for at a point of the view.
+fn window_under(layout: &Layout<TestWindow>, x: f64, y: f64) -> Option<usize> {
+    let output = layout.active_output().unwrap();
+    layout
+        .window_under(output, Point::from((x, y)))
+        .map(|(win, _)| win.0.id)
+}
+
+#[test]
+fn a_window_takes_the_pointer_where_it_is_drawn() {
+    let layout = scaled_layout();
+
+    // It was placed at 0, 0 and is 400 × 400, but it's drawn smaller.
+    assert_eq!(window_under(&layout, 50., 50.), None);
+    assert_eq!(window_under(&layout, 150., 150.), Some(1));
+    assert_eq!(window_under(&layout, 290., 290.), Some(1));
+    assert_eq!(window_under(&layout, 310., 310.), None);
+    // The other window's place is the one that the first overlaps without being drawn there.
+    assert_eq!(window_under(&layout, 350., 50.), Some(2));
+}
+
+#[test]
+fn a_window_is_resized_from_where_its_edges_are_drawn() {
+    let layout = scaled_layout();
+    let output = layout.active_output().unwrap();
+    let edges = |x, y| layout.resize_edges_under(output, Point::from((x, y)));
+
+    // In the thirds of the window as it's drawn, not as it was placed.
+    assert_eq!(edges(160., 160.), Some(ResizeEdge::TOP | ResizeEdge::LEFT));
+    assert_eq!(
+        edges(280., 280.),
+        Some(ResizeEdge::BOTTOM | ResizeEdge::RIGHT)
+    );
+    assert_eq!(edges(200., 200.), Some(ResizeEdge::empty()));
+    assert_eq!(edges(50., 50.), None);
+}
+
+#[test]
+fn a_clip_cuts_off_what_a_window_takes_the_pointer_for() {
+    let source = r#"
+    export const meta = { api: 2, name: "clipped", floating: false };
+    export default function create(bento) {
+        bento.addEventListener("windowadd", (e) => {
+            e.window.place({ x: 0, y: 0, w: 400, h: 400 });
+            const clip = bento.createNode("box", { rect: { x: 0, y: 0, w: 200, h: 400 }, clip: true });
+            e.window.workspace.tree.append(clip);
+            clip.append(e.window.node);
+            e.window.focus();
+        });
+    }
+    "#;
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("clipped", source), ops);
+
+    assert_eq!(window_under(&layout, 100., 100.), Some(1));
+    assert_eq!(window_under(&layout, 300., 100.), None);
+}
+
+/// An engine with two windows and a button between them, which is larger than the upper window.
+/// The upper window's input goes where `set-input` says. What the engine gets is exposed as `[who, event, x, y]`.
+const LAYERS: &str = r#"
+export const meta = {
+    api: 2,
+    name: "layers",
+    floating: false,
+    actions: { "set-input": { args: [{ name: "input", type: "choice", choices: ["app", "engine", "none"] }] } },
+};
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => ({ log }));
+    let count = 0;
+    let upper;
+    bento.addEventListener("windowadd", (e) => {
+        count++;
+        if (count === 1) {
+            e.window.place({ x: 0, y: 0, w: 400, h: 400 });
+            const button = bento.createNode("box", { rect: { x: 100, y: 100, w: 250, h: 250 }, interactive: true });
+            button.addEventListener("click", (p) => log.push(["button", "click", p.pointer.x, p.pointer.y]));
+            e.window.workspace.tree.append(button);
+        } else {
+            e.window.place({ x: 100, y: 100, w: 200, h: 200 });
+            upper = e.window;
+            e.window.node.addEventListener("click", (p) => log.push(["window", "click", p.pointer.x, p.pointer.y]));
+        }
+        e.window.focus();
+    });
+    bento.addEventListener("action", (e) => upper.node.set({ input: e.args[0] }));
+}
+"#;
+
+fn set_input(layout: &mut Layout<TestWindow>, input: &str) {
+    let arg = niri_config::TilingOption::String(String::from(input));
+    check_ops_on_layout(layout, [Op::LayoutAction("set-input", vec![arg], None)]);
+}
+
+fn layers_layout() -> Layout<TestWindow> {
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    check_ops_with_options(options_for_source("layers", LAYERS), ops)
+}
+
+#[test]
+fn a_window_with_app_input_takes_the_pointer_from_what_is_below() {
+    let layout = layers_layout();
+
+    // The upper window is above the button, and the button is above the lower window.
+    assert_eq!(window_under(&layout, 150., 150.), Some(2));
+    assert_eq!(node_under(&layout, 150., 150.), None);
+    assert_eq!(node_under(&layout, 320., 320.).as_deref(), Some("n1"));
+    assert_eq!(window_under(&layout, 50., 50.), Some(1));
+}
+
+#[test]
+fn a_window_with_no_input_leaves_the_pointer_to_what_is_below() {
+    let mut layout = layers_layout();
+    set_input(&mut layout, "none");
+
+    // The button is below the window, and gets the pointer.
+    assert_eq!(node_under(&layout, 150., 150.).as_deref(), Some("n1"));
+    // The window below the button is where the window would have been.
+    assert_eq!(window_under(&layout, 150., 150.), Some(1));
+    assert_eq!(window_under(&layout, 50., 50.), Some(1));
+    assert_eq!(node_under(&layout, 50., 50.), None);
+}
+
+#[test]
+fn a_window_with_engine_input_is_a_node_and_the_app_gets_nothing() {
+    let mut layout = layers_layout();
+    set_input(&mut layout, "engine");
+    let upper = layout
+        .active_workspace()
+        .unwrap()
+        .scrolling()
+        .engine_id_of(&2)
+        .unwrap();
+    let upper = format!("w{upper}");
+
+    assert_eq!(
+        node_under(&layout, 150., 150.).as_deref(),
+        Some(upper.as_str())
+    );
+    // Neither it nor the window below it gets the pointer for the app there.
+    assert_eq!(window_under(&layout, 150., 150.), None);
+    // Where it isn't, what's there gets it.
+    assert_eq!(node_under(&layout, 320., 320.).as_deref(), Some("n1"));
+    assert_eq!(window_under(&layout, 50., 50.), Some(1));
+
+    // Its events reach the engine as the window node's own.
+    let none = [false; 4];
+    let output = layout.active_output().unwrap().clone();
+    let hit = layout.node_under(&output, Point::from((150., 150.)));
+    layout.node_pointer_moved(hit.as_ref(), none);
+    let pos = Point::from((150., 150.));
+    layout.node_pointer_event(&upper, "click", pos, 1, none, Point::from((0., 0.)));
+    assert_eq!(
+        node_log(),
+        serde_json::json!([["window", "click", 150, 150]])
+    );
+
+    // The pointer leaving it is told like it is for any node.
+    layout.node_pointer_moved(None, none);
+}
+
+/// An engine with a window and a button, which `zoom` zooms the camera to, with the camera's
+/// position at `x`.
+const ZOOMING: &str = r#"
+export const meta = {
+    api: 2,
+    name: "zooming",
+    floating: false,
+    actions: {
+        zoom: { args: [{ name: "zoom", type: "number" }, { name: "x", type: "number" }, { name: "animate", type: "boolean", default: false }] },
+    },
+};
+export default function create(bento) {
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 200, y: 100, w: 200, h: 200 });
+        const button = bento.createNode("box", { rect: { x: 600, y: 400, w: 100, h: 100 }, interactive: true });
+        e.window.workspace.tree.append(button);
+        e.window.focus();
+    });
+    bento.addEventListener("action", (e) => {
+        const [zoom, x, animate] = e.args;
+        e.window.workspace.camera.move({ zoom, x }, { animate });
+    });
+}
+"#;
+
+fn zoom_to(layout: &mut Layout<TestWindow>, zoom: f64, x: f64, animate: bool) {
+    use niri_config::TilingOption::{Bool, Number};
+    let args = vec![Number(zoom), Number(x), Bool(animate)];
+    check_ops_on_layout(layout, [Op::LayoutAction("zoom", args, None)]);
+}
+
+fn zooming_layout() -> Layout<TestWindow> {
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    check_ops_with_options(options_for_source("zooming", ZOOMING), ops)
+}
+
+#[test]
+fn pointer_input_lands_where_a_zoomed_canvas_is_drawn() {
+    let mut layout = zooming_layout();
+    zoom_to(&mut layout, 0.5, 100., false);
+    let output = layout.active_output().unwrap().clone();
+
+    // The window is at 200, 100 on the canvas, which has the camera at 100, 0 and is drawn half
+    // as large: at 50, 50 and 100 × 100.
+    assert_eq!(window_under(&layout, 100., 100.), Some(1));
+    assert_eq!(window_under(&layout, 60., 60.), Some(1));
+    assert_eq!(window_under(&layout, 160., 100.), None);
+    // Where it is on the canvas when it isn't zoomed.
+    assert_eq!(window_under(&layout, 250., 150.), None);
+
+    // The button is at 600, 400 on the canvas: drawn at 250, 200 and 50 × 50.
+    assert_eq!(node_under(&layout, 260., 210.).as_deref(), Some("n1"));
+    assert_eq!(node_under(&layout, 300., 210.), None);
+    let hit = layout
+        .node_under(&output, Point::from((260., 210.)))
+        .unwrap();
+    // The pointer is at 620, 420 on the canvas.
+    assert_eq!(hit.pos, Point::from((620., 420.)));
+
+    // Resizing, and so everything else that asks which window is there, is where it's drawn.
+    assert_eq!(
+        layout.resize_edges_under(&output, Point::from((60., 60.))),
+        Some(ResizeEdge::TOP | ResizeEdge::LEFT)
+    );
+}
+
+#[test]
+fn zooming_back_puts_pointer_input_where_the_canvas_is() {
+    let mut layout = zooming_layout();
+    zoom_to(&mut layout, 0.5, 100., false);
+    zoom_to(&mut layout, 1., 0., false);
+
+    assert_eq!(window_under(&layout, 250., 150.), Some(1));
+    assert_eq!(window_under(&layout, 60., 60.), None);
+    assert_eq!(node_under(&layout, 650., 450.).as_deref(), Some("n1"));
+}
+
+#[test]
+fn a_zoom_move_animates_like_a_camera_move() {
+    let mut layout = zooming_layout();
+    let output = layout.active_output().unwrap().clone();
+    let zoom =
+        |layout: &Layout<TestWindow>| layout.active_workspace().unwrap().scrolling().camera_zoom();
+    assert_eq!(zoom(&layout), 1.);
+
+    zoom_to(&mut layout, 2., 0., true);
+    // It's on its way: still drawn as it was, and the layout runs animations.
+    assert_eq!(zoom(&layout), 1.);
+    assert!(layout.are_animations_ongoing(Some(&output)));
+
+    check_ops_on_layout(&mut layout, [Op::CompleteAnimations]);
+    assert_eq!(zoom(&layout), 2.);
+    assert!(!layout.are_animations_ongoing(Some(&output)));
+}
+
+#[test]
+fn bento_keeps_the_zoom_in_a_sane_range() {
+    let mut layout = zooming_layout();
+    let zoom =
+        |layout: &Layout<TestWindow>| layout.active_workspace().unwrap().scrolling().camera_zoom();
+
+    zoom_to(&mut layout, 1e-6, 0., false);
+    assert_eq!(zoom(&layout), 0.01);
+    zoom_to(&mut layout, 1e6, 0., false);
+    assert_eq!(zoom(&layout), 100.);
 }

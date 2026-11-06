@@ -22,6 +22,19 @@ impl NodeTransform {
     };
 }
 
+/// Where pointer input on a window's node goes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Input {
+    /// To the app, where the window is drawn.
+    #[default]
+    App,
+    /// To the engine, as the node's pointer events.
+    Engine,
+    /// To what's below the window.
+    None,
+}
+
 /// What a fill or a border is painted with: a colour or a gradient.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Paint {
@@ -119,6 +132,7 @@ pub struct Update {
     pub color: Option<Color>,
     pub image: Option<String>,
     pub interactive: Option<bool>,
+    pub input: Option<Input>,
     pub transitions: Option<Transitions>,
 }
 
@@ -208,6 +222,7 @@ struct RawProps {
     color: Option<String>,
     image: Option<String>,
     interactive: Option<bool>,
+    input: Option<Input>,
     transitions: Option<HashMap<String, RawTransition>>,
 }
 
@@ -391,6 +406,7 @@ impl TryFrom<RawProps> for Update {
                 .transpose()?,
             image: raw.image,
             interactive: raw.interactive,
+            input: raw.input,
             transitions: raw.transitions.map(Transitions::from_raw).transpose()?,
         })
     }
@@ -418,6 +434,7 @@ mod tests {
             "background": "#000",
             "border": { "width": 2, "color": "#fff" },
             "interactive": true,
+            "input": "engine",
         }))
         .unwrap();
 
@@ -450,6 +467,20 @@ mod tests {
             Paint::Color(Color::from_rgba8_unpremul(255, 255, 255, 255))
         );
         assert_eq!(update.interactive, Some(true));
+        assert_eq!(update.input, Some(Input::Engine));
+    }
+
+    #[test]
+    fn input_is_app_engine_or_none() {
+        for (name, input) in [
+            ("app", Input::App),
+            ("engine", Input::Engine),
+            ("none", Input::None),
+        ] {
+            assert_eq!(parse(json!({ "input": name })).unwrap().input, Some(input));
+        }
+        assert_eq!(parse(json!({})).unwrap().input, None);
+        assert_eq!(Input::default(), Input::App);
     }
 
     #[test]
@@ -554,6 +585,8 @@ mod tests {
             json!({ "border": { "width": -1, "color": "#fff" } }),
             json!({ "border": { "width": 1, "color": { "from": "#000" } } }),
             json!({ "color": "#12" }),
+            json!({ "input": "pointer" }),
+            json!({ "input": true }),
             // Text has a colour, not a gradient.
             json!({ "color": { "from": "#000", "to": "#fff" } }),
         ] {

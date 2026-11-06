@@ -17,8 +17,8 @@ use serde_json::Value;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use self::animated::Animated;
-pub use self::props::NodeTransform;
 use self::props::{Border, Paint, Transitions, Update};
+pub use self::props::{Input, NodeTransform};
 pub use self::render::{RenderItem, SurfaceRenderElement};
 use self::render::{Target, Visuals};
 use crate::animation::Clock;
@@ -90,6 +90,8 @@ struct Node {
     color: Color,
     image: Option<String>,
     interactive: bool,
+    /// Where pointer input goes, for a window's node.
+    input: Input,
     transitions: Transitions,
     visuals: RefCell<Visuals>,
 }
@@ -114,6 +116,17 @@ pub struct Clip {
     /// Where it ends up.
     pub rect: Rectangle<f64, Logical>,
     pub radius: f64,
+}
+
+/// What a window does to the pointer over it, as the caller that hit tests windows says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowHit {
+    /// The pointer isn't on the window, or the window passes it on to what's below.
+    Through,
+    /// The app gets the pointer, and the nodes below the window don't.
+    Covers,
+    /// The engine gets the pointer, as the window node's own events.
+    Node,
 }
 
 /// Where a window goes, reported to the caller that draws windows.
@@ -185,6 +198,32 @@ impl Drawn {
     /// Whether `point` is on it, and not cut off by a clip.
     pub fn contains(&self, point: Point<f64, Logical>) -> bool {
         self.bounds().contains(point) && self.clip.is_none_or(|clip| clip.rect.contains(point))
+    }
+
+    /// Where it's drawn on a view that shows the canvas `zoom` times as large, with `origin` on
+    /// the canvas at its top left: its position is relative to the view, and its sizes are as
+    /// large as they're drawn.
+    pub fn zoomed(&self, zoom: f64, origin: Point<f64, Logical>) -> Drawn {
+        let centre = (center_f64(self.rect) - origin).upscale(zoom);
+        Drawn {
+            rect: Rectangle::new(
+                centre - self.rect.size.to_point().downscale(2.),
+                self.rect.size,
+            ),
+            opacity: self.opacity,
+            transform: NodeTransform {
+                scale: self.transform.scale * zoom,
+                x: self.transform.x * zoom,
+                y: self.transform.y * zoom,
+            },
+            clip: self.clip.map(|clip| Clip {
+                rect: Rectangle::new(
+                    (clip.rect.loc - origin).upscale(zoom),
+                    clip.rect.size.upscale(zoom),
+                ),
+                radius: clip.radius * zoom,
+            }),
+        }
     }
 }
 
@@ -265,6 +304,7 @@ impl Node {
             color: Color::from_rgba8_unpremul(255, 255, 255, 255),
             image: None,
             interactive: false,
+            input: Input::default(),
             transitions: Transitions::default(),
             visuals: RefCell::default(),
         }
@@ -321,6 +361,9 @@ impl Node {
         if let Some(interactive) = update.interactive {
             self.interactive = interactive;
         }
+        if let Some(input) = update.input {
+            self.input = input;
+        }
     }
 
     fn advance_animations(&mut self) {
@@ -339,9 +382,14 @@ impl Node {
             || self.background.is_animating()
     }
 
-    /// Whether the pointer can be on it. Windows get the pointer from bento, not from the tree.
+    /// Whether the pointer can be on it. Windows get the pointer from bento, not from the tree,
+    /// unless their input goes to the engine.
     fn takes_pointer(&self) -> bool {
-        self.interactive && !matches!(self.kind, NodeKind::Root | NodeKind::Window(_))
+        match self.kind {
+            NodeKind::Root => false,
+            NodeKind::Window(_) => self.input == Input::Engine,
+            _ => self.interactive,
+        }
     }
 }
 
@@ -362,6 +410,9 @@ fn check_props(kind: NodeKind, update: &Update) -> Result<(), String> {
     }
     if update.image.is_some() && kind != NodeKind::Image {
         return only("image", "image");
+    }
+    if update.input.is_some() && !matches!(kind, NodeKind::Window(_)) {
+        return only("input", "window");
     }
     if (update.background.is_some() || update.border.is_some())
         && matches!(kind, NodeKind::Root | NodeKind::Window(_))
@@ -787,25 +838,35 @@ impl Tree {
         drawn
     }
 
+    /// Where a window's node is drawn right now, with its ancestors' opacity, transforms and
+    /// clips.
+    pub fn window_drawn(&self, id: u64) -> Option<Drawn> {
+        self.drawn(&window_key(id))
+    }
+
     /// Hands what the tree draws to `push`, in draw order, with the canvas' origin at `location`
-    /// on the output, which has `scale`. The workspace's view starts at the output's origin and is
-    /// `view_size` large, which gradients that span the view cover. Windows come as slots, in
-    /// canvas coordinates.
+    /// on the output, which has `scale`, and the canvas drawn `zoom` times as large around the
+    /// output's origin. The workspace's view starts at the output's origin and is `view_size`
+    /// large, which gradients that span the view cover. Windows come as slots, in canvas
+    /// coordinates, for the caller to zoom.
     pub fn render_elements<R: NiriRenderer>(
         &self,
         renderer: &mut R,
         location: Point<f64, Logical>,
         scale: f64,
+        zoom: f64,
         view_size: Size<f64, Logical>,
         push: &mut dyn FnMut(RenderItem),
     ) {
+        // What's drawn is already placed on the zoomed view, so its nodes aren't moved again.
         let target = Target {
-            location,
+            location: Point::from((0., 0.)),
             scale,
             view: Rectangle::from_size(view_size),
             icon_theme: &self.icon_theme,
             has_border_shader: BorderRenderElement::has_shader(renderer),
         };
+        let origin = Point::from((-location.x, -location.y));
 
         self.walk(&mut |_, node, drawn| {
             if let NodeKind::Window(id) = node.kind {
@@ -813,30 +874,41 @@ impl Tree {
                     push(RenderItem::Window(WindowSlot { id, drawn: *drawn }));
                 }
             } else {
-                render::draw(renderer, node, drawn, &target, push);
+                render::draw(renderer, node, &drawn.zoomed(zoom, origin), &target, push);
             }
         });
     }
 
     /// The topmost interactive node at `point` on the canvas. Windows aren't hit.
     pub fn hit(&self, point: Point<f64, Logical>) -> Option<String> {
-        self.hit_with(point, &|_| false)
+        self.hit_with(point, &|_| WindowHit::Through)
     }
 
-    /// The topmost interactive node at `point` on the canvas, where the windows for which
-    /// `covers` is true also take the pointer from the nodes below them.
+    /// The topmost interactive node at `point` on the canvas, where `window` says what each
+    /// window does to the pointer: it can take it from the nodes below it, or be hit itself.
     pub fn hit_with(
         &self,
         point: Point<f64, Logical>,
-        covers: &dyn Fn(u64) -> bool,
+        window: &dyn Fn(u64) -> WindowHit,
     ) -> Option<String> {
         let mut hit = None;
         self.walk(&mut |id, node, drawn| match node.kind {
-            NodeKind::Window(window) if covers(window) => hit = None,
+            NodeKind::Window(window_id) => match window(window_id) {
+                WindowHit::Through => (),
+                WindowHit::Covers => hit = None,
+                WindowHit::Node => hit = Some(id.to_owned()),
+            },
             _ if node.takes_pointer() && drawn.contains(point) => hit = Some(id.to_owned()),
             _ => (),
         });
         hit
+    }
+
+    /// Where pointer input on a window goes.
+    pub fn window_input(&self, id: u64) -> Input {
+        self.nodes
+            .get(&window_key(id))
+            .map_or_else(Input::default, |node| node.input)
     }
 
     /// The interactive nodes from `id` up to the root.
