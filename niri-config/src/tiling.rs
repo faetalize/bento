@@ -4,11 +4,13 @@ use std::rc::Rc;
 
 use knuffel::errors::DecodeError;
 use knuffel::Decode as _;
+use niri_ipc::LayoutEngineGradient;
 
+use crate::appearance::{Color, Gradient, GradientInterpolation, GradientRelativeTo};
 use crate::binds::{Binds, Key};
 use crate::utils::{expand_home_path, MergeWith};
 use crate::window_rule::Match;
-use crate::{Config, CurrentFile, Includes};
+use crate::{Config, CurrentFile, Includes, OutputName};
 
 /// Which tiling layout bento runs, and its options.
 ///
@@ -25,6 +27,20 @@ use crate::{Config, CurrentFile, Includes};
 /// options {
 ///     gravity true
 ///     preset-column-widths "33%" "50%" "67%"
+///     active-gradient from="#80c8ff" to="#c7ff7f" angle=45
+/// }
+///
+/// // Options for the workspaces of an output, and for a named workspace.
+/// output "DP-2" {
+///     options {
+///         gravity false
+///     }
+/// }
+///
+/// workspace "web" {
+///     options {
+///         preset-column-widths "50%"
+///     }
 /// }
 ///
 /// window-rule {
@@ -42,9 +58,45 @@ pub struct Tiling {
     /// Options for the layout, by name, with the values as written: an option is `name value...`,
     /// and several values make a list. The layout declares their types, so they're checked and
     /// converted when it loads.
-    pub options: Vec<(String, Vec<TilingOption>)>,
+    pub options: EngineOptions,
+    /// Options that differ on the workspaces of an output, in the order they're written.
+    pub output_options: Vec<ScopedOptions>,
+    /// Options that differ on a named workspace, in the order they're written.
+    pub workspace_options: Vec<ScopedOptions>,
     /// The layout's own window rules, in the order they're written.
     pub window_rules: Vec<EngineWindowRule>,
+}
+
+/// Options by name, with the values as written.
+pub type EngineOptions = Vec<(String, Vec<TilingOption>)>;
+
+/// The options that an `output` or `workspace` block of the engine's file sets for the output or
+/// workspace it names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopedOptions {
+    pub name: String,
+    pub options: EngineOptions,
+}
+
+impl Tiling {
+    /// The lists of options that apply to a workspace, in the order they take effect: the
+    /// top-level options, then those of the outputs `output` matches, then those of the
+    /// workspaces called `workspace`. An option that a later list sets replaces the earlier ones.
+    pub fn option_layers(
+        &self,
+        output: Option<&OutputName>,
+        workspace: Option<&str>,
+    ) -> Vec<&EngineOptions> {
+        let outputs = self
+            .output_options
+            .iter()
+            .filter(|scoped| output.is_some_and(|output| output.matches(&scoped.name)));
+        let workspaces = self.workspace_options.iter().filter(|scoped| {
+            workspace.is_some_and(|workspace| workspace.eq_ignore_ascii_case(&scoped.name))
+        });
+        let scoped = outputs.chain(workspaces).map(|scoped| &scoped.options);
+        std::iter::once(&self.options).chain(scoped).collect()
+    }
 }
 
 /// A `window-rule` of the engine's file: bento's matchers, with properties that the engine
@@ -95,6 +147,49 @@ pub enum TilingOption {
     Bool(bool),
     Number(f64),
     String(String),
+    /// A gradient, which is written with properties instead of arguments.
+    Gradient(LayoutEngineGradient),
+}
+
+/// Checks a gradient that a layout engine writes, and turns it into the gradient that bento draws
+/// for borders and focus rings.
+pub fn resolve_gradient(gradient: &LayoutEngineGradient) -> Result<Gradient, String> {
+    let color =
+        |name: &str, text: &str| Color::from_hex(text).map_err(|err| format!("`{name}`: {err}"));
+    let from = color("from", &gradient.from)?;
+    let to = color("to", &gradient.to)?;
+
+    let angle = match gradient.angle {
+        // The same as niri's: from top to bottom.
+        None => 180,
+        Some(angle) if angle.is_finite() && angle.round().abs() <= f64::from(i16::MAX) => {
+            angle.round() as i16
+        }
+        Some(_) => return Err(String::from("`angle` must be a number of degrees")),
+    };
+
+    let relative_to = match gradient.relative_to.as_deref() {
+        None | Some("node") => GradientRelativeTo::Window,
+        Some("view") => GradientRelativeTo::WorkspaceView,
+        Some(other) => {
+            return Err(format!(
+                "`relative-to` must be \"node\" or \"view\", not {other:?}"
+            ))
+        }
+    };
+
+    let in_ = match &gradient.color_space {
+        None => GradientInterpolation::default(),
+        Some(space) => space.parse().map_err(|err| format!("`in`: {err}"))?,
+    };
+
+    Ok(Gradient {
+        from,
+        to,
+        angle,
+        relative_to,
+        in_,
+    })
 }
 
 impl TilingOption {
@@ -120,6 +215,8 @@ impl Default for Tiling {
         Self {
             layout: TilingLayout::BuiltIn(String::from("bento")),
             options: Vec::new(),
+            output_options: Vec::new(),
+            workspace_options: Vec::new(),
             window_rules: Vec::new(),
         }
     }
@@ -265,7 +362,7 @@ where
 
         for node in nodes {
             let name = &**node.node_name;
-            if name != "window-rule" && seen.contains(&name) {
+            if !matches!(name, "window-rule" | "output" | "workspace") && seen.contains(&name) {
                 ctx.emit_error(DecodeError::unexpected(
                     &node.node_name,
                     "node",
@@ -277,12 +374,29 @@ where
 
             match name {
                 "options" => {
-                    let mut options = Vec::new();
-                    for option in node.children() {
-                        let name = String::from(&**option.node_name);
-                        options.push((name, decode_values(option, ctx)?));
+                    config.borrow_mut().tiling.options = decode_options(node, ctx)?;
+                }
+                "output" | "workspace" => {
+                    let scoped = decode_scoped(node, ctx)?;
+                    let mut config = config.borrow_mut();
+                    let tiling = &mut config.tiling;
+                    let list = if name == "output" {
+                        &mut tiling.output_options
+                    } else {
+                        &mut tiling.workspace_options
+                    };
+                    if list
+                        .iter()
+                        .any(|o| o.name.eq_ignore_ascii_case(&scoped.name))
+                    {
+                        ctx.emit_error(DecodeError::unexpected(
+                            &node.node_name,
+                            "node",
+                            format!("duplicate {name} {:?}, single node expected", scoped.name),
+                        ));
+                    } else {
+                        list.push(scoped);
                     }
-                    config.borrow_mut().tiling.options = options;
                 }
                 "window-rule" => {
                     let rule = decode_window_rule(node, ctx)?;
@@ -316,8 +430,8 @@ where
                     node,
                     "node",
                     format!(
-                        "unexpected node `{}`, an engine's file has `options`, `window-rule` and \
-                         `binds`",
+                        "unexpected node `{}`, an engine's file has `options`, `output`, \
+                         `workspace`, `window-rule` and `binds`",
                         name.escape_default()
                     ),
                 )),
@@ -328,17 +442,155 @@ where
     }
 }
 
-/// The values of an option or window rule property: the node's arguments.
-fn decode_values<S: knuffel::traits::ErrorSpan>(
+/// The options in an `options` node.
+fn decode_options<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
-) -> Result<Vec<TilingOption>, DecodeError<S>> {
+) -> Result<EngineOptions, DecodeError<S>> {
+    let mut options = Vec::new();
+    for option in node.children() {
+        let name = String::from(&**option.node_name);
+        options.push((name, decode_values(option, ctx)?));
+    }
+    Ok(options)
+}
+
+/// An `output "DP-2" { options { … } }` or `workspace "web" { options { … } }` node.
+fn decode_scoped<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<ScopedOptions, DecodeError<S>> {
+    let kind = &**node.node_name;
+
+    let mut arguments = node.arguments.iter();
+    let name: String = match arguments.next() {
+        Some(value) => knuffel::traits::DecodeScalar::decode(value, ctx)?,
+        None => {
+            ctx.emit_error(DecodeError::missing(node, format!("the {kind}'s name")));
+            String::new()
+        }
+    };
+    for value in arguments {
+        ctx.emit_error(DecodeError::unexpected(
+            &value.literal,
+            "argument",
+            "unexpected argument",
+        ));
+    }
     for name in node.properties.keys() {
         ctx.emit_error(DecodeError::unexpected(
             name,
             "property",
             format!("unexpected property `{}`", name.escape_default()),
         ));
+    }
+
+    let mut options = Vec::new();
+    let mut seen = false;
+    for child in node.children() {
+        if &**child.node_name != "options" {
+            ctx.emit_error(DecodeError::unexpected(
+                child,
+                "node",
+                format!(
+                    "unexpected node `{}`, an {kind} block has `options`",
+                    child.node_name.escape_default()
+                ),
+            ));
+        } else if seen {
+            ctx.emit_error(DecodeError::unexpected(
+                &child.node_name,
+                "node",
+                "duplicate node `options`, single node expected",
+            ));
+        } else {
+            seen = true;
+            options = decode_options(child, ctx)?;
+        }
+    }
+    Ok(ScopedOptions { name, options })
+}
+
+/// A gradient option or window rule property, which is written with properties: `from` and `to`
+/// colours, and optionally `angle`, `relative-to` and `in`.
+fn decode_gradient<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<Vec<TilingOption>, DecodeError<S>> {
+    for value in &node.arguments {
+        ctx.emit_error(DecodeError::unexpected(
+            &value.literal,
+            "argument",
+            "a gradient is written with properties, like `from=\"#000\" to=\"#fff\"`",
+        ));
+    }
+    for child in node.children() {
+        ctx.emit_error(DecodeError::unexpected(
+            child,
+            "node",
+            format!(
+                "`{}` takes its values as properties, not children",
+                node.node_name.escape_default()
+            ),
+        ));
+    }
+
+    let mut gradient = LayoutEngineGradient {
+        from: String::new(),
+        to: String::new(),
+        angle: None,
+        relative_to: None,
+        color_space: None,
+    };
+    let (mut has_from, mut has_to) = (false, false);
+    for (name, value) in &node.properties {
+        let option: TilingOption = knuffel::traits::DecodeScalar::decode(value, ctx)?;
+        match (&***name, option) {
+            ("from", TilingOption::String(text)) => (gradient.from, has_from) = (text, true),
+            ("to", TilingOption::String(text)) => (gradient.to, has_to) = (text, true),
+            ("angle", TilingOption::Number(degrees)) => gradient.angle = Some(degrees),
+            ("relative-to", TilingOption::String(text)) => gradient.relative_to = Some(text),
+            ("in", TilingOption::String(text)) => gradient.color_space = Some(text),
+            ("from" | "to" | "relative-to" | "in", _) => {
+                ctx.emit_error(DecodeError::conversion(&value.literal, "expected a string"));
+            }
+            ("angle", _) => {
+                ctx.emit_error(DecodeError::conversion(&value.literal, "expected a number"));
+            }
+            _ => ctx.emit_error(DecodeError::unexpected(
+                name,
+                "property",
+                format!(
+                    "unexpected property `{}`, a gradient has `from`, `to`, `angle`, \
+                     `relative-to` and `in`",
+                    name.escape_default()
+                ),
+            )),
+        }
+    }
+
+    if !(has_from && has_to) {
+        ctx.emit_error(DecodeError::missing(
+            node,
+            "a gradient needs `from` and `to` colours",
+        ));
+        return Ok(Vec::new());
+    }
+    if let Err(err) = resolve_gradient(&gradient) {
+        ctx.emit_error(DecodeError::conversion(&node.node_name, err));
+        return Ok(Vec::new());
+    }
+    Ok(vec![TilingOption::Gradient(gradient)])
+}
+
+/// The values of an option or window rule property: the node's arguments, or for a gradient its
+/// properties.
+fn decode_values<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<Vec<TilingOption>, DecodeError<S>> {
+    if !node.properties.is_empty() {
+        return decode_gradient(node, ctx);
     }
     for child in node.children() {
         ctx.emit_error(DecodeError::unexpected(
@@ -498,6 +750,8 @@ mod tests {
                     ),
                     (String::from("default-column-width"), vec![]),
                 ],
+                output_options: Vec::new(),
+                workspace_options: Vec::new(),
                 window_rules: Vec::new(),
             }
         );
@@ -546,6 +800,207 @@ mod tests {
         let open = [TilingOption::Bool(true)];
         assert_eq!(rules[1].properties.get("open-maximized"), Some(&open[..]));
         assert_eq!(rules[1].properties.get("nope"), None);
+    }
+
+    fn gradient(from: &str, to: &str) -> LayoutEngineGradient {
+        LayoutEngineGradient {
+            from: String::from(from),
+            to: String::from(to),
+            angle: None,
+            relative_to: None,
+            color_space: None,
+        }
+    }
+
+    #[test]
+    fn gradients_are_written_with_properties() {
+        let config = Config::parse_mem_with_engine(
+            "",
+            r##"
+            options {
+                active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view" in="oklch shorter hue"
+                inactive-gradient from="#000" to="#ffffff80"
+                urgent-gradient
+            }
+
+            window-rule {
+                tab-indicator-active-gradient from="#f00" to="#00f"
+            }
+            "##,
+        )
+        .unwrap();
+
+        let options = &config.tiling.options;
+        assert_eq!(
+            options[0].1,
+            [TilingOption::Gradient(LayoutEngineGradient {
+                angle: Some(45.),
+                relative_to: Some(String::from("view")),
+                color_space: Some(String::from("oklch shorter hue")),
+                ..gradient("#80c8ff", "#c7ff7f")
+            })]
+        );
+        assert_eq!(
+            options[1].1,
+            [TilingOption::Gradient(gradient("#000", "#ffffff80"))]
+        );
+        // A gradient with no value is left out.
+        assert!(options[2].1.is_empty());
+
+        let rule = &config.tiling.window_rules[0].properties;
+        assert_eq!(
+            rule.get("tab-indicator-active-gradient"),
+            Some(&[TilingOption::Gradient(gradient("#f00", "#00f"))][..])
+        );
+    }
+
+    #[test]
+    fn gradients_with_bad_values_are_errors() {
+        for (gradient, problem) in [
+            (r##"from="#000""##, "needs `from` and `to`"),
+            (r##"to="#000""##, "needs `from` and `to`"),
+            (r##"from="red" to="#fff""##, "invalid colour"),
+            (r##"from="#000" to="#fff" angle="up""##, "expected a number"),
+            (
+                r##"from="#000" to="#fff" angle=99999"##,
+                "must be a number of degrees",
+            ),
+            (
+                r##"from="#000" to="#fff" relative-to="window""##,
+                "relative-to",
+            ),
+            (r##"from="#000" to="#fff" in="hsl""##, "invalid color space"),
+            (
+                r##"from="#000" to="#fff" in="srgb shorter hue""##,
+                "hue interpolation",
+            ),
+            (r##"from="#000" to="#fff" width=2"##, "unexpected property"),
+            (r##"from=1 to="#fff""##, "expected a string"),
+            (r##""x" from="#000" to="#fff""##, "written with properties"),
+        ] {
+            let text = format!("options {{ active-gradient {gradient}; }}");
+            let result = Config::parse_mem_with_engine("", &text);
+            let text = format!("{:?}", miette::Report::new(result.unwrap_err()));
+            assert!(text.contains(problem), "{gradient}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_gradient_resolves_to_the_gradient_bento_draws() {
+        let resolved = resolve_gradient(&gradient("#000", "#fff")).unwrap();
+        // Like niri's: from top to bottom, over the node, in sRGB.
+        assert_eq!(resolved.angle, 180);
+        assert_eq!(resolved.relative_to, GradientRelativeTo::Window);
+        assert_eq!(resolved.in_, GradientInterpolation::default());
+        assert_eq!(resolved.from, Color::from_rgba8_unpremul(0, 0, 0, 255));
+
+        let resolved = resolve_gradient(&LayoutEngineGradient {
+            angle: Some(44.6),
+            relative_to: Some(String::from("view")),
+            color_space: Some(String::from("oklab")),
+            ..gradient("#000", "#fff")
+        })
+        .unwrap();
+        assert_eq!(resolved.angle, 45);
+        assert_eq!(resolved.relative_to, GradientRelativeTo::WorkspaceView);
+        assert_eq!(
+            resolved.in_,
+            "oklab".parse::<GradientInterpolation>().unwrap()
+        );
+
+        let infinite = LayoutEngineGradient {
+            angle: Some(f64::INFINITY),
+            ..gradient("#000", "#fff")
+        };
+        assert!(resolve_gradient(&infinite).is_err());
+    }
+
+    #[test]
+    fn options_differ_per_output_and_workspace() {
+        let config = Config::parse_mem_with_engine(
+            "",
+            r#"
+            options {
+                gravity true
+                rows 4
+            }
+
+            output "DP-2" {
+                options {
+                    rows 6
+                }
+            }
+
+            output "HDMI-A-1" {
+                options {
+                    gravity false
+                }
+            }
+
+            workspace "web" {
+                options {
+                    rows 8
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let tiling = &config.tiling;
+        assert_eq!(tiling.output_options.len(), 2);
+        assert_eq!(tiling.workspace_options.len(), 1);
+
+        let output = |connector: &str| OutputName {
+            connector: String::from(connector),
+            make: None,
+            model: None,
+            serial: None,
+        };
+        let rows = |layers: Vec<&EngineOptions>| -> Vec<f64> {
+            let rows = layers
+                .into_iter()
+                .flatten()
+                .filter(|(name, _)| name == "rows");
+            rows.map(|(_, values)| match values[..] {
+                [TilingOption::Number(rows)] => rows,
+                _ => panic!("{values:?}"),
+            })
+            .collect()
+        };
+
+        // The top-level options come first, so the ones after them win.
+        assert_eq!(rows(tiling.option_layers(None, None)), [4.]);
+        let dp2 = output("dp-2");
+        assert_eq!(rows(tiling.option_layers(Some(&dp2), None)), [4., 6.]);
+        assert_eq!(
+            rows(tiling.option_layers(Some(&dp2), Some("WEB"))),
+            [4., 6., 8.]
+        );
+        assert_eq!(rows(tiling.option_layers(None, Some("web"))), [4., 8.]);
+        let other = output("DP-3");
+        assert_eq!(rows(tiling.option_layers(Some(&other), Some("mail"))), [4.]);
+    }
+
+    #[test]
+    fn output_and_workspace_blocks_are_checked() {
+        for (text, problem) in [
+            ("output { options { rows 1; }; }", "the output's name"),
+            (r#"output "a" "b" { }"#, "unexpected argument"),
+            (r#"output "a" x=1 { }"#, "unexpected property"),
+            (r#"workspace "a" { rows 1; }"#, "has `options`"),
+            (
+                r#"workspace "a" { options { }; options { }; }"#,
+                "duplicate node `options`",
+            ),
+            (r#"output "a" { }; output "A" { }"#, "duplicate output"),
+            (
+                r#"workspace "a" { }; workspace "a" { }"#,
+                "duplicate workspace",
+            ),
+        ] {
+            let result = Config::parse_mem_with_engine("", text);
+            let text = format!("{:?}", miette::Report::new(result.unwrap_err()));
+            assert!(text.contains(problem), "{text}");
+        }
     }
 
     #[test]
@@ -659,7 +1114,7 @@ mod tests {
         let config = Config::parse_mem_with_engine("", "layout { gaps 8; }");
         assert!(error(config).contains("unexpected node `layout`"));
 
-        // An option's values are arguments, not properties or children.
+        // An option's values are arguments (or the properties of a gradient), not children.
         let config = Config::parse_mem_with_engine("", "options { rows x=1; }");
         assert!(error(config).contains("unexpected property"));
         let config = Config::parse_mem_with_engine("", "options { rows { x; }; }");

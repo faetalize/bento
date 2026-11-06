@@ -12,7 +12,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context as _};
-use niri_config::{Tiling, TilingLayout, TilingOption};
+use niri_config::{
+    resolve_gradient, Color, EngineOptions, OutputName, Tiling, TilingLayout, TilingOption,
+};
 use niri_ipc::{
     LayoutEngineAction, LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOption,
     LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, LayoutEngineWindowRule,
@@ -210,7 +212,7 @@ pub fn size_arg(value: &TilingOption) -> Option<SizeChange> {
         TilingOption::String(value) => value.parse().ok(),
         // Numbers come from configs and the command line, like `800` or `-100`.
         TilingOption::Number(value) => value.to_string().parse().ok(),
-        TilingOption::Bool(_) => None,
+        TilingOption::Bool(_) | TilingOption::Gradient(_) => None,
     }
 }
 
@@ -239,6 +241,8 @@ pub enum OptionType {
     String,
     Choice,
     Size,
+    Color,
+    Gradient,
 }
 
 impl OptionType {
@@ -249,6 +253,8 @@ impl OptionType {
             Self::String => LayoutEngineOptionType::String,
             Self::Choice => LayoutEngineOptionType::Choice,
             Self::Size => LayoutEngineOptionType::Size,
+            Self::Color => LayoutEngineOptionType::Color,
+            Self::Gradient => LayoutEngineOptionType::Gradient,
         }
     }
 }
@@ -266,15 +272,19 @@ impl OptionMeta {
     }
 
     /// Converts values written in the layout's file to what the layout receives: booleans,
-    /// numbers, strings and choices as they are, and sizes as `{ proportion }` or `{ fixed }`. A
-    /// list option gets a list, and a size with no value is `null`: the window decides.
+    /// numbers, strings, choices and colours as they are, sizes as `{ proportion }` or
+    /// `{ fixed }`, and gradients as `{ from, to, angle, relativeTo, in }` with what was written.
+    /// A list option gets a list, and a size or a gradient with no value is `null`: the window
+    /// decides, or there is none.
     pub fn convert(&self, values: &[TilingOption]) -> Result<serde_json::Value, String> {
         if self.list {
             let values: Result<Vec<_>, _> = values.iter().map(|v| self.convert_one(v)).collect();
             return values.map(serde_json::Value::Array);
         }
         match values {
-            [] if self.r#type == OptionType::Size => Ok(serde_json::Value::Null),
+            [] if matches!(self.r#type, OptionType::Size | OptionType::Gradient) => {
+                Ok(serde_json::Value::Null)
+            }
             [] => Err(String::from("needs a value")),
             [value] => self.convert_one(value),
             values => Err(format!("takes one value, not {}", values.len())),
@@ -296,10 +306,22 @@ impl OptionMeta {
                 Some(SizeChange::SetFixed(pixels)) => Ok(json!({ "fixed": pixels })),
                 _ => Err(String::from(r#"must be a size, like "50%" or "800""#)),
             },
+            (OptionType::Color, TilingOption::String(value)) => Color::from_hex(value)
+                .map(|_| json!(value))
+                .map_err(|_| String::from(r##"must be a colour, like "#rrggbb" or "#rrggbbaa""##)),
+            (OptionType::Gradient, TilingOption::Gradient(gradient)) => resolve_gradient(gradient)
+                .map(|_| json!(gradient))
+                .map_err(|err| format!("has an invalid gradient, {err}")),
             (OptionType::Boolean, _) => Err(String::from("must be true or false")),
             (OptionType::Number, _) => Err(String::from("must be a number")),
             (OptionType::String, _) => Err(String::from("must be a string")),
             (OptionType::Choice, _) => Err(format!("must be one of {:?}", self.choices)),
+            (OptionType::Color, _) => Err(String::from(
+                r##"must be a colour, like "#rrggbb" or "#rrggbbaa""##,
+            )),
+            (OptionType::Gradient, _) => Err(String::from(
+                r##"must be a gradient, like `from="#000" to="#fff"`"##,
+            )),
         }
     }
 
@@ -319,6 +341,7 @@ fn scalar_option(value: &LayoutEngineOptionValue) -> Option<TilingOption> {
         LayoutEngineOptionValue::Boolean(value) => Some(TilingOption::Bool(*value)),
         LayoutEngineOptionValue::Number(value) => Some(TilingOption::Number(*value)),
         LayoutEngineOptionValue::String(value) => Some(TilingOption::String(value.clone())),
+        LayoutEngineOptionValue::Gradient(value) => Some(TilingOption::Gradient(value.clone())),
         LayoutEngineOptionValue::List(_) => None,
     }
 }
@@ -328,6 +351,7 @@ fn ipc_scalar(value: &TilingOption) -> Option<LayoutEngineOptionValue> {
         TilingOption::Bool(value) => LayoutEngineOptionValue::Boolean(*value),
         TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
         TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
+        TilingOption::Gradient(value) => LayoutEngineOptionValue::Gradient(value.clone()),
     })
 }
 
@@ -697,7 +721,7 @@ pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
             // Like the engine sees it: the last value wins, and one that doesn't fit the type
             // gives the default.
             let default = option.ipc_value(&option.default_values());
-            let value = configured(config, option)
+            let value = configured(&[&config.options], option)
                 .map(|values| option.ipc_value(values))
                 .unwrap_or_else(|| default.clone());
             LayoutEngineOption {
@@ -732,26 +756,43 @@ pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
     })
 }
 
-/// The values the config writes for `option`, if there are any and they fit its type. The last
-/// one written wins.
-fn configured<'a>(config: &'a Tiling, option: &OptionMeta) -> Option<&'a [TilingOption]> {
-    let (_, values) = config
-        .options
-        .iter()
-        .rev()
-        .find(|(name, _)| *name == option.name)?;
-    option.convert(values).ok().map(|_| values.as_slice())
+/// The values the config writes for `option` in the last of `layers` that sets it, if they fit its
+/// type. In a list, the last one written wins. A layer that sets the option to something that
+/// doesn't fit leaves it to the layers before.
+fn configured<'a>(layers: &[&'a EngineOptions], option: &OptionMeta) -> Option<&'a [TilingOption]> {
+    layers.iter().rev().find_map(|options| {
+        let (_, values) = options
+            .iter()
+            .rev()
+            .find(|(name, _)| *name == option.name)?;
+        option.convert(values).ok().map(|_| values.as_slice())
+    })
 }
 
 /// Options for the layout as JSON: every option it declares, converted by its type, with the
 /// default for the ones the config doesn't set or sets to something that doesn't fit.
 pub fn options_json(config: &Tiling) -> serde_json::Value {
+    resolved_options_json(&[&config.options])
+}
+
+/// The options of one workspace as JSON: the top-level options with those that the engine's file
+/// sets for the workspace's output and for the workspace by name on top, see
+/// [`Tiling::option_layers`].
+pub fn workspace_options_json(
+    config: &Tiling,
+    output: Option<&OutputName>,
+    workspace: Option<&str>,
+) -> serde_json::Value {
+    resolved_options_json(&config.option_layers(output, workspace))
+}
+
+fn resolved_options_json(layers: &[&EngineOptions]) -> serde_json::Value {
     ENGINE.with_borrow(|engine| {
         let Some(engine) = engine else {
             return json!({});
         };
         let options = engine.meta.options.iter().map(|option| {
-            let values = configured(config, option)
+            let values = configured(layers, option)
                 .map(<[TilingOption]>::to_vec)
                 .unwrap_or_else(|| option.default_values());
             let value = option.convert(&values).unwrap_or(serde_json::Value::Null);
@@ -821,18 +862,15 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
     };
 
     let mut problems = Vec::new();
-    for (name, values) in &config.tiling.options {
-        match meta.options.iter().find(|option| option.name == *name) {
-            None => problems.push(format!(
-                "the {} layout engine has no option called {name:?}",
-                meta.name
-            )),
-            Some(option) => {
-                if let Err(problem) = option.convert(values) {
-                    problems.push(format!("layout engine option {name:?} {problem}"));
-                }
-            }
-        }
+    let tiling = &config.tiling;
+    check_options(&meta, &tiling.options, "", &mut problems);
+    for scoped in &tiling.output_options {
+        let scope = format!(" of output {:?}", scoped.name);
+        check_options(&meta, &scoped.options, &scope, &mut problems);
+    }
+    for scoped in &tiling.workspace_options {
+        let scope = format!(" of workspace {:?}", scoped.name);
+        check_options(&meta, &scoped.options, &scope, &mut problems);
     }
 
     for rule in &config.tiling.window_rules {
@@ -869,6 +907,29 @@ pub fn check(config: &niri_config::Config) -> Result<(), Vec<String>> {
         Ok(())
     } else {
         Err(problems)
+    }
+}
+
+/// Checks that `options` are options of the layout, with values of their types. `scope` says
+/// whose they are, for the messages.
+fn check_options(
+    meta: &LayoutMeta,
+    options: &EngineOptions,
+    scope: &str,
+    problems: &mut Vec<String>,
+) {
+    for (name, values) in options {
+        match meta.options.iter().find(|option| option.name == *name) {
+            None => problems.push(format!(
+                "the {} layout engine has no option called {name:?}{scope}",
+                meta.name
+            )),
+            Some(option) => {
+                if let Err(problem) = option.convert(values) {
+                    problems.push(format!("layout engine option {name:?}{scope} {problem}"));
+                }
+            }
+        }
     }
 }
 
@@ -927,5 +988,150 @@ fn check_args(action: &LayoutEngineAction, args: &[TilingOption], problems: &mut
             "the {:?} argument of action {name:?} must be {expected}",
             arg.name
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use niri_ipc::LayoutEngineGradient;
+    use serde_json::json;
+
+    use super::*;
+
+    fn option(r#type: &str, list: bool) -> OptionMeta {
+        serde_json::from_value(json!({
+            "name": "x",
+            "type": r#type,
+            "list": list,
+            "default": null,
+            "description": null,
+        }))
+        .unwrap()
+    }
+
+    fn string(value: &str) -> TilingOption {
+        TilingOption::String(value.to_owned())
+    }
+
+    fn gradient(from: &str, to: &str) -> LayoutEngineGradient {
+        LayoutEngineGradient {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            angle: None,
+            relative_to: None,
+            color_space: None,
+        }
+    }
+
+    #[test]
+    fn colors_are_hex_strings() {
+        let color = option("color", false);
+        assert_eq!(color.convert(&[string("#80c8ff")]), Ok(json!("#80c8ff")));
+        assert_eq!(color.convert(&[string("#fff")]), Ok(json!("#fff")));
+        assert_eq!(
+            color.convert(&[string("#00000080")]),
+            Ok(json!("#00000080"))
+        );
+
+        for bad in [string("red"), string("#ff"), TilingOption::Number(1.)] {
+            assert!(color.convert(&[bad.clone()]).is_err(), "{bad:?}");
+        }
+        // A colour is always set.
+        assert!(color.convert(&[]).is_err());
+    }
+
+    #[test]
+    fn gradients_reach_the_engine_as_written() {
+        let option = option("gradient", false);
+        let written = LayoutEngineGradient {
+            angle: Some(45.),
+            relative_to: Some(String::from("view")),
+            color_space: Some(String::from("oklch shorter hue")),
+            ..gradient("#80c8ff", "#c7ff7f")
+        };
+        assert_eq!(
+            option.convert(&[TilingOption::Gradient(written)]),
+            Ok(json!({
+                "from": "#80c8ff",
+                "to": "#c7ff7f",
+                "angle": 45.0,
+                "relativeTo": "view",
+                "in": "oklch shorter hue",
+            }))
+        );
+
+        // What isn't written stays out, for the engine to default.
+        let plain = TilingOption::Gradient(gradient("#000", "#fff"));
+        assert_eq!(
+            option.convert(&[plain]),
+            Ok(json!({ "from": "#000", "to": "#fff" }))
+        );
+
+        // Left out, there is none.
+        assert_eq!(option.convert(&[]), Ok(serde_json::Value::Null));
+    }
+
+    #[test]
+    fn bad_gradients_are_refused() {
+        let option = option("gradient", false);
+        let bad = LayoutEngineGradient {
+            relative_to: Some(String::from("window")),
+            ..gradient("#000", "#fff")
+        };
+        for value in [
+            TilingOption::Gradient(gradient("red", "#fff")),
+            TilingOption::Gradient(bad),
+            string("#000"),
+            TilingOption::Bool(true),
+        ] {
+            assert!(option.convert(&[value.clone()]).is_err(), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn sizes_and_gradients_without_a_value_are_null_and_others_need_one() {
+        for r#type in ["size", "gradient"] {
+            assert_eq!(
+                option(r#type, false).convert(&[]),
+                Ok(serde_json::Value::Null)
+            );
+        }
+        for r#type in ["boolean", "number", "string", "color"] {
+            assert!(option(r#type, false).convert(&[]).is_err(), "{type}");
+        }
+    }
+
+    #[test]
+    fn lists_of_colours_convert_each_one() {
+        let colors = option("color", true);
+        assert_eq!(
+            colors.convert(&[string("#000"), string("#ffffff")]),
+            Ok(json!(["#000", "#ffffff"]))
+        );
+        assert!(colors.convert(&[string("#000"), string("white")]).is_err());
+    }
+
+    #[test]
+    fn later_layers_win_per_option() {
+        let option = option("number", false);
+        let number = |value: f64| vec![TilingOption::Number(value)];
+        let top: EngineOptions = vec![(String::from("x"), number(1.))];
+        let output: EngineOptions = vec![(String::from("x"), number(2.))];
+        let unrelated: EngineOptions = vec![(String::from("y"), number(3.))];
+        let wrong: EngineOptions = vec![(String::from("x"), vec![string("two")])];
+
+        let layers = [&top, &output, &unrelated];
+        assert_eq!(configured(&layers, &option), Some(&number(2.)[..]));
+        assert_eq!(configured(&layers[..1], &option), Some(&number(1.)[..]));
+        // A layer with a value of the wrong type leaves the option to the ones before it.
+        let layers = [&top, &output, &wrong];
+        assert_eq!(configured(&layers, &option), Some(&number(2.)[..]));
+        assert_eq!(configured(&[&unrelated], &option), None);
+        // In a layer, the last one written wins.
+        let twice: EngineOptions = vec![
+            (String::from("x"), number(4.)),
+            (String::from("x"), number(5.)),
+        ];
+        assert_eq!(configured(&[&twice], &option), Some(&number(5.)[..]));
     }
 }

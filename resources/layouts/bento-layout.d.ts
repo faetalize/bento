@@ -82,12 +82,15 @@ export interface OptionSpec {
      * engine as a `Gradient`, or `null` when left out.
      */
     type: ValueType;
-    /** Whether the value is a list, written as several arguments. */
+    /**
+     * Whether the value is a list, written as several arguments. A gradient is written with the
+     * properties of its node, so it can't be a list.
+     */
     list?: boolean;
     /**
      * Written the way the .kdl file writes it: `"50%"`, or `["33%", "50%"]` for a list; `null` for
-     * a size left to the window. A window rule property that no rule sets is left out of
-     * `Window.rules`, so its default is only for settings screens to show.
+     * a size left to the window, or for no gradient. A window rule property that no rule sets is
+     * left out of `Window.rules`, so its default is only for settings screens to show.
      */
     default: unknown;
     /** The values a `"choice"` accepts. */
@@ -102,6 +105,9 @@ export interface OptionSpec {
 export interface ArgSpec {
     name: string;
     /**
+     * Binds write an action's arguments as plain values, so there are no `"color"` or
+     * `"gradient"` arguments.
+     *
      * - `"size"`: written like `"50%"`, `"+10%"`, `"800"` or `"-100"`; the engine gets a
      *   `SizeChange`.
      * - `"workspace"`: written as an index on the focused monitor, counting from 1, or a
@@ -109,7 +115,7 @@ export interface ArgSpec {
      * - `"monitor"`: written as a connector name like `"DP-2"`; the engine gets a `Monitor`, or
      *   `null`.
      */
-    type: ValueType | "workspace" | "monitor";
+    type: Exclude<ValueType, "color" | "gradient"> | "workspace" | "monitor";
     /** Value when the argument is left out. Arguments without one must be given. */
     default?: boolean | number | string;
     choices?: string[];
@@ -586,7 +592,9 @@ export type Color = string;
  * interpolated in the colour space `in`, like niri's: `"srgb"`, `"srgb-linear"`, `"oklab"`, or
  * `"oklch"` followed by `"shorter hue"`, `"longer hue"`, `"increasing hue"` or `"decreasing
  * hue"`. It spans the node's rect, or with `relativeTo: "view"` the whole view of the workspace,
- * so that neighbouring nodes share one gradient.
+ * so that neighbouring nodes share one gradient. Left out, `angle` is 180, from top to bottom,
+ * `relativeTo` is `"node"` and `in` is `"srgb"`, like niri's. Angles are whole degrees: bento
+ * rounds them.
  */
 export interface Gradient {
     from: Color;

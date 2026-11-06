@@ -60,6 +60,35 @@ impl Color {
         let [r, g, b, a] = [self.r, self.g, self.b, self.a];
         [r * a, g * a, b * a, a]
     }
+
+    /// Parses `#rgb`, `#rrggbb` and `#rrggbbaa`, the only colours layout engines write.
+    pub fn from_hex(text: &str) -> Result<Self, String> {
+        let invalid = || format!("invalid colour `{text}`: expected #rgb, #rrggbb or #rrggbbaa");
+
+        let digits = text.strip_prefix('#').ok_or_else(invalid)?;
+        let digits = digits
+            .chars()
+            .map(|c| c.to_digit(16).map(|d| d as u8))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(invalid)?;
+
+        let channels: Vec<u8> = match digits.len() {
+            3 => digits.iter().map(|d| d * 17).collect(),
+            6 | 8 => digits
+                .chunks(2)
+                .map(|pair| pair[0] * 16 + pair[1])
+                .collect(),
+            _ => return Err(invalid()),
+        };
+        let alpha = channels.get(3).copied().unwrap_or(255);
+
+        Ok(Self::from_rgba8_unpremul(
+            channels[0],
+            channels[1],
+            channels[2],
+            alpha,
+        ))
+    }
 }
 
 impl Mul<f32> for Color {
@@ -921,6 +950,31 @@ mod tests {
 
     use super::*;
     use crate::Config;
+
+    #[test]
+    fn hex_colors_parse_in_all_three_spellings() {
+        assert_eq!(
+            Color::from_hex("#fa0").unwrap(),
+            Color::from_rgba8_unpremul(255, 170, 0, 255)
+        );
+        assert_eq!(
+            Color::from_hex("#1a2b3c").unwrap(),
+            Color::from_rgba8_unpremul(0x1a, 0x2b, 0x3c, 255)
+        );
+        assert_eq!(
+            Color::from_hex("#1A2B3C80").unwrap(),
+            Color::from_rgba8_unpremul(0x1a, 0x2b, 0x3c, 0x80)
+        );
+    }
+
+    #[test]
+    fn hex_colors_reject_everything_else() {
+        for bad in [
+            "", "#", "fff", "#ff", "#ffff", "#fffff", "#ggg", "#+12", "#ééé", "red",
+        ] {
+            assert!(Color::from_hex(bad).is_err(), "{bad:?} should be invalid");
+        }
+    }
 
     #[test]
     fn parse_gradient_interpolation() {

@@ -223,10 +223,14 @@ fn typed_engine(name: &str) -> (std::path::PathBuf, niri_config::TilingLayout) {
                 "flag": { type: "boolean", default: false },
                 "gap": { type: "number", default: 5 },
                 "color": { type: "string", default: "#fff" },
+                "tint": { type: "color", default: "#102030" },
+                "glow": { type: "gradient", default: null },
             },
             windowRules: {
                 "width": { type: "size" },
                 "open-maximized": { type: "boolean", default: false },
+                "tab-tint": { type: "color" },
+                "tab-glow": { type: "gradient" },
             },
         };
         export default function create(bento) {}
@@ -273,21 +277,37 @@ fn engine_options_and_rules_are_converted_by_their_declared_types() {
             "flag": false,
             "gap": 5.0,
             "color": "#fff",
+            "tint": "#102030",
+            "glow": null,
         })
     );
 
+    let glow = niri_ipc::LayoutEngineGradient {
+        from: String::from("#f00"),
+        to: String::from("#00f"),
+        angle: Some(90.),
+        relative_to: Some(String::from("view")),
+        color_space: None,
+    };
     let rules = EngineRules(vec![
         (String::from("width"), strings(&["67%"])),
         (
             String::from("open-maximized"),
             vec![TilingOption::Bool(true)],
         ),
+        (String::from("tab-tint"), strings(&["#abc"])),
+        (String::from("tab-glow"), vec![TilingOption::Gradient(glow)]),
         (String::from("nope"), vec![TilingOption::Bool(true)]),
     ]);
     // Only what the rules set, and what the engine declares.
     assert_eq!(
         engine::rules_json(&rules),
-        json!({ "width": { "proportion": 0.67 }, "open-maximized": true })
+        json!({
+            "width": { "proportion": 0.67 },
+            "open-maximized": true,
+            "tab-tint": "#abc",
+            "tab-glow": { "from": "#f00", "to": "#00f", "angle": 90.0, "relativeTo": "view" },
+        })
     );
     assert_eq!(engine::rules_json(&EngineRules::default()), json!({}));
 
@@ -310,13 +330,24 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
             (String::from("presets"), vec![TilingOption::Bool(true)]),
             (String::from("gap"), vec![]),
             (String::from("flag"), vec![TilingOption::Bool(true)]),
+            (String::from("tint"), strings(&["blue"])),
+            (String::from("glow"), strings(&["#fff"])),
         ],
+        output_options: vec![niri_config::ScopedOptions {
+            name: String::from("DP-2"),
+            options: vec![(String::from("tint"), strings(&["#12"]))],
+        }],
+        workspace_options: vec![niri_config::ScopedOptions {
+            name: String::from("web"),
+            options: vec![(String::from("nope"), vec![TilingOption::Bool(true)])],
+        }],
         window_rules: vec![EngineWindowRule {
             matches: Vec::new(),
             excludes: Vec::new(),
             properties: EngineRules(vec![
                 (String::from("width"), strings(&["50%"])),
                 (String::from("open-maximized"), strings(&["yes"])),
+                (String::from("tab-tint"), strings(&["red"])),
                 (String::from("zzz"), vec![TilingOption::Bool(true)]),
             ]),
         }],
@@ -336,7 +367,12 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
             r#"layout engine option "width" must be a size, like "50%" or "800""#,
             r#"layout engine option "presets" must be a size, like "50%" or "800""#,
             r#"layout engine option "gap" needs a value"#,
+            r##"layout engine option "tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
+            r##"layout engine option "glow" must be a gradient, like `from="#000" to="#fff"`"##,
+            r##"layout engine option "tint" of output "DP-2" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
+            r#"the typed layout engine has no option called "nope" of workspace "web""#,
             r#"layout engine window rule "open-maximized" must be true or false"#,
+            r##"layout engine window rule "tab-tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
             r#"the typed layout engine has no window rule called "zzz""#,
         ]
     );
@@ -452,8 +488,7 @@ fn options_for_source(name: &str, source: &str) -> Options {
     Options {
         tiling: niri_config::Tiling {
             layout: niri_config::TilingLayout::File(path),
-            options: Vec::new(),
-            window_rules: Vec::new(),
+            ..niri_config::Tiling::default()
         },
         ..Options::default()
     }
@@ -510,6 +545,71 @@ fn one_engine_sees_every_monitor_and_workspace() {
         state["windows"],
         serde_json::json!([[1, "output1", 0], [2, "output2", 0]])
     );
+}
+
+#[test]
+fn workspaces_have_the_options_of_their_output_and_their_own() {
+    use niri_config::{ScopedOptions, TilingOption};
+
+    use crate::layout::tiling::engine;
+
+    let source = r#"
+        export const meta = {
+            api: 2,
+            name: "scoped",
+            options: { rows: { type: "number", default: 1 } },
+        };
+        export default function create(bento) {
+            bento.exposeState(() => ({
+                top: bento.options.rows,
+                workspaces: bento.monitors.flatMap((m) =>
+                    m.workspaces.map((ws) => [m.name, ws.name, ws.options.rows]),
+                ),
+            }));
+        }
+    "#;
+    let rows = |rows: f64| vec![(String::from("rows"), vec![TilingOption::Number(rows)])];
+    let mut options = options_for_source("scoped-options", source);
+    options.tiling.options = rows(4.);
+    options.tiling.output_options = vec![ScopedOptions {
+        name: String::from("output2"),
+        options: rows(6.),
+    }];
+    options.tiling.workspace_options = vec![ScopedOptions {
+        name: String::from("ws1"),
+        options: rows(8.),
+    }];
+
+    let ops = [
+        Op::AddOutput(1),
+        Op::SetWorkspaceName {
+            new_ws_name: 1,
+            ws_name: None,
+        },
+        Op::AddOutput(2),
+    ];
+    let layout = check_ops_with_options(options, ops);
+    drop(layout);
+
+    let state = engine::exposed_state().unwrap();
+    // `Bento.options` stays the top-level ones.
+    assert_eq!(state["top"], serde_json::json!(4.0));
+    let workspaces = state["workspaces"].as_array().unwrap();
+    let rows_of = |monitor: &str, name: Option<&str>| {
+        let found = workspaces
+            .iter()
+            .find(|ws| ws[0] == monitor && ws[1] == serde_json::json!(name));
+        found.map(|ws| ws[2].clone())
+    };
+    assert_eq!(
+        rows_of("output1", Some("ws1")),
+        Some(serde_json::json!(8.0))
+    );
+    assert_eq!(rows_of("output2", None), Some(serde_json::json!(6.0)));
+    // The empty workspace below it, if it has one, is no one's in particular.
+    if let Some(rows) = rows_of("output1", None) {
+        assert_eq!(rows, serde_json::json!(4.0));
+    }
 }
 
 #[test]

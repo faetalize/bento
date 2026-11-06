@@ -875,11 +875,24 @@ fn print_actions(actions: &[LayoutEngineAction]) {
 
 fn fmt_option_value(value: &Option<LayoutEngineOptionValue>) -> String {
     match value {
-        // A size that the window decides.
+        // A size that the window decides, or no gradient.
         None => String::from("none"),
         Some(LayoutEngineOptionValue::Boolean(value)) => value.to_string(),
         Some(LayoutEngineOptionValue::Number(value)) => value.to_string(),
         Some(LayoutEngineOptionValue::String(value)) => format!("{value:?}"),
+        Some(LayoutEngineOptionValue::Gradient(gradient)) => {
+            let mut text = format!("from={:?} to={:?}", gradient.from, gradient.to);
+            if let Some(angle) = gradient.angle {
+                text.push_str(&format!(" angle={angle}"));
+            }
+            if let Some(relative_to) = &gradient.relative_to {
+                text.push_str(&format!(" relative-to={relative_to:?}"));
+            }
+            if let Some(space) = &gradient.color_space {
+                text.push_str(&format!(" in={space:?}"));
+            }
+            text
+        }
         Some(LayoutEngineOptionValue::List(values)) => {
             let values: Vec<_> = values
                 .iter()
@@ -897,6 +910,8 @@ fn fmt_option_type(r#type: LayoutEngineOptionType) -> &'static str {
         LayoutEngineOptionType::String => "string",
         LayoutEngineOptionType::Choice => "choice",
         LayoutEngineOptionType::Size => "size",
+        LayoutEngineOptionType::Color => "color",
+        LayoutEngineOptionType::Gradient => "gradient",
     }
 }
 

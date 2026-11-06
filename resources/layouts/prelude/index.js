@@ -24,9 +24,12 @@ let meta = null;
 let session = null;
 let adapter = null;
 
-const VALUE_TYPES = ["boolean", "number", "string", "choice", "size"];
+// Colours and gradients are for options and window rules: binds write an action's arguments as
+// plain values.
+const ARG_VALUE_TYPES = ["boolean", "number", "string", "choice", "size"];
+const VALUE_TYPES = [...ARG_VALUE_TYPES, "color", "gradient"];
 const V1_VALUE_TYPES = ["boolean", "number", "string"];
-const ARG_TYPES = [...VALUE_TYPES, "workspace", "monitor"];
+const ARG_TYPES = [...ARG_VALUE_TYPES, "workspace", "monitor"];
 
 /** Sets the engine's module, with its `meta` and default export. Returns the engine's metadata. */
 export function load(module) {
@@ -47,7 +50,7 @@ export function load(module) {
     }
     const api = given.api;
     const valueTypes = api === 1 ? V1_VALUE_TYPES : VALUE_TYPES;
-    const argTypes = api === 1 ? VALUE_TYPES : ARG_TYPES;
+    const argTypes = api === 1 ? ARG_VALUE_TYPES : ARG_TYPES;
 
     const actions = given.actions ?? {};
     const options = given.options ?? {};
@@ -106,6 +109,10 @@ function checkSpecs(what, specs, types) {
         }
         if (spec.list !== undefined && typeof spec.list !== "boolean") {
             throw new Error(`\`list\` of ${what} ${name} must be a boolean`);
+        }
+        if (spec.type === "gradient" && spec.list === true) {
+            // A gradient is written with the properties of its node, so a node holds one.
+            throw new Error(`${what} ${name} is a gradient, which can't be a list`);
         }
     }
 }

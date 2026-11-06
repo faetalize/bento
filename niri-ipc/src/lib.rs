@@ -1073,7 +1073,7 @@ pub struct LayoutEngineOption {
     /// The values a `Choice` option accepts.
     pub choices: Vec<String>,
     /// Value of the option when the config doesn't set it. `None` for a size that is left to the
-    /// window.
+    /// window, and for a gradient there is none of.
     pub default: Option<LayoutEngineOptionValue>,
     /// Description of the option.
     pub description: Option<String>,
@@ -1096,7 +1096,7 @@ pub struct LayoutEngineWindowRule {
     /// The values a `Choice` property accepts.
     pub choices: Vec<String>,
     /// Value of the property for windows that no rule sets it for. `None` for a size that is left
-    /// to the window.
+    /// to the window, and for a gradient there is none of.
     pub default: Option<LayoutEngineOptionValue>,
     /// Description of the property.
     pub description: Option<String>,
@@ -1117,6 +1117,11 @@ pub enum LayoutEngineOptionType {
     /// A size, written like `"50%"` for a proportion of the working area or `"800"` for logical
     /// pixels.
     Size,
+    /// A colour, written `"#rrggbb"` or `"#rrggbbaa"`; `"#rgb"` works too.
+    Color,
+    /// A linear gradient, written with properties like `from="#80c8ff" to="#c7ff7f" angle=45`. An
+    /// option of this type has no value when it's left out.
+    Gradient,
 }
 
 /// Value of a layout engine option.
@@ -1129,10 +1134,36 @@ pub enum LayoutEngineOptionValue {
     Boolean(bool),
     /// A number value.
     Number(f64),
-    /// A string value. Choices and sizes are strings too.
+    /// A string value. Choices, sizes and colours are strings too.
     String(String),
+    /// A gradient.
+    Gradient(LayoutEngineGradient),
     /// The values of a list option.
     List(Vec<LayoutEngineOptionValue>),
+}
+
+/// A linear gradient, as a layout engine option has it and as the layout engine draws it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LayoutEngineGradient {
+    /// The colour at the start, written `"#rrggbb"` or `"#rrggbbaa"`.
+    pub from: String,
+    /// The colour at the end.
+    pub to: String,
+    /// Direction in degrees: 0 goes up and 90 to the right. 180, from top to bottom, when left
+    /// out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f64>,
+    /// What the gradient spans: `"node"`, the rect it's drawn in, or `"view"`, the whole view of
+    /// the workspace. `"node"` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_to: Option<String>,
+    /// The colour space to interpolate in: `"srgb"`, `"srgb-linear"`, `"oklab"`, or `"oklch"`
+    /// with `"shorter hue"`, `"longer hue"`, `"increasing hue"` or `"decreasing hue"`. `"srgb"`
+    /// when left out.
+    #[serde(default, rename = "in", skip_serializing_if = "Option::is_none")]
+    pub color_space: Option<String>,
 }
 
 /// An action that a layout engine handles.

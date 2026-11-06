@@ -62,6 +62,11 @@ function monitorKey(d) {
     return JSON.stringify([d.size, d.scale, d.workingArea, d.left, d.right, d.up, d.down]);
 }
 
+/** What `configchange` is about for a workspace: bento's settings and the engine's options. */
+function configKey(d) {
+    return JSON.stringify([d.config, d.options]);
+}
+
 function windowKey(d) {
     return JSON.stringify([d.appId, d.title, d.size, d.minSize, d.maxSize, d.urgent, d.rules]);
 }
@@ -240,6 +245,10 @@ export class Workspace extends EventTarget {
 
     get config() {
         return this.#d.config;
+    }
+
+    get options() {
+        return this.#d.options;
     }
 
     get tilingArea() {
@@ -716,7 +725,7 @@ export class Session {
             }
         }
         const focusBefore = this.focusKey();
-        const configBefore = new Map([...this.workspaces.values()].map((d) => [d, JSON.stringify(d.config)]));
+        const configBefore = new Map([...this.workspaces.values()].map((d) => [d, configKey(d)]));
 
         const addedMonitors = [];
         for (const info of sync.monitors ?? []) {
@@ -760,6 +769,7 @@ export class Session {
                 gaps: info.config.gaps,
                 struts: Object.freeze({ ...info.config.struts }),
             });
+            d.options = Object.freeze(copyJson(info.options ?? {}));
             d.focused = info.focused;
         }
 
@@ -830,7 +840,7 @@ export class Session {
             fire.push(event(this.bento, "focuschange"));
         }
         const configChanged = [...this.workspaces.values()].some(
-            (d) => configBefore.has(d) && configBefore.get(d) !== JSON.stringify(d.config),
+            (d) => configBefore.has(d) && configBefore.get(d) !== configKey(d),
         );
         if (optionsChanged || configChanged) {
             fire.push(event(this.bento, "configchange"));

@@ -151,6 +151,9 @@ pub struct WorkspaceInfo {
     /// Where the camera is going, if it's moving.
     pub camera: Xy,
     pub config: ConfigInfo,
+    /// The engine's options for the workspace: the top-level ones with its output's and its own on
+    /// top.
+    pub options: serde_json::Value,
     /// Id of the window that has the workspace's focus.
     pub focused: Option<u64>,
 }
