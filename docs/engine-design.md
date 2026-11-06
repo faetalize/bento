@@ -316,6 +316,21 @@ Engines can ask to be called back after a delay, like for focusing a window the 
 or arranging windows once a burst of them has opened. The callback comes like an event, between
 other events, never during one.
 
+### Engines can take the keyboard briefly
+
+An engine can take the keyboard for a short interaction, like picking a window by pressing the
+letter it shows on it, or a mode where some keys resize the focused window until Escape. While it
+holds the keyboard, it gets each key: its name, the text it types and the modifiers held. Apps
+get no keys meanwhile.
+
+The keyboard is only the engine's while it visibly holds it, for an interaction that the person
+started. Escape always ends it unless the engine handles Escape itself, and so do a click outside
+what the engine draws, the lock screen, and the engine failing. bento's binds that can't be
+inhibited keep working throughout.
+
+Outside of that, engines are only told when the held modifiers change, like for showing hints
+while Super is held. They never see keys they don't hold.
+
 ### Grouping is bento's, its presentation is the engine's
 
 bento has a native concept of a group of windows, which any engine can use. It's called
