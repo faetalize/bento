@@ -262,10 +262,7 @@ function create(call) {
     if (meta.api === 1) {
         adapter = new V1Adapter(session, layoutModule);
         adapter.start();
-        adapter.adopt(
-            windows.map(({ d }) => d.facade),
-            event.focused,
-        );
+        adapter.adopt(windows.map(({ d }) => d.facade));
         return;
     }
 

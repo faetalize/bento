@@ -1257,7 +1257,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             return;
         }
 
-        // Keep hidden tiles that are fading out visible until they're done.
+        // Hidden tiles aren't drawn, unless an alpha animation of bento's own, like a dragged
+        // window's, still runs on them. Engines fade windows with their node's opacity.
         if !data.visible && tile.alpha_animation.is_none() {
             return;
         }

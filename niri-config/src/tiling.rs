@@ -724,4 +724,19 @@ mod tests {
         assert!(!system.join("engines").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn a_relative_engine_path_is_relative_to_the_config() {
+        let text = "tiling {\n    layout \"mine.js\"\n}\n";
+        let config =
+            Config::parse_with_engine(Path::new("/home/me/.config/bento/config.kdl"), text, |_| {
+                Ok(String::new())
+            })
+            .config
+            .unwrap();
+        assert_eq!(
+            config.tiling.layout,
+            TilingLayout::File(PathBuf::from("/home/me/.config/bento/mine.js"))
+        );
+    }
 }

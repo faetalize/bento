@@ -448,6 +448,9 @@ fn rasterize_text(key: &TextKey, max_width: i32) -> anyhow::Result<RasterizedTex
     })
 }
 
+/// Largest width and height of an image that a node draws.
+const MAX_IMAGE_SIZE: u32 = 4096;
+
 /// Loads an icon from the icon theme, or an image from an absolute path.
 fn load_image(key: &ImageKey) -> anyhow::Result<MemoryBuffer> {
     let _span = tracy_client::span!("surfaces::load_image");
@@ -459,7 +462,17 @@ fn load_image(key: &ImageKey) -> anyhow::Result<MemoryBuffer> {
             .with_context(|| format!("no icon named {:?} in the icon theme", key.name))?
     };
 
-    let image = image::open(&path)
+    // An engine names any file it likes, so a huge image mustn't take bento's memory.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_SIZE);
+    limits.max_image_height = Some(MAX_IMAGE_SIZE);
+    limits.max_alloc = Some(u64::from(MAX_IMAGE_SIZE) * u64::from(MAX_IMAGE_SIZE) * 4);
+    let mut reader = image::ImageReader::open(&path)
+        .and_then(|reader| reader.with_guessed_format())
+        .with_context(|| format!("error reading {path:?}"))?;
+    reader.limits(limits);
+    let image = reader
+        .decode()
         .with_context(|| format!("error reading {path:?}"))?
         .into_rgba8();
     let (width, height) = image.dimensions();
