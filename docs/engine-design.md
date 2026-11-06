@@ -346,8 +346,10 @@ bento has a native concept of a group of windows, which any engine can use. It's
 grouping rather than tabbing, because how a group looks is entirely up to the engine: tabs, a
 carousel, thumbnails, or anything else.
 
-A group is a set of windows and which one of them is active. Nothing more: order, looks and
-layout are the engine's.
+A group is a set of windows that engines can address together, and which one of them is active.
+Nothing more. It doesn't mean tabs, a single place in the layout, or that only one of its windows
+shows at a time. Its windows stay ordinary windows, which the engine places, sizes, shows and hides
+like any other, and order, looks and layout are the engine's.
 
 Which windows are grouped is bento's state, not the engine's. Engines can call on bento to
 change it, like `bento.createGroup([a, b])`, `group.add(win)`, `group.remove(win)` and

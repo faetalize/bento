@@ -339,7 +339,7 @@ binds {
 The main config can't bind them, so its binds work whichever engine runs.
 Everything else is bento's own and bound in the main config: spawning, screenshots, workspaces, monitors, the overview, and floating windows, which have their own actions like `focus-floating-left` and `move-floating-left`.
 
-Grouping is bento's too. A group is a set of windows and which one is active; how it looks is up to the engine, which can show tabs, a carousel or anything else.
+Grouping is bento's too. A group is a set of windows that engines can address together, and which one is active, nothing more: it doesn't mean tabs, or one place in the layout, or that only one of its windows shows. How it looks is up to the engine, which can show tabs, a carousel or anything else.
 `group-window-left`, `group-window-right`, `group-window-up` and `group-window-down` group the focused window with the nearest one in that direction, by where the engine put them, and `ungroup-window` takes it out.
 Engines can group windows too, and read the groups, through `bento.groups` and `bento.createGroup`.
 Floating windows can't be in a group, and a window that closes, floats or is dragged out leaves its group.
@@ -455,7 +455,7 @@ In short:
 
 - **Objects** are what the engine reads and changes: monitors, their workspaces, windows, each workspace's camera, and groups. Properties are read-only, and every change is a method call that says whether it worked, like `win.place(rect)`, `win.focus()`, `win.moveTo(workspace)` or `workspace.camera.move({ x })`.
 - **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes and drags over a workspace, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
-- **Groups** are bento's own: a set of windows and which one is active. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
+- **Groups** are bento's own: a set of windows that engines can address together, and which one is active. Its windows stay ordinary windows. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
 - **Search** is bento's own: `bento.search(scope)` starts it, and the engine gets a `Search` with the query, the matching windows best first, and the field to place in a tree, and hears `change` and `end`.
 - **Nodes** are what the engine draws: boxes, text and images in a tree for each workspace, which also holds the windows. Tab bars, hints and drop targets are nodes. bento renders the tree and runs the transitions the engine describes, so no engine code runs per frame.
 - **State** can be exposed with `bento.exposeState`, so that the shell, bento Settings and scripts can read it through bento's socket, and `unload` can keep state for the next instance of the engine when it reloads.
