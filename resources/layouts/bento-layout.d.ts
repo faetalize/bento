@@ -66,7 +66,7 @@ export type SizingMode = "normal" | "fullscreen" | "maximized";
 
 // Declarations.
 
-export type ValueType = "boolean" | "number" | "string" | "choice" | "size";
+export type ValueType = "boolean" | "number" | "string" | "choice" | "size" | "color" | "gradient";
 
 /**
  * An option, or a property an engine's window rules can set. Values are written in the engine's
@@ -76,6 +76,10 @@ export interface OptionSpec {
     /**
      * `"size"` values reach the engine as a `Preset`. A size written with no value, like
      * `default-column-width` alone on its line, reaches it as `null`: the window decides.
+     * `"color"` values are written `"#rrggbb"` or `"#rrggbbaa"` and reach the engine as a
+     * `Color`. `"gradient"` values are written with properties, like
+     * `active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view"`, and reach the
+     * engine as a `Gradient`, or `null` when left out.
      */
     type: ValueType;
     /** Whether the value is a list, written as several arguments. */
@@ -400,7 +404,10 @@ export interface Bento extends EventTarget<BentoEvents> {
     /** Every window the engine places, on every workspace. Floating windows aren't the engine's. */
     readonly windows: readonly Window[];
     readonly groups: readonly Group[];
-    /** The engine's options, from its .kdl file, with defaults filled in. */
+    /**
+     * The engine's options, from its .kdl file, with defaults filled in. A workspace's own options,
+     * which can differ per monitor and per named workspace, are `Workspace.options`.
+     */
     readonly options: Readonly<Record<string, unknown>>;
     /** State the previous instance of this engine saved in `unload`, or `null`. */
     readonly savedState: unknown;
@@ -465,6 +472,12 @@ export interface Workspace extends EventTarget<WorkspaceEvents> {
     readonly camera: Camera;
     /** bento's settings for this workspace, which can differ per monitor or workspace. */
     readonly config: Config;
+    /**
+     * The engine's options for this workspace: `Bento.options`, with what the engine's file sets
+     * for this workspace's monitor (`output "DP-2" { options {} }`) and then for this workspace by
+     * name (`workspace "web" { options {} }`) on top. `configchange` tells when they change.
+     */
+    readonly options: Readonly<Record<string, unknown>>;
     /** The monitor's working area minus the config's struts, starting at a physical pixel. */
     readonly tilingArea: Rect;
     /** The root of what's drawn on this workspace: window nodes and the engine's own nodes. */
@@ -568,6 +581,21 @@ export type Transition =
 /** A colour, written `"#rgb"`, `"#rrggbb"` or `"#rrggbbaa"`. */
 export type Color = string;
 
+/**
+ * A linear gradient from `from` to `to`, at `angle` degrees (0 goes up, 90 to the right),
+ * interpolated in the colour space `in`, like niri's: `"srgb"`, `"srgb-linear"`, `"oklab"`, or
+ * `"oklch"` followed by `"shorter hue"`, `"longer hue"`, `"increasing hue"` or `"decreasing
+ * hue"`. It spans the node's rect, or with `relativeTo: "view"` the whole view of the workspace,
+ * so that neighbouring nodes share one gradient.
+ */
+export interface Gradient {
+    from: Color;
+    to: Color;
+    angle?: number;
+    relativeTo?: "node" | "view";
+    in?: string;
+}
+
 export interface NodeProps {
     /**
      * Where it's drawn, on the workspace's canvas. For a window's node this is its place, set by
@@ -582,9 +610,9 @@ export interface NodeProps {
     clip?: boolean;
     cornerRadius?: number;
     /** Fill, for every node but a window's. */
-    background?: Color | null;
+    background?: Color | Gradient | null;
     /** A border drawn inside its rect, for every node but a window's. */
-    border?: { width: number; color: Color } | null;
+    border?: { width: number; color: Color | Gradient } | null;
     /** `"text"`: what it says, centred in its rect and cut with an ellipsis where it's too wide. */
     text?: string;
     /** `"text"`: a Pango font description, like `"sans 11"`, with its size in logical pixels. */

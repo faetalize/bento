@@ -1,27 +1,14 @@
 # Engines, objects and actions
 
-How layout engines and bento split the work. This holds the current decisions; open questions
-are at the end.
+How layout engines and bento split the work: the design as agreed, written as the starting point
+for building bento and its engines from scratch. It describes what they do, not how far along the
+code is; whatever the code does differently is a gap to close.
 
 ## Terms
 
 - **bento**: the compositor, a fork of niri.
 - **niri**: the upstream compositor, where bento's native actions come from.
 - **Engine**: a `*.js` layout engine, like `bento.js`, `niri.js` or a user's own file.
-
-## Why this is changing
-
-Today bento starts one copy of the engine per workspace, and each copy only sees its own
-workspace: its windows, its view and its camera. Monitors and other workspaces don't exist for
-it. So:
-
-- bento sends niri's action names to every engine whether the engine declared them or not, and
-  each engine gives them its own meaning. `bento.js`'s `move-column-left` moves one window by one
-  cell, which isn't what its name says.
-- Anything that crosses a workspace's edge, like `focus-column-or-monitor-left`, is done by
-  bento in Rust after the engine returns false.
-- Nothing can list everything an engine does, so a shortcuts page or `bento validate` has
-  nothing complete to read.
 
 ## Decisions
 
@@ -80,6 +67,7 @@ class Bento {                    // what create(bento) receives
     get options() {}             // this engine's options, from its .kdl file
 
     window(id) {}                // find a Window by id
+    setTimeout(callback, ms) {}  // call back later, see "Engines can wait"
     log(...args) {}
 }
 
@@ -127,6 +115,8 @@ class Window {
     get data() {}                // anything the engine stored on it
 
     place(rect, { animate }) {}
+    beginMove() {}               // start moving it with the pointer, like a title bar drag
+    beginResize(edges) {}        // start resizing it with the pointer
     focus() {}
     raise() {}
     moveTo(workspace) {}
@@ -135,11 +125,12 @@ class Window {
     setData(data) {}
 }
 
-class Camera {                   // its own object, so it can grow, e.g. zoom
+class Camera {
     get x() {}
     get y() {}
+    get zoom() {}                // 1 shows the canvas at its size, 0.5 twice as much of it
 
-    move({ x, y }, { animate }) {}
+    move({ x, y, zoom }, { animate }) {}
 }
 ```
 
@@ -283,14 +274,47 @@ workspaces itself, since switching between them and the overview are bento's, an
 transforming a workspace would fight bento's animations.
 
 bento draws the tree with its own renderer, on smithay's, and borrows little else from a
-browser. Nodes come in a few kinds: boxes (a fill, a border and a corner radius), text, images,
-and windows. Any node can have a transform, opacity, clipping and transitions. Pointer events hit
-the topmost node under the pointer and bubble up to its parents, like the DOM's. There's no layout
-system, since engines do their own layout, and no browser engine underneath.
+browser. Nodes come in a few kinds: boxes (a fill, a border and a corner radius, where fills and
+borders are colours or gradients), text, images, and windows. Any node can have a transform,
+opacity, clipping and transitions. Pointer events hit the topmost node under the pointer and
+bubble up to its parents, like the DOM's. There's no layout system, since engines do their own
+layout, and no browser engine underneath.
 
 Engines only ever draw inside workspaces. Anything above them on a monitor, like a panel, an OSD
 or a mini-map of an engine's columns, is the shell's job, and the shell can read the engine's
 state to draw it.
+
+### Engines decide where input on a window goes
+
+A window can be drawn anywhere and at any size, so the engine says, for each window's node, where
+pointer input on it goes:
+
+- to the app, where the window is drawn: a window shown at a third of its size in an overview
+  still takes clicks where they land on it;
+- to the engine, as the node's own pointer events, with the app getting nothing: a thumbnail or a
+  slit of a window that the engine expands or activates when it's clicked;
+- nowhere, so that what's below it gets it: a window shown as a preview over others.
+
+### Engines can move, resize and decorate windows with the pointer
+
+Moving and resizing a window with the pointer are bento's mechanics, and the engine decides what
+they do. Besides bento's own ways to start them, like dragging with the modifier held, an engine
+can start them itself, like when the title bar it draws is dragged.
+
+An engine can turn off, per window, the border, focus ring and shadow that bento draws around
+it, to draw its own decorations instead.
+
+### Engines can zoom the camera
+
+A workspace's camera can zoom as well as move, so the engine can show more or less of the canvas
+than fits the monitor, like zooming out to see a whole strip of columns. Pointer input on a zoomed
+workspace lands where things are drawn, the same as on a window drawn with a transform.
+
+### Engines can wait
+
+Engines can ask to be called back after a delay, like for focusing a window the pointer rests on,
+or arranging windows once a burst of them has opened. The callback comes like an event, between
+other events, never during one.
 
 ### Grouping is bento's, its presentation is the engine's
 
@@ -368,6 +392,11 @@ file of their own, and bento loads the one for the running engine. Switching eng
 which file is loaded, so nothing breaks, while validation stays strict against the running
 engine.
 
+An engine's options are booleans, numbers, strings, choices, sizes, colours and gradients, or lists
+of them, as the engine declares. They can differ per monitor and per named workspace, like bento's
+own `layout {}` settings: the engine's file can set options for an `output` or a `workspace`, and
+the engine reads each workspace's options from the workspace.
+
 The main config picks the engine with `tiling { layout "…" }`. A built-in engine's file is
 `~/.config/bento/engines/<name>.kdl`, like `engines/niri.kdl`. An engine from a file has its
 `.kdl` next to the `.js`, with the same name: `layout "~/layouts/mine.js"` loads
@@ -440,50 +469,3 @@ action picker.
 The page lists bento's actions and the running engine's. It can't see the actions of engines that
 aren't running: Settings never runs engine code itself, and learns an engine's declarations only
 from the running one. Switching engines on the Engine page brings up that engine's shortcuts.
-
-## Plan
-
-This work started from the Shortcuts page in bento Settings, the first of the pages still marked
-as planned there. The order agreed on:
-
-1. **Groundwork on today's engines**, so the Shortcuts page has something complete to read. Done, in
-   #27:
-   - `meta.actions` with typed arguments, checked when an engine loads and by `bento validate`;
-   - each engine's options and binds in its own `.kdl` file, and default `.kdl` files for the
-     built-in engines, written on first run.
-2. **Engine action names, before the page.** Done, in #27. niri's layout actions are
-   no longer bento's native actions: they're `niri.js`'s own, bound in its file. `bento.js` and
-   the template have names that say what they do. bento's internal layout methods named after
-   niri's actions are gone, with the inherited tests that only exercised niri's columns. bento has
-   its own floating actions. Actions that cross a monitor or workspace edge, like
-   `focus-column-or-monitor-left`, don't exist until the rework: engines can't see other monitors
-   or workspaces before it, and bento adds no stopgap to fake it.
-
-   The rework closes most of the gaps this left: actions that cross into another monitor or
-   workspace, moving a whole column to another workspace or monitor, double-clicking a window's
-   resize edge (now the engine's `edgedoubleclick`), and `default-window-height`, which is an
-   engine's window rule now. These stay open:
-   - bento's own screens don't borrow the engine's actions: the overview's left and right arrow
-     keys and its horizontal wheel, the window switcher reusing focus-left and focus-right binds,
-     and moving or resizing the screenshot selection with move and resize binds;
-   - the hotkey overlay lists no engine actions.
-3. **The Shortcuts page**, as described above, with bento's own action table. Done, in #27.
-4. **The engine rework**, everything else in this document: one engine for the session, the
-   object model, events, drawn surfaces, grouping, the socket, typed engine options and window
-   rules, the niri converter, and `bento.js` and `niri.js` on the new API. Done, in #28.
-
-   What it leaves open:
-   - a window drawn with a transform still takes input where it's placed, a `rect` transition on
-     a window's node doesn't animate (windows move with their placement's animation), and a clip
-     on a window also cuts its popups;
-   - boxes, text and images clip only to rectangles, and images are PNG, JPEG or WebP: icons are
-     found as PNGs, from the `hicolor` theme, since bento doesn't know the user's icon theme;
-   - touch and tablet input doesn't reach drawn nodes, and nodes don't take input in the
-     overview;
-   - switching a floating window between preset widths and heights went away with the preset
-     settings, which are engines' options now;
-   - bento still focuses a window on a workspace whose engine focuses none, and centres a window
-     the engine doesn't place.
-
-The other planned pages in bento Settings (Displays, Workspaces, Window Rules, Gestures, Startup
-Apps) and bento's own shell come after, in no agreed order yet.
