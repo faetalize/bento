@@ -257,6 +257,9 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) -> Self {
         let working_area = compute_working_area(parent_area, scale, options.layout.struts);
 
+        let mut tree = Tree::new(id, clock.clone(), options.animations.clone());
+        tree.set_icon_theme(&options.icon_theme);
+
         Self {
             tiles: Vec::new(),
             data: Vec::new(),
@@ -266,7 +269,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 y: Axis::Static(0.),
                 gesture: None,
             },
-            tree: Tree::new(id, clock.clone(), options.animations.clone()),
+            tree,
             pointer: Point::from((0., 0.)),
             swipe: None,
             drop: None,
@@ -297,6 +300,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         }
 
         self.tree.set_animations(options.animations.clone());
+        self.tree.set_icon_theme(&options.icon_theme);
 
         self.view_size = view_size;
         self.working_area = working_area;
