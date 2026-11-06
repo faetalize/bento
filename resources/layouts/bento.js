@@ -117,12 +117,6 @@ export const meta = {
         "move-up": {
             description: "Move the focused window one cell up.",
         },
-        "stack-left": {
-            description: "Stack the window under the one to its left, or take it out of its stack.",
-        },
-        "stack-right": {
-            description: "Stack the window under the one to its right, or take it out of its stack.",
-        },
         "stack-from-right": {
             description: "Stack the window to the right under the focused one.",
         },
@@ -249,11 +243,6 @@ export const meta = {
             default: ["33.333%", "50%", "66.667%"],
             description: "The heights that cycling heights goes through.",
         },
-        "default-group": {
-            type: "boolean",
-            default: false,
-            description: "Open new windows as a group of their own, which windows stacked into it join.",
-        },
         "hint-color": {
             type: "color",
             default: "#7fc8ff80",
@@ -270,11 +259,6 @@ export const meta = {
             type: "size",
             default: null,
             description: "The height the window opens with. Left out, as tall as the grid.",
-        },
-        "default-group": {
-            type: "boolean",
-            default: false,
-            description: "Open the window as a group of its own, which windows stacked into it join.",
         },
         "open-full-width": {
             type: "boolean",
@@ -1313,8 +1297,6 @@ function createSpace(bento, ws) {
             group: null,
             /** Index of the active window. */
             active: 0,
-            /** Whether windows stacked into it join it, see `consume`. */
-            grouped: opensGrouped(windows[0]),
             width: intent.width,
             fullWidth: intent.fullWidth,
             cols: intent.cols,
@@ -1334,11 +1316,10 @@ function createSpace(bento, ws) {
     const rulesWidth = (rules) =>
         rules["default-width"] !== undefined ? rules["default-width"] : options("default-width");
     const rulesHeight = (rules) => rules["default-height"] ?? null;
-    const rulesGroup = (rules) => rules["default-group"] ?? options("default-group");
 
-    /** Whether a new area of `win` is a group: its window rule, or the option. */
-    function opensGrouped(win) {
-        return win !== undefined && win !== null && rulesGroup(win.rules) === true;
+    /** Whether `item` is a group: several windows sharing its area. */
+    function isGroup(item) {
+        return item.windows.length > 1;
     }
 
     function intentOf(item) {
@@ -1450,9 +1431,33 @@ function createSpace(bento, ws) {
         return [cols, rows];
     }
 
-    /** Grid size `[cols, rows]` that an item should have, from the size of its window. */
+    /**
+     * Grid size `[cols, rows]` that an item should have, from the size of its window, and at
+     * least as wide as its windows need.
+     */
     function spanFor(item) {
-        return spanOf(item, item.windows[0].borders);
+        const [cols, rows] = spanOf(item, item.windows[0].borders);
+        return [Math.max(cols, minCols(item)), rows];
+    }
+
+    /**
+     * Fewest columns the windows of `item` fit in, from their minimum width, with the slits of a
+     * group beside its active window.
+     */
+    function minCols(item) {
+        const width = Math.max(
+            0,
+            ...item.windows.map((win) => (win.minSize.w > 0 ? win.minSize.w + win.borders.w : 0)),
+        );
+        if (width === 0) {
+            return 1;
+        }
+        const others = item.windows.length - 1;
+        const slits = others * (SLIT_WIDTH + pixel(ws.config.gaps / 2));
+        const m = metrics;
+        // A hair under, so that a width that fits exactly doesn't round up a column.
+        const cols = Math.ceil((width + slits + m.gap) / (m.cellW + m.gap) - 1e-6);
+        return clamp(cols, 1, MAX_COLS);
     }
 
     /**
@@ -1568,6 +1573,11 @@ function createSpace(bento, ws) {
         for (const item of items) {
             if (modeOf(item) !== "normal") {
                 continue;
+            }
+            // Windows that can't be as narrow as their area widen it, pushing the others right.
+            const min = minCols(item);
+            if (grid.area(item).cols < min) {
+                grid.setArea(item, grid.area(item).with({ cols: min }), Right);
             }
             const area = grid.area(item);
             const [cols, rows] = spanFor(item);
@@ -1823,7 +1833,7 @@ function createSpace(bento, ws) {
             return false;
         }
 
-        const before = JSON.stringify([item.windows.map((win) => win.id), item.active, item.grouped]);
+        const before = JSON.stringify([item.windows.map((win) => win.id), item.active]);
         const same =
             item.windows.length === wins.length && item.windows.every((win) => wins.includes(win));
         if (!same) {
@@ -1846,10 +1856,9 @@ function createSpace(bento, ws) {
                 expelMember(item, item.windows.indexOf(win), Right);
             }
         }
-        item.grouped = true;
         item.group = group;
         item.active = item.windows.indexOf(group.active);
-        const after = JSON.stringify([item.windows.map((win) => win.id), item.active, item.grouped]);
+        const after = JSON.stringify([item.windows.map((win) => win.id), item.active]);
         if (before === after) {
             return false;
         }
@@ -1962,7 +1971,7 @@ function createSpace(bento, ws) {
                 windows: item.windows.map((win) => win.id),
                 active: item.windows[item.active].id,
                 area: grid.area(item).toJSON(),
-                grouped: item.grouped,
+                grouped: isGroup(item),
                 mode: modeOf(item),
             })),
         };
@@ -2387,7 +2396,6 @@ function createSpace(bento, ws) {
         const out = {
             windows: [...item.windows],
             member: item.active,
-            grouped: item.grouped,
             fullscreen: item.fullscreen,
             intent: { ...intentOf(item), maximized: item.maximized },
         };
@@ -2402,7 +2410,6 @@ function createSpace(bento, ws) {
     /** Puts what `takeOut` took on this grid, right of the focused window, at its size. */
     function putIn(out, activate) {
         const item = makeItem(out.windows, out.intent);
-        item.grouped = out.grouped;
         item.active = out.member;
         item.fullscreen = out.fullscreen;
         item.maximized = out.intent.maximized;
@@ -2552,8 +2559,6 @@ function createSpace(bento, ws) {
     /** Adds a new item with `win`, sized like `from`, at `area` on the grid, pushing others. */
     function putItem(win, from, area) {
         const item = makeItem([win], intentOf(from));
-        // It was in a group, and is a window of its own now.
-        item.grouped = false;
         items.push(item);
         grid.insert(item, area);
         return item;
@@ -2661,34 +2666,6 @@ function createSpace(bento, ws) {
     // single items with several windows.
 
     /**
-     * Expels `target` (or the focused window) from its stack towards `dir`, or if it's not
-     * stacked with other windows, consumes it into the stack of the window beside it towards
-     * `dir`.
-     */
-    function consumeOrExpel(target, dir) {
-        const item = itemFor(target);
-        if (item === null) {
-            return false;
-        }
-        const area = grid.area(item);
-
-        // A window leaves its group.
-        if (item.windows.length > 1) {
-            const idx = target ? item.windows.findIndex((w) => w.id === target.id) : item.active;
-            return changeGrid(() => expelMember(item, idx, dir));
-        }
-
-        const stacked = [Up, Down].some((d) => grid.adjacent(item, d, null) !== null);
-        if (stacked) {
-            return changeGrid(() => expel(item, dir));
-        }
-
-        const row = anchor?.item === item ? anchor.row : area.row;
-        const into = grid.adjacent(item, dir, row);
-        return into !== null && changeGrid(() => consume(item, into));
-    }
-
-    /**
      * Puts `item` in the column of cells of `into`, which keeps the top half of its rows, giving
      * `item` the bottom half, like consuming a window into a column in niri.
      */
@@ -2696,11 +2673,6 @@ function createSpace(bento, ws) {
         // Fullscreen and maximized windows keep their place until they're back to normal.
         if (item === into || modeOf(item) !== "normal" || modeOf(into) !== "normal") {
             return false;
-        }
-
-        // A group takes the window in.
-        if (into.grouped) {
-            return consumeIntoGroup(item, into);
         }
 
         if (grid.area(into).rows < 2) {
@@ -2766,23 +2738,6 @@ function createSpace(bento, ws) {
     }
 
     /**
-     * Moves the windows of `item` into the group `into`, after its own, focusing the first
-     * of them if `item` was focused.
-     */
-    function consumeIntoGroup(item, into) {
-        const wasActive = active === item;
-        takeItem(item);
-
-        const first = into.windows.length;
-        into.windows.push(...item.windows);
-        if (wasActive) {
-            into.active = first;
-            active = into;
-        }
-        return true;
-    }
-
-    /**
      * Takes the window at `idx` out of the group `item`, putting it beside the area towards `dir`
      * at the same size, and focusing it if it was focused.
      */
@@ -2812,7 +2767,7 @@ function createSpace(bento, ws) {
      * rows.
      */
     function setGrouped(grouped) {
-        if (active === null || active.grouped === grouped || modeOf(active) !== "normal") {
+        if (active === null || isGroup(active) === grouped || modeOf(active) !== "normal") {
             return false;
         }
         const item = active;
@@ -2843,7 +2798,9 @@ function createSpace(bento, ws) {
             bottom = next.area;
         }
 
-        item.grouped = true;
+        if (above.length === 0 && below.length === 0) {
+            return false;
+        }
         for (const other of above) {
             takeItem(other);
             item.windows.unshift(...other.windows);
@@ -2871,7 +2828,6 @@ function createSpace(bento, ws) {
 
         const rest = item.windows.splice(1);
         item.active = 0;
-        item.grouped = false;
 
         // Split the rows as evenly as possible, giving the remainder to the top ones.
         const stacked = Math.min(count, area.rows);
@@ -4014,7 +3970,6 @@ function createSpace(bento, ws) {
                 key: item.key,
                 windows: item.windows.map((win) => win.id),
                 active: item.active,
-                grouped: item.grouped,
                 area: grid.area(item).toJSON(),
                 ...intentOf(item),
                 fullscreen: item.fullscreen,
@@ -4110,7 +4065,6 @@ function createSpace(bento, ws) {
                 item.key = saved.key;
                 nextItemId = Math.max(nextItemId, Number(id) + 1);
             }
-            item.grouped = saved.grouped === true;
             item.active = clamp(toInt(saved.active), 0, wins.length - 1);
             item.fullscreen = saved.fullscreen === true;
             item.maximized = saved.maximized === true;
@@ -4284,8 +4238,6 @@ function createSpace(bento, ws) {
         },
         "move-to-index": ([index]) => moveToIndex(index),
 
-        "stack-left": (args, target) => consumeOrExpel(target, Left),
-        "stack-right": (args, target) => consumeOrExpel(target, Right),
         // Brings the window on the right under the focused one.
         "stack-from-right": () => {
             const lines = focusLines();
@@ -4299,7 +4251,7 @@ function createSpace(bento, ws) {
                 ? changeGrid(() => expelMember(item, item.active, Right))
                 : changeGrid(() => expel(item, Right));
         },
-        "toggle-group": () => active !== null && setGrouped(!active.grouped),
+        "toggle-group": () => active !== null && setGrouped(!isGroup(active)),
         "set-group": ([grouped]) => setGrouped(grouped === true),
 
         "center": () => centerColumn(),
@@ -4380,7 +4332,8 @@ function createSpace(bento, ws) {
 
         // The grid decides window sizes. A window that can't take the size of its cells, like
         // one with a larger minimum size, is drawn at its own size where its cells are.
-        windowChanged: () => flush(),
+        // Its minimum size can change.
+        windowChanged: changes(sync),
 
         /** The monitor's size, scale or working area changed, or the workspace moved to another. */
         viewChanged: changes(reconfigure),

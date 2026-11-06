@@ -47,6 +47,17 @@ impl<R: NiriRenderer> ClippedSurfaceRenderElement<R> {
         }
     }
 
+    /// Takes it apart: the surface, and the area and corners that it's clipped to.
+    pub fn into_parts(
+        self,
+    ) -> (
+        WaylandSurfaceRenderElement<R>,
+        Rectangle<f64, Logical>,
+        CornerRadius,
+    ) {
+        (self.inner, self.geometry, self.corner_radius)
+    }
+
     fn compute_uniforms(&self) -> Vec<Uniform<'static>> {
         let scale = Scale::from(f64::from(self.scale));
         let elem_geo = self.inner.geometry(scale);

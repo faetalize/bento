@@ -51,17 +51,13 @@ options {
     // The heights that "cycle-height" goes through.
     preset-heights "33.333%" "50%" "66.667%"
 
-    // Open new windows as a group of their own, which windows stacked into it join, instead of
-    // as a window.
-    default-group false
-
     // The hints that show the window picked for swap, split and stuff, and where a dragged
     // window would land. Colors are written "#rgb", "#rrggbb" or "#rrggbbaa".
     hint-color "#7fc8ff80"
 }
 
 // Window rules have the same match and exclude as the ones in config.kdl, and set what the
-// engine declares: default-width, default-height, default-group and open-full-width. See
+// engine declares: default-width, default-height and open-full-width. See
 // "bento msg engine" for their types. For example, to open dialogs at half the height:
 //
 // window-rule {
@@ -108,13 +104,9 @@ binds {
     Mod+Ctrl+Shift+WheelScrollDown { move-right; }
     Mod+Ctrl+Shift+WheelScrollUp   { move-left; }
 
-    // Stack the window under the one beside it, or take it out of its stack.
-    Mod+BracketLeft  { stack-left; }
-    Mod+BracketRight { stack-right; }
-
     // Stack the window to the right under the focused one.
     Mod+Comma  { stack-from-right; }
-    // Take the focused window out of its stack, to the right.
+    // Take the focused window out of its stack or its group, to the right.
     Mod+Period { unstack; }
 
     // Cycle the focused window through the preset widths, and back.

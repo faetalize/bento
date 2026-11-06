@@ -46,8 +46,10 @@ fn stack_resize_waits_for_both_windows() {
     let _ = f.client(id).window(&surface1).recent_configures();
     let _ = f.client(id).window(&surface2).recent_configures();
 
-    // Stack the second window under the first.
-    f.niri().layout.layout_action("stack-left", &[], None);
+    // Stack the second window under the first, and focus it again.
+    f.niri().layout.layout_action("focus-left", &[], None);
+    f.niri().layout.layout_action("stack-from-right", &[], None);
+    f.niri().layout.layout_action("focus-down", &[], None);
     f.double_roundtrip(id);
 
     // Commit for the stacking.

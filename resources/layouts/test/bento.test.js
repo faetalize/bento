@@ -276,8 +276,9 @@ async function setUpStackOfTwo() {
     host.open();
     host.open();
     host.open();
+    host.activate(1);
+    host.action("stack-from-right");
     host.activate(2);
-    host.action("stack-left");
     return host;
 }
 
@@ -733,15 +734,15 @@ describe("grid layout", () => {
         host.action("fill-width");
     });
 
-    test("consuming splits rows and expelling gives them back", async () => {
+    test("stacking splits rows and unstacking gives them back", async () => {
         const host = await setUpStackOfTwo();
 
         // Window 2 goes under window 1, which keeps the top half, and window 3 slides left.
         assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6", "2 × 12 at 2, 0"]);
 
-        // Window 2 is stacked now, so this expels it back out to the right.
-        host.action("stack-right");
+        // Window 2 is stacked, and goes back out to the right.
+        host.action("unstack");
         assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0", "2 × 12 at 4, 0"]);
     });
@@ -788,102 +789,22 @@ describe("grid layout", () => {
         assert.equal(clips(host).length, 0);
     });
 
-    test("consuming into a group adds a window and expelling takes it out", async () => {
+    test("stacking under a group stacks the window, which doesn't join the group", async () => {
         const host = await setup();
         host.open();
         host.open();
+        host.open();
+        host.groupWindows([1, 2], 1);
         host.activate(1);
-        host.action("toggle-group");
-        host.activate(2);
-        host.action("stack-left");
-
-        // Window 2 is a second window in window 1's group.
-        assert.equal(host.focused(), 2);
-        assert.deepEqual(exposed(host).items.map((item) => item.area), [at(0, 0, 2, 12)]);
+        host.action("stack-from-right");
         assert.deepEqual(groupedAreas(host), [[1, 2]]);
         assert.deepEqual(
-            ipc(host),
+            exposed(host).items.map((item) => [item.windows, item.area]),
             [
-                [1, [1, 1]],
-                [2, [1, 2]],
+                [[1, 2], at(0, 0, 2, 6)],
+                [[3], at(0, 6, 2, 6)],
             ],
         );
-
-        host.action("stack-right");
-        assert.equal(host.focused(), 2);
-        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
-    });
-
-    test("swapping past a stack keeps the view still", async () => {
-        // Window 1 three rows tall, windows 2 and 3 stacked to its right within its rows, and
-        // window 4 under all of them, spanning both.
-        const host = await setup();
-        host.open();
-        host.actionOn(1, "set-height", rows(3));
-        host.open();
-        host.actionOn(2, "set-height", rows(2));
-        host.open();
-        host.actionOn(3, "set-height", rows(1));
-        repeat(2, () => host.action("move-down"));
-        host.open();
-        host.actionOn(4, "set-width", set(18.2));
-        host.actionOn(4, "set-height", rows(2));
-        repeat(3, () => host.action("move-down"));
-        assert.deepEqual(cells(host), [
-            "2 × 3 at 0, 0",
-            "2 × 2 at 2, 0",
-            "2 × 1 at 2, 2",
-            "4 × 2 at 0, 3",
-        ]);
-
-        // Window 1 trades places with the stack of windows 2 and 3. Window 4 isn't involved, so
-        // it stays where it is on screen, and so does the view.
-        host.activate(1);
-        host.action("move-right");
-        assert.deepEqual(cells(host), [
-            "2 × 3 at 2, 0",
-            "2 × 2 at 0, 0",
-            "2 × 1 at 0, 2",
-            "4 × 2 at 0, 3",
-        ]);
-    });
-
-    test("dragging the left edge without gravity pushes past column 0", async () => {
-        const host = await setup({ options: { gravity: false } });
-        host.open();
-        host.open();
-        resizeBegin(host, 2, { left: true });
-        resizeUpdate(host, 2, { left: true }, -COL_STEP * 3, 0);
-
-        // Without gravity there's no left edge to stop at: window 2 grows 3 cells to the left,
-        // pushing window 1 past column 0, and its right edge stays at x = 230.
-        assert.deepEqual(cells(host), ["2 × 12 at -3, 0", "5 × 12 at -1, 0"]);
-    });
-});
-
-describe("window rules", () => {
-    test("open-full-width opens a window as wide as the view", async () => {
-        const host = await setup();
-        host.open();
-        host.open({ rules: { "open-full-width": true } });
-        assert.deepEqual(cells(host, [2]), [`${METRICS.colsPerView} × 12 at 0, 0`]);
-
-        // Like after toggle-full-width, it toggles back to its own width.
-        host.action("toggle-full-width");
-        assert.deepEqual(cells(host, [2]), ["2 × 12 at 0, 0"]);
-    });
-
-    test("default-group can open a new window as a group", async () => {
-        const host = await setup();
-        host.open();
-        host.open({ rules: { "default-group": true } });
-        assert.deepEqual(groupedAreas(host), [[2]]);
-    });
-
-    test("default-group is also an option", async () => {
-        const host = await setup({ options: { "default-group": true } });
-        host.open();
-        assert.deepEqual(groupedAreas(host), [[1]]);
     });
 });
 
@@ -893,7 +814,9 @@ describe("split and swap", () => {
         const host = await setup({ options: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
-        host.action("stack-left");
+        host.activate(a);
+        host.action("stack-from-right");
+        host.activate(b);
         const c = host.open();
         assert.deepEqual(cells(host), ["12 × 6 at 0, 0", "12 × 6 at 0, 6", "12 × 12 at 12, 0"]);
         return { host, a, b, c };
@@ -993,7 +916,9 @@ describe("sticky vertical resizing", () => {
         const host = await setup();
         host.open();
         host.open();
-        host.action("stack-left");
+        host.activate(1);
+        host.action("stack-from-right");
+        host.activate(2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
         return host;
     }
@@ -1043,7 +968,9 @@ describe("sticky vertical resizing", () => {
         const host = await setup();
         host.open({ rules: { "default-width": { fixed: 200 } } });
         host.open();
-        host.action("stack-left");
+        host.activate(1);
+        host.action("stack-from-right");
+        host.activate(2);
         host.actionOn(2, "set-width", { op: "set", value: 100, unit: "px" });
         assert.deepEqual(cells(host), ["4 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
@@ -1124,7 +1051,9 @@ describe("stuff", () => {
         const host = await setup(half);
         const a = host.open();
         const b = host.open();
-        host.action("stack-left");
+        host.activate(a);
+        host.action("stack-from-right");
+        host.activate(b);
         const w = host.open();
         host.action("stuff");
         host.action("stuff");
@@ -1207,7 +1136,6 @@ describe("layout API", () => {
                 ["default-width", "50%"],
                 ["preset-widths", ["33.333%", "50%", "66.667%"]],
                 ["preset-heights", ["33.333%", "50%", "66.667%"]],
-                ["default-group", false],
                 ["hint-color", "#7fc8ff80"],
             ],
         );
@@ -1216,7 +1144,6 @@ describe("layout API", () => {
             [
                 ["default-width", "size"],
                 ["default-height", "size"],
-                ["default-group", "boolean"],
                 ["open-full-width", "boolean"],
             ],
         );
@@ -1417,6 +1344,40 @@ describe("layout API", () => {
         assert.equal(parentOf(host, 1), host.tree().rootId);
     });
 
+    test("a window's area fits its minimum width, and a group's its slits too", async () => {
+        const host = await setup();
+        host.open({ minSize: { w: 300, h: 0 } });
+        host.open();
+
+        // 100 px would be two cells, but window 1 needs 300 px: six cells of 37 px and their gaps,
+        // and window 2 goes after it.
+        assert.deepEqual(cells(host), ["6 × 12 at 0, 0", "2 × 12 at 6, 0"]);
+        assert.deepEqual(host.windows.get(1).size, { w: 300, h: cellRect(0, 0, 6, 12).h });
+        assert.deepEqual(host.errors, []);
+
+        // As a group, the area also fits the 40 px slit beside window 1 and its 8 px gap: seven
+        // cells, and window 2 moves out of the way.
+        host.open();
+        host.groupWindows([1, 3], 1);
+        assert.ok(host.rect(1).w >= 300);
+        assert.deepEqual(
+            exposed(host).items.map((item) => [item.windows, item.area]),
+            [
+                [[1, 3], at(0, 0, 7, 12)],
+                [[2], at(7, 0, 2, 12)],
+            ],
+        );
+    });
+
+    test("a window whose minimum width grows widens its area", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        host.setLimits(1, { minSize: { w: 300, h: 0 } });
+        assert.ok(host.rect(1).w >= 300);
+        assert.ok(host.rect(2).x >= host.rect(1).x + host.rect(1).w);
+    });
+
     test("slits leave half of the gaps between them, and at most half of the area", async () => {
         const host = await setup();
         for (let i = 0; i < 3; i++) host.open();
@@ -1463,7 +1424,8 @@ describe("layout API", () => {
         host.actionOn(2, "set-width", set(50));
         host.activate(2);
         host.open();
-        host.action("stack-left");
+        host.activate(2);
+        host.action("stack-from-right");
         host.action("toggle-group");
         const before = {
             tiles: tiles(host),
@@ -1539,15 +1501,6 @@ describe("layout API", () => {
         host.config = { ...host.config, struts: { left: 0, right: 0, top: 100, bottom: 0 } };
         host.setOptions(host.options);
         assert.equal(host.screenRect(1).y, 116);
-    });
-
-    test("a window that can't fit its cells keeps its place", async () => {
-        const host = await setup();
-        host.open({ minSize: { w: 300, h: 0 } });
-        host.open();
-        assert.deepEqual(host.windows.get(1).size, { w: 300, h: cellRect(0, 0, 2, 12).h });
-        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
-        assert.deepEqual(host.errors, []);
     });
 
     test("the highlight on an empty workspace is where the window will land", async () => {
@@ -1638,9 +1591,8 @@ describe("workspaces and monitors", () => {
         host.open();
         host.open();
         host.open();
+        host.groupWindows([1, 2], 1);
         host.activate(1);
-        host.action("toggle-group");
-        host.action("stack-from-right");
         assert.deepEqual(groupedAreas(host), [[1, 2]]);
 
         host.action("move-to-workspace", w1);

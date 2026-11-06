@@ -325,7 +325,7 @@ Where several rules match a window, later ones win, as in the main config.
 ### Actions
 
 Moving around and resizing tiled windows is the engine's: each engine has its own actions, named for what they do in it.
-The `niri` engine has niri's, like `focus-column-left` or `consume-or-expel-window-left`, and the `bento` engine has its own, like `focus-left` or `stack-left`.
+The `niri` engine has niri's, like `focus-column-left` or `consume-or-expel-window-left`, and the `bento` engine has its own, like `focus-left` or `stack-from-right`.
 Bind them in the engine's file by name, followed by any arguments:
 
 ```kdl
@@ -516,7 +516,8 @@ Window sizes snap to whole cells.
 Its actions are named for what they do on the grid, and `bento msg engine` lists them all with what each does.
 `focus-left`, `focus-right`, `focus-up` and `focus-down` go to the nearest window that way, even diagonally, and `move-left` and the rest move the focused window one cell, swapping with a window in the way.
 In a group, `focus-left` and `focus-right` first go through its windows, and `move-left` and `move-right` reorder them.
-A window's stack is the windows covering the same column of cells: `stack-left` and `stack-right` stack a window under its neighbour or take it out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-group` makes it a group.
+A window's stack is the windows covering the same column of cells: `stack-from-right` stacks the window on the right under the focused one and `unstack` takes the focused one out, `focus-stack-top` and `focus-in-stack N` move within it, and `toggle-group` makes it a group.
+Stacking never groups windows: only grouping does.
 `set-width`, `set-height`, `cycle-width` and `cycle-height` size the focused window in whole cells.
 Actions like `focus-index N` count the places where windows start, from left to right starting at 1.
 
@@ -534,12 +535,12 @@ The grid also has no left edge then, so windows can be pushed or moved further l
 
 The engine's other options are in its file too, written at their defaults.
 `center-focused-window` and `always-center-single-window` say when the view centers the focused window, `default-width` is the width new windows open with, and `preset-widths` and `preset-heights` are what `cycle-width` and `cycle-height` go through.
-`default-group` opens new windows as a group of their own, which windows stacked into it join.
 `hint-color` is the color of the hints.
-Its window rules set `default-width`, `default-height`, `default-group` and `open-full-width`.
+Its window rules set `default-width`, `default-height` and `open-full-width`.
 
 `toggle-group` makes the windows of a stack one bento group, which shares their area as a carousel: the active window takes most of it, and the others show as slits of their middle beside it, in order, half of the gaps apart.
 Every window of a group is as large as the active one, so that activating one only moves it.
+An area is always wide enough for the smallest width its windows accept, with a group's slits beside it, and pushes the windows after it out of the way.
 Pointing at a slit widens it, and clicking it activates its window.
 A group made by bento's own group actions shows as a carousel in the area of its active window, and while a group is fullscreen or maximized, only its active window shows.
 Dragging a window shows where it would land, and double-clicking the left or right edge of a window toggles its full width, and the top or bottom edge its full height.
