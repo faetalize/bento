@@ -17,7 +17,7 @@ use crate::render_helpers::shadow::ShadowRenderElement;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
 use crate::render_helpers::surface::push_elements_from_surface_tree;
 use crate::render_helpers::xray::XrayPos;
-use crate::render_helpers::{background_effect, RenderCtx};
+use crate::render_helpers::{background_effect, glass, RenderCtx};
 use crate::utils::{baba_is_float_offset, round_logical_in_physical};
 
 #[derive(Debug)]
@@ -232,6 +232,12 @@ impl MappedLayer {
         let location = location.to_physical_precise_round(scale).to_logical(scale);
         self.shadow
             .render(ctx.renderer, location, &mut |elem| push(elem.into()));
+
+        if !should_block_out {
+            glass::render(ns, surface, location, self.scale, &mut |elem| {
+                push(BackgroundEffectElement::from(elem).into())
+            });
+        }
 
         let geometry = Rectangle::new(location, self.block_out_buffer.size());
         let surface_off = Point::new(0., 0.); // No geometry on layer surfaces.

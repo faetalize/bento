@@ -14,6 +14,14 @@ pub struct SpawnShAtStartup {
     pub command: String,
 }
 
+/// The shell: the program bento starts with a private connection of its own, and starts again
+/// when it exits. No arguments means no shell.
+#[derive(knuffel::Decode, Debug, Clone, PartialEq, Eq)]
+pub struct Shell {
+    #[knuffel(arguments)]
+    pub command: Vec<String>,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Cursor {
     pub xcursor_theme: String,

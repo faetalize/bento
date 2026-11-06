@@ -10,11 +10,17 @@ use super::renderer::NiriRenderer;
 use super::shader_element::ShaderProgram;
 use crate::render_helpers::blur::BlurProgram;
 
+/// The glass shader's shape uniforms, one per shape it takes.
+pub const GLASS_SHAPE_UNIFORMS: [&str; 8] = [
+    "shape0", "shape1", "shape2", "shape3", "shape4", "shape5", "shape6", "shape7",
+];
+
 pub struct Shaders {
     pub border: Option<ShaderProgram>,
     pub shadow: Option<ShaderProgram>,
     pub clipped_surface: Option<GlesTexProgram>,
     pub postprocess_and_clip: Option<GlesTexProgram>,
+    pub glass: Option<GlesTexProgram>,
     pub resize: Option<ShaderProgram>,
     pub gradient_fade: Option<GlesTexProgram>,
     pub blur: Option<BlurProgram>,
@@ -126,6 +132,29 @@ impl Shaders {
             })
             .ok();
 
+        let mut glass_uniforms = vec![
+            UniformName::new("niri_scale", UniformType::_1f),
+            UniformName::new("geo_size", UniformType::_2f),
+            UniformName::new("input_to_geo", UniformType::Matrix3x3),
+            UniformName::new("geo_to_input", UniformType::Matrix3x3),
+            UniformName::new("shape_count", UniformType::_1f),
+            UniformName::new("radii0", UniformType::_4f),
+            UniformName::new("radii1", UniformType::_4f),
+            UniformName::new("noise", UniformType::_1f),
+            UniformName::new("saturation", UniformType::_1f),
+        ];
+        glass_uniforms.extend(
+            GLASS_SHAPE_UNIFORMS
+                .iter()
+                .map(|name| UniformName::new(*name, UniformType::_4f)),
+        );
+        let glass = renderer
+            .compile_custom_texture_shader(include_str!("glass.frag"), &glass_uniforms)
+            .map_err(|err| {
+                warn!("error compiling glass shader: {err:?}");
+            })
+            .ok();
+
         let resize = compile_resize_program(renderer, include_str!("resize.frag"))
             .map_err(|err| {
                 warn!("error compiling resize shader: {err:?}");
@@ -153,6 +182,7 @@ impl Shaders {
             shadow,
             clipped_surface,
             postprocess_and_clip,
+            glass,
             resize,
             gradient_fade,
             blur,

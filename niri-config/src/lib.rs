@@ -87,6 +87,7 @@ pub struct Config {
     pub outputs: Outputs,
     pub spawn_at_startup: Vec<SpawnAtStartup>,
     pub spawn_sh_at_startup: Vec<SpawnShAtStartup>,
+    pub shell: Option<Shell>,
     pub layout: Layout,
     pub tiling: Tiling,
     pub prefer_no_csd: bool,
@@ -288,6 +289,11 @@ where
 
                 "prefer-no-csd" => {
                     config.borrow_mut().prefer_no_csd = Flag::decode_node(node, ctx)?.0
+                }
+
+                "shell" => {
+                    let part = knuffel::Decode::decode_node(node, ctx)?;
+                    config.borrow_mut().shell = Some(part);
                 }
 
                 "screenshot-path" => {
@@ -1901,6 +1907,7 @@ mod tests {
                     command: "qs -c ~/source/qs/MyAwesomeShell",
                 },
             ],
+            shell: None,
             layout: Layout {
                 focus_ring: FocusRing {
                     off: false,
@@ -3056,14 +3063,14 @@ mod tests {
         -            natural_scroll: false,
         +            natural_scroll: true,
 
-        -    spawn_at_startup: [],
-        +    spawn_at_startup: [
-        +        SpawnAtStartup {
+        -    shell: None,
+        +    shell: Some(
+        +        Shell {
         +            command: [
-        +                "waybar",
+        +                "bento-shell",
         +            ],
         +        },
-        +    ],
+        +    ),
 
         -    bind_files: BindFiles(0),
         +    bind_files: BindFiles(107),

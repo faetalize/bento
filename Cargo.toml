@@ -2,6 +2,7 @@
 members = [
     "bento-ipc",
     "bento-settings",
+    "bento-shell",
     "niri-config",
     "niri-ipc",
     "niri-visual-tests",

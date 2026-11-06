@@ -50,6 +50,11 @@ pub fn native_actions() -> Vec<Declaration> {
             vec![],
         ),
         action(
+            "toggle-launcher",
+            "Show or hide the shell's launcher.",
+            vec![],
+        ),
+        action(
             "switch-layout",
             "Switch the keyboard layout.",
             vec![required(

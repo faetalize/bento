@@ -1,0 +1,127 @@
+/* The shell's surfaces are glass: bento draws it, the stage tints it, so windows are bare. */
+window.bento-shell {
+  background: none;
+  box-shadow: none;
+}
+
+.bar {
+  padding: 0 6px;
+}
+
+.bar-item {
+  min-height: 28px;
+  padding: 2px 12px;
+  border-radius: 99px;
+  font-weight: 600;
+}
+
+.tray-item {
+  padding: 2px 6px;
+}
+
+.workspaces {
+  margin-left: 2px;
+}
+
+.workspace {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 6px;
+  border-radius: 99px;
+  font-weight: 700;
+  font-feature-settings: "tnum";
+}
+
+.workspace.active {
+  background: alpha(@accent_bg_color, 0.85);
+  color: @accent_fg_color;
+}
+
+.workspace.urgent:not(.active) {
+  color: @error_color;
+}
+
+.panel {
+  padding: 18px;
+}
+
+.panel .row {
+  min-height: 36px;
+}
+
+.power {
+  min-width: 44px;
+  min-height: 44px;
+  background: alpha(currentColor, 0.1);
+}
+
+.power:hover {
+  background: alpha(currentColor, 0.16);
+}
+
+.osd {
+  padding: 12px 18px;
+}
+
+.osd levelbar trough {
+  min-height: 6px;
+  border-radius: 99px;
+}
+
+.osd levelbar block.filled {
+  background: @accent_bg_color;
+  border-radius: 99px;
+}
+
+.banner {
+  padding: 14px 14px 14px 16px;
+}
+
+.banner-picture {
+  border-radius: 10px;
+}
+
+.banner-actions button {
+  border-radius: 99px;
+}
+
+calendar {
+  background: none;
+  border: none;
+}
+
+calendar > header {
+  border: none;
+  background: none;
+}
+
+calendar > grid > label.today {
+  box-shadow: none;
+  background: @accent_bg_color;
+  color: @accent_fg_color;
+  border-radius: 99px;
+}
+
+.launcher {
+  padding: 12px;
+}
+
+.launcher-entry {
+  min-height: 44px;
+  font-size: 1.2em;
+  border-radius: 14px;
+  background: alpha(currentColor, 0.07);
+}
+
+.launcher-results {
+  background: none;
+}
+
+.launcher-row {
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+.launcher-row:selected {
+  background: alpha(@accent_bg_color, 0.3);
+}

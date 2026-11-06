@@ -283,6 +283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for elem in spawn_sh_at_startup {
         spawn_sh(elem.command, None);
     }
+    state.niri.update_shell();
 
     // Show the config error notification right away if needed.
     if config_errored {

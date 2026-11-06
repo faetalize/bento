@@ -349,6 +349,8 @@ pub enum Action {
     },
     /// Show the hotkey overlay.
     ShowHotkeyOverlay {},
+    /// Show or hide the shell's launcher.
+    ToggleLauncher {},
     /// Move the focused workspace to the monitor to the left.
     MoveWorkspaceToMonitorLeft {},
     /// Move the focused workspace to the monitor to the right.

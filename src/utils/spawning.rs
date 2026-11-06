@@ -1,4 +1,5 @@
 use std::ffi::OsStr;
+use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -75,7 +76,27 @@ pub fn spawn<T: AsRef<OsStr> + Send + 'static>(command: Vec<T>, token: Option<Xd
         .name("Command Spawner".to_owned())
         .spawn(move || {
             let (command, args) = command.split_first().unwrap();
-            spawn_sync(command, args, token);
+            spawn_sync(command, args, token, None);
+        });
+
+    if let Err(err) = res {
+        warn!("error spawning a thread to spawn the command: {err:?}");
+    }
+}
+
+/// Spawns the command with `socket` as its Wayland connection, through `WAYLAND_SOCKET`.
+pub fn spawn_with_wayland_socket(command: Vec<String>, socket: OwnedFd) {
+    let _span = tracy_client::span!();
+
+    if command.is_empty() {
+        return;
+    }
+
+    let res = thread::Builder::new()
+        .name("Command Spawner".to_owned())
+        .spawn(move || {
+            let (command, args) = command.split_first().unwrap();
+            spawn_sync(command, args, None, Some(socket));
         });
 
     if let Err(err) = res {
@@ -97,6 +118,7 @@ fn spawn_sync(
     command: impl AsRef<OsStr>,
     args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     token: Option<XdgActivationToken>,
+    wayland_socket: Option<OwnedFd>,
 ) {
     let _span = tracy_client::span!();
 
@@ -156,9 +178,26 @@ fn spawn_sync(
 
     unsafe { process.pre_exec(crate::utils::signals::unblock_all) };
 
+    if let Some(socket) = &wayland_socket {
+        let fd = socket.as_raw_fd();
+        process.env("WAYLAND_SOCKET", fd.to_string());
+        // The socket is made close-on-exec; the child keeps this one.
+        unsafe {
+            process.pre_exec(move || {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags == -1 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            })
+        };
+    }
+
     let Some(mut child) = do_spawn(command, process) else {
         return;
     };
+    // The child has its copy.
+    drop(wayland_socket);
 
     match child.wait() {
         Ok(status) => {

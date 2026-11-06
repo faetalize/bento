@@ -1,0 +1,25 @@
+[package]
+name = "bento-shell"
+version.workspace = true
+description = "The desktop shell for the bento compositor"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+adw = { version = "0.8.1", package = "libadwaita", features = ["v1_5"] }
+async-channel = "2.5.0"
+gdk-wayland = { version = "0.10", package = "gdk4-wayland", features = ["wayland_crate"] }
+gio = { version = "0.21", features = ["v2_80"] }
+glib = "0.21"
+gtk = { version = "0.10.3", package = "gtk4", features = ["v4_12"] }
+gtk4-layer-shell = "0.6"
+libpulse-binding = "2.30"
+libpulse-glib-binding = "2.29"
+bento-ipc = { version = "26.4.0", path = "../bento-ipc" }
+serde_json.workspace = true
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-client = "0.31"
+wayland-scanner = "0.31.11"

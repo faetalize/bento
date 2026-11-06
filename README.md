@@ -50,6 +50,7 @@ Next, get latest stable Rust: https://rustup.rs/
 
 Then, build bento with `cargo build --release`.
 For the settings app, also install libadwaita (`libadwaita-1-dev` on Ubuntu, `libadwaita-devel` on Fedora) and build it with `cargo build --release -p bento-settings`.
+For the shell, also install gtk4-layer-shell and PulseAudio's client library (`libgtk4-layer-shell-dev` and `libpulse-dev` on Ubuntu, `gtk4-layer-shell-devel` and `pulseaudio-libs-devel` on Fedora) and build it with `cargo build --release -p bento-shell`.
 
 Check Cargo.toml for a list of build features.
 For example, you can replace systemd integration with dinit integration using `cargo build --release --no-default-features --features dinit,dbus,xdp-gnome-screencast`.
@@ -77,6 +78,7 @@ These may vary depending on your distribution.
 | `resources/dinit/bento` (dinit) | `/etc/dinit.d/user/` |
 | `resources/dinit/bento.target` (dinit) | `/etc/dinit.d/user/` |
 | `target/release/bento-settings` (settings app) | `/usr/local/bin/` |
+| `target/release/bento-shell` (shell) | `/usr/local/bin/` |
 | `resources/io.github.faetalize.bento.Settings.desktop` (settings app) | `/usr/local/share/applications/` |
 
 Doing this will make bento appear in GDM and other display managers.
@@ -93,7 +95,7 @@ sudo ln -s /usr/local/bin/bento /usr/local/bin/niri
 ## Starting bento
 
 After installing, start bento from your display manager like GDM.
-Press <kbd>Super</kbd><kbd>T</kbd> to run a terminal ([Alacritty](https://github.com/alacritty/alacritty)) and <kbd>Super</kbd><kbd>D</kbd> to run an application launcher ([fuzzel](https://codeberg.org/dnkl/fuzzel)).
+Press <kbd>Super</kbd><kbd>T</kbd> to run a terminal ([Alacritty](https://github.com/alacritty/alacritty)) and <kbd>Super</kbd><kbd>D</kbd> to open the shell's launcher.
 Press <kbd>Super</kbd><kbd>Shift</kbd><kbd>/</kbd> to see the important hotkeys, and <kbd>Super</kbd><kbd>Shift</kbd><kbd>E</kbd> to exit bento.
 
 If you're not using a display manager, you should run `bento-session` (systemd/dinit) or `bento --session` (others) from a TTY.
@@ -135,14 +137,27 @@ When a session starts, bento links `~/.config/niri` to `~/.config/bento` if noth
 A real `~/.config/niri` stays untouched, and bento won't see what tools write there.
 After linking, niri itself can't run from that config if it uses anything specific to bento, like `tiling {}`.
 
-### Desktop shells
+### The shell
+
+bento's shell, `bento-shell`, is the desktop around the workspaces: a glass bar along the top of each monitor with the workspaces, the clock, the tray and the status icons, and the calendar, quick settings, notifications and the volume indicator that grow out of it.
+`toggle-launcher`, bound to <kbd>Super</kbd><kbd>D</kbd>, opens its launcher.
+
+The config names the shell, and bento starts it, and starts it again if it exits:
+
+```kdl
+shell "bento-shell"
+```
+
+bento hands it a Wayland connection of its own, through `WAYLAND_SOCKET`. On that connection only, the `bento_shell_v1` protocol (`resources/bento-shell-v1.xml`) gives the shell bento's commands for it, like `toggle-launcher`, and glass: the shell gives bento rounded shapes for each of its surfaces, and bento refracts, blurs and lights what's behind them, melting shapes that come close into one piece.
+Without a `shell` line, bento starts no shell.
+
+### Other desktop shells
 
 bento sets `XDG_CURRENT_DESKTOP=bento:niri`, so portals and tools that look for niri find it, but it has no niri IPC socket.
 Desktop shells made for niri, such as [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) and [Noctalia](https://github.com/noctalia-dev/noctalia-shell), lose what they read from that socket.
 Shells get the basics from Wayland protocols: `ext-workspace`, foreign-toplevel and output management.
 
-The default bento config runs Waybar, so with a desktop shell you might get two bars on screen.
-To fix this, stop Waybar with `pkill waybar` command, then open `~/.config/bento/config.kdl` and delete the `spawn-at-startup "waybar"` line.
+To run one instead of bento's, name it with `shell`, or remove the `shell` line and start it with `spawn-at-startup`.
 
 ### Settings
 
@@ -200,7 +215,7 @@ Requests:
 - `action` runs an action by name with its arguments and properties, as written in a bind, and parses it the way the config does, so the same things are invalid.
   Besides bento's actions it runs the running engine's, by their names.
   `window` and `workspace` aim it at another window or workspace than the focused one.
-- `output` changes a monitor's configuration temporarily, `pickWindow` and `pickColor` let the user pick, `loadConfigFile` reloads the config, `focusWindow`, `setWindowUrgent` and `stopCast` do what they say.
+- `output` changes a monitor's configuration temporarily, `pickWindow` and `pickColor` let the user pick, `loadConfigFile` reloads the config, `focusWindow`, `focusWorkspace`, `setWindowUrgent` and `stopCast` do what they say.
 - `subscribe` takes the kinds of events to get, or all of them.
   A new subscriber first gets the current state as events like `monitorAdded` and `windowAdded`.
   The events are `monitorAdded`, `monitorChanged`, `monitorRemoved`, the same for `workspace`, `window` and `group`, `focusChanged`, `engineChanged`, `engineStateChanged`, `keyboardLayoutsChanged`, `keyboardLayoutSwitched`, `overviewChanged`, `castsChanged`, `configLoaded`, `screenshotCaptured` and `touchpadToggled`.

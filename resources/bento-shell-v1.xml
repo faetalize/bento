@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="bento_shell_v1">
+  <copyright>
+    Copyright © 2026 the bento authors
+
+    This program is free software: you can redistribute it and/or modify it under the terms of
+    the GNU General Public License as published by the Free Software Foundation, either version 3
+    of the License, or (at your option) any later version.
+  </copyright>
+
+  <description summary="bento's private connection to its shell">
+    The shell is the program bento's config names with `shell`. bento starts it and hands it a
+    connection of its own through WAYLAND_SOCKET; this global is only on that connection.
+
+    Through it, the shell gets the commands and events meant for the shell, and asks bento for
+    glass behind its surfaces.
+  </description>
+
+  <interface name="bento_shell_v1" version="1">
+    <description summary="the shell's commands and requests">
+      Bound once by the shell.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop being the shell's object">
+        Glass objects made from it stay valid.
+      </description>
+    </request>
+
+    <request name="get_glass">
+      <description summary="glass behind a surface">
+        Makes the glass object for a layer surface. The surface has no glass until the object
+        gets shapes. Only layer surfaces show glass; it's ignored on other surfaces.
+
+        A surface can have one glass object at a time.
+      </description>
+      <arg name="id" type="new_id" interface="bento_glass_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="glass_exists" value="0" summary="the surface already has a glass object"/>
+    </enum>
+
+    <event name="style">
+      <description summary="the look of bento's windows">
+        Sent once bound and whenever the config changes it. The shell's own surfaces line up
+        with the windows by these: the gaps between windows and their corner radius, in logical
+        pixels.
+      </description>
+      <arg name="gaps" type="fixed"/>
+      <arg name="corner_radius" type="fixed"/>
+    </event>
+
+    <event name="toggle_launcher">
+      <description summary="show or hide the launcher">
+        Sent when the toggle-launcher action runs, like from a shortcut.
+      </description>
+    </event>
+  </interface>
+
+  <interface name="bento_glass_v1" version="1">
+    <description summary="glass behind a layer surface">
+      bento draws glass behind the surface in the shapes it's given: it refracts and blurs what's
+      behind them and lights their edges. Shapes that come close melt into one piece of glass,
+      so a surface can grow one shape out of another.
+
+      The surface draws its own tint over the glass.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="remove the glass">
+        The glass goes away on the surface's next commit.
+      </description>
+    </request>
+
+    <request name="set_shapes">
+      <description summary="set the glass's shapes">
+        The shapes, as an array of int32 quintuples: x, y, width, height and corner radius, in
+        the surface's logical coordinates. An empty array removes the glass.
+
+        Double-buffered: it applies on the surface's next commit.
+      </description>
+      <arg name="shapes" type="array"/>
+    </request>
+
+    <enum name="error">
+      <entry name="invalid_shapes" value="0"
+             summary="the array isn't whole quintuples, has more than 8 shapes, or a shape has a negative size or radius"/>
+    </enum>
+  </interface>
+</protocol>

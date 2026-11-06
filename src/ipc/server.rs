@@ -15,7 +15,7 @@ use directories::BaseDirs;
 use futures_util::io::{AsyncReadExt, BufReader};
 use futures_util::{select_biased, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, FutureExt as _};
 use niri_config::actions::native_actions;
-use niri_config::{Action, OutputName};
+use niri_config::{Action, OutputName, WorkspaceReference};
 use smithay::input::pointer::{
     CursorIcon, CursorImageStatus, Focus, GrabStartData as PointerGrabStartData,
 };
@@ -398,6 +398,10 @@ async fn process(ctx: &ClientCtx, request: Request) -> Result<Response, String> 
         }
         Request::FocusWindow { id } => {
             run_action(ctx, Action::FocusWindow(id)).await;
+            Response::Handled
+        }
+        Request::FocusWorkspace { id } => {
+            run_action(ctx, Action::FocusWorkspace(WorkspaceReference::Id(id))).await;
             Response::Handled
         }
         Request::SetWindowUrgent { id, urgent } => {

@@ -131,6 +131,11 @@ pub enum Request {
         /// The window's id.
         id: u64,
     },
+    /// Focuses a workspace, wherever it is.
+    FocusWorkspace {
+        /// The workspace's id.
+        id: u64,
+    },
     /// Sets whether a window asks for attention.
     SetWindowUrgent {
         /// The window's id.

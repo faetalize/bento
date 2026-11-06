@@ -161,6 +161,7 @@ use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement, NodeHit,
 };
 use crate::niri_render_elements;
+use crate::protocols::bento_shell::BentoShellState;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
@@ -350,6 +351,9 @@ pub struct Niri {
     pub gamma_control_manager_state: GammaControlManagerState,
     pub activation_state: XdgActivationState,
     pub mutter_x11_interop_state: MutterX11InteropManagerState,
+    pub bento_shell_state: BentoShellState,
+    /// The shell bento starts.
+    pub shell: crate::shell::Shell,
 
     // This will not work as is outside of tests, so it is gated with #[cfg(test)] for now. In
     // particular, shaders will need to learn about the single pixel buffer. Also, it must be
@@ -1998,6 +2002,8 @@ impl State {
             self.niri.window_mru_ui.update_config();
         }
 
+        self.niri.update_shell();
+
         if xwls_changed {
             // If xwl-s was previously working and is now off, we don't try to kill it or stop
             // watching the sockets, for simplicity's sake.
@@ -2723,6 +2729,9 @@ impl Niri {
 
         let mutter_x11_interop_state =
             MutterX11InteropManagerState::new::<State, _>(&display_handle, move |_| true);
+        let bento_shell_state =
+            BentoShellState::new::<State, _>(&display_handle, crate::shell::Shell::is_shell);
+        let shell = crate::shell::Shell::new(&event_loop);
 
         #[cfg(test)]
         let single_pixel_buffer_state = SinglePixelBufferState::new::<State>(&display_handle);
@@ -2948,6 +2957,8 @@ impl Niri {
             gamma_control_manager_state,
             activation_state,
             mutter_x11_interop_state,
+            bento_shell_state,
+            shell,
             #[cfg(test)]
             single_pixel_buffer_state,
 
@@ -3048,6 +3059,7 @@ impl Niri {
             primary_selection_disabled: config.clipboard.disable_primary,
             restricted,
             credentials_unknown,
+            shell: None,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -7603,11 +7615,17 @@ pub struct ClientState {
     pub restricted: bool,
     /// We cannot retrieve this client's socket credentials.
     pub credentials_unknown: bool,
+    /// Set for the shell's private connection: told when it disconnects.
+    pub shell: Option<calloop::channel::Sender<ClientId>>,
 }
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, client_id: ClientId, _reason: DisconnectReason) {
+        if let Some(shell) = &self.shell {
+            let _ = shell.send(client_id);
+        }
+    }
 }
 
 fn scale_relocate_crop<E: Element>(

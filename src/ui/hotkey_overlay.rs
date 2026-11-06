@@ -249,6 +249,15 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
         &Action::ToggleOverview,
     ]);
 
+    // The launcher is the shell's, so it's only there when bound.
+    if let Some(action) = binds
+        .iter()
+        .flat_map(bind_actions)
+        .find(|action| matches!(action, Action::ToggleLauncher))
+    {
+        actions.push(action);
+    }
+
     // Screenshot is not as important, can omit if not bound.
     if let Some(action) = binds
         .iter()
@@ -456,6 +465,7 @@ fn action_name(action: &Action) -> String {
     match action {
         Action::Quit(_) => String::from("Exit niri"),
         Action::ShowHotkeyOverlay => String::from("Show Important Hotkeys"),
+        Action::ToggleLauncher => String::from("Run an Application"),
         Action::CloseWindow => String::from("Close Focused Window"),
         Action::FocusWorkspaceDown => String::from("Switch Workspace Down"),
         Action::FocusWorkspaceUp => String::from("Switch Workspace Up"),
