@@ -305,6 +305,24 @@ export interface UnloadEvent extends BentoEvent {
     saveState(state: unknown): void;
 }
 
+/** Modifiers held. */
+export interface Modifiers {
+    shift: boolean;
+    ctrl: boolean;
+    alt: boolean;
+    super: boolean;
+}
+
+export interface KeyEvent extends BentoEvent {
+    /** The key's xkb name with the held modifiers applied, like `"a"`, `"A"`, `"Return"`, `"Left"`. */
+    readonly key: string;
+    /** What the key types with the keyboard layout, or `""`, like for arrows. */
+    readonly text: string;
+    readonly modifiers: Modifiers;
+    /** Whether the key is held down and repeating. */
+    readonly repeat: boolean;
+}
+
 export interface BentoEvents {
     windowadd: WindowAddEvent;
     monitoradd: BentoEvent & { readonly monitor: Monitor };
@@ -322,6 +340,15 @@ export interface BentoEvents {
     configchange: BentoEvent;
     newwindowsize: NewWindowSizeQuery;
     unload: UnloadEvent;
+    /** A key, while the engine holds the keyboard, see `Bento.grabKeyboard`. */
+    keydown: KeyEvent;
+    keyup: KeyEvent;
+    /** The keyboard went back to the apps, see `Bento.grabKeyboard`. */
+    keyboardrelease: BentoEvent & {
+        readonly reason: "engine" | "escape" | "click" | "lock" | "focus";
+    };
+    /** The modifiers held changed, whether or not the engine holds the keyboard. */
+    modifierschange: BentoEvent & { readonly modifiers: Modifiers };
 }
 
 export interface MonitorEvents {
@@ -437,6 +464,39 @@ export interface Bento extends EventTarget<BentoEvents> {
     /** Creates a node to draw, see `Node`. It shows once it's added to a workspace's tree. */
     createNode(kind: "box" | "text" | "image", props?: NodeProps): Node;
 
+    /**
+     * Calls `callback` once, after `ms` milliseconds, between events like an event of its own.
+     * Returns an id for `clearTimeout`. Timers end when the engine is unloaded.
+     */
+    setTimeout(callback: () => void, ms: number): number;
+    clearTimeout(id: number): void;
+
+    /**
+     * Takes the keyboard for a short interaction the person started, like picking a window by a
+     * letter shown on it. While the engine holds it, keys go to `keydown`/`keyup` and apps get
+     * none. Escape ends it unless a `keydown` listener prevents its default, and so do a click
+     * outside what the engine draws, the lock screen, keyboard focus moving to something that
+     * isn't the engine's, and the engine failing; `keyboardrelease` says which. bento's binds that
+     * can't be inhibited keep working. Returns false when the keyboard can't be taken, like on the
+     * lock screen.
+     */
+    grabKeyboard(): boolean;
+    /** Gives the keyboard back to the apps. */
+    releaseKeyboard(): void;
+    /** Whether the engine holds the keyboard. */
+    readonly keyboardGrabbed: boolean;
+    /** The modifiers held right now. */
+    readonly modifiers: Modifiers;
+
+    /**
+     * Starts searching windows: a group's, a workspace's, or every window with `null`. bento owns
+     * the query, typing and matching; the engine places and draws the field, `Search.field`, and
+     * shows the results. Returns null if a search is already running.
+     */
+    search(scope: Group | Workspace | null): Search | null;
+    /** The running search, or null. */
+    readonly searching: Search | null;
+
     log(...args: unknown[]): void;
 }
 
@@ -542,18 +602,64 @@ export interface Window extends EventTarget<WindowEvents> {
     /** Shows or hides it, like the inactive windows of a group shown as tabs. */
     setVisible(visible: boolean): boolean;
     setData(data: unknown): void;
+    /**
+     * Starts moving it with the pointer, like dragging a title bar the engine draws. Only from a
+     * `pointerdown` listener, with the button still held; bento runs the move as when it starts
+     * one, and the window leaves the engine with reason `"drag"` and comes back with `"drop"`.
+     * Returns false outside a press.
+     */
+    beginMove(): boolean;
+    /** Starts resizing it from `edges` with the pointer, like `beginMove`; `resizebegin` follows. */
+    beginResize(edges: Edges): boolean;
+    /** Turns bento's border, focus ring and shadow around it on or off; all on by default. */
+    setDecorations(decorations: { border?: boolean; focusRing?: boolean; shadow?: boolean }): void;
+    readonly decorations: { readonly border: boolean; readonly focusRing: boolean; readonly shadow: boolean };
 }
 
 export interface Camera {
-    /** Where it's going, if it's moving, or where it is. */
+    /** Where it's going, if it's moving, or where it is: the canvas point at the view's top left. */
     readonly x: number;
     readonly y: number;
+    /**
+     * How large the canvas is drawn: 1 at its size, 0.5 shows twice as much of it. Pointer input
+     * lands where things are drawn at any zoom.
+     */
+    readonly zoom: number;
 
     /**
-     * Moves it. Coordinates left out stay as they are. `velocity` continues a swipe's speed into
-     * the animation, in px/s.
+     * Moves it. Values left out stay as they are. `velocity` continues a swipe's speed into the
+     * animation, in px/s.
      */
-    move(to: Partial<Point>, opts?: { animate?: boolean; velocity?: number }): boolean;
+    move(to: Partial<Point & { zoom: number }>, opts?: { animate?: boolean; velocity?: number }): boolean;
+}
+
+/**
+ * A search of windows, see `Bento.search`. bento owns the query, the typing (with input methods
+ * and screen readers) and the matching on titles and app ids.
+ */
+export interface Search extends EventTarget<SearchEvents> {
+    readonly scope: Group | Workspace | null;
+    readonly query: string;
+    /** The windows in scope that match the query, best match first; all of them for no query. */
+    readonly matches: readonly Window[];
+    /**
+     * The field people type in, a node of kind `"search"` that bento draws: the query, its caret
+     * and selection, and a placeholder. The engine adds it to a tree and sets its `rect`, `font`,
+     * `color`, `background`, `border`, `cornerRadius` and the like.
+     */
+    readonly field: Node;
+    /** Ends it without picking a window. */
+    cancel(): void;
+}
+
+export interface SearchEvents {
+    /** The query or the matching windows changed. */
+    change: BentoEvent;
+    /**
+     * It ended. With Enter, `picked` is the best match, and an `activaterequest` for it follows;
+     * with Escape or `cancel`, it's null.
+     */
+    end: BentoEvent & { readonly picked: Window | null };
 }
 
 /**
@@ -635,6 +741,15 @@ export interface NodeProps {
     image?: string;
     /** Whether it gets pointer events. Nodes without listeners can leave it off. */
     interactive?: boolean;
+    /**
+     * A window's node: where pointer input on it goes. `"app"`, the default, gives it to the app
+     * where the window is drawn, through its transform and the camera's zoom; `"engine"` gives it
+     * to the engine as the node's pointer events, the app getting none; `"none"` lets it through
+     * to what's below.
+     */
+    input?: "app" | "engine" | "none";
+    /** `"search"`: what the field shows while the query is empty. */
+    placeholder?: string;
     /** How each property animates when it changes; properties left out change at once. */
     transitions?: Partial<Record<"rect" | "opacity" | "transform" | "cornerRadius" | "background", Transition>>;
 }
@@ -645,7 +760,7 @@ export interface NodeProps {
  * earlier ones. bento draws the tree and runs its transitions, so no engine code runs per frame.
  */
 export interface Node extends EventTarget<NodeEvents> {
-    readonly kind: "root" | "box" | "text" | "image" | "window";
+    readonly kind: "root" | "box" | "text" | "image" | "window" | "search";
     /** The window, for a window's node. */
     readonly window: Window | null;
     readonly parent: Node | null;
