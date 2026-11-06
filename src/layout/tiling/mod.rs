@@ -1472,7 +1472,8 @@ impl<W: LayoutElement> TilingSpace<W> {
             dnd_nonzero_start_time: None,
         });
 
-        self.interactive_resize = None;
+        // A drag stops a resize, and the layout hears that it ended.
+        self.interactive_resize_end(None);
     }
 
     pub fn dnd_scroll_gesture_scroll(&mut self, delta: f64) -> bool {
@@ -1571,11 +1572,13 @@ impl<W: LayoutElement> TilingSpace<W> {
             data: InteractiveResizeData { edges },
         });
 
-        // Freeze the view while resizing.
+        // Freeze the view while resizing. A swipe stops, and the layout hears that it ended.
         if let Some(gesture) = self.camera.gesture.take() {
             self.camera.x = Axis::Static(gesture.current);
         }
-        self.swipe = None;
+        if let Some(swipe) = self.swipe.take() {
+            self.queue_swipe("swipeend", 0., 0., swipe.is_touchpad);
+        }
 
         Some(id)
     }

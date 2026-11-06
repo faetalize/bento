@@ -1056,3 +1056,50 @@ fn an_engine_that_keeps_running_out_of_time_falls_back() {
     drop(layout);
     assert_eq!(crate::layout::tiling::engine::name(), "fallback");
 }
+
+/// An engine that logs swipes and resizes, and takes every resize.
+const GESTURES: &str = r#"
+export const meta = { api: 2, name: "gestures" };
+export default function create(bento) {
+    const log = [];
+    bento.exposeState(() => log);
+    const watch = (ws) => {
+        for (const type of ["swipebegin", "swipeend"]) {
+            ws.addEventListener(type, () => log.push(type));
+        }
+    };
+    bento.monitors.forEach((m) => m.workspaces.forEach(watch));
+    bento.addEventListener("workspaceadd", (e) => watch(e.workspace));
+    bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
+        win.place({ x: 0, y: 0, w: 100, h: 100 });
+        win.focus();
+        win.addEventListener("resizebegin", () => log.push("resizebegin"));
+        win.addEventListener("resizeend", () => log.push("resizeend"));
+    });
+}
+"#;
+
+#[test]
+fn a_swipe_that_a_resize_cuts_short_still_ends() {
+    let ops = [
+        Op::AddOutput(1),
+        add_window(1),
+        Op::ViewOffsetGestureBegin {
+            output_idx: 1,
+            workspace_idx: None,
+            is_touchpad: true,
+        },
+        Op::InteractiveResizeBegin {
+            window: 1,
+            edges: ResizeEdge::RIGHT,
+        },
+    ];
+    let layout = check_ops_with_options(options_for_source("swipes", GESTURES), ops);
+    drop(layout);
+    let log = crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(
+        log,
+        serde_json::json!(["swipebegin", "swipeend", "resizebegin"])
+    );
+}
