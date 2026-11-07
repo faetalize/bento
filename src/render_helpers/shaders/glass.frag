@@ -61,7 +61,7 @@ uniform float refractive_index;
 uniform float dispersion;
 // How bright the light the bezel reflects is.
 uniform float highlight;
-// How much the surface spreads the light it reflects, from polished 0 to rough 1.
+// How shiny the surface is, from rough 0 to polished 1.
 uniform float sheen;
 // How big the light looks, from a point 0 to a broad window 1.
 uniform float light_size;
@@ -249,7 +249,8 @@ void main() {
     // side, as light that went through the glass comes back off its inside. A rough surface and
     // a big light both spread it, broader and dimmer, the same light spread over more of the
     // bezel; a polished surface and a small light keep it tight and bright.
-    float spread = 0.06 + 0.6 * sqrt(sheen * sheen + light_size * light_size);
+    float roughness = 1.0 - sheen;
+    float spread = 0.06 + 0.6 * sqrt(roughness * roughness + light_size * light_size);
     float shininess = 2.0 / (spread * spread) - 2.0;
     // Bright as it is at a shininess of 60, the tight reflection the light is tuned for.
     float brightness = (shininess + 2.0) / 62.0;

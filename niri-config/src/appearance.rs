@@ -860,12 +860,13 @@ pub struct Blur {
 
 impl Default for Blur {
     fn default() -> Self {
+        // Settings' Regular preset.
         Self {
             off: false,
-            passes: 3,
-            offset: 3.,
-            noise: 0.02,
-            saturation: 1.5,
+            passes: 1,
+            offset: 4.09,
+            noise: 0.01,
+            saturation: 1.15,
             material: Material::Glass,
             glass: Glass::default(),
         }
@@ -884,8 +885,9 @@ pub struct Glass {
     pub dispersion: f64,
     /// How bright the light the bezel reflects is.
     pub highlight: f64,
-    /// How much the surface spreads the light it reflects, from 0 for polished to 1 for rough:
-    /// the reflection's side of the roughness that blurs what's behind.
+    /// How shiny the surface is, from 0 for rough, which spreads the light it reflects into a
+    /// broad dim glow, to 1 for polished, which keeps it a tight bright spot: the reflection's
+    /// side of the roughness that blurs what's behind.
     pub sheen: f64,
     /// How big the light looks from the glass, from 0 for a point to 1 for a broad window.
     pub light_size: f64,
@@ -901,8 +903,8 @@ impl Default for Glass {
             refractive_index: 1.5,
             dispersion: 0.14,
             highlight: 0.6,
-            sheen: 0.5,
-            light_size: 0.4,
+            sheen: 0.6,
+            light_size: 0.35,
             light_angle: 315.,
         }
     }

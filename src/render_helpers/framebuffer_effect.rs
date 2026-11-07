@@ -103,12 +103,12 @@ impl FramebufferEffect {
         &self,
         ns: Option<usize>,
         params: RenderParams,
-        blur_options: BlurOptions,
+        blur_options: Option<BlurOptions>,
         noise: f32,
         saturation: f32,
         shapes: GlassShapes,
     ) -> FramebufferEffectElement {
-        let mut elem = self.render(ns, params, Some(blur_options), noise, saturation);
+        let mut elem = self.render(ns, params, blur_options, noise, saturation);
         elem.glass = Some(shapes);
         elem
     }

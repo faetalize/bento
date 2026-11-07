@@ -165,7 +165,7 @@ pub fn render(
         push(glass.effect.render_glass(
             ns,
             params,
-            BlurOptions::from(blur),
+            BlurOptions::reaching(blur),
             blur.noise as f32,
             blur.saturation as f32,
             uniforms,

@@ -188,7 +188,9 @@ impl BackgroundEffect {
         // Use noise/saturation from options, falling back to blur defaults if blurred, and
         // to no effect if not blurred.
         let blur = self.options.blur && !self.blur_config.off;
-        let blur_options = blur.then_some(BlurOptions::from(self.blur_config));
+        let blur_options = blur
+            .then(|| BlurOptions::reaching(self.blur_config))
+            .flatten();
         let noise = if blur { self.blur_config.noise } else { 0. };
         let noise = self.options.noise.unwrap_or(noise) as f32;
         let saturation = if blur {
@@ -222,13 +224,13 @@ impl BackgroundEffect {
                 ctx,
                 params,
                 xray_pos,
-                blur,
+                blur_options.is_some(),
                 noise,
                 saturation,
                 glass.map(|shapes| shapes.glass),
                 &mut |elem| push(elem.into()),
             );
-        } else if let (Some(shapes), Some(blur_options)) = (glass, blur_options) {
+        } else if let Some(shapes) = glass {
             let elem =
                 self.nonxray
                     .render_glass(ns, params, blur_options, noise, saturation, shapes);

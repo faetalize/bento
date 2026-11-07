@@ -190,10 +190,10 @@ The `blur {}` section sets it for everything, and the even blur, without glass's
 ```kdl
 blur {
     material "glass" // or "plain"
-    passes 3
-    offset 3.0
-    noise 0.02
-    saturation 1.5
+    passes 1     // with offset, how far the blur reaches, about offset × 2^passes
+    offset 4.09  // 0 doesn't blur at all
+    noise 0.01
+    saturation 1.15
 
     // How glass bends and lights what's behind it.
     glass {
@@ -202,8 +202,8 @@ blur {
         refractive-index 1.5 // 1 doesn't bend at all
         dispersion 0.14      // how much more red bends than blue
         highlight 0.6        // how bright the light it reflects is
-        sheen 0.5            // how much it spreads that light, from polished 0 to rough 1
-        light-size 0.4       // how big the light looks, from a point 0 to a broad window 1
+        sheen 0.6            // how shiny it is, from rough 0 to polished 1
+        light-size 0.35      // how big the light looks, from a point 0 to a broad window 1
         light-angle 315      // where the light comes from, clockwise from the top
     }
 }

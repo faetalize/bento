@@ -155,28 +155,29 @@ struct Rough {
     sheen: f64,
 }
 
-/// How far the blur reaches, about `offset · 2^passes`, at a roughness: from 4 to 136, evenly on
-/// a log scale, with bento's defaults, 3 passes of 3, in the middle.
+/// How far the blur reaches, about `offset · 2^passes`, at a roughness: from nothing at 0, where
+/// glass is clear, to 255 at 1, nearly evenly on a log scale.
 fn reach(roughness: f64) -> f64 {
-    24. * (5. * (roughness - 0.5)).exp2()
+    256f64.powf(roughness) - 1.
 }
 
 /// The settings at `roughness`. The passes are the ones that put the offset nearest 3, where
-/// the blur looks smoothest, and the offset and sheen are in hundredths, as they're saved.
+/// the blur looks smoothest, and the offset and sheen are in hundredths, as they're saved. A
+/// rough surface isn't shiny, so sheen falls as roughness rises.
 fn rough_at(roughness: f64) -> Rough {
     let reach = reach(roughness);
-    let passes = (reach.log2() - 3f64.log2()).round().clamp(1., 8.);
+    let passes = (reach / 3.).log2().round().clamp(1., 8.);
     Rough {
         passes,
         offset: hundredths(reach / passes.exp2()),
-        sheen: hundredths(roughness),
+        sheen: hundredths(1. - roughness),
     }
 }
 
 /// The roughness `blur`'s passes and offset reach as far as.
 fn roughness_of(blur: &Blur) -> f64 {
     let reach = blur.offset * f64::from(blur.passes).exp2();
-    ((reach / 24.).log2() / 5. + 0.5).clamp(0., 1.)
+    ((reach + 1.).ln() / 256f64.ln()).clamp(0., 1.)
 }
 
 /// Where Roughness stands for `blur`, or `None` if its settings aren't those of any roughness.
@@ -211,33 +212,34 @@ struct Preset {
     light_size: f64,
 }
 
-/// Clear, Regular and Hazy, at 0, 1 and 2 on the Preset slider. Regular is bento's defaults.
+/// Clear, Regular and Hazy, at 0, 1 and 2 on the Preset slider: clear glass doesn't blur at all,
+/// and above Hazy, Roughness has room for heavier blur still. Regular is bento's defaults.
 const PRESETS: [(&str, Preset); 3] = [
     (
         "Clear",
         Preset {
-            roughness: 0.2,
-            saturation: 1.2,
+            roughness: 0.,
+            saturation: 1.,
             noise: 0.,
-            light_size: 0.2,
+            light_size: 0.15,
         },
     ),
     (
         "Regular",
         Preset {
-            roughness: 0.5,
-            saturation: 1.5,
-            noise: 0.02,
-            light_size: 0.4,
+            roughness: 0.4,
+            saturation: 1.15,
+            noise: 0.01,
+            light_size: 0.35,
         },
     ),
     (
         "Hazy",
         Preset {
             roughness: 0.8,
-            saturation: 1.6,
-            noise: 0.04,
-            light_size: 0.7,
+            saturation: 1.3,
+            noise: 0.03,
+            light_size: 0.6,
         },
     ),
 ];
@@ -682,7 +684,7 @@ mod tests {
     #[test]
     fn bentos_defaults_are_the_middle_roughness_and_the_regular_preset() {
         let blur = Blur::default();
-        assert_eq!(roughness(&blur), Some(0.5));
+        assert_eq!(roughness(&blur), Some(0.4));
         assert_eq!(preset_position(&blur), Some(1.));
     }
 
@@ -707,11 +709,11 @@ mod tests {
         assert_eq!(preset_position(&blur), None);
         // Plain has no sheen, so it doesn't count there.
         blur.material = Material::Plain;
-        assert_eq!(roughness(&blur), Some(0.5));
+        assert_eq!(roughness(&blur), Some(0.4));
 
         let mut blur = Blur::default();
         blur.saturation = 1.0;
-        assert_eq!(roughness(&blur), Some(0.5));
+        assert_eq!(roughness(&blur), Some(0.4));
         assert_eq!(preset_position(&blur), None);
     }
 
