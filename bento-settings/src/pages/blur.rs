@@ -161,12 +161,13 @@ fn reach(roughness: f64) -> f64 {
     256f64.powf(roughness) - 1.
 }
 
-/// The settings at `roughness`. The passes are the ones that put the offset nearest 3, where
-/// the blur looks smoothest, and the offset and sheen are in hundredths, as they're saved. A
-/// rough surface isn't shiny, so sheen falls as roughness rises.
+/// The settings at `roughness`. The passes are the ones that put the offset nearest 2, so it
+/// stays between about 1.4 and 2.8: further apart, a pass's samples skip what's between them,
+/// which shows as ghosting. The offset and sheen are in hundredths, as they're saved. A rough
+/// surface isn't shiny, so sheen falls as roughness rises.
 fn rough_at(roughness: f64) -> Rough {
     let reach = reach(roughness);
-    let passes = (reach / 3.).log2().round().clamp(1., 8.);
+    let passes = (reach / 2.).log2().round().clamp(1., 8.);
     Rough {
         passes,
         offset: hundredths(reach / passes.exp2()),
@@ -372,8 +373,9 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     // Roughness holds the settings it sets, so expanding it shows them under it.
     let (roughness_scale, roughness_value) = slider(0., 1., 0.01);
     let roughness_row = adw::ExpanderRow::builder().title("Roughness").build();
-    roughness_row.add_suffix(&roughness_value);
+    // An expander row puts each suffix before the last, so the value goes in after its slider.
     roughness_row.add_suffix(&roughness_scale);
+    roughness_row.add_suffix(&roughness_value);
     ctx.anchor(ROUGHNESS_KEY, &roughness_row);
     advanced.add_row(&roughness_row);
     let passes = part(&PASSES);
@@ -400,6 +402,8 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             roughness_row.set_subtitle(subtitle);
         }
     };
+    // Glass until the config says otherwise, when the material's toggle renames it.
+    name_roughness(true);
     advanced.add_row(&row(&SATURATION));
     advanced.add_row(&row(&NOISE));
     let mut glass_rows: Vec<gtk::Widget> = vec![preset_row.clone().upcast(), sheen.upcast()];

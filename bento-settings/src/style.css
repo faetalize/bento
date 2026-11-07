@@ -122,3 +122,11 @@ scale.custom highlight {
 row.part > box.header {
   margin-left: 24px;
 }
+
+/* libadwaita turns the arrow of every expander inside an open one, since its rule matches any
+   arrow under an expander that's open; a nested expander's arrow follows its own state. */
+row.expander row.expander:not(:checked) image.expander-row-arrow {
+  -gtk-icon-transform: rotate(0.5turn);
+  opacity: var(--dim-opacity);
+  color: inherit;
+}

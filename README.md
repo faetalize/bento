@@ -190,8 +190,8 @@ The `blur {}` section sets it for everything, and the even blur, without glass's
 ```kdl
 blur {
     material "glass" // or "plain"
-    passes 1     // with offset, how far the blur reaches, about offset × 2^passes
-    offset 4.09  // 0 doesn't blur at all
+    passes 2     // with offset, how far the blur reaches, about offset × 2^passes
+    offset 2.05  // 0 doesn't blur at all; above about 3 a pass ghosts, so add a pass instead
     noise 0.01
     saturation 1.15
 

@@ -2206,8 +2206,8 @@ mod tests {
             },
             blur: Blur {
                 off: false,
-                passes: 1,
-                offset: 4.09,
+                passes: 2,
+                offset: 2.05,
                 noise: 0.01,
                 saturation: 1.15,
                 material: Glass,
