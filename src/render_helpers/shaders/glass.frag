@@ -113,12 +113,14 @@ void main() {
     );
     vec2 normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
 
-    // 1 at the edge, 0 where the bezel meets the flat middle. The bezel's surface is a quarter
-    // ellipse, rising from nothing at the edge to the full thickness.
+    // 1 at the edge, 0 where the bezel meets the flat middle. The bezel's surface is a squircle,
+    // rising from nothing at the edge to the full thickness: unlike a circle, its curvature fades
+    // to nothing at the flat middle, so the magnification eases out instead of stopping at a
+    // crease.
     float rim = clamp(1.0 + d / max(bezel, 1e-3), 0.0, 1.0);
-    float rise = sqrt(max(1.0 - rim * rim, 0.0));
-    float height = thickness * rise;
-    float slope = thickness / max(bezel, 1e-3) * rim / max(rise, 1e-4);
+    float rise4 = max(1.0 - rim * rim * rim * rim, 0.0);
+    float height = thickness * pow(rise4, 0.25);
+    float slope = thickness / max(bezel, 1e-3) * rim * rim * rim / max(pow(rise4, 0.75), 1e-4);
 
     // Looking straight down, the ray meets the surface tilted by `tilt` and bends towards its
     // normal, so it lands on what's behind further in: the bezel magnifies.
