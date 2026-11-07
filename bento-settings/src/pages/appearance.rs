@@ -29,6 +29,7 @@ pub fn category() -> Category {
                     "Blur",
                     &[
                         "glass",
+                        "plain",
                         "frosted",
                         "transparency",
                         "translucency",
@@ -40,7 +41,7 @@ pub fn category() -> Category {
                 .search_item(
                     "blur.material",
                     "Blur Material",
-                    &["glass", "frosted", "transparency", "translucency"],
+                    &["glass", "plain", "transparency", "translucency"],
                 )
                 .search_item(
                     "blur.glass.preset",
@@ -50,7 +51,14 @@ pub fn category() -> Category {
                 .search_item(
                     "blur.roughness",
                     "Blur Roughness",
-                    &["amount", "radius", "frost", "transparency", "translucency"],
+                    &[
+                        "intensity",
+                        "amount",
+                        "radius",
+                        "frost",
+                        "transparency",
+                        "translucency",
+                    ],
                 )
                 .search_item("blur.offset", "Blur Strength", &["radius", "offset"])
                 .search_item("blur.passes", "Blur Passes", &["quality"])

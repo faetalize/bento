@@ -1,7 +1,7 @@
 //! A piece of the screen at its real size, with a pane of the blur material over the wallpaper.
 //!
 //! It draws with bento's own shaders: the background is blurred by the same passes with the same
-//! offset, and the pane is drawn by the glass or frosted shader with the uniforms bento gives it.
+//! offset, and the pane is drawn by the glass or plain shader with the uniforms bento gives it.
 //! The pane can be dragged around, to watch the glass bend what's behind it, and on glass a handle
 //! beside it moves the light.
 
@@ -39,7 +39,7 @@ const LIGHT_GAP: f64 = 8.;
 
 const GLASS: &str = include_str!("../../../src/render_helpers/shaders/glass.frag");
 /// bento's `postprocess_and_clip` program.
-const FROSTED: &str = concat!(
+const PLAIN: &str = concat!(
     include_str!("../../../src/render_helpers/shaders/clipped_surface.frag"),
     include_str!("../../../src/render_helpers/shaders/rounding_alpha.frag"),
     include_str!("../../../src/render_helpers/shaders/postprocess.frag"),
@@ -611,7 +611,7 @@ fn pane_uniforms(
 
     if !(blur && look.blur.material == Material::Glass) {
         uniforms.push(("corner_radius", Uniform::Vec4(<[f32; 4]>::from(radius))));
-        return (gl.frosted, uniforms);
+        return (gl.plain, uniforms);
     }
 
     let glass = look.blur.glass;
@@ -735,7 +735,7 @@ struct Gl {
     down: glow::Program,
     up: glow::Program,
     glass: glow::Program,
-    frosted: glow::Program,
+    plain: glow::Program,
     /// The wallpaper's texture and the picture it holds.
     wallpaper: Option<(glow::Texture, Rc<Picture>)>,
     /// What's behind the pane.
@@ -783,7 +783,7 @@ impl Gl {
             let down = compile("blur_down", BLUR_VERTEX, BLUR_DOWN)?;
             let up = compile("blur_up", BLUR_VERTEX, BLUR_UP)?;
             let glass = compile("glass", VERTEX, GLASS)?;
-            let frosted = compile("postprocess_and_clip", VERTEX, FROSTED)?;
+            let plain = compile("postprocess_and_clip", VERTEX, PLAIN)?;
 
             Ok(Self {
                 gl,
@@ -794,7 +794,7 @@ impl Gl {
                 down,
                 up,
                 glass,
-                frosted,
+                plain,
                 wallpaper: None,
                 background: None,
                 steps: Vec::new(),
@@ -811,7 +811,7 @@ impl Gl {
                 self.down,
                 self.up,
                 self.glass,
-                self.frosted,
+                self.plain,
             ] {
                 gl.delete_program(program);
             }

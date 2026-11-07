@@ -951,8 +951,8 @@ pub enum Material {
     /// catch the light.
     #[default]
     Glass,
-    /// Frosted: what's behind is blurred evenly.
-    Frosted,
+    /// Plain: what's behind is blurred evenly, with no edge to bend or light it.
+    Plain,
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]

@@ -185,11 +185,11 @@ A shell's own wallpaper draws above it, so turn that off to see bento's; in Noct
 ### Glass
 
 What bento blurs behind windows, layer surfaces and popups, whether a `background-effect` rule asks for it or the app does, is glass: blurred, bent like through a lens near its rounded edges, with the edges catching the light.
-The `blur {}` section sets it for everything, and the old even blur is the `frosted` material:
+The `blur {}` section sets it for everything, and the even blur, without glass's edge, is the `plain` material:
 
 ```kdl
 blur {
-    material "glass" // or "frosted"
+    material "glass" // or "plain"
     passes 3
     offset 3.0
     noise 0.02
@@ -217,7 +217,7 @@ A rule can pick the other material for some windows or surfaces:
 window-rule {
     match app-id="^org\.gnome\.Nautilus$"
     background-effect {
-        material "frosted"
+        material "plain"
     }
 }
 ```

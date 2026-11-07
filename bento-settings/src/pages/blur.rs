@@ -1,4 +1,4 @@
-//! Blur: the material bento draws behind windows and panels that ask for it, glass or frosted,
+//! Blur: the material bento draws behind windows and panels that ask for it, glass or plain,
 //! with a preview of it over the wallpaper.
 //!
 //! Two sliders set several settings at once: Roughness sets how far the blur reaches (passes and
@@ -184,7 +184,7 @@ fn roughness_of(blur: &Blur) -> f64 {
 fn roughness(blur: &Blur) -> Option<f64> {
     let roughness = hundredths(roughness_of(blur));
     let at = rough_at(roughness);
-    let sheen_matches = blur.material == Material::Frosted || close(blur.glass.sheen, at.sheen);
+    let sheen_matches = blur.material == Material::Plain || close(blur.glass.sheen, at.sheen);
     (f64::from(blur.passes) == at.passes && close(blur.offset, at.offset) && sheen_matches)
         .then_some(roughness)
 }
@@ -322,11 +322,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     // config saves it after.
     let row = |setting: &'static Setting| number_row(setting, ctx, &live);
     // A setting Roughness sets too.
-    let part = |setting: &'static Setting| {
-        let row = number_row(setting, ctx, &live);
-        row.set_subtitle("Set by Roughness, with the others");
-        row
-    };
+    let part = |setting: &'static Setting| number_row(setting, ctx, &live);
     let switch = {
         let live = live.clone();
         setting_row_watched(&SWITCH, ctx, move |input| {
@@ -341,7 +337,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         .width_request(240)
         .homogeneous(true)
         .build();
-    for (name, label) in [("glass", "Glass"), ("frosted", "Frosted")] {
+    for (name, label) in [("glass", "Glass"), ("plain", "Plain")] {
         material.add(adw::Toggle::builder().name(name).label(label).build());
     }
     ctx.anchor(MATERIAL_KEY, &material);
@@ -366,13 +362,39 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
 
     let advanced = adw::ExpanderRow::builder().title("Advanced").build();
     let (roughness_row, roughness_scale, roughness_value) = slider_row("Roughness", 0., 1., 0.01);
-    roughness_row.set_subtitle("How far the blur reaches, and how glass spreads its light");
     ctx.anchor(ROUGHNESS_KEY, &roughness_row);
     advanced.add_row(&roughness_row);
-    advanced.add_row(&part(&PASSES));
-    advanced.add_row(&part(&STRENGTH));
+    let passes = part(&PASSES);
+    let strength = part(&STRENGTH);
     let sheen = part(&SHEEN);
+    advanced.add_row(&passes);
+    advanced.add_row(&strength);
     advanced.add_row(&sheen);
+    // Roughness is glass's, which it sets sheen for too; plain has only the blur, so there it's
+    // Blur Intensity.
+    let name_roughness = {
+        let (roughness_row, passes, strength, sheen) = (
+            roughness_row.clone(),
+            passes.clone(),
+            strength.clone(),
+            sheen.clone(),
+        );
+        move |glass: bool| {
+            let (title, subtitle) = if glass {
+                (
+                    "Roughness",
+                    "How far the blur reaches, and how glass spreads its light",
+                )
+            } else {
+                ("Blur Intensity", "How far the blur reaches")
+            };
+            roughness_row.set_title(title);
+            roughness_row.set_subtitle(subtitle);
+            for part in [&passes, &strength, &sheen] {
+                part.set_subtitle(&format!("Set by {title}, with the others"));
+            }
+        }
+    };
     advanced.add_row(&row(&SATURATION));
     advanced.add_row(&row(&NOISE));
     let mut glass_rows: Vec<gtk::Widget> = vec![preset_row.clone().upcast(), sheen.upcast()];
@@ -451,19 +473,20 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     {
         let (ctx, live, updating) = (ctx.clone(), live.clone(), updating.clone());
         material.connect_active_name_notify(move |material| {
-            let glass = material.active_name().as_deref() != Some("frosted");
+            let glass = material.active_name().as_deref() != Some("plain");
             for row in &glass_rows {
                 row.set_visible(glass);
             }
+            name_roughness(glass);
             if updating.get() {
                 return;
             }
             live.show(Unsaved::Material(if glass {
                 Material::Glass
             } else {
-                Material::Frosted
+                Material::Plain
             }));
-            let word = if glass { "glass" } else { "frosted" };
+            let word = if glass { "glass" } else { "plain" };
             ctx.store.edit(MATERIAL_KEY, move |doc| {
                 doc.set(MATERIAL_PATH, vec![Value::Str(word.to_owned())]);
             });
@@ -478,7 +501,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             if !ctx.store.is_pending(MATERIAL_KEY) {
                 material.set_active_name(Some(match blur.material {
                     Material::Glass => "glass",
-                    Material::Frosted => "frosted",
+                    Material::Plain => "plain",
                 }));
             }
             updating.set(false);
@@ -682,8 +705,8 @@ mod tests {
         blur.glass.sheen = 0.9;
         assert_eq!(roughness(&blur), None);
         assert_eq!(preset_position(&blur), None);
-        // Frosted has no sheen, so it doesn't count there.
-        blur.material = Material::Frosted;
+        // Plain has no sheen, so it doesn't count there.
+        blur.material = Material::Plain;
         assert_eq!(roughness(&blur), Some(0.5));
 
         let mut blur = Blur::default();

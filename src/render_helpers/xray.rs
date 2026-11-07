@@ -351,7 +351,6 @@ impl RenderElement<GlesRenderer> for XrayElement {
             }
         };
 
-
         // FIXME: avoid reallocating a fresh Vec here somehow.
         let mut filtered_damage = Vec::new();
         let damage = if let Some(subregion) = &self.subregion {
