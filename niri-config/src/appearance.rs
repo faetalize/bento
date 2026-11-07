@@ -854,6 +854,7 @@ pub struct Blur {
     pub offset: f64,
     pub noise: f64,
     pub saturation: f64,
+    pub material: Material,
 }
 
 impl Default for Blur {
@@ -864,8 +865,20 @@ impl Default for Blur {
             offset: 3.,
             noise: 0.02,
             saturation: 1.5,
+            material: Material::Glass,
         }
     }
+}
+
+/// What a blurred background looks like.
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Material {
+    /// Glass: what's behind is blurred, bent like through a lens near the edges, and the edges
+    /// catch the light.
+    #[default]
+    Glass,
+    /// Frosted: what's behind is blurred evenly.
+    Frosted,
 }
 
 #[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
@@ -882,6 +895,8 @@ pub struct BlurPart {
     pub noise: Option<FloatOrInt<0, 1000>>,
     #[knuffel(child, unwrap(argument))]
     pub saturation: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub material: Option<Material>,
 }
 
 impl MergeWith<BlurPart> for Blur {
@@ -891,7 +906,7 @@ impl MergeWith<BlurPart> for Blur {
             self.off = false;
         }
 
-        merge_clone!((self, part), passes);
+        merge_clone!((self, part), passes, material);
         merge!((self, part), offset, noise, saturation);
     }
 }
@@ -906,6 +921,8 @@ pub struct BackgroundEffectRule {
     pub noise: Option<FloatOrInt<0, 1000>>,
     #[knuffel(child, unwrap(argument))]
     pub saturation: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub material: Option<Material>,
 }
 
 /// Resolved background effect rule.
@@ -928,11 +945,14 @@ pub struct BackgroundEffect {
 
     pub noise: Option<f64>,
     pub saturation: Option<f64>,
+
+    /// The material when blurred, or `None` for the `blur {}` section's.
+    pub material: Option<Material>,
 }
 
 impl MergeWith<BackgroundEffectRule> for BackgroundEffect {
     fn merge_with(&mut self, part: &BackgroundEffectRule) {
-        merge_clone_opt!((self, part), xray, blur);
+        merge_clone_opt!((self, part), xray, blur, material);
 
         if let Some(x) = part.noise {
             self.noise = Some(x.0);

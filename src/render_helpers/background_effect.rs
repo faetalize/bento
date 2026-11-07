@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use niri_config::CornerRadius;
+use niri_config::{CornerRadius, Material};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale};
 use smithay::wayland::compositor::{with_states, SurfaceData};
@@ -12,6 +12,7 @@ use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::clipped_surface::rounded_overlap;
 use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
+use crate::render_helpers::glass::GlassShapes;
 use crate::render_helpers::xray::{XrayElement, XrayPos};
 use crate::render_helpers::RenderCtx;
 use crate::utils::region::TransformedRegion;
@@ -37,6 +38,8 @@ pub struct Options {
     pub xray: bool,
     pub noise: Option<f64>,
     pub saturation: Option<f64>,
+    /// The material when blurred, or `None` for the `blur {}` section's.
+    pub material: Option<Material>,
 }
 
 impl Options {
@@ -127,6 +130,7 @@ impl BackgroundEffect {
             xray: effect.xray == Some(true),
             noise: effect.noise,
             saturation: effect.saturation,
+            material: effect.material,
         };
 
         // If we have some background effect but xray wasn't explicitly set, default it to true
@@ -194,6 +198,15 @@ impl BackgroundEffect {
         };
         let saturation = self.options.saturation.unwrap_or(saturation) as f32;
 
+        // Glass is a material for blur; without blur, what's behind shows as it is.
+        let material = self.options.material.unwrap_or(self.blur_config.material);
+        let glass = (blur && material == Material::Glass).then(|| {
+            let (geo, radius) = params
+                .clip
+                .unwrap_or((params.geometry, CornerRadius::default()));
+            GlassShapes::filling(geo.size.w as f32, geo.size.h as f32, radius)
+        });
+
         if self.options.xray {
             let Some(xray) = ctx.xray else {
                 return;
@@ -207,8 +220,14 @@ impl BackgroundEffect {
                 blur,
                 noise,
                 saturation,
+                glass.is_some(),
                 &mut |elem| push(elem.into()),
             );
+        } else if let (Some(shapes), Some(blur_options)) = (glass, blur_options) {
+            let elem =
+                self.nonxray
+                    .render_glass(ns, params, blur_options, noise, saturation, shapes);
+            push(elem.into());
         } else {
             // Render non-xray effect.
             let elem = self

@@ -182,6 +182,32 @@ It fills each monitor, cropped to fit, and takes the place of `background-color`
 Set it per monitor with a `layout {}` section inside `output`.
 A shell's own wallpaper draws above it, so turn that off to see bento's; in Noctalia, run `noctalia msg config-set wallpaper.enabled false`.
 
+### Glass
+
+What bento blurs behind windows, layer surfaces and popups, whether a `background-effect` rule asks for it or the app does, is glass: blurred, bent like through a lens near its rounded edges, with the edges catching the light.
+The `blur {}` section sets it for everything, and the old even blur is the `frosted` material:
+
+```kdl
+blur {
+    material "glass" // or "frosted"
+    passes 3
+    offset 3.0
+    noise 0.02
+    saturation 1.5
+}
+```
+
+A rule can pick the other material for some windows or surfaces:
+
+```kdl
+window-rule {
+    match app-id="^org\.gnome\.Nautilus$"
+    background-effect {
+        material "frosted"
+    }
+}
+```
+
 ### Default applications
 
 If you install bento alongside GNOME or KDE and want to keep their default app associations (e.g. which image viewer or video player to use), symlink their `mimeapps.list` like so:

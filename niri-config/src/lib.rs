@@ -2210,6 +2210,7 @@ mod tests {
                 offset: 3.0,
                 noise: 0.02,
                 saturation: 1.5,
+                material: Glass,
             },
             gestures: Gestures {
                 dnd_edge_view_scroll: DndEdgeViewScroll {
@@ -2421,6 +2422,7 @@ mod tests {
                         blur: None,
                         noise: None,
                         saturation: None,
+                        material: None,
                     },
                     popups: PopupsRule {
                         opacity: None,
@@ -2430,6 +2432,7 @@ mod tests {
                             blur: None,
                             noise: None,
                             saturation: None,
+                            material: None,
                         },
                     },
                 },
@@ -2472,6 +2475,7 @@ mod tests {
                         blur: None,
                         noise: None,
                         saturation: None,
+                        material: None,
                     },
                     popups: PopupsRule {
                         opacity: None,
@@ -2481,6 +2485,7 @@ mod tests {
                             blur: None,
                             noise: None,
                             saturation: None,
+                            material: None,
                         },
                     },
                 },

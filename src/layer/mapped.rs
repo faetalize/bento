@@ -234,9 +234,14 @@ impl MappedLayer {
             .render(ctx.renderer, location, &mut |elem| push(elem.into()));
 
         if !should_block_out {
-            glass::render(ns, surface, location, self.scale, &mut |elem| {
-                push(BackgroundEffectElement::from(elem).into())
-            });
+            glass::render(
+                ns,
+                surface,
+                location,
+                self.scale,
+                self.blur_config,
+                &mut |elem| push(BackgroundEffectElement::from(elem).into()),
+            );
         }
 
         let geometry = Rectangle::new(location, self.block_out_buffer.size());

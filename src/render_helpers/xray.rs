@@ -16,6 +16,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, T
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::effect_buffer::EffectBuffer;
+use crate::render_helpers::glass::{self, GlassShapes};
 use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 use crate::render_helpers::{RenderCtx, RenderTarget};
@@ -80,6 +81,8 @@ pub struct XrayElement {
     noise: f32,
     saturation: f32,
     bg_color: Color32F,
+    /// Draws glass filling the clip geometry instead of the plain effect.
+    glass: Option<GlassShapes>,
     program: Option<GlesTexProgram>,
 }
 
@@ -102,9 +105,19 @@ impl Xray {
         blur: bool,
         noise: f32,
         saturation: f32,
+        glass: bool,
         push: &mut dyn FnMut(XrayElement),
     ) {
-        let program = Shaders::get(ctx.renderer).postprocess_and_clip.clone();
+        let shaders = Shaders::get(ctx.renderer);
+        let program = if glass {
+            // Without its shader, glass would be an unclipped rectangle.
+            let Some(program) = shaders.glass.clone() else {
+                return;
+            };
+            Some(program)
+        } else {
+            shaders.postprocess_and_clip.clone()
+        };
 
         let zoom = xray_pos.zoom;
         let pos_in_backdrop = xray_pos.pos_in_backdrop.upscale(zoom);
@@ -201,6 +214,9 @@ impl Xray {
                     noise,
                     saturation,
                     bg_color: *bg_color,
+                    glass: glass.then(|| {
+                        GlassShapes::filling(clip_geo_size.x, clip_geo_size.y, corner_radius)
+                    }),
                     program: program.clone(),
                 };
                 push(elem);
@@ -251,6 +267,13 @@ impl Xray {
                 noise,
                 saturation,
                 bg_color: self.backdrop_color,
+                glass: glass.then(|| {
+                    GlassShapes::filling(
+                        clip_geo_size.x,
+                        clip_geo_size.y,
+                        corner_radius.scaled_by(zoom as f32),
+                    )
+                }),
                 program: program.clone(),
             };
             push(elem);
@@ -259,8 +282,20 @@ impl Xray {
 }
 
 impl XrayElement {
-    fn compute_uniforms(&self) -> [Uniform<'static>; 7] {
-        [
+    fn compute_uniforms(&self) -> Vec<Uniform<'static>> {
+        if let Some(shapes) = &self.glass {
+            return glass::uniforms(
+                shapes,
+                self.scale,
+                self.clip_geo_size,
+                self.input_to_clip_geo,
+                self.noise,
+                self.saturation,
+                self.bg_color.components(),
+            );
+        }
+
+        vec![
             Uniform::new("niri_scale", self.scale),
             Uniform::new("geo_size", <[f32; 2]>::from(self.clip_geo_size)),
             Uniform::new("corner_radius", <[f32; 4]>::from(self.corner_radius)),

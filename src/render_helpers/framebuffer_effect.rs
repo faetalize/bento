@@ -15,11 +15,11 @@ use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
-use crate::protocols::bento_shell::MAX_GLASS_SHAPES;
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::{Blur, BlurOptions};
+use crate::render_helpers::glass::{self, GlassShapes};
 use crate::render_helpers::renderer::AsGlesFrame as _;
-use crate::render_helpers::shaders::{mat3_uniform, Shaders, GLASS_SHAPE_UNIFORMS};
+use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 use crate::utils::region::TransformedRegion;
 
 #[derive(Debug)]
@@ -42,14 +42,6 @@ pub struct FramebufferEffectElement {
     saturation: f32,
     /// Draws glass in these shapes instead of the plain effect.
     glass: Option<GlassShapes>,
-}
-
-/// Shapes of glass, in the element's logical coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct GlassShapes {
-    pub rects: [[f32; 4]; MAX_GLASS_SHAPES],
-    pub radii: [f32; MAX_GLASS_SHAPES],
-    pub count: usize,
 }
 
 #[derive(Debug)]
@@ -105,7 +97,8 @@ impl FramebufferEffect {
         }
     }
 
-    /// Renders glass in the shapes over `params.geometry`, which mustn't be clipped.
+    /// Renders glass in the shapes, which are in the coordinates of the clip geometry, or of
+    /// `params.geometry` without a clip.
     pub fn render_glass(
         &self,
         ns: Option<usize>,
@@ -144,26 +137,16 @@ impl FramebufferEffectElement {
 
         let clip_geo_size = (self.clip_geo.size.w as f32, self.clip_geo.size.h as f32);
 
-        if let Some(glass) = &self.glass {
-            let radii = glass.radii;
-            let mut uniforms = vec![
-                Uniform::new("niri_scale", self.scale),
-                Uniform::new("geo_size", clip_geo_size),
-                mat3_uniform("input_to_geo", input_to_clip_geo),
-                mat3_uniform("geo_to_input", input_to_clip_geo.inverse()),
-                Uniform::new("shape_count", glass.count as f32),
-                Uniform::new("radii0", [radii[0], radii[1], radii[2], radii[3]]),
-                Uniform::new("radii1", [radii[4], radii[5], radii[6], radii[7]]),
-                Uniform::new("noise", self.noise),
-                Uniform::new("saturation", self.saturation),
-            ];
-            uniforms.extend(
-                GLASS_SHAPE_UNIFORMS
-                    .iter()
-                    .zip(glass.rects)
-                    .map(|(name, rect)| Uniform::new(*name, rect)),
+        if let Some(shapes) = &self.glass {
+            return glass::uniforms(
+                shapes,
+                self.scale,
+                Vec2::from(clip_geo_size),
+                input_to_clip_geo,
+                self.noise,
+                self.saturation,
+                [0., 0., 0., 0.],
             );
-            return uniforms;
         }
 
         vec![

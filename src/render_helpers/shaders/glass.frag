@@ -42,6 +42,8 @@ uniform vec4 radii1;
 
 uniform float noise;
 uniform float saturation;
+// Drawn under what's behind where that's see-through, like where xray has no wallpaper.
+uniform vec4 bg_color;
 
 // Shapes closer than this melt into one piece.
 const float MELT = 20.0;
@@ -114,25 +116,26 @@ void main() {
 
     // What's behind, seen through the bezel: from further in, red bent more than blue.
     vec2 shift = (geo_to_input * vec3(-normal * bend / geo_size, 0.0)).xy;
-    vec3 color = vec3(
-        texture2D(tex, v_coords + shift * (1.0 + DISPERSION)).r,
-        texture2D(tex, v_coords + shift).g,
-        texture2D(tex, v_coords + shift * (1.0 - DISPERSION)).b
-    );
+    vec4 red = texture2D(tex, v_coords + shift * (1.0 + DISPERSION));
+    vec4 green = texture2D(tex, v_coords + shift);
+    vec4 blue = texture2D(tex, v_coords + shift * (1.0 - DISPERSION));
+    vec4 behind = vec4(red.r, green.g, blue.b, green.a);
+    behind = behind + bg_color * (1.0 - behind.a);
 
     const vec3 luma = vec3(0.2126, 0.7152, 0.0722);
-    color = mix(vec3(dot(color, luma)), color, saturation);
+    behind.rgb = mix(vec3(dot(behind.rgb, luma)), behind.rgb, saturation);
+    behind.rgb += (hash12(gl_FragCoord.xy) - 0.5) * noise * behind.a;
 
     // The edge catches the light where it faces it, and a little on the far side too.
     float facing = dot(normal, normalize(LIGHT));
     float edge = 1.0 - smoothstep(0.0, EDGE, -d);
     float lit = 0.16 + 0.6 * pow(max(facing, 0.0), 2.0) + 0.3 * pow(max(-facing, 0.0), 2.0);
     float sheen = pow(rim, 4.0) * 0.12 * max(facing, 0.0);
-    color += vec3(edge * lit + sheen);
+    float light = clamp(edge * lit + sheen, 0.0, 1.0);
 
-    color += (hash12(gl_FragCoord.xy) - 0.5) * noise;
-
-    vec4 result = vec4(color, 1.0) * coverage * alpha;
+    // The light goes over what's behind, both premultiplied.
+    vec4 result = vec4(vec3(light), light) + behind * (1.0 - light);
+    result = result * coverage * alpha;
 
 #if defined(DEBUG_FLAGS)
     if (tint == 1.0)
