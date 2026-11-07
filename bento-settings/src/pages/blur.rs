@@ -390,20 +390,9 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     let name_roughness = {
         let roughness_row = roughness_row.clone();
         move |glass: bool| {
-            let (title, subtitle) = if glass {
-                (
-                    "Roughness",
-                    "How far the blur reaches, and how glass spreads its light",
-                )
-            } else {
-                ("Blur Intensity", "How far the blur reaches")
-            };
-            roughness_row.set_title(title);
-            roughness_row.set_subtitle(subtitle);
+            roughness_row.set_title(if glass { "Roughness" } else { "Blur Intensity" });
         }
     };
-    // Glass until the config says otherwise, when the material's toggle renames it.
-    name_roughness(true);
     advanced.add_row(&row(&SATURATION));
     advanced.add_row(&row(&NOISE));
     let mut glass_rows: Vec<gtk::Widget> = vec![preset_row.clone().upcast(), sheen.upcast()];

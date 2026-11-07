@@ -110,31 +110,35 @@ float rounded_box(vec2 p, vec4 rect, vec4 radii) {
 // distance like `rounded_box`'s, with its slope in `slope`.
 //
 // Deeper than a corner's radius, the distance to the nearest edge turns a sharp corner along the
-// diagonal, which would fold the bezel there like a mitred frame. So near the edge it's the
-// outline's own distance, and from there on it eases into that of the outline with its corners
-// rounded at least as wide as the bezel, which rolls around the corner as one curve. The two
-// agree at the edge, and the easing is smooth, so there's no seam.
+// diagonal, which would fold the bezel there like a mitred frame. Instead, a point's depth is how
+// far the outline has to shrink to pass through it, keeping its corners' radius as it shrinks:
+// at the outline it's the distance to the edge, and deeper in its lines stay rounded, so the
+// surface rolls around a corner as one curve, at any bezel.
 float surface_box(vec2 p, vec4 rect, vec4 radii, out vec2 slope) {
     vec2 half_size = rect.zw * 0.5;
     vec2 q = p - rect.xy - half_size;
     float radius = corner_radius(q, half_size, radii);
-    float rounder = min(max(radius, bezel), min(half_size.x, half_size.y));
-
     float outline = box_distance(q, half_size, radius);
-    vec2 outline_slope = box_normal(q, half_size, radius);
-    float rounded = box_distance(q, half_size, rounder);
-    vec2 rounded_slope = box_normal(q, half_size, rounder);
+    if (outline > 0.0) {
+        slope = box_normal(q, half_size, radius);
+        return outline;
+    }
 
-    // From the outline at the edge to the rounded outline a corner's radius in, where the
-    // outline's own distance starts to fold.
-    float reach = max(radius, 1.0);
-    float x = clamp(-outline / reach, 0.0, 1.0);
-    float ease = x * x * (3.0 - 2.0 * x);
-    float ease_slope = 6.0 * x * (1.0 - x) / reach;
-
-    slope = mix(outline_slope, rounded_slope, ease)
-        - (rounded - outline) * ease_slope * outline_slope;
-    return mix(outline, rounded, ease);
+    vec2 side = vec2(q.x < 0.0 ? -1.0 : 1.0, q.y < 0.0 ? -1.0 : 1.0);
+    vec2 d = abs(q) - half_size + radius;
+    // In a corner, the shrunk outline's corner, centred `depth` further in on both axes, passes
+    // through the point: |d + depth| = radius.
+    float spread = 2.0 * radius * radius - (d.x - d.y) * (d.x - d.y);
+    if (spread >= 0.0) {
+        float depth = (sqrt(spread) - d.x - d.y) * 0.5;
+        if (d.x + depth > 0.0 && d.y + depth > 0.0) {
+            slope = side * normalize(d + depth);
+            return -depth;
+        }
+    }
+    // Along a side, it's the distance to the nearer side.
+    slope = d.x > d.y ? vec2(side.x, 0.0) : vec2(0.0, side.y);
+    return max(d.x, d.y) - radius;
 }
 
 // Polynomial smooth minimum: like min(), with a rounded seam where a and b are within k.
