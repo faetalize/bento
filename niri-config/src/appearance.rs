@@ -873,6 +873,9 @@ impl Default for Blur {
     }
 }
 
+/// The most lights glass catches.
+pub const MAX_GLASS_LIGHTS: usize = 4;
+
 /// How glass bends and lights what's behind it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glass {
@@ -883,8 +886,6 @@ pub struct Glass {
     pub refractive_index: f64,
     /// How much more red bends than blue, as a fraction of the bend.
     pub dispersion: f64,
-    /// How bright the light the bezel reflects is.
-    pub highlight: f64,
     /// How much of its surroundings the bezel reflects where it's seen edge on, at its very edge,
     /// from 0 for none to 1.
     pub reflection: f64,
@@ -892,10 +893,8 @@ pub struct Glass {
     /// broad dim glow, to 1 for polished, which keeps it a tight bright spot: the reflection's
     /// side of the roughness that blurs what's behind.
     pub sheen: f64,
-    /// How big the light looks from the glass, from 0 for a point to 1 for a broad window.
-    pub light_size: f64,
-    /// Where the light comes from, in degrees clockwise from the top.
-    pub light_angle: f64,
+    /// The lights glass catches, in order.
+    pub lights: [Option<GlassLight>; MAX_GLASS_LIGHTS],
 }
 
 impl Default for Glass {
@@ -905,16 +904,40 @@ impl Default for Glass {
             thickness: 40.,
             refractive_index: 1.5,
             dispersion: 0.14,
-            highlight: 0.6,
             reflection: 0.5,
             sheen: 0.6,
-            light_size: 0.35,
-            light_angle: 315.,
+            lights: [Some(GlassLight::default()), None, None, None],
         }
     }
 }
 
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+/// A light glass catches: far away, so it lights every window from the same direction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlassLight {
+    pub on: bool,
+    /// How bright the light's reflection on the bezel is, and how much it shades the bezel.
+    pub intensity: f64,
+    /// Where it comes from, in degrees clockwise from the top.
+    pub angle: f64,
+    /// How high it is over the screen, in degrees from flat along it to 90 straight above.
+    pub height: f64,
+    /// How big it looks from the glass, from 0 for a point to 1 for a broad window.
+    pub size: f64,
+}
+
+impl Default for GlassLight {
+    fn default() -> Self {
+        Self {
+            on: true,
+            intensity: 0.6,
+            angle: 315.,
+            height: 40.,
+            size: 0.35,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
 pub struct GlassPart {
     #[knuffel(child, unwrap(argument))]
     pub bezel: Option<FloatOrInt<0, 1000>>,
@@ -925,15 +948,26 @@ pub struct GlassPart {
     #[knuffel(child, unwrap(argument))]
     pub dispersion: Option<FloatOrInt<0, 1>>,
     #[knuffel(child, unwrap(argument))]
-    pub highlight: Option<FloatOrInt<0, 10>>,
-    #[knuffel(child, unwrap(argument))]
     pub reflection: Option<FloatOrInt<0, 1>>,
     #[knuffel(child, unwrap(argument))]
     pub sheen: Option<FloatOrInt<0, 1>>,
+    /// The lights, replacing the default one when there are any.
+    #[knuffel(children(name = "light"))]
+    pub lights: Vec<GlassLightPart>,
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+pub struct GlassLightPart {
+    #[knuffel(child)]
+    pub off: bool,
     #[knuffel(child, unwrap(argument))]
-    pub light_size: Option<FloatOrInt<0, 1>>,
+    pub intensity: Option<FloatOrInt<0, 10>>,
     #[knuffel(child, unwrap(argument))]
-    pub light_angle: Option<FloatOrInt<0, 360>>,
+    pub angle: Option<FloatOrInt<0, 360>>,
+    #[knuffel(child, unwrap(argument))]
+    pub height: Option<FloatOrInt<0, 90>>,
+    #[knuffel(child, unwrap(argument))]
+    pub size: Option<FloatOrInt<0, 1>>,
 }
 
 impl MergeWith<GlassPart> for Glass {
@@ -944,12 +978,19 @@ impl MergeWith<GlassPart> for Glass {
             thickness,
             refractive_index,
             dispersion,
-            highlight,
             reflection,
-            sheen,
-            light_size,
-            light_angle
+            sheen
         );
+        // A later `glass` with lights replaces the lights; parsing refuses more than fit.
+        if !part.lights.is_empty() {
+            self.lights = [None; MAX_GLASS_LIGHTS];
+            for (slot, light) in self.lights.iter_mut().zip(&part.lights) {
+                let mut merged = GlassLight::default();
+                merged.on = !light.off;
+                merge!((merged, light), intensity, angle, height, size);
+                *slot = Some(merged);
+            }
+        }
     }
 }
 
@@ -964,7 +1005,7 @@ pub enum Material {
     Plain,
 }
 
-#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
 pub struct BlurPart {
     #[knuffel(child)]
     pub off: bool,
@@ -1065,7 +1106,6 @@ mod tests {
             "blur {
                 glass {
                     thickness 30
-                    light-angle 90
                 }
             }",
         )
@@ -1074,11 +1114,52 @@ mod tests {
             config.blur.glass,
             Glass {
                 thickness: 30.,
-                light_angle: 90.,
                 ..Glass::default()
             }
         );
         assert_eq!(config.blur.material, Material::Glass);
+    }
+
+    #[test]
+    fn glass_lights_replace_the_default_one_and_keep_their_own_defaults() {
+        let config = Config::parse_mem(
+            "blur {
+                glass {
+                    light {
+                        angle 90
+                    }
+                    light {
+                        off
+                        height 10
+                    }
+                }
+            }",
+        )
+        .unwrap();
+        let light = GlassLight::default();
+        assert_eq!(
+            config.blur.glass.lights,
+            [
+                Some(GlassLight {
+                    angle: 90.,
+                    ..light
+                }),
+                Some(GlassLight {
+                    on: false,
+                    height: 10.,
+                    ..light
+                }),
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn glass_refuses_more_lights_than_it_takes() {
+        let lights = "light {}\n".repeat(MAX_GLASS_LIGHTS + 1);
+        let text = format!("blur {{\n glass {{\n{lights}}}\n}}");
+        assert!(Config::parse_mem(&text).is_err());
     }
 
     #[test]

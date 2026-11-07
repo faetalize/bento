@@ -59,23 +59,24 @@ uniform float thickness;
 uniform float refractive_index;
 // How much more red bends than blue, as a fraction of the bend.
 uniform float dispersion;
-// How bright the light the bezel reflects is.
-uniform float highlight;
 // How much of its surroundings the bezel reflects where it's seen edge on.
 uniform float reflection;
 // How shiny the surface is, from rough 0 to polished 1.
 uniform float sheen;
-// How big the light looks, from a point 0 to a broad window 1.
-uniform float light_size;
-// Towards the light, in screen coordinates.
-uniform vec2 light_direction;
+
+// The lights that shine: towards each, over the screen in screen coordinates, with its intensity
+// in w, and how big each looks, from a point 0 to a broad window 1.
+uniform float light_count;
+uniform vec4 light0;
+uniform vec4 light1;
+uniform vec4 light2;
+uniform vec4 light3;
+uniform vec4 light_sizes;
 
 // Shapes closer than this melt into one piece.
 const float MELT = 20.0;
-// How high the light is over the screen, in radians.
-const float LIGHT_ELEVATION = 0.7;
-// How much the bezel darkens away from the light, and brightens towards it.
-const float SHADING = 0.35;
+// How much a light of intensity 1 darkens the bezel away from it and brightens it towards it.
+const float SHADING = 0.6;
 
 // The radius of the corner of a box nearest `q`, from the box's middle, fit to the box.
 float corner_radius(vec2 q, vec2 half_size, vec4 radii) {
@@ -181,6 +182,27 @@ float surface(vec2 p) {
     return d;
 }
 
+// A light's reflection on the surface: where the bezel tilts towards it, and weaker from the far
+// side, as light that went through the glass comes back off its inside. A rough surface and a
+// big light both spread it, broader and dimmer, the same light spread over more of the bezel; a
+// polished surface and a small light keep it tight and bright.
+float specular(vec3 surface, vec3 light, float size) {
+    float roughness = 1.0 - sheen;
+    float spread = 0.06 + 0.6 * sqrt(roughness * roughness + size * size);
+    float shininess = 2.0 / (spread * spread) - 2.0;
+    // Bright as it is at a shininess of 60, the tight reflection lights are tuned for.
+    float brightness = (shininess + 2.0) / 62.0;
+    vec3 view = vec3(0.0, 0.0, 1.0);
+    vec3 halfway = normalize(light + view);
+    vec3 back_halfway = normalize(vec3(-light.xy, light.z) + view);
+    float reflected = pow(max(dot(surface, halfway), 0.0), shininess)
+        + 0.5 * pow(max(dot(surface, back_halfway), 0.0), shininess);
+    // A broad reflection reaches the flat middle too; that even glow is left out, so the light
+    // stays on the bezel.
+    float on_flat = pow(halfway.z, shininess) + 0.5 * pow(back_halfway.z, shininess);
+    return max(reflected - on_flat, 0.0) * brightness;
+}
+
 // Sin-less white noise by David Hoskins (MIT License).
 // https://www.shadertoy.com/view/4djSRW
 float hash12(vec2 p) {
@@ -256,12 +278,19 @@ void main() {
     behind.rgb = mix(vec3(dot(behind.rgb, luma)), behind.rgb, saturation);
     behind.rgb += (hash12(gl_FragCoord.xy) - 0.5) * noise * behind.a;
 
-    // The light, over the screen in its direction.
-    vec3 light = vec3(light_direction * cos(LIGHT_ELEVATION), sin(LIGHT_ELEVATION));
-
-    // The bezel's side facing the light is lit, the far side in its shade.
-    float shade = clamp(dot(surface, light) - light.z, -1.0, 1.0);
-    behind.rgb *= 1.0 + SHADING * shade;
+    // Each light lights the bezel's side facing it, and shades the far side, against how it
+    // lights the flat middle.
+    float shade = 0.0;
+    float shine = 0.0;
+    for (int i = 0; i < 4; i++) {
+        if (float(i) >= light_count) break;
+        vec4 light = i == 0 ? light0 : i == 1 ? light1 : i == 2 ? light2 : light3;
+        float size = i == 0 ? light_sizes.x : i == 1 ? light_sizes.y
+            : i == 2 ? light_sizes.z : light_sizes.w;
+        shade += light.w * clamp(dot(surface, light.xyz) - light.z, -1.0, 1.0);
+        shine += light.w * specular(surface, light.xyz, size);
+    }
+    behind.rgb *= max(1.0 + SHADING * shade, 0.0);
 
     // Seen edge on, glass reflects more and lets less through (Schlick's Fresnel).
     float f0 = (refractive_index - 1.0) / (refractive_index + 1.0);
@@ -269,28 +298,9 @@ void main() {
     float fresnel = f0 + (1.0 - f0) * pow(1.0 - surface.z, 5.0);
     behind.rgb = mix(behind.rgb, vec3(behind.a), fresnel * reflection);
 
-    // The light's reflection where the bezel tilts towards it, and a weaker one from the far
-    // side, as light that went through the glass comes back off its inside. A rough surface and
-    // a big light both spread it, broader and dimmer, the same light spread over more of the
-    // bezel; a polished surface and a small light keep it tight and bright.
-    float roughness = 1.0 - sheen;
-    float spread = 0.06 + 0.6 * sqrt(roughness * roughness + light_size * light_size);
-    float shininess = 2.0 / (spread * spread) - 2.0;
-    // Bright as it is at a shininess of 60, the tight reflection the light is tuned for.
-    float brightness = (shininess + 2.0) / 62.0;
-    vec3 view = vec3(0.0, 0.0, 1.0);
-    vec3 halfway = normalize(light + view);
-    vec3 back = vec3(-light.xy, light.z);
-    vec3 back_halfway = normalize(back + view);
-    float specular = pow(max(dot(surface, halfway), 0.0), shininess)
-        + 0.5 * pow(max(dot(surface, back_halfway), 0.0), shininess);
-    // A broad reflection reaches the flat middle too; that even glow is left out, so the light
-    // stays on the bezel.
-    float flat_specular = pow(halfway.z, shininess) + 0.5 * pow(back_halfway.z, shininess);
-    specular = clamp(max(specular - flat_specular, 0.0) * brightness * highlight, 0.0, 1.0);
-
-    // The reflection goes over what's behind, both premultiplied.
-    vec4 result = vec4(vec3(specular), specular) + behind * (1.0 - specular);
+    // The lights' reflections go over what's behind, both premultiplied.
+    shine = clamp(shine, 0.0, 1.0);
+    vec4 result = vec4(vec3(shine), shine) + behind * (1.0 - shine);
     result = result * coverage * alpha;
 
 #if defined(DEBUG_FLAGS)

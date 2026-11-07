@@ -15,7 +15,9 @@ use crate::protocols::bento_shell::{glass_shapes, GlassShape, MAX_GLASS_SHAPES};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
-use crate::render_helpers::shaders::{mat3_uniform, GLASS_RADII_UNIFORMS, GLASS_SHAPE_UNIFORMS};
+use crate::render_helpers::shaders::{
+    mat3_uniform, GLASS_LIGHT_UNIFORMS, GLASS_RADII_UNIFORMS, GLASS_SHAPE_UNIFORMS,
+};
 
 /// Shapes of glass, in the coordinates of the geometry the shader clips to.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -59,8 +61,7 @@ pub fn uniforms(
     bg_color: [f32; 4],
 ) -> Vec<Uniform<'static>> {
     let glass = shapes.glass;
-    let angle = glass.light_angle.to_radians();
-    let light_direction = [angle.sin() as f32, -angle.cos() as f32];
+    let (lights, sizes) = light_uniforms(&glass);
     let mut uniforms = vec![
         Uniform::new("niri_scale", scale),
         Uniform::new("geo_size", <[f32; 2]>::from(geo_size)),
@@ -74,12 +75,17 @@ pub fn uniforms(
         Uniform::new("thickness", glass.thickness as f32),
         Uniform::new("refractive_index", glass.refractive_index as f32),
         Uniform::new("dispersion", glass.dispersion as f32),
-        Uniform::new("highlight", glass.highlight as f32),
         Uniform::new("reflection", glass.reflection as f32),
         Uniform::new("sheen", glass.sheen as f32),
-        Uniform::new("light_size", glass.light_size as f32),
-        Uniform::new("light_direction", light_direction),
+        Uniform::new("light_count", lights.len() as f32),
+        Uniform::new("light_sizes", sizes),
     ];
+    uniforms.extend(
+        GLASS_LIGHT_UNIFORMS
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Uniform::new(*name, lights.get(i).copied().unwrap_or_default())),
+    );
     uniforms.extend(
         GLASS_SHAPE_UNIFORMS
             .iter()
@@ -88,6 +94,29 @@ pub fn uniforms(
             .map(|(name, values)| Uniform::new(*name, values)),
     );
     uniforms
+}
+
+/// The lights that shine, each towards it over the screen with its intensity, and their sizes.
+fn light_uniforms(glass: &niri_config::Glass) -> (Vec<[f32; 4]>, [f32; 4]) {
+    let mut sizes = [0.; 4];
+    let lights = glass
+        .lights
+        .iter()
+        .flatten()
+        .filter(|light| light.on && light.intensity > 0.)
+        .enumerate()
+        .map(|(i, light)| {
+            sizes[i] = light.size as f32;
+            let (angle, height) = (light.angle.to_radians(), light.height.to_radians());
+            [
+                (angle.sin() * height.cos()) as f32,
+                (-angle.cos() * height.cos()) as f32,
+                height.sin() as f32,
+                light.intensity as f32,
+            ]
+        })
+        .collect();
+    (lights, sizes)
 }
 
 /// How far past its shapes the glass reaches where nearby shapes melt together.

@@ -15,6 +15,10 @@ pub const GLASS_SHAPE_UNIFORMS: [&str; 8] = [
     "shape0", "shape1", "shape2", "shape3", "shape4", "shape5", "shape6", "shape7",
 ];
 
+/// The glass shader's light uniforms, one per light it takes.
+pub const GLASS_LIGHT_UNIFORMS: [&str; niri_config::MAX_GLASS_LIGHTS] =
+    ["light0", "light1", "light2", "light3"];
+
 /// The glass shader's corner radii uniforms, one per shape.
 pub const GLASS_RADII_UNIFORMS: [&str; 8] = [
     "radii0", "radii1", "radii2", "radii3", "radii4", "radii5", "radii6", "radii7",
@@ -150,16 +154,16 @@ impl Shaders {
             UniformName::new("thickness", UniformType::_1f),
             UniformName::new("refractive_index", UniformType::_1f),
             UniformName::new("dispersion", UniformType::_1f),
-            UniformName::new("highlight", UniformType::_1f),
             UniformName::new("reflection", UniformType::_1f),
             UniformName::new("sheen", UniformType::_1f),
-            UniformName::new("light_size", UniformType::_1f),
-            UniformName::new("light_direction", UniformType::_2f),
+            UniformName::new("light_count", UniformType::_1f),
+            UniformName::new("light_sizes", UniformType::_4f),
         ];
         glass_uniforms.extend(
             GLASS_SHAPE_UNIFORMS
                 .iter()
                 .chain(&GLASS_RADII_UNIFORMS)
+                .chain(&GLASS_LIGHT_UNIFORMS)
                 .map(|name| UniformName::new(*name, UniformType::_4f)),
         );
         let glass = renderer

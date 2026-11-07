@@ -240,7 +240,18 @@ where
                 "hotkey-overlay" => m_merge!(hotkey_overlay),
                 "config-notification" => m_merge!(config_notification),
                 "animations" => m_merge!(animations),
-                "blur" => m_merge!(blur),
+                "blur" => {
+                    let part = BlurPart::decode_node(node, ctx)?;
+                    let lights = part.glass.as_ref().map_or(0, |glass| glass.lights.len());
+                    if lights > MAX_GLASS_LIGHTS {
+                        ctx.emit_error(DecodeError::unexpected(
+                            &node.node_name,
+                            "node",
+                            format!("glass takes at most {MAX_GLASS_LIGHTS} lights, not {lights}"),
+                        ));
+                    }
+                    config.borrow_mut().blur.merge_with(&part);
+                }
                 "gestures" => m_merge!(gestures),
                 "overview" => m_merge!(overview),
                 "xwayland-satellite" => m_merge!(xwayland_satellite),
@@ -2216,11 +2227,22 @@ mod tests {
                     thickness: 40.0,
                     refractive_index: 1.5,
                     dispersion: 0.14,
-                    highlight: 0.6,
                     reflection: 0.5,
                     sheen: 0.6,
-                    light_size: 0.35,
-                    light_angle: 315.0,
+                    lights: [
+                        Some(
+                            GlassLight {
+                                on: true,
+                                intensity: 0.6,
+                                angle: 315.0,
+                                height: 40.0,
+                                size: 0.35,
+                            },
+                        ),
+                        None,
+                        None,
+                        None,
+                    ],
                 },
             },
             gestures: Gestures {
