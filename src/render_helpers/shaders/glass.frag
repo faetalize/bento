@@ -77,28 +77,64 @@ const float SHADING = 0.35;
 // How much of the surroundings the bezel reflects where it's seen edge on.
 const float REFLECTION = 0.5;
 
-// Signed distance to a rounded rectangle, negative inside.
-float rounded_box(vec2 p, vec4 rect, vec4 radii) {
-    vec2 half_size = rect.zw * 0.5;
-    vec2 q = p - rect.xy - half_size;
+// The radius of the corner of a box nearest `q`, from the box's middle, fit to the box.
+float corner_radius(vec2 q, vec2 half_size, vec4 radii) {
     float radius = q.x < 0.0 ? (q.y < 0.0 ? radii.x : radii.w) : (q.y < 0.0 ? radii.y : radii.z);
-    radius = min(radius, min(half_size.x, half_size.y));
+    return min(radius, min(half_size.x, half_size.y));
+}
+
+// Signed distance to a box with rounded corners, from its middle, negative inside.
+float box_distance(vec2 q, vec2 half_size, float radius) {
     vec2 d = abs(q) - half_size + radius;
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
 }
 
-// A rounded rectangle's outward normal, exactly.
-vec2 rounded_box_normal(vec2 p, vec4 rect, vec4 radii) {
-    vec2 half_size = rect.zw * 0.5;
-    vec2 q = p - rect.xy - half_size;
-    float radius = q.x < 0.0 ? (q.y < 0.0 ? radii.x : radii.w) : (q.y < 0.0 ? radii.y : radii.z);
-    radius = min(radius, min(half_size.x, half_size.y));
+// The slope of `box_distance`: its outward normal, exactly.
+vec2 box_normal(vec2 q, vec2 half_size, float radius) {
     vec2 d = abs(q) - half_size + radius;
     vec2 side = vec2(q.x < 0.0 ? -1.0 : 1.0, q.y < 0.0 ? -1.0 : 1.0);
     if (d.x > 0.0 && d.y > 0.0) {
         return side * normalize(d);
     }
     return d.x > d.y ? vec2(side.x, 0.0) : vec2(0.0, side.y);
+}
+
+// Signed distance to a rounded rectangle, negative inside.
+float rounded_box(vec2 p, vec4 rect, vec4 radii) {
+    vec2 half_size = rect.zw * 0.5;
+    vec2 q = p - rect.xy - half_size;
+    return box_distance(q, half_size, corner_radius(q, half_size, radii));
+}
+
+// How deep into a rounded rectangle the bezel's surface takes a point to be, as a signed
+// distance like `rounded_box`'s, with its slope in `slope`.
+//
+// Deeper than a corner's radius, the distance to the nearest edge turns a sharp corner along the
+// diagonal, which would fold the bezel there like a mitred frame. So near the edge it's the
+// outline's own distance, and from there on it eases into that of the outline with its corners
+// rounded at least as wide as the bezel, which rolls around the corner as one curve. The two
+// agree at the edge, and the easing is smooth, so there's no seam.
+float surface_box(vec2 p, vec4 rect, vec4 radii, out vec2 slope) {
+    vec2 half_size = rect.zw * 0.5;
+    vec2 q = p - rect.xy - half_size;
+    float radius = corner_radius(q, half_size, radii);
+    float rounder = min(max(radius, bezel), min(half_size.x, half_size.y));
+
+    float outline = box_distance(q, half_size, radius);
+    vec2 outline_slope = box_normal(q, half_size, radius);
+    float rounded = box_distance(q, half_size, rounder);
+    vec2 rounded_slope = box_normal(q, half_size, rounder);
+
+    // From the outline at the edge to the rounded outline a corner's radius in, where the
+    // outline's own distance starts to fold.
+    float reach = max(radius, 1.0);
+    float x = clamp(-outline / reach, 0.0, 1.0);
+    float ease = x * x * (3.0 - 2.0 * x);
+    float ease_slope = 6.0 * x * (1.0 - x) / reach;
+
+    slope = mix(outline_slope, rounded_slope, ease)
+        - (rounded - outline) * ease_slope * outline_slope;
+    return mix(outline, rounded, ease);
 }
 
 // Polynomial smooth minimum: like min(), with a rounded seam where a and b are within k.
@@ -120,6 +156,20 @@ float glass(vec2 p) {
     return d;
 }
 
+// How deep the bezel's surface takes a point to be, as `glass` does the outline.
+float surface(vec2 p) {
+    vec2 slope;
+    float d = surface_box(p, shape0, radii0, slope);
+    if (shape_count > 1.5) d = smooth_min(d, surface_box(p, shape1, radii1, slope), MELT);
+    if (shape_count > 2.5) d = smooth_min(d, surface_box(p, shape2, radii2, slope), MELT);
+    if (shape_count > 3.5) d = smooth_min(d, surface_box(p, shape3, radii3, slope), MELT);
+    if (shape_count > 4.5) d = smooth_min(d, surface_box(p, shape4, radii4, slope), MELT);
+    if (shape_count > 5.5) d = smooth_min(d, surface_box(p, shape5, radii5, slope), MELT);
+    if (shape_count > 6.5) d = smooth_min(d, surface_box(p, shape6, radii6, slope), MELT);
+    if (shape_count > 7.5) d = smooth_min(d, surface_box(p, shape7, radii7, slope), MELT);
+    return d;
+}
+
 // Sin-less white noise by David Hoskins (MIT License).
 // https://www.shadertoy.com/view/4djSRW
 float hash12(vec2 p) {
@@ -138,24 +188,26 @@ void main() {
         return;
     }
 
-    // The edge's outward normal: exact for one shape, from the distance's slope where shapes
-    // melt together.
-    vec2 normal;
+    // How deep the bezel's surface is, and which way it faces: exact for one shape, from the
+    // distance's slope where shapes melt together.
+    float depth;
+    vec2 grad;
     if (shape_count < 1.5) {
-        normal = rounded_box_normal(p, shape0, radii0);
+        depth = surface_box(p, shape0, radii0, grad);
     } else {
-        vec2 grad = vec2(
-            glass(p + vec2(0.5, 0.0)) - glass(p - vec2(0.5, 0.0)),
-            glass(p + vec2(0.0, 0.5)) - glass(p - vec2(0.0, 0.5))
+        depth = surface(p);
+        grad = vec2(
+            surface(p + vec2(0.5, 0.0)) - surface(p - vec2(0.5, 0.0)),
+            surface(p + vec2(0.0, 0.5)) - surface(p - vec2(0.0, 0.5))
         );
-        normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
     }
+    vec2 normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
 
     // 1 at the edge, 0 where the bezel meets the flat middle. The bezel's surface is a squircle,
     // rising from nothing at the edge to the full thickness: unlike a circle, its curvature fades
     // to nothing at the flat middle, so the magnification eases out instead of stopping at a
     // crease.
-    float rim = clamp(1.0 + d / max(bezel, 1e-3), 0.0, 1.0);
+    float rim = clamp(1.0 + depth / max(bezel, 1e-3), 0.0, 1.0);
     float rise4 = max(1.0 - rim * rim * rim * rim, 0.0);
     float height = thickness * pow(rise4, 0.25);
     float slope = thickness / max(bezel, 1e-3) * rim * rim * rim / max(pow(rise4, 0.75), 1e-4);
