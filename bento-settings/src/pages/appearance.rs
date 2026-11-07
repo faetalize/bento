@@ -48,18 +48,18 @@ pub fn category() -> Category {
                     &["clear", "regular", "hazy", "style"],
                 )
                 .search_item(
-                    "blur.amount",
-                    "Blur Amount",
-                    &["radius", "strength", "transparency", "translucency"],
+                    "blur.roughness",
+                    "Blur Roughness",
+                    &["amount", "radius", "frost", "transparency", "translucency"],
                 )
                 .search_item("blur.offset", "Blur Strength", &["radius", "offset"])
                 .search_item("blur.passes", "Blur Passes", &["quality"])
                 .search_item("blur.noise", "Blur Noise", &["grain", "dither"])
                 .search_item("blur.saturation", "Blur Saturation", &["vibrancy", "color"])
                 .search_item(
-                    "blur.glass.clarity",
-                    "Glass Clarity",
-                    &["sharp", "clear", "haze"],
+                    "blur.glass.sheen",
+                    "Glass Sheen",
+                    &["gloss", "polish", "reflection"],
                 )
                 .search_item("blur.glass.bezel", "Glass Bezel", &["edge", "curve"])
                 .search_item(
@@ -81,6 +81,11 @@ pub fn category() -> Category {
                     "blur.glass.highlight",
                     "Glass Highlight",
                     &["glare", "edge light", "shine"],
+                )
+                .search_item(
+                    "blur.glass.light-size",
+                    "Glass Light Size",
+                    &["light", "softness", "highlight"],
                 )
                 .search_item(
                     "blur.glass.light-angle",

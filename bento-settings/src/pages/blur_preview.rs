@@ -573,10 +573,7 @@ impl Preview {
         }
         let pane = self.pane();
         let (program, uniforms) = pane_uniforms(gl, &look, pane, (lw, lh), scale);
-        // Glass also reads what's behind sharp, at the same place as the blurred copy.
-        gl.bind_sharp(background);
         gl.draw(program, Some(behind), -1., &uniforms);
-        gl.bind_sharp(None);
         unsafe { gl.gl.disable(glow::BLEND) };
         Ok(())
     }
@@ -621,8 +618,6 @@ fn pane_uniforms(
     let angle = glass.light_angle.to_radians();
     uniforms.extend([
         ("geo_to_input", Uniform::Mat3(geo_to_input)),
-        ("sharp", Uniform::Int(SHARP_UNIT)),
-        ("clarity", Uniform::Float(glass.clarity as f32)),
         ("shape_count", Uniform::Float(1.)),
         ("shape0", Uniform::Vec4([0., 0., pw, ph])),
         ("radii0", Uniform::Vec4(<[f32; 4]>::from(radius))),
@@ -634,6 +629,8 @@ fn pane_uniforms(
         ),
         ("dispersion", Uniform::Float(glass.dispersion as f32)),
         ("highlight", Uniform::Float(glass.highlight as f32)),
+        ("sheen", Uniform::Float(glass.sheen as f32)),
+        ("light_size", Uniform::Float(glass.light_size as f32)),
         (
             "light_direction",
             Uniform::Vec2([angle.sin() as f32, -angle.cos() as f32]),
@@ -713,13 +710,8 @@ fn decode(path: &Path, screen: (i32, i32), region: (i32, i32)) -> Option<Picture
     })
 }
 
-/// The texture unit glass reads the sharp copy of what's behind from, like bento's
-/// `GLASS_SHARP_UNIT`.
-const SHARP_UNIT: i32 = 1;
-
 #[derive(Debug, Clone, Copy)]
 enum Uniform {
-    Int(i32),
     Float(f32),
     Vec2([f32; 2]),
     Vec4([f32; 4]),
@@ -960,15 +952,6 @@ impl Gl {
         }
     }
 
-    /// Binds `texture` where glass reads the sharp copy of what's behind, or unbinds it.
-    fn bind_sharp(&self, texture: Option<glow::Texture>) {
-        unsafe {
-            self.gl.active_texture(glow::TEXTURE0 + SHARP_UNIT as u32);
-            self.gl.bind_texture(glow::TEXTURE_2D, texture);
-            self.gl.active_texture(glow::TEXTURE0);
-        }
-    }
-
     /// Draws `texture` through `program` over the whole target. `flip` is -1 on screen.
     fn draw(
         &self,
@@ -992,7 +975,6 @@ impl Gl {
                 let location = location(name);
                 let location = location.as_ref();
                 match *value {
-                    Uniform::Int(x) => gl.uniform_1_i32(location, x),
                     Uniform::Float(x) => gl.uniform_1_f32(location, x),
                     Uniform::Vec2([x, y]) => gl.uniform_2_f32(location, x, y),
                     Uniform::Vec4([x, y, z, w]) => gl.uniform_4_f32(location, x, y, z, w),

@@ -111,3 +111,9 @@ flowbox.wallpapers > flowboxchild.current {
 .blur-light:hover {
   background-color: alpha(black, 0.7);
 }
+
+/* A slider whose settings don't match any of its positions: only its track shows. */
+scale.custom slider,
+scale.custom highlight {
+  opacity: 0;
+}

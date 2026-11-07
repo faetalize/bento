@@ -882,12 +882,15 @@ pub struct Glass {
     pub refractive_index: f64,
     /// How much more red bends than blue, as a fraction of the bend.
     pub dispersion: f64,
-    /// How bright the lit edge is.
+    /// How bright the light the bezel reflects is.
     pub highlight: f64,
+    /// How much the surface spreads the light it reflects, from 0 for polished to 1 for rough:
+    /// the reflection's side of the roughness that blurs what's behind.
+    pub sheen: f64,
+    /// How big the light looks from the glass, from 0 for a point to 1 for a broad window.
+    pub light_size: f64,
     /// Where the light comes from, in degrees clockwise from the top.
     pub light_angle: f64,
-    /// How much of what's behind shows sharp rather than blurred, from 0 to 1.
-    pub clarity: f64,
 }
 
 impl Default for Glass {
@@ -898,8 +901,9 @@ impl Default for Glass {
             refractive_index: 1.5,
             dispersion: 0.14,
             highlight: 0.6,
+            sheen: 0.5,
+            light_size: 0.4,
             light_angle: 315.,
-            clarity: 0.5,
         }
     }
 }
@@ -917,9 +921,11 @@ pub struct GlassPart {
     #[knuffel(child, unwrap(argument))]
     pub highlight: Option<FloatOrInt<0, 10>>,
     #[knuffel(child, unwrap(argument))]
-    pub light_angle: Option<FloatOrInt<0, 360>>,
+    pub sheen: Option<FloatOrInt<0, 1>>,
     #[knuffel(child, unwrap(argument))]
-    pub clarity: Option<FloatOrInt<0, 1>>,
+    pub light_size: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub light_angle: Option<FloatOrInt<0, 360>>,
 }
 
 impl MergeWith<GlassPart> for Glass {
@@ -931,8 +937,9 @@ impl MergeWith<GlassPart> for Glass {
             refractive_index,
             dispersion,
             highlight,
-            light_angle,
-            clarity
+            sheen,
+            light_size,
+            light_angle
         );
     }
 }

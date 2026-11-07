@@ -445,16 +445,7 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             .then(|| self.compute_uniforms(crop, frame.transformation()));
         let uniforms = uniforms.as_ref().map_or(&[][..], |x| &x[..]);
 
-        // Glass mixes in the sharp copy, which covers the same area as the blurred one.
-        let sharp = match &self.glass {
-            Some(_) => inner.framebuffer.clone(),
-            None => None,
-        };
-        if let Some(sharp) = &sharp {
-            glass::bind_sharp(frame, sharp)?;
-        }
-
-        let result = frame.render_texture_from_to(
+        frame.render_texture_from_to(
             texture,
             Rectangle::from_size(texture.size().to_f64()),
             clamped_dst,
@@ -465,12 +456,7 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             1.,
             program.as_ref(),
             uniforms,
-        );
-
-        if sharp.is_some() {
-            glass::unbind_sharp(frame)?;
-        }
-        result
+        )
     }
 }
 

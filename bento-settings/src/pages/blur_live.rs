@@ -40,8 +40,9 @@ impl Unsaved {
                 "blur.glass.refractive-index" => glass.refractive_index = x,
                 "blur.glass.dispersion" => glass.dispersion = x,
                 "blur.glass.highlight" => glass.highlight = x,
+                "blur.glass.sheen" => glass.sheen = x,
+                "blur.glass.light-size" => glass.light_size = x,
                 "blur.glass.light-angle" => glass.light_angle = x,
-                "blur.glass.clarity" => glass.clarity = x,
                 _ => (),
             },
         }
@@ -61,8 +62,9 @@ pub fn value(blur: &Blur, path: &str) -> Option<f64> {
         "blur.glass.refractive-index" => glass.refractive_index,
         "blur.glass.dispersion" => glass.dispersion,
         "blur.glass.highlight" => glass.highlight,
+        "blur.glass.sheen" => glass.sheen,
+        "blur.glass.light-size" => glass.light_size,
         "blur.glass.light-angle" => glass.light_angle,
-        "blur.glass.clarity" => glass.clarity,
         _ => return None,
     })
 }
@@ -165,15 +167,15 @@ mod tests {
             fs::write(&config_path, "").unwrap();
             let live = Live::new(&Store::load_from(config_path));
 
-            // Like the Preset slider, one edit that sets clarity among others.
+            // Like the Preset slider, one edit that sets sheen among others.
             live.show_edit(
                 "blur.glass.preset",
                 &[
-                    Unsaved::Setting("blur.glass.clarity", 0.8),
+                    Unsaved::Setting("blur.glass.sheen", 0.8),
                     Unsaved::Setting("blur.noise", 0.01),
                 ],
             );
-            assert_eq!(live.shown("blur.glass.clarity"), Some(0.8));
+            assert_eq!(live.shown("blur.glass.sheen"), Some(0.8));
             assert_eq!(live.shown("blur.noise"), Some(0.01));
 
             fs::remove_dir_all(&dir).unwrap();

@@ -2217,8 +2217,9 @@ mod tests {
                     refractive_index: 1.5,
                     dispersion: 0.14,
                     highlight: 0.6,
+                    sheen: 0.5,
+                    light_size: 0.4,
                     light_angle: 315.0,
-                    clarity: 0.5,
                 },
             },
             gestures: Gestures {

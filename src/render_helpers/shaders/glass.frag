@@ -22,11 +22,6 @@ uniform float tint;
 
 uniform float niri_scale;
 
-// What's behind, as `tex` has it blurred, and sharp.
-uniform sampler2D sharp;
-// How much of the sharp copy shows through, from 0 to 1.
-uniform float clarity;
-
 // The element's size, and the mappings between texture coordinates and the element's [0, 1].
 uniform vec2 geo_size;
 uniform mat3 input_to_geo;
@@ -64,8 +59,12 @@ uniform float thickness;
 uniform float refractive_index;
 // How much more red bends than blue, as a fraction of the bend.
 uniform float dispersion;
-// How bright the light the bezel catches is.
+// How bright the light the bezel reflects is.
 uniform float highlight;
+// How much the surface spreads the light it reflects, from polished 0 to rough 1.
+uniform float sheen;
+// How big the light looks, from a point 0 to a broad window 1.
+uniform float light_size;
 // Towards the light, in screen coordinates.
 uniform vec2 light_direction;
 
@@ -73,8 +72,6 @@ uniform vec2 light_direction;
 const float MELT = 20.0;
 // How high the light is over the screen, in radians.
 const float LIGHT_ELEVATION = 0.7;
-// How tight the light's reflection on the bezel is.
-const float SHININESS = 60.0;
 // How much the bezel darkens away from the light, and brightens towards it.
 const float SHADING = 0.35;
 // How much of the surroundings the bezel reflects where it's seen edge on.
@@ -121,11 +118,6 @@ float glass(vec2 p) {
     if (shape_count > 6.5) d = smooth_min(d, rounded_box(p, shape6, radii6), MELT);
     if (shape_count > 7.5) d = smooth_min(d, rounded_box(p, shape7, radii7), MELT);
     return d;
-}
-
-// What's behind at `at`, as clear as the glass is.
-vec4 behind_at(vec2 at) {
-    return mix(texture2D(tex, at), texture2D(sharp, at), clarity);
 }
 
 // Sin-less white noise by David Hoskins (MIT License).
@@ -178,9 +170,9 @@ void main() {
 
     // What's behind, seen through the bezel, red bent more than blue.
     vec2 shift = (geo_to_input * vec3(-normal * bend / geo_size, 0.0)).xy;
-    vec4 red = behind_at(v_coords + shift * (1.0 + dispersion));
-    vec4 green = behind_at(v_coords + shift);
-    vec4 blue = behind_at(v_coords + shift * (1.0 - dispersion));
+    vec4 red = texture2D(tex, v_coords + shift * (1.0 + dispersion));
+    vec4 green = texture2D(tex, v_coords + shift);
+    vec4 blue = texture2D(tex, v_coords + shift * (1.0 - dispersion));
     vec4 behind = vec4(red.r, green.g, blue.b, green.a);
     behind = behind + bg_color * (1.0 - behind.a);
 
@@ -202,14 +194,23 @@ void main() {
     behind.rgb = mix(behind.rgb, vec3(behind.a), fresnel * REFLECTION);
 
     // The light's reflection where the bezel tilts towards it, and a weaker one from the far
-    // side, as light that went through the glass comes back off its inside.
+    // side, as light that went through the glass comes back off its inside. A rough surface and
+    // a big light both spread it, broader and dimmer, the same light spread over more of the
+    // bezel; a polished surface and a small light keep it tight and bright.
+    float spread = 0.06 + 0.6 * sqrt(sheen * sheen + light_size * light_size);
+    float shininess = 2.0 / (spread * spread) - 2.0;
+    // Bright as it is at a shininess of 60, the tight reflection the light is tuned for.
+    float brightness = (shininess + 2.0) / 62.0;
     vec3 view = vec3(0.0, 0.0, 1.0);
     vec3 halfway = normalize(light + view);
     vec3 back = vec3(-light.xy, light.z);
     vec3 back_halfway = normalize(back + view);
-    float specular = pow(max(dot(surface, halfway), 0.0), SHININESS)
-        + 0.5 * pow(max(dot(surface, back_halfway), 0.0), SHININESS);
-    specular = clamp(specular * highlight, 0.0, 1.0);
+    float specular = pow(max(dot(surface, halfway), 0.0), shininess)
+        + 0.5 * pow(max(dot(surface, back_halfway), 0.0), shininess);
+    // A broad reflection reaches the flat middle too; that even glow is left out, so the light
+    // stays on the bezel.
+    float flat_specular = pow(halfway.z, shininess) + 0.5 * pow(back_halfway.z, shininess);
+    specular = clamp(max(specular - flat_specular, 0.0) * brightness * highlight, 0.0, 1.0);
 
     // The reflection goes over what's behind, both premultiplied.
     vec4 result = vec4(vec3(specular), specular) + behind * (1.0 - specular);

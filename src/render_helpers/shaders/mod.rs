@@ -20,9 +20,6 @@ pub const GLASS_RADII_UNIFORMS: [&str; 8] = [
     "radii0", "radii1", "radii2", "radii3", "radii4", "radii5", "radii6", "radii7",
 ];
 
-/// The texture unit the glass shader reads the sharp copy of what's behind from.
-pub const GLASS_SHARP_UNIT: u32 = 1;
-
 pub struct Shaders {
     pub border: Option<ShaderProgram>,
     pub shadow: Option<ShaderProgram>,
@@ -146,8 +143,6 @@ impl Shaders {
             UniformName::new("input_to_geo", UniformType::Matrix3x3),
             UniformName::new("geo_to_input", UniformType::Matrix3x3),
             UniformName::new("shape_count", UniformType::_1f),
-            UniformName::new("sharp", UniformType::_1i),
-            UniformName::new("clarity", UniformType::_1f),
             UniformName::new("noise", UniformType::_1f),
             UniformName::new("saturation", UniformType::_1f),
             UniformName::new("bg_color", UniformType::_4f),
@@ -156,6 +151,8 @@ impl Shaders {
             UniformName::new("refractive_index", UniformType::_1f),
             UniformName::new("dispersion", UniformType::_1f),
             UniformName::new("highlight", UniformType::_1f),
+            UniformName::new("sheen", UniformType::_1f),
+            UniformName::new("light_size", UniformType::_1f),
             UniformName::new("light_direction", UniformType::_2f),
         ];
         glass_uniforms.extend(

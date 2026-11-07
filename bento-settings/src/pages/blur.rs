@@ -1,5 +1,10 @@
 //! Blur: the material bento draws behind windows and panels that ask for it, glass or frosted,
 //! with a preview of it over the wallpaper.
+//!
+//! Two sliders set several settings at once: Roughness sets how far the blur reaches (passes and
+//! strength) and how much glass spreads the light it reflects (sheen), and Preset sets a whole
+//! look. Each reads Custom, without its knob, while the settings it sets don't match any of its
+//! positions, as after changing one of them under Advanced.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -14,9 +19,9 @@ use crate::model::{BoolStyle, Control, Input, Setting};
 use crate::page::{setting_row_watched, PageContext};
 
 const MATERIAL_KEY: &str = "blur.material";
-/// The store's key for Blur Amount's edits, which set passes and offset together.
-const AMOUNT_KEY: &str = "blur.amount";
-/// The store's key for the Preset slider's edits, which set what makes glass clear or hazy.
+/// The store's key for Roughness's edits, which set passes, offset and sheen together.
+const ROUGHNESS_KEY: &str = "blur.roughness";
+/// The store's key for the Preset slider's edits, which set a whole look for glass.
 const PRESET_KEY: &str = "blur.glass.preset";
 const MATERIAL_PATH: &[&str] = &["blur", "material"];
 
@@ -35,7 +40,14 @@ static SWITCH: LazyLock<Setting> = LazyLock::new(|| {
         .keywords(&["transparency", "translucency", "background effect"])
 });
 
-/// Passes and Strength, which Blur Amount sets together.
+static PASSES: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Passes", "blur.passes", |c| f64::from(c.blur.passes))
+        .range(1., 8., 1.)
+        .slider()
+        .format(|x| format!("{x:.0}"))
+        .keywords(&["quality", "iterations"])
+});
+
 static STRENGTH: LazyLock<Setting> = LazyLock::new(|| {
     Setting::number("Strength", "blur.offset", |c| c.blur.offset)
         .range(0., 10., 0.01)
@@ -45,39 +57,42 @@ static STRENGTH: LazyLock<Setting> = LazyLock::new(|| {
         .keywords(&["radius", "offset"])
 });
 
-static PASSES: LazyLock<Setting> = LazyLock::new(|| {
-    Setting::number("Passes", "blur.passes", |c| f64::from(c.blur.passes))
-        .range(1., 8., 1.)
+static SHEEN: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Sheen", "blur.glass.sheen", |c| c.blur.glass.sheen)
+        .range(0., 1., 0.01)
+        .digits(2)
         .slider()
-        .format(|x| format!("{x:.0}"))
-        .keywords(&["quality", "iterations"])
+        .format(|x| format!("{:.0} %", x * 100.))
+        .keywords(&["gloss", "polish", "reflection"])
 });
 
 static NOISE: LazyLock<Setting> = LazyLock::new(|| {
     Setting::number("Noise", "blur.noise", |c| c.blur.noise)
-        .range(0., 0.2, 0.01)
-        .digits(2)
+        .range(0., 0.2, 0.005)
+        .digits(3)
         .slider()
-        .format(|x| format!("{x:.2}"))
+        .format(|x| format!("{x:.3}"))
         .keywords(&["grain", "dither"])
 });
 
 static SATURATION: LazyLock<Setting> = LazyLock::new(|| {
     Setting::number("Saturation", "blur.saturation", |c| c.blur.saturation)
-        .range(0., 3., 0.05)
+        .range(0., 3., 0.01)
         .digits(2)
         .slider()
         .format(|x| format!("{:.0} %", x * 100.))
         .keywords(&["vibrancy", "color"])
 });
 
-static CLARITY: LazyLock<Setting> = LazyLock::new(|| {
-    Setting::number("Clarity", "blur.glass.clarity", |c| c.blur.glass.clarity)
-        .range(0., 1., 0.01)
-        .digits(2)
-        .slider()
-        .format(|x| format!("{:.0} %", x * 100.))
-        .keywords(&["sharp", "clear", "haze"])
+static LIGHT_SIZE: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Light Size", "blur.glass.light-size", |c| {
+        c.blur.glass.light_size
+    })
+    .range(0., 1., 0.01)
+    .digits(2)
+    .slider()
+    .format(|x| format!("{:.0} %", x * 100.))
+    .keywords(&["light", "softness", "highlight"])
 });
 
 static LIGHT_ANGLE: LazyLock<Setting> = LazyLock::new(|| {
@@ -90,7 +105,7 @@ static LIGHT_ANGLE: LazyLock<Setting> = LazyLock::new(|| {
     .keywords(&["light direction"])
 });
 
-/// The rest of the settings only glass has.
+/// Glass's shape and its light, which neither Roughness nor Preset sets.
 static GLASS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
     vec![
         Setting::number("Bezel", "blur.glass.bezel", |c| c.blur.glass.bezel)
@@ -124,7 +139,7 @@ static GLASS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
         Setting::number("Highlight", "blur.glass.highlight", |c| {
             c.blur.glass.highlight
         })
-        .range(0., 2., 0.05)
+        .range(0., 2., 0.01)
         .digits(2)
         .slider()
         .format(|x| format!("{x:.2}"))
@@ -132,70 +147,102 @@ static GLASS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
     ]
 });
 
-/// How far the blur reaches, about `offset · 2^passes`, at a Blur Amount from 0 to 1: from 4 to
-/// 128, evenly on a log scale.
-fn reach(amount: f64) -> f64 {
-    4. * (5. * amount).exp2()
+/// The settings Roughness sets, at a roughness from 0 to 1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rough {
+    passes: f64,
+    offset: f64,
+    sheen: f64,
 }
 
-/// The Blur Amount that `blur` reaches as far as.
-fn amount(blur: &Blur) -> f64 {
+/// How far the blur reaches, about `offset · 2^passes`, at a roughness: from 4 to 136, evenly on
+/// a log scale, with bento's defaults, 3 passes of 3, in the middle.
+fn reach(roughness: f64) -> f64 {
+    24. * (5. * (roughness - 0.5)).exp2()
+}
+
+/// The settings at `roughness`. The passes are the ones that put the offset nearest 3, where
+/// the blur looks smoothest, and the offset and sheen are in hundredths, as they're saved.
+fn rough_at(roughness: f64) -> Rough {
+    let reach = reach(roughness);
+    let passes = (reach.log2() - 3f64.log2()).round().clamp(1., 8.);
+    Rough {
+        passes,
+        offset: hundredths(reach / passes.exp2()),
+        sheen: hundredths(roughness),
+    }
+}
+
+/// The roughness `blur`'s passes and offset reach as far as.
+fn roughness_of(blur: &Blur) -> f64 {
     let reach = blur.offset * f64::from(blur.passes).exp2();
-    ((reach / 4.).log2() / 5.).clamp(0., 1.)
+    ((reach / 24.).log2() / 5. + 0.5).clamp(0., 1.)
 }
 
-/// The passes and offset that reach `reach`, with the offset in hundredths as it's saved.
-fn passes_and_offset(reach: f64) -> (f64, f64) {
-    let passes = (reach.log2() - 1.).round().clamp(1., 8.);
-    (passes, hundredths(reach / passes.exp2()))
+/// Where Roughness stands for `blur`, or `None` if its settings aren't those of any roughness.
+/// Sheen only counts for glass.
+fn roughness(blur: &Blur) -> Option<f64> {
+    let roughness = hundredths(roughness_of(blur));
+    let at = rough_at(roughness);
+    let sheen_matches = blur.material == Material::Frosted || close(blur.glass.sheen, at.sheen);
+    (f64::from(blur.passes) == at.passes && close(blur.offset, at.offset) && sheen_matches)
+        .then_some(roughness)
 }
 
 fn hundredths(x: f64) -> f64 {
     (x * 100.).round() / 100.
 }
 
+fn thousandths(x: f64) -> f64 {
+    (x * 1000.).round() / 1000.
+}
+
+/// Whether two saved values are the same, given they're saved in hundredths at most.
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.006
+}
+
 /// A look for glass, from its Preset slider.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Preset {
-    clarity: f64,
-    reach: f64,
-    noise: f64,
+    roughness: f64,
     saturation: f64,
+    noise: f64,
+    light_size: f64,
 }
 
-/// Clear, Regular and Hazy, at 0, 1 and 2 on the Preset slider.
+/// Clear, Regular and Hazy, at 0, 1 and 2 on the Preset slider. Regular is bento's defaults.
 const PRESETS: [(&str, Preset); 3] = [
     (
         "Clear",
         Preset {
-            clarity: 1.,
-            reach: 8.,
-            noise: 0.,
+            roughness: 0.2,
             saturation: 1.2,
+            noise: 0.,
+            light_size: 0.2,
         },
     ),
     (
         "Regular",
         Preset {
-            clarity: 0.5,
-            reach: 24.,
+            roughness: 0.5,
+            saturation: 1.5,
             noise: 0.02,
-            saturation: 1.4,
+            light_size: 0.4,
         },
     ),
     (
         "Hazy",
         Preset {
-            clarity: 0.,
-            reach: 72.,
+            roughness: 0.8,
+            saturation: 1.6,
             noise: 0.04,
-            saturation: 1.5,
+            light_size: 0.7,
         },
     ),
 ];
 
-/// The look at `position` on the Preset slider, between the two presets around it. The reach
-/// changes evenly on a log scale, like Blur Amount.
+/// The look at `position` on the Preset slider, between the two presets around it.
 fn preset_at(position: f64) -> Preset {
     let last = (PRESETS.len() - 1) as f64;
     let position = position.clamp(0., last);
@@ -204,32 +251,41 @@ fn preset_at(position: f64) -> Preset {
     let (a, b) = (PRESETS[i].1, PRESETS[i + 1].1);
     let lerp = |a: f64, b: f64| a + (b - a) * t;
     Preset {
-        clarity: lerp(a.clarity, b.clarity),
-        reach: lerp(a.reach.log2(), b.reach.log2()).exp2(),
-        noise: lerp(a.noise, b.noise),
+        roughness: lerp(a.roughness, b.roughness),
         saturation: lerp(a.saturation, b.saturation),
+        noise: lerp(a.noise, b.noise),
+        light_size: lerp(a.light_size, b.light_size),
     }
+}
+
+/// Where Preset stands for `blur`, or `None` if its settings aren't those of any position.
+fn preset_position(blur: &Blur) -> Option<f64> {
+    let roughness = roughness(blur)?;
+    let first = PRESETS[0].1.roughness;
+    let step = PRESETS[1].1.roughness - first;
+    let position = (roughness - first) / step;
+    if !(0. ..=(PRESETS.len() - 1) as f64 + 1e-9).contains(&position) {
+        return None;
+    }
+    let at = preset_at(position);
+    (close(blur.saturation, hundredths(at.saturation))
+        && (blur.noise - thousandths(at.noise)).abs() < 0.0006
+        && close(blur.glass.light_size, hundredths(at.light_size)))
+    .then_some(position)
+}
+
+/// The Preset position nearest `position` whose roughness Roughness can stand at, in hundredths,
+/// so moving Preset never leaves Roughness reading Custom.
+fn snap_preset(position: f64) -> f64 {
+    let first = PRESETS[0].1.roughness;
+    let step = PRESETS[1].1.roughness - first;
+    (hundredths(first + position * step) - first) / step
 }
 
 /// The name of the preset nearest `position` on the Preset slider.
 fn nearest_preset(position: f64) -> &'static str {
     let i = position.round().clamp(0., (PRESETS.len() - 1) as f64) as usize;
     PRESETS[i].0
-}
-
-/// Where `clarity` puts the Preset slider.
-fn preset_position(clarity: f64) -> f64 {
-    for (i, pair) in PRESETS.windows(2).enumerate() {
-        let (a, b) = (pair[0].1.clarity, pair[1].1.clarity);
-        if (b..=a).contains(&clarity) {
-            return i as f64 + (a - clarity) / (a - b);
-        }
-    }
-    if clarity > PRESETS[0].1.clarity {
-        0.
-    } else {
-        (PRESETS.len() - 1) as f64
-    }
 }
 
 /// A slider row of the page's own, like a setting's, with the label for its value.
@@ -265,10 +321,10 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     // Each control shows its value in the preview, and in the other controls, as it moves; the
     // config saves it after.
     let row = |setting: &'static Setting| number_row(setting, ctx, &live);
-    // A raw slider that Blur Amount also sets.
-    let coupled = |setting: &'static Setting, other: &str| {
+    // A setting Roughness sets too.
+    let part = |setting: &'static Setting| {
         let row = number_row(setting, ctx, &live);
-        row.set_subtitle(&format!("Blur Amount sets this together with {other}"));
+        row.set_subtitle("Set by Roughness, with the others");
         row
     };
     let switch = {
@@ -299,7 +355,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     list.append(&switch);
 
     // Its marks are bare, and its value label names the nearest preset, so its track lines up
-    // with Blur Amount's.
+    // with the other sliders'.
     let (preset_row, preset_scale, preset_value) =
         slider_row("Preset", 0., (PRESETS.len() - 1) as f64, 0.01);
     for i in 0..PRESETS.len() {
@@ -308,20 +364,19 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     ctx.anchor(PRESET_KEY, &preset_row);
     list.append(&preset_row);
 
-    let (amount_row, amount_scale, amount_value) = slider_row("Blur Amount", 0., 1., 0.01);
-    ctx.anchor(AMOUNT_KEY, &amount_row);
-    list.append(&amount_row);
-
     let advanced = adw::ExpanderRow::builder().title("Advanced").build();
-    advanced.add_row(&coupled(&PASSES, "Strength"));
-    advanced.add_row(&coupled(&STRENGTH, "Passes"));
-    advanced.add_row(&row(&NOISE));
+    let (roughness_row, roughness_scale, roughness_value) = slider_row("Roughness", 0., 1., 0.01);
+    roughness_row.set_subtitle("How far the blur reaches, and how glass spreads its light");
+    ctx.anchor(ROUGHNESS_KEY, &roughness_row);
+    advanced.add_row(&roughness_row);
+    advanced.add_row(&part(&PASSES));
+    advanced.add_row(&part(&STRENGTH));
+    let sheen = part(&SHEEN);
+    advanced.add_row(&sheen);
     advanced.add_row(&row(&SATURATION));
-    let mut glass_rows = vec![preset_row.clone().upcast::<gtk::Widget>()];
-    for setting in std::iter::once(&*CLARITY)
-        .chain(GLASS.iter())
-        .chain([&*LIGHT_ANGLE])
-    {
+    advanced.add_row(&row(&NOISE));
+    let mut glass_rows: Vec<gtk::Widget> = vec![preset_row.clone().upcast(), sheen.upcast()];
+    for setting in GLASS.iter().chain([&*LIGHT_SIZE, &*LIGHT_ANGLE]) {
         let row = row(setting);
         advanced.add_row(&row);
         glass_rows.push(row.upcast());
@@ -343,46 +398,53 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         });
     }
 
-    // Set while the controls show the config, so they don't write it back.
+    // Set while the controls follow the settings, so they don't write them back.
     let updating = Rc::new(Cell::new(false));
     {
         let (ctx, live, updating) = (ctx.clone(), live.clone(), updating.clone());
         let value = preset_value.clone();
         preset_scale.connect_value_changed(move |scale| {
-            value.set_label(nearest_preset(scale.value()));
             if updating.get() {
                 return;
             }
-            let preset = preset_at(scale.value());
-            let (passes, offset) = passes_and_offset(preset.reach);
+            set_custom(scale, &value, None);
+            value.set_label(nearest_preset(scale.value()));
+            let preset = preset_at(snap_preset(scale.value()));
+            let rough = rough_at(preset.roughness);
             edit_together(
                 &ctx,
                 &live,
                 PRESET_KEY,
                 [
-                    (&CLARITY, hundredths(preset.clarity)),
-                    (&PASSES, passes),
-                    (&STRENGTH, offset),
-                    (&NOISE, hundredths(preset.noise)),
+                    (&PASSES, rough.passes),
+                    (&STRENGTH, rough.offset),
+                    (&SHEEN, rough.sheen),
                     (&SATURATION, hundredths(preset.saturation)),
+                    (&NOISE, thousandths(preset.noise)),
+                    (&LIGHT_SIZE, hundredths(preset.light_size)),
                 ],
             );
         });
     }
     {
         let (ctx, live, updating) = (ctx.clone(), live.clone(), updating.clone());
-        let value = amount_value.clone();
-        amount_scale.connect_value_changed(move |scale| {
-            value.set_label(&percent(scale.value()));
+        let value = roughness_value.clone();
+        roughness_scale.connect_value_changed(move |scale| {
             if updating.get() {
                 return;
             }
-            let (passes, offset) = passes_and_offset(reach(scale.value()));
+            set_custom(scale, &value, None);
+            value.set_label(&percent(scale.value()));
+            let rough = rough_at(scale.value());
             edit_together(
                 &ctx,
                 &live,
-                AMOUNT_KEY,
-                [(&PASSES, passes), (&STRENGTH, offset)],
+                ROUGHNESS_KEY,
+                [
+                    (&PASSES, rough.passes),
+                    (&STRENGTH, rough.offset),
+                    (&SHEEN, rough.sheen),
+                ],
             );
         });
     }
@@ -423,7 +485,6 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             for widget in [
                 material.upcast_ref::<gtk::Widget>(),
                 preset_row.upcast_ref(),
-                amount_row.upcast_ref(),
                 advanced.upcast_ref(),
             ] {
                 widget.set_sensitive(!blur.off);
@@ -441,38 +502,46 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     show();
     ctx.store.subscribe(show);
 
+    // Preset and Roughness follow the settings they set, and read Custom when no position of
+    // theirs gives them.
     let follow = {
         let store = ctx.store.clone();
         let (preset_scale, preset_value) = (preset_scale.downgrade(), preset_value.downgrade());
-        let (amount_scale, amount_value) = (amount_scale.downgrade(), amount_value.downgrade());
+        let (roughness_scale, roughness_value) =
+            (roughness_scale.downgrade(), roughness_value.downgrade());
         move |live: &Live, key: Option<&'static str>| {
-            let (Some(preset_scale), Some(preset_value), Some(amount_scale), Some(amount_value)) = (
+            let (
+                Some(preset_scale),
+                Some(preset_value),
+                Some(roughness_scale),
+                Some(roughness_value),
+            ) = (
                 preset_scale.upgrade(),
                 preset_value.upgrade(),
-                amount_scale.upgrade(),
-                amount_value.upgrade(),
-            ) else {
+                roughness_scale.upgrade(),
+                roughness_value.upgrade(),
+            )
+            else {
                 return;
             };
-            let shown = |path| live.shown(path).unwrap_or_default();
+            let blur = live.blur();
             updating.set(true);
             // Not while it's the one moving, nor between its own saves.
             if key != Some(PRESET_KEY) && !store.is_pending(PRESET_KEY) {
-                let position = preset_position(shown(CLARITY.path));
-                preset_scale.set_value(position);
-                // The scale doesn't signal when the value stays the same.
-                preset_value.set_label(nearest_preset(position));
+                let position = preset_position(&blur);
+                set_custom(&preset_scale, &preset_value, position);
+                if let Some(position) = position {
+                    preset_scale.set_value(position);
+                    preset_value.set_label(nearest_preset(position));
+                }
             }
-            if key != Some(AMOUNT_KEY) && !store.is_pending(AMOUNT_KEY) {
-                let blur = Blur {
-                    passes: shown(PASSES.path) as u8,
-                    offset: shown(STRENGTH.path),
-                    ..Blur::default()
-                };
-                // Set the label too: the scale doesn't signal when the value stays the same.
-                let current = amount(&blur);
-                amount_scale.set_value(current);
-                amount_value.set_label(&percent(current));
+            if key != Some(ROUGHNESS_KEY) && !store.is_pending(ROUGHNESS_KEY) {
+                let roughness = roughness(&blur);
+                set_custom(&roughness_scale, &roughness_value, roughness);
+                if let Some(roughness) = roughness {
+                    roughness_scale.set_value(roughness);
+                    roughness_value.set_label(&percent(roughness));
+                }
             }
             updating.set(false);
         }
@@ -481,6 +550,17 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     live.connect(follow);
 
     group.upcast()
+}
+
+/// Shows a slider that sets several settings as Custom, without its knob, when `position` is
+/// `None`: the settings aren't those of any of its positions. Grabbing it sets them again.
+fn set_custom(scale: &gtk::Scale, value: &gtk::Label, position: Option<f64>) {
+    if position.is_some() {
+        scale.remove_css_class("custom");
+    } else {
+        scale.add_css_class("custom");
+        value.set_label("Custom");
+    }
 }
 
 /// A setting's slider, which shows its value in the preview and the other controls as it moves,
@@ -572,29 +652,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blur_amount_round_trips() {
-        for amount_in in [0., 0.25, 0.5, 0.75, 1.] {
-            let (passes, offset) = passes_and_offset(reach(amount_in));
-            let blur = Blur {
-                passes: passes as u8,
-                offset,
-                ..Blur::default()
-            };
-            assert!((amount(&blur) - amount_in).abs() < 0.005, "{amount_in}");
-        }
-        assert_eq!(passes_and_offset(4.), (1., 2.));
-        assert_eq!(passes_and_offset(128.), (6., 2.));
+    fn bentos_defaults_are_the_middle_roughness_and_the_regular_preset() {
+        let blur = Blur::default();
+        assert_eq!(roughness(&blur), Some(0.5));
+        assert_eq!(preset_position(&blur), Some(1.));
     }
 
     #[test]
-    fn presets_follow_clarity() {
-        for (i, (_, preset)) in PRESETS.iter().enumerate() {
-            let at = preset_at(i as f64);
-            assert_eq!((at.clarity, at.noise), (preset.clarity, preset.noise));
-            assert!((at.reach - preset.reach).abs() < 1e-9);
-            assert_eq!(preset_position(preset.clarity), i as f64);
+    fn roughness_round_trips_through_its_settings() {
+        for i in 0..=100 {
+            let r = f64::from(i) / 100.;
+            let rough = rough_at(r);
+            let mut blur = Blur::default();
+            blur.passes = rough.passes as u8;
+            blur.offset = rough.offset;
+            blur.glass.sheen = rough.sheen;
+            assert_eq!(roughness(&blur), Some(r), "{r}");
         }
-        assert!((preset_position(preset_at(1.5).clarity) - 1.5).abs() < 1e-9);
-        assert!((preset_at(0.5).reach - 8. * 3f64.sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn changing_a_part_of_roughness_makes_it_custom() {
+        let mut blur = Blur::default();
+        blur.glass.sheen = 0.9;
+        assert_eq!(roughness(&blur), None);
+        assert_eq!(preset_position(&blur), None);
+        // Frosted has no sheen, so it doesn't count there.
+        blur.material = Material::Frosted;
+        assert_eq!(roughness(&blur), Some(0.5));
+
+        let mut blur = Blur::default();
+        blur.saturation = 1.0;
+        assert_eq!(roughness(&blur), Some(0.5));
+        assert_eq!(preset_position(&blur), None);
+    }
+
+    #[test]
+    fn presets_round_trip_through_their_settings() {
+        for i in 0..=200 {
+            let position = f64::from(i) / 100.;
+            let preset = preset_at(snap_preset(position));
+            let rough = rough_at(preset.roughness);
+            let mut blur = Blur::default();
+            blur.passes = rough.passes as u8;
+            blur.offset = rough.offset;
+            blur.glass.sheen = rough.sheen;
+            blur.saturation = hundredths(preset.saturation);
+            blur.noise = thousandths(preset.noise);
+            blur.glass.light_size = hundredths(preset.light_size);
+            let found = preset_position(&blur).expect("a preset's settings are a preset");
+            assert!(
+                (found - position).abs() < 0.02,
+                "{position} came back as {found}"
+            );
+        }
     }
 }
