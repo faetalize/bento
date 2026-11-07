@@ -106,14 +106,30 @@ float rounded_box(vec2 p, vec4 rect, vec4 radii) {
     return box_distance(q, half_size, corner_radius(q, half_size, radii));
 }
 
+// Polynomial smooth minimum: like min(), with a rounded seam where a and b are within k.
+float smooth_min(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
+}
+
+// The radius of a corner of the outline once it has shrunk by `depth`: it grows as the outline
+// shrinks, so the surface rolls around the corner over about the bezel's width, until it has to
+// fit what's left of the shape.
+float shrunk_radius(float radius, float depth, float inradius) {
+    return max(smooth_min(radius + depth, max(inradius - depth, 0.0), 0.5 * inradius), 0.0);
+}
+
+// How far `q` is outside the outline shrunk by `depth`, negative inside it.
+float outside_shrunk(vec2 q, vec2 half_size, float radius, float depth, float inradius) {
+    return box_distance(q, half_size - depth, shrunk_radius(radius, depth, inradius));
+}
+
 // How deep into a rounded rectangle the bezel's surface takes a point to be, as a signed
 // distance like `rounded_box`'s, with its slope in `slope`.
 //
-// Deeper than a corner's radius, the distance to the nearest edge turns a sharp corner along the
-// diagonal, which would fold the bezel there like a mitred frame. Instead, a point's depth is how
-// far the outline has to shrink to pass through it, keeping its corners' radius as it shrinks:
-// at the outline it's the distance to the edge, and deeper in its lines stay rounded, so the
-// surface rolls around a corner as one curve, at any bezel.
+// A point's depth is how far the outline has to shrink to pass through it. At the edge that's the
+// distance to the edge, and as the outline shrinks its corners grow rounder, so the surface rolls
+// around a corner as one smooth curve instead of folding along the diagonal, at any bezel.
 float surface_box(vec2 p, vec4 rect, vec4 radii, out vec2 slope) {
     vec2 half_size = rect.zw * 0.5;
     vec2 q = p - rect.xy - half_size;
@@ -124,27 +140,18 @@ float surface_box(vec2 p, vec4 rect, vec4 radii, out vec2 slope) {
         return outline;
     }
 
-    vec2 side = vec2(q.x < 0.0 ? -1.0 : 1.0, q.y < 0.0 ? -1.0 : 1.0);
-    vec2 d = abs(q) - half_size + radius;
-    // In a corner, the shrunk outline's corner, centred `depth` further in on both axes, passes
-    // through the point: |d + depth| = radius.
-    float spread = 2.0 * radius * radius - (d.x - d.y) * (d.x - d.y);
-    if (spread >= 0.0) {
-        float depth = (sqrt(spread) - d.x - d.y) * 0.5;
-        if (d.x + depth > 0.0 && d.y + depth > 0.0) {
-            slope = side * normalize(d + depth);
-            return -depth;
-        }
+    // Newton's method from the distance to the edge, where it's exact along the sides; three
+    // steps settle it to within a hundredth of a pixel in the corners.
+    float inradius = min(half_size.x, half_size.y);
+    float depth = -outline;
+    for (int i = 0; i < 3; i++) {
+        float f = outside_shrunk(q, half_size, radius, depth, inradius);
+        float g = (outside_shrunk(q, half_size, radius, depth + 0.25, inradius) - f) / 0.25;
+        depth = clamp(depth - f / max(g, 0.5), 0.0, inradius);
     }
-    // Along a side, it's the distance to the nearer side.
-    slope = d.x > d.y ? vec2(side.x, 0.0) : vec2(0.0, side.y);
-    return max(d.x, d.y) - radius;
-}
 
-// Polynomial smooth minimum: like min(), with a rounded seam where a and b are within k.
-float smooth_min(float a, float b, float k) {
-    float h = max(k - abs(a - b), 0.0) / k;
-    return min(a, b) - h * h * k * 0.25;
+    slope = box_normal(q, half_size - depth, shrunk_radius(radius, depth, inradius));
+    return -depth;
 }
 
 // Signed distance to the glass's edge, negative inside.
@@ -211,10 +218,22 @@ void main() {
     // rising from nothing at the edge to the full thickness: unlike a circle, its curvature fades
     // to nothing at the flat middle, so the magnification eases out instead of stopping at a
     // crease.
-    float rim = clamp(1.0 + depth / max(bezel, 1e-3), 0.0, 1.0);
+    // A bezel can't be wider than half the glass: two sides' bezels would meet in a ridge
+    // instead of rising to one rounded top.
+    float inradius = 0.5 * min(shape0.z, shape0.w);
+    if (shape_count > 1.5) inradius = max(inradius, 0.5 * min(shape1.z, shape1.w));
+    if (shape_count > 2.5) inradius = max(inradius, 0.5 * min(shape2.z, shape2.w));
+    if (shape_count > 3.5) inradius = max(inradius, 0.5 * min(shape3.z, shape3.w));
+    if (shape_count > 4.5) inradius = max(inradius, 0.5 * min(shape4.z, shape4.w));
+    if (shape_count > 5.5) inradius = max(inradius, 0.5 * min(shape5.z, shape5.w));
+    if (shape_count > 6.5) inradius = max(inradius, 0.5 * min(shape6.z, shape6.w));
+    if (shape_count > 7.5) inradius = max(inradius, 0.5 * min(shape7.z, shape7.w));
+    float width = max(min(bezel, inradius), 1e-3);
+
+    float rim = clamp(1.0 + depth / width, 0.0, 1.0);
     float rise4 = max(1.0 - rim * rim * rim * rim, 0.0);
     float height = thickness * pow(rise4, 0.25);
-    float slope = thickness / max(bezel, 1e-3) * rim * rim * rim / max(pow(rise4, 0.75), 1e-4);
+    float slope = thickness / width * rim * rim * rim / max(pow(rise4, 0.75), 1e-4);
     // The surface's normal, up out of the screen.
     vec3 surface = normalize(vec3(normal * slope, 1.0));
 
@@ -222,7 +241,8 @@ void main() {
     // normal, so it lands on what's behind further in: the bezel magnifies.
     float tilt = atan(slope);
     float bent = asin(sin(tilt) / max(refractive_index, 1.0));
-    float bend = height * tan(tilt - bent);
+    // Never past the middle, where it would show the far side's background.
+    float bend = min(height * tan(tilt - bent), max(inradius + depth, 0.0));
 
     // What's behind, seen through the bezel, red bent more than blue.
     vec2 shift = (geo_to_input * vec3(-normal * bend / geo_size, 0.0)).xy;
