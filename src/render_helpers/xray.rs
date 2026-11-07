@@ -350,6 +350,17 @@ impl RenderElement<GlesRenderer> for XrayElement {
                 return Ok(());
             }
         };
+        // Glass mixes in the sharp copy, which covers the same area as the blurred one.
+        let sharp = match &self.glass {
+            Some(_) => match buffer.render(frame, false) {
+                Ok(x) => Some(x),
+                Err(err) => {
+                    warn!("error rendering effect buffer: {err:?}");
+                    return Ok(());
+                }
+            },
+            None => None,
+        };
 
         // FIXME: avoid reallocating a fresh Vec here somehow.
         let mut filtered_damage = Vec::new();
@@ -378,7 +389,11 @@ impl RenderElement<GlesRenderer> for XrayElement {
         let uniforms = self.program.is_some().then(|| self.compute_uniforms());
         let uniforms = uniforms.as_ref().map_or(&[][..], |x| &x[..]);
 
-        frame.render_texture_from_to(
+        if let Some(sharp) = &sharp {
+            glass::bind_sharp(frame, sharp)?;
+        }
+
+        let result = frame.render_texture_from_to(
             &texture,
             src,
             dst,
@@ -389,7 +404,12 @@ impl RenderElement<GlesRenderer> for XrayElement {
             1.,
             self.program.as_ref(),
             uniforms,
-        )
+        );
+
+        if sharp.is_some() {
+            glass::unbind_sharp(frame)?;
+        }
+        result
     }
 }
 

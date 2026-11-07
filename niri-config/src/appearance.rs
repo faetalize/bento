@@ -886,6 +886,8 @@ pub struct Glass {
     pub highlight: f64,
     /// Where the light comes from, in degrees clockwise from the top.
     pub light_angle: f64,
+    /// How much of what's behind shows sharp rather than blurred, from 0 to 1.
+    pub clarity: f64,
 }
 
 impl Default for Glass {
@@ -897,6 +899,7 @@ impl Default for Glass {
             dispersion: 0.14,
             highlight: 0.6,
             light_angle: 315.,
+            clarity: 0.5,
         }
     }
 }
@@ -915,6 +918,8 @@ pub struct GlassPart {
     pub highlight: Option<FloatOrInt<0, 10>>,
     #[knuffel(child, unwrap(argument))]
     pub light_angle: Option<FloatOrInt<0, 360>>,
+    #[knuffel(child, unwrap(argument))]
+    pub clarity: Option<FloatOrInt<0, 1>>,
 }
 
 impl MergeWith<GlassPart> for Glass {
@@ -926,7 +931,8 @@ impl MergeWith<GlassPart> for Glass {
             refractive_index,
             dispersion,
             highlight,
-            light_angle
+            light_angle,
+            clarity
         );
     }
 }

@@ -203,6 +203,7 @@ blur {
         dispersion 0.14      // how much more red bends than blue
         highlight 0.6        // how bright the lit edge is
         light-angle 315      // where the light comes from, clockwise from the top
+        clarity 0.5          // how much of what's behind shows sharp rather than blurred
     }
 }
 ```

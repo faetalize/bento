@@ -6,7 +6,9 @@ use std::sync::Mutex;
 
 use glam::{Mat3, Vec2};
 use niri_config::CornerRadius;
-use smithay::backend::renderer::gles::Uniform;
+use smithay::backend::renderer::gles::{
+    ffi, GlesError, GlesFrame, GlesTexture, Uniform, UniformValue,
+};
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::compositor::{with_states, SurfaceData};
 use wayland_server::protocol::wl_surface::WlSurface;
@@ -15,13 +17,16 @@ use crate::protocols::bento_shell::{glass_shapes, GlassShape, MAX_GLASS_SHAPES};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
-use crate::render_helpers::shaders::{mat3_uniform, GLASS_SHAPE_UNIFORMS};
+use crate::render_helpers::shaders::{
+    mat3_uniform, GLASS_RADII_UNIFORMS, GLASS_SHAPE_UNIFORMS, GLASS_SHARP_UNIT,
+};
 
 /// Shapes of glass, in the coordinates of the geometry the shader clips to.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct GlassShapes {
     pub rects: [[f32; 4]; MAX_GLASS_SHAPES],
-    pub radii: [f32; MAX_GLASS_SHAPES],
+    /// Top left, top right, bottom right and bottom left.
+    pub radii: [[f32; 4]; MAX_GLASS_SHAPES],
     pub count: usize,
     /// How the glass bends and lights what's behind it.
     pub glass: niri_config::Glass,
@@ -41,8 +46,7 @@ impl GlassShapes {
             ..Self::default()
         };
         shapes.rects[0] = [0., 0., width, height];
-        // The shader rounds each shape evenly.
-        shapes.radii[0] = radius.top_left;
+        shapes.radii[0] = radius.into();
         shapes
     }
 }
@@ -58,7 +62,6 @@ pub fn uniforms(
     saturation: f32,
     bg_color: [f32; 4],
 ) -> Vec<Uniform<'static>> {
-    let radii = shapes.radii;
     let glass = shapes.glass;
     let angle = glass.light_angle.to_radians();
     let light_direction = [angle.sin() as f32, -angle.cos() as f32];
@@ -68,8 +71,8 @@ pub fn uniforms(
         mat3_uniform("input_to_geo", input_to_geo),
         mat3_uniform("geo_to_input", input_to_geo.inverse()),
         Uniform::new("shape_count", shapes.count as f32),
-        Uniform::new("radii0", [radii[0], radii[1], radii[2], radii[3]]),
-        Uniform::new("radii1", [radii[4], radii[5], radii[6], radii[7]]),
+        Uniform::new("sharp", UniformValue::_1i(GLASS_SHARP_UNIT as i32)),
+        Uniform::new("clarity", glass.clarity as f32),
         Uniform::new("noise", noise),
         Uniform::new("saturation", saturation),
         Uniform::new("bg_color", bg_color),
@@ -84,9 +87,40 @@ pub fn uniforms(
         GLASS_SHAPE_UNIFORMS
             .iter()
             .zip(shapes.rects)
-            .map(|(name, rect)| Uniform::new(*name, rect)),
+            .chain(GLASS_RADII_UNIFORMS.iter().zip(shapes.radii))
+            .map(|(name, values)| Uniform::new(*name, values)),
     );
     uniforms
+}
+
+/// Binds the sharp copy of what's behind where the glass shader reads it, for one draw.
+pub fn bind_sharp(frame: &mut GlesFrame<'_, '_>, sharp: &GlesTexture) -> Result<(), GlesError> {
+    frame.with_context(|gl| unsafe {
+        gl.ActiveTexture(ffi::TEXTURE0 + GLASS_SHARP_UNIT);
+        gl.BindTexture(ffi::TEXTURE_2D, sharp.tex_id());
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+        gl.TexParameteri(
+            ffi::TEXTURE_2D,
+            ffi::TEXTURE_WRAP_S,
+            ffi::CLAMP_TO_EDGE as i32,
+        );
+        gl.TexParameteri(
+            ffi::TEXTURE_2D,
+            ffi::TEXTURE_WRAP_T,
+            ffi::CLAMP_TO_EDGE as i32,
+        );
+        gl.ActiveTexture(ffi::TEXTURE0);
+    })
+}
+
+/// Unbinds what [`bind_sharp`] bound, once the draw is done.
+pub fn unbind_sharp(frame: &mut GlesFrame<'_, '_>) -> Result<(), GlesError> {
+    frame.with_context(|gl| unsafe {
+        gl.ActiveTexture(ffi::TEXTURE0 + GLASS_SHARP_UNIT);
+        gl.BindTexture(ffi::TEXTURE_2D, 0);
+        gl.ActiveTexture(ffi::TEXTURE0);
+    })
 }
 
 /// How far past its shapes the glass reaches where nearby shapes melt together.
@@ -153,7 +187,7 @@ pub fn render(
                 rect.size.w as f32,
                 rect.size.h as f32,
             ];
-            uniforms.radii[i] = shape.radius as f32;
+            uniforms.radii[i] = [shape.radius as f32; 4];
         }
 
         let params = RenderParams {

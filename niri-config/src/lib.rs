@@ -2218,6 +2218,7 @@ mod tests {
                     dispersion: 0.14,
                     highlight: 0.6,
                     light_angle: 315.0,
+                    clarity: 0.5,
                 },
             },
             gestures: Gestures {

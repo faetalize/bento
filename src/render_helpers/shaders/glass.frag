@@ -22,12 +22,18 @@ uniform float tint;
 
 uniform float niri_scale;
 
+// What's behind, as `tex` has it blurred, and sharp.
+uniform sampler2D sharp;
+// How much of the sharp copy shows through, from 0 to 1.
+uniform float clarity;
+
 // The element's size, and the mappings between texture coordinates and the element's [0, 1].
 uniform vec2 geo_size;
 uniform mat3 input_to_geo;
 uniform mat3 geo_to_input;
 
-// The shapes: x, y, width and height in the element's logical pixels, with a radius each.
+// The shapes: x, y, width and height in the element's logical pixels, with the radii of their
+// top left, top right, bottom right and bottom left corners.
 uniform float shape_count;
 uniform vec4 shape0;
 uniform vec4 shape1;
@@ -39,6 +45,12 @@ uniform vec4 shape6;
 uniform vec4 shape7;
 uniform vec4 radii0;
 uniform vec4 radii1;
+uniform vec4 radii2;
+uniform vec4 radii3;
+uniform vec4 radii4;
+uniform vec4 radii5;
+uniform vec4 radii6;
+uniform vec4 radii7;
 
 uniform float noise;
 uniform float saturation;
@@ -52,21 +64,44 @@ uniform float thickness;
 uniform float refractive_index;
 // How much more red bends than blue, as a fraction of the bend.
 uniform float dispersion;
-// How bright the lit edge is.
+// How bright the light the bezel catches is.
 uniform float highlight;
 // Towards the light, in screen coordinates.
 uniform vec2 light_direction;
 
 // Shapes closer than this melt into one piece.
 const float MELT = 20.0;
-// The width of the lit edge.
-const float EDGE = 1.5;
+// How high the light is over the screen, in radians.
+const float LIGHT_ELEVATION = 0.7;
+// How tight the light's reflection on the bezel is.
+const float SHININESS = 60.0;
+// How much the bezel darkens away from the light, and brightens towards it.
+const float SHADING = 0.35;
+// How much of the surroundings the bezel reflects where it's seen edge on.
+const float REFLECTION = 0.5;
 
-float rounded_box(vec2 p, vec4 rect, float radius) {
+// Signed distance to a rounded rectangle, negative inside.
+float rounded_box(vec2 p, vec4 rect, vec4 radii) {
     vec2 half_size = rect.zw * 0.5;
+    vec2 q = p - rect.xy - half_size;
+    float radius = q.x < 0.0 ? (q.y < 0.0 ? radii.x : radii.w) : (q.y < 0.0 ? radii.y : radii.z);
     radius = min(radius, min(half_size.x, half_size.y));
-    vec2 q = abs(p - rect.xy - half_size) - half_size + radius;
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    vec2 d = abs(q) - half_size + radius;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
+}
+
+// A rounded rectangle's outward normal, exactly.
+vec2 rounded_box_normal(vec2 p, vec4 rect, vec4 radii) {
+    vec2 half_size = rect.zw * 0.5;
+    vec2 q = p - rect.xy - half_size;
+    float radius = q.x < 0.0 ? (q.y < 0.0 ? radii.x : radii.w) : (q.y < 0.0 ? radii.y : radii.z);
+    radius = min(radius, min(half_size.x, half_size.y));
+    vec2 d = abs(q) - half_size + radius;
+    vec2 side = vec2(q.x < 0.0 ? -1.0 : 1.0, q.y < 0.0 ? -1.0 : 1.0);
+    if (d.x > 0.0 && d.y > 0.0) {
+        return side * normalize(d);
+    }
+    return d.x > d.y ? vec2(side.x, 0.0) : vec2(0.0, side.y);
 }
 
 // Polynomial smooth minimum: like min(), with a rounded seam where a and b are within k.
@@ -77,15 +112,20 @@ float smooth_min(float a, float b, float k) {
 
 // Signed distance to the glass's edge, negative inside.
 float glass(vec2 p) {
-    float d = rounded_box(p, shape0, radii0.x);
-    if (shape_count > 1.5) d = smooth_min(d, rounded_box(p, shape1, radii0.y), MELT);
-    if (shape_count > 2.5) d = smooth_min(d, rounded_box(p, shape2, radii0.z), MELT);
-    if (shape_count > 3.5) d = smooth_min(d, rounded_box(p, shape3, radii0.w), MELT);
-    if (shape_count > 4.5) d = smooth_min(d, rounded_box(p, shape4, radii1.x), MELT);
-    if (shape_count > 5.5) d = smooth_min(d, rounded_box(p, shape5, radii1.y), MELT);
-    if (shape_count > 6.5) d = smooth_min(d, rounded_box(p, shape6, radii1.z), MELT);
-    if (shape_count > 7.5) d = smooth_min(d, rounded_box(p, shape7, radii1.w), MELT);
+    float d = rounded_box(p, shape0, radii0);
+    if (shape_count > 1.5) d = smooth_min(d, rounded_box(p, shape1, radii1), MELT);
+    if (shape_count > 2.5) d = smooth_min(d, rounded_box(p, shape2, radii2), MELT);
+    if (shape_count > 3.5) d = smooth_min(d, rounded_box(p, shape3, radii3), MELT);
+    if (shape_count > 4.5) d = smooth_min(d, rounded_box(p, shape4, radii4), MELT);
+    if (shape_count > 5.5) d = smooth_min(d, rounded_box(p, shape5, radii5), MELT);
+    if (shape_count > 6.5) d = smooth_min(d, rounded_box(p, shape6, radii6), MELT);
+    if (shape_count > 7.5) d = smooth_min(d, rounded_box(p, shape7, radii7), MELT);
     return d;
+}
+
+// What's behind at `at`, as clear as the glass is.
+vec4 behind_at(vec2 at) {
+    return mix(texture2D(tex, at), texture2D(sharp, at), clarity);
 }
 
 // Sin-less white noise by David Hoskins (MIT License).
@@ -106,12 +146,18 @@ void main() {
         return;
     }
 
-    // The edge's outward normal.
-    vec2 grad = vec2(
-        glass(p + vec2(0.5, 0.0)) - glass(p - vec2(0.5, 0.0)),
-        glass(p + vec2(0.0, 0.5)) - glass(p - vec2(0.0, 0.5))
-    );
-    vec2 normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
+    // The edge's outward normal: exact for one shape, from the distance's slope where shapes
+    // melt together.
+    vec2 normal;
+    if (shape_count < 1.5) {
+        normal = rounded_box_normal(p, shape0, radii0);
+    } else {
+        vec2 grad = vec2(
+            glass(p + vec2(0.5, 0.0)) - glass(p - vec2(0.5, 0.0)),
+            glass(p + vec2(0.0, 0.5)) - glass(p - vec2(0.0, 0.5))
+        );
+        normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
+    }
 
     // 1 at the edge, 0 where the bezel meets the flat middle. The bezel's surface is a squircle,
     // rising from nothing at the edge to the full thickness: unlike a circle, its curvature fades
@@ -121,6 +167,8 @@ void main() {
     float rise4 = max(1.0 - rim * rim * rim * rim, 0.0);
     float height = thickness * pow(rise4, 0.25);
     float slope = thickness / max(bezel, 1e-3) * rim * rim * rim / max(pow(rise4, 0.75), 1e-4);
+    // The surface's normal, up out of the screen.
+    vec3 surface = normalize(vec3(normal * slope, 1.0));
 
     // Looking straight down, the ray meets the surface tilted by `tilt` and bends towards its
     // normal, so it lands on what's behind further in: the bezel magnifies.
@@ -130,9 +178,9 @@ void main() {
 
     // What's behind, seen through the bezel, red bent more than blue.
     vec2 shift = (geo_to_input * vec3(-normal * bend / geo_size, 0.0)).xy;
-    vec4 red = texture2D(tex, v_coords + shift * (1.0 + dispersion));
-    vec4 green = texture2D(tex, v_coords + shift);
-    vec4 blue = texture2D(tex, v_coords + shift * (1.0 - dispersion));
+    vec4 red = behind_at(v_coords + shift * (1.0 + dispersion));
+    vec4 green = behind_at(v_coords + shift);
+    vec4 blue = behind_at(v_coords + shift * (1.0 - dispersion));
     vec4 behind = vec4(red.r, green.g, blue.b, green.a);
     behind = behind + bg_color * (1.0 - behind.a);
 
@@ -140,15 +188,31 @@ void main() {
     behind.rgb = mix(vec3(dot(behind.rgb, luma)), behind.rgb, saturation);
     behind.rgb += (hash12(gl_FragCoord.xy) - 0.5) * noise * behind.a;
 
-    // The edge catches the light where it faces it, and a little on the far side too.
-    float facing = dot(normal, light_direction);
-    float edge = 1.0 - smoothstep(0.0, EDGE, -d);
-    float lit = highlight * (0.27 + pow(max(facing, 0.0), 2.0) + 0.5 * pow(max(-facing, 0.0), 2.0));
-    float sheen = pow(rim, 4.0) * 0.2 * highlight * max(facing, 0.0);
-    float light = clamp(edge * lit + sheen, 0.0, 1.0);
+    // The light, over the screen in its direction.
+    vec3 light = vec3(light_direction * cos(LIGHT_ELEVATION), sin(LIGHT_ELEVATION));
 
-    // The light goes over what's behind, both premultiplied.
-    vec4 result = vec4(vec3(light), light) + behind * (1.0 - light);
+    // The bezel's side facing the light is lit, the far side in its shade.
+    float shade = clamp(dot(surface, light) - light.z, -1.0, 1.0);
+    behind.rgb *= 1.0 + SHADING * shade;
+
+    // Seen edge on, glass reflects more and lets less through (Schlick's Fresnel).
+    float f0 = (refractive_index - 1.0) / (refractive_index + 1.0);
+    f0 *= f0;
+    float fresnel = f0 + (1.0 - f0) * pow(1.0 - surface.z, 5.0);
+    behind.rgb = mix(behind.rgb, vec3(behind.a), fresnel * REFLECTION);
+
+    // The light's reflection where the bezel tilts towards it, and a weaker one from the far
+    // side, as light that went through the glass comes back off its inside.
+    vec3 view = vec3(0.0, 0.0, 1.0);
+    vec3 halfway = normalize(light + view);
+    vec3 back = vec3(-light.xy, light.z);
+    vec3 back_halfway = normalize(back + view);
+    float specular = pow(max(dot(surface, halfway), 0.0), SHININESS)
+        + 0.5 * pow(max(dot(surface, back_halfway), 0.0), SHININESS);
+    specular = clamp(specular * highlight, 0.0, 1.0);
+
+    // The reflection goes over what's behind, both premultiplied.
+    vec4 result = vec4(vec3(specular), specular) + behind * (1.0 - specular);
     result = result * coverage * alpha;
 
 #if defined(DEBUG_FLAGS)
