@@ -3,7 +3,7 @@ use crate::model::{BoolStyle, Category, Group, Setting};
 pub fn category() -> Category {
     Category::settings("appearance", "Appearance")
         .icon("ph-palette-symbolic")
-        .keywords(&["look", "theme", "colors"])
+        .keywords(&["look", "theme", "colors", "blur", "glass"])
         .group(
             Group::custom(super::theme::build)
                 .search_item(
@@ -22,6 +22,61 @@ pub fn category() -> Category {
             "Wallpaper",
             &["background", "picture", "image", "desktop"],
         ))
+        .group(
+            Group::custom(super::blur::build)
+                .search_item(
+                    "appearance.blur",
+                    "Blur",
+                    &[
+                        "glass",
+                        "frosted",
+                        "transparency",
+                        "translucency",
+                        "transparent",
+                        "translucent",
+                        "background effect",
+                    ],
+                )
+                .search_item(
+                    "blur.material",
+                    "Blur Material",
+                    &["glass", "frosted", "transparency", "translucency"],
+                )
+                .search_item(
+                    "blur.offset",
+                    "Blur Strength",
+                    &["radius", "amount", "transparency", "translucency"],
+                )
+                .search_item("blur.passes", "Blur Passes", &["quality"])
+                .search_item("blur.noise", "Blur Noise", &["grain", "dither"])
+                .search_item("blur.saturation", "Blur Saturation", &["vibrancy", "color"])
+                .search_item("blur.glass.bezel", "Glass Bezel", &["edge", "curve"])
+                .search_item(
+                    "blur.glass.thickness",
+                    "Glass Thickness",
+                    &["height", "depth"],
+                )
+                .search_item(
+                    "blur.glass.refractive-index",
+                    "Glass Refractive Index",
+                    &["refraction", "bend", "lens"],
+                )
+                .search_item(
+                    "blur.glass.dispersion",
+                    "Glass Dispersion",
+                    &["chromatic aberration", "rainbow", "prism"],
+                )
+                .search_item(
+                    "blur.glass.highlight",
+                    "Glass Highlight",
+                    &["glare", "edge light", "shine"],
+                )
+                .search_item(
+                    "blur.glass.light-angle",
+                    "Glass Light Angle",
+                    &["light direction"],
+                ),
+        )
         .group(
             Group::untitled()
                 .setting(

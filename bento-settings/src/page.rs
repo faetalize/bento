@@ -101,7 +101,17 @@ pub fn open_uri(widget: &impl IsA<gtk::Widget>, uri: &str) {
     launcher.launch(window.as_ref(), None::<&gio::Cancellable>, |_| ());
 }
 
-fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
+pub fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
+    setting_row_watched(setting, ctx, |_| ())
+}
+
+/// A setting's row that also tells `watch` each value the person picks, right away, before the
+/// change is saved.
+pub fn setting_row_watched(
+    setting: &'static Setting,
+    ctx: &PageContext,
+    watch: impl Fn(&Input) + 'static,
+) -> gtk::Widget {
     let store = ctx.store.clone();
     // Set while the row shows a new value, so its own change signal doesn't write it back.
     let updating = Rc::new(Cell::new(false));
@@ -111,6 +121,7 @@ fn setting_row(setting: &'static Setting, ctx: &PageContext) -> gtk::Widget {
         let updating = updating.clone();
         move |input: Input| {
             if !updating.get() {
+                watch(&input);
                 store.edit(setting.path, move |doc| setting.write(doc, input));
             }
         }

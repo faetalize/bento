@@ -92,3 +92,9 @@ flowbox.wallpapers > flowboxchild.current {
   border-radius: 8px;
   border: 2px dashed alpha(currentColor, 0.25);
 }
+
+/* The blur preview: a piece of the screen with a pane of the material on it. */
+.blur-preview {
+  border-radius: 12px;
+  background-color: alpha(currentColor, 0.06);
+}
