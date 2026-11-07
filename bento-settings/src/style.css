@@ -98,3 +98,16 @@ flowbox.wallpapers > flowboxchild.current {
   border-radius: 12px;
   background-color: alpha(currentColor, 0.06);
 }
+
+/* The handle that moves the light in the blur preview. */
+.blur-light {
+  border-radius: 9999px;
+  color: white;
+  background-color: alpha(black, 0.55);
+  box-shadow: 0 1px 3px alpha(black, 0.3);
+  transition: background-color 150ms ease-out;
+}
+
+.blur-light:hover {
+  background-color: alpha(black, 0.7);
+}

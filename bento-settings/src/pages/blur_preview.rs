@@ -2,7 +2,8 @@
 //!
 //! It draws with bento's own shaders: the background is blurred by the same passes with the same
 //! offset, and the pane is drawn by the glass or frosted shader with the uniforms bento gives it.
-//! The pane can be dragged around, to watch the glass bend what's behind it.
+//! The pane can be dragged around, to watch the glass bend what's behind it, and on glass a handle
+//! beside it moves the light.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -17,6 +18,7 @@ use gtk::{gdk, gio, glib};
 use niri_config::{Blur, CornerRadius, Material};
 
 use super::layout::every_window;
+use crate::model::{Input, Setting};
 use crate::page::{keep_alive, PageContext};
 use crate::store::Store;
 
@@ -29,6 +31,10 @@ const MAX_WIDTH: i32 = 800;
 const PANE: (f64, f64) = (240., 150.);
 /// The screen the wallpaper covers when the monitor isn't known, in logical pixels.
 const SCREEN: (i32, i32) = (1920, 1080);
+/// The light's handle, in logical pixels.
+const LIGHT: i32 = 28;
+/// The space between the pane and the light's handle, in logical pixels.
+const LIGHT_GAP: f64 = 8.;
 
 const GLASS: &str = include_str!("../../../src/render_helpers/shaders/glass.frag");
 /// bento's `postprocess_and_clip` program.
@@ -101,13 +107,18 @@ pub enum Unsaved {
 pub struct Handle(Rc<Preview>);
 
 impl Handle {
+    /// Shows a change saved under its setting's own key.
     pub fn show(&self, change: Unsaved) {
-        let key = change.key();
+        self.show_edit(change.key(), &[change]);
+    }
+
+    /// Shows changes that one edit saves together, under the edit's `key`.
+    pub fn show_edit(&self, key: &'static str, changes: &[Unsaved]) {
         let mut unsaved = self.0.unsaved.borrow_mut();
-        unsaved.retain(|old| old.key() != key);
-        unsaved.push(change);
+        unsaved.retain(|(old, _)| *old != key);
+        unsaved.extend(changes.iter().map(|change| (key, *change)));
         drop(unsaved);
-        self.0.area.queue_render();
+        self.0.changed();
     }
 }
 
@@ -136,17 +147,29 @@ impl Unsaved {
                 "blur.glass.dispersion" => glass.dispersion = x,
                 "blur.glass.highlight" => glass.highlight = x,
                 "blur.glass.light-angle" => glass.light_angle = x,
+                "blur.glass.clarity" => glass.clarity = x,
                 _ => (),
             },
         }
     }
 }
 
-pub fn build(ctx: &PageContext) -> (gtk::Widget, Handle) {
+/// Builds the preview. Dragging the light's handle saves `light_angle`.
+pub fn build(ctx: &PageContext, light_angle: &'static Setting) -> (gtk::Widget, Handle) {
     let area = gtk::GLArea::builder()
         .allowed_apis(gdk::GLAPI::GLES)
         .hexpand(true)
         .build();
+    let light = gtk::Image::builder()
+        .icon_name("ph-sun-symbolic")
+        .width_request(LIGHT)
+        .height_request(LIGHT)
+        .tooltip_text("Light Angle")
+        .css_classes(["blur-light"])
+        .build();
+    light.set_cursor_from_name(Some("grab"));
+    let overlay = gtk::Overlay::builder().child(&area).build();
+    overlay.add_overlay(&light);
     let fallback = gtk::Label::builder()
         .label("Preview Unavailable")
         .css_classes(["dim-label"])
@@ -156,11 +179,13 @@ pub fn build(ctx: &PageContext) -> (gtk::Widget, Handle) {
         .overflow(gtk::Overflow::Hidden)
         .css_classes(["blur-preview"])
         .build();
-    stack.add_named(&area, Some("preview"));
+    stack.add_named(&overlay, Some("preview"));
     stack.add_named(&fallback, Some("fallback"));
 
     let preview = Rc::new(Preview {
         area: area.clone(),
+        overlay: overlay.clone(),
+        light: light.clone(),
         stack: stack.clone(),
         store: ctx.store.clone(),
         gl: RefCell::new(None),
@@ -206,7 +231,21 @@ pub fn build(ctx: &PageContext) -> (gtk::Widget, Handle) {
             }
         });
     }
+    {
+        let preview = Rc::downgrade(&preview);
+        overlay.connect_get_child_position(move |_, _| {
+            let (x, y) = preview.upgrade()?.light_position();
+            let half = f64::from(LIGHT) / 2.;
+            Some(gdk::Rectangle::new(
+                (x - half).round() as i32,
+                (y - half).round() as i32,
+                LIGHT,
+                LIGHT,
+            ))
+        });
+    }
     drag(&preview);
+    drag_light(&preview, ctx, light_angle);
 
     let redraw = Rc::downgrade(&preview);
     ctx.store.subscribe(move || {
@@ -216,11 +255,12 @@ pub fn build(ctx: &PageContext) -> (gtk::Widget, Handle) {
             preview
                 .unsaved
                 .borrow_mut()
-                .retain(|change| store.is_pending(change.key()));
+                .retain(|(key, _)| store.is_pending(key));
             preview.update_picture();
-            preview.area.queue_render();
+            preview.changed();
         }
     });
+    preview.changed();
     let redraw = Rc::downgrade(&preview);
     adw::StyleManager::default().connect_dark_notify(move |_| {
         if let Some(preview) = redraw.upgrade() {
@@ -280,8 +320,66 @@ fn drag(preview: &Rc<Preview>) {
     area.add_controller(motion);
 }
 
+/// Dragging the light's handle points the light from the pane's middle towards the pointer.
+fn drag_light(preview: &Rc<Preview>, ctx: &PageContext, setting: &'static Setting) {
+    let start = Rc::new(Cell::new((0., 0.)));
+    let drag = gtk::GestureDrag::new();
+    {
+        let (preview, start) = (Rc::downgrade(preview), start.clone());
+        drag.connect_drag_begin(move |gesture, x, y| {
+            let Some(preview) = preview.upgrade() else {
+                return;
+            };
+            let light = preview.light.upcast_ref::<gtk::Widget>();
+            let picked = preview.overlay.pick(x, y, gtk::PickFlags::DEFAULT);
+            if !picked.is_some_and(|widget| widget == *light || widget.is_ancestor(light)) {
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
+            start.set(preview.light_position());
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            preview.light.set_cursor_from_name(Some("grabbing"));
+        });
+    }
+    {
+        let (preview, store) = (Rc::downgrade(preview), ctx.store.clone());
+        drag.connect_drag_update(move |_, dx, dy| {
+            let Some(preview) = preview.upgrade() else {
+                return;
+            };
+            let (x, y) = start.get();
+            let (px, py, pw, ph) = preview.pane();
+            let (dx, dy) = (x + dx - (px + pw / 2.), y + dy - (py + ph / 2.));
+            if dx.hypot(dy) < 1. {
+                return;
+            }
+            // Degrees clockwise from the top, in whole degrees like the setting.
+            let angle = dx.atan2(-dy).to_degrees().round().rem_euclid(360.);
+            if angle == preview.look().blur.glass.light_angle {
+                return;
+            }
+            Handle(preview).show(Unsaved::Setting(setting.path, angle));
+            store.edit(setting.path, move |doc| {
+                setting.write(doc, Input::Number(angle))
+            });
+        });
+    }
+    {
+        let preview = Rc::downgrade(preview);
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(preview) = preview.upgrade() {
+                preview.light.set_cursor_from_name(Some("grab"));
+            }
+        });
+    }
+    preview.overlay.add_controller(drag);
+}
+
 struct Preview {
     area: gtk::GLArea,
+    overlay: gtk::Overlay,
+    /// The light's handle.
+    light: gtk::Image,
     stack: gtk::Stack,
     store: Store,
     gl: RefCell<Option<Gl>>,
@@ -291,8 +389,8 @@ struct Preview {
     picture: RefCell<Option<Rc<Picture>>>,
     /// The wallpaper being shown or loaded.
     wanted: RefCell<Option<Wanted>>,
-    /// Changes not saved yet, shown over the config.
-    unsaved: RefCell<Vec<Unsaved>>,
+    /// Changes not saved yet, by the store's key for their edit, shown over the config.
+    unsaved: RefCell<Vec<(&'static str, Unsaved)>>,
 }
 
 /// A wallpaper, with the screen's logical size and the scale it's loaded for.
@@ -347,7 +445,7 @@ impl Preview {
     fn look(&self) -> Look {
         let config = self.store.config();
         let mut blur = config.blur;
-        for change in self.unsaved.borrow().iter() {
+        for (_, change) in self.unsaved.borrow().iter() {
             change.apply(&mut blur);
         }
         Look {
@@ -416,6 +514,37 @@ impl Preview {
         });
     }
 
+    /// Shows what the controls or the config changed.
+    fn changed(&self) {
+        let blur = self.look().blur;
+        // Only glass has a light.
+        self.light
+            .set_visible(!blur.off && blur.material == Material::Glass);
+        self.overlay.queue_allocate();
+        self.area.queue_render();
+    }
+
+    /// The middle of the light's handle, in logical pixels: beside the pane, towards the light,
+    /// and inside the preview.
+    fn light_position(&self) -> (f64, f64) {
+        let (px, py, pw, ph) = self.pane();
+        let angle = self.look().blur.glass.light_angle.to_radians();
+        let direction = (angle.sin(), -angle.cos());
+        let reach = beside(
+            (pw / 2., ph / 2.),
+            direction,
+            LIGHT_GAP + f64::from(LIGHT) / 2.,
+        );
+        let (width, height) = (f64::from(self.area.width()), f64::from(self.area.height()));
+        let margin = f64::from(LIGHT) / 2. + 4.;
+        let x = px + pw / 2. + direction.0 * reach;
+        let y = py + ph / 2. + direction.1 * reach;
+        (
+            x.clamp(margin, (width - margin).max(margin)),
+            y.clamp(margin, (height - margin).max(margin)),
+        )
+    }
+
     /// The pane's x, y, width and height, in logical pixels.
     fn pane(&self) -> (f64, f64, f64, f64) {
         let (width, height) = (f64::from(self.area.width()), f64::from(self.area.height()));
@@ -442,6 +571,7 @@ impl Preview {
         let cx = x.clamp(pw / 2., (width - pw / 2.).max(pw / 2.));
         let cy = y.clamp(ph / 2., (height - ph / 2.).max(ph / 2.));
         self.center.set((cx / width, cy / height));
+        self.overlay.queue_allocate();
         self.area.queue_render();
     }
 
@@ -507,7 +637,10 @@ impl Preview {
         }
         let pane = self.pane();
         let (program, uniforms) = pane_uniforms(gl, &look, pane, (lw, lh), scale);
+        // Glass also reads what's behind sharp, at the same place as the blurred copy.
+        gl.bind_sharp(background);
         gl.draw(program, Some(behind), -1., &uniforms);
+        gl.bind_sharp(None);
         unsafe { gl.gl.disable(glow::BLEND) };
         Ok(())
     }
@@ -552,10 +685,11 @@ fn pane_uniforms(
     let angle = glass.light_angle.to_radians();
     uniforms.extend([
         ("geo_to_input", Uniform::Mat3(geo_to_input)),
+        ("sharp", Uniform::Int(SHARP_UNIT)),
+        ("clarity", Uniform::Float(glass.clarity as f32)),
         ("shape_count", Uniform::Float(1.)),
         ("shape0", Uniform::Vec4([0., 0., pw, ph])),
-        ("radii0", Uniform::Vec4([radius.top_left, 0., 0., 0.])),
-        ("radii1", Uniform::Vec4([0.; 4])),
+        ("radii0", Uniform::Vec4(<[f32; 4]>::from(radius))),
         ("bezel", Uniform::Float(glass.bezel as f32)),
         ("thickness", Uniform::Float(glass.thickness as f32)),
         (
@@ -570,11 +704,30 @@ fn pane_uniforms(
         ),
     ]);
     for name in [
-        "shape1", "shape2", "shape3", "shape4", "shape5", "shape6", "shape7",
+        "shape1", "shape2", "shape3", "shape4", "shape5", "shape6", "shape7", "radii1", "radii2",
+        "radii3", "radii4", "radii5", "radii6", "radii7",
     ] {
         uniforms.push((name, Uniform::Vec4([0.; 4])));
     }
     (gl.glass, uniforms)
+}
+
+/// How far from the middle of a box with half its size `half`, along `direction`, a point is
+/// `gap` outside it.
+fn beside((hx, hy): (f64, f64), direction: (f64, f64), gap: f64) -> f64 {
+    let (ax, ay) = (direction.0.abs(), direction.1.abs());
+    // Past a side.
+    let to_side = (hx + gap) / ax;
+    if to_side * ay <= hy {
+        return to_side;
+    }
+    let to_top = (hy + gap) / ay;
+    if to_top * ax <= hx {
+        return to_top;
+    }
+    // Round a corner: `gap` from it.
+    let b = ax * hx + ay * hy;
+    b + (b * b - (hx * hx + hy * hy - gap * gap)).max(0.).sqrt()
 }
 
 /// The middle of the wallpaper as it covers the screen, in physical pixels: premultiplied RGBA,
@@ -624,8 +777,13 @@ fn decode(path: &Path, screen: (i32, i32), region: (i32, i32)) -> Option<Picture
     })
 }
 
+/// The texture unit glass reads the sharp copy of what's behind from, like bento's
+/// `GLASS_SHARP_UNIT`.
+const SHARP_UNIT: i32 = 1;
+
 #[derive(Debug, Clone, Copy)]
 enum Uniform {
+    Int(i32),
     Float(f32),
     Vec2([f32; 2]),
     Vec4([f32; 4]),
@@ -866,6 +1024,15 @@ impl Gl {
         }
     }
 
+    /// Binds `texture` where glass reads the sharp copy of what's behind, or unbinds it.
+    fn bind_sharp(&self, texture: Option<glow::Texture>) {
+        unsafe {
+            self.gl.active_texture(glow::TEXTURE0 + SHARP_UNIT as u32);
+            self.gl.bind_texture(glow::TEXTURE_2D, texture);
+            self.gl.active_texture(glow::TEXTURE0);
+        }
+    }
+
     /// Draws `texture` through `program` over the whole target. `flip` is -1 on screen.
     fn draw(
         &self,
@@ -889,6 +1056,7 @@ impl Gl {
                 let location = location(name);
                 let location = location.as_ref();
                 match *value {
+                    Uniform::Int(x) => gl.uniform_1_i32(location, x),
                     Uniform::Float(x) => gl.uniform_1_f32(location, x),
                     Uniform::Vec2([x, y]) => gl.uniform_2_f32(location, x, y),
                     Uniform::Vec4([x, y, z, w]) => gl.uniform_4_f32(location, x, y, z, w),

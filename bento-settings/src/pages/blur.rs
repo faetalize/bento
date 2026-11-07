@@ -8,17 +8,22 @@ use std::sync::LazyLock;
 use adw::prelude::*;
 use niri_config::{Blur, Material};
 
-use super::blur_preview::Unsaved;
+use super::blur_preview::{Handle, Unsaved};
 use crate::kdl::Value;
 use crate::model::{BoolStyle, Input, Setting};
 use crate::page::{setting_row_watched, PageContext};
 
 const MATERIAL_KEY: &str = "blur.material";
+/// The store's key for Blur Amount's edits, which set passes and offset together.
+const AMOUNT_KEY: &str = "blur.amount";
+/// The store's key for the Preset slider's edits, which set what makes glass clear or hazy.
+const PRESET_KEY: &str = "blur.glass.preset";
 const MATERIAL_PATH: &[&str] = &["blur", "material"];
 
 /// What resetting the advanced settings removes from the config.
 const ADVANCED_PATHS: &[&[&str]] = &[
     &["blur", "passes"],
+    &["blur", "offset"],
     &["blur", "noise"],
     &["blur", "saturation"],
     &["blur", "glass"],
@@ -30,39 +35,62 @@ static SWITCH: LazyLock<Setting> = LazyLock::new(|| {
         .keywords(&["transparency", "translucency", "background effect"])
 });
 
+/// Passes and Strength, which Blur Amount sets together.
 static STRENGTH: LazyLock<Setting> = LazyLock::new(|| {
     Setting::number("Strength", "blur.offset", |c| c.blur.offset)
-        .range(0., 10., 0.1)
-        .digits(1)
+        .range(0., 10., 0.01)
+        .digits(2)
         .slider()
-        .format(|x| format!("{x:.1}"))
-        .keywords(&["radius", "amount", "offset"])
+        .format(|x| format!("{x:.2}"))
+        .keywords(&["radius", "offset"])
 });
 
-/// Settings both materials share.
-static SHARED: LazyLock<Vec<Setting>> = LazyLock::new(|| {
-    vec![
-        Setting::number("Passes", "blur.passes", |c| f64::from(c.blur.passes))
-            .range(1., 8., 1.)
-            .slider()
-            .format(|x| format!("{x:.0}"))
-            .keywords(&["quality", "iterations"]),
-        Setting::number("Noise", "blur.noise", |c| c.blur.noise)
-            .range(0., 0.2, 0.01)
-            .digits(2)
-            .slider()
-            .format(|x| format!("{x:.2}"))
-            .keywords(&["grain", "dither"]),
-        Setting::number("Saturation", "blur.saturation", |c| c.blur.saturation)
-            .range(0., 3., 0.05)
-            .digits(2)
-            .slider()
-            .format(|x| format!("{:.0} %", x * 100.))
-            .keywords(&["vibrancy", "color"]),
-    ]
+static PASSES: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Passes", "blur.passes", |c| f64::from(c.blur.passes))
+        .range(1., 8., 1.)
+        .slider()
+        .format(|x| format!("{x:.0}"))
+        .keywords(&["quality", "iterations"])
 });
 
-/// Settings only glass has.
+static NOISE: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Noise", "blur.noise", |c| c.blur.noise)
+        .range(0., 0.2, 0.01)
+        .digits(2)
+        .slider()
+        .format(|x| format!("{x:.2}"))
+        .keywords(&["grain", "dither"])
+});
+
+static SATURATION: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Saturation", "blur.saturation", |c| c.blur.saturation)
+        .range(0., 3., 0.05)
+        .digits(2)
+        .slider()
+        .format(|x| format!("{:.0} %", x * 100.))
+        .keywords(&["vibrancy", "color"])
+});
+
+static CLARITY: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Clarity", "blur.glass.clarity", |c| c.blur.glass.clarity)
+        .range(0., 1., 0.01)
+        .digits(2)
+        .slider()
+        .format(|x| format!("{:.0} %", x * 100.))
+        .keywords(&["sharp", "clear", "haze"])
+});
+
+static LIGHT_ANGLE: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Light Angle", "blur.glass.light-angle", |c| {
+        c.blur.glass.light_angle
+    })
+    .range(0., 360., 1.)
+    .slider()
+    .format(|x| format!("{x:.0}°"))
+    .keywords(&["light direction"])
+});
+
+/// The rest of the settings only glass has.
 static GLASS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
     vec![
         Setting::number("Bezel", "blur.glass.bezel", |c| c.blur.glass.bezel)
@@ -101,22 +129,132 @@ static GLASS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
         .slider()
         .format(|x| format!("{x:.2}"))
         .keywords(&["glare", "edge light", "shine"]),
-        Setting::number("Light Angle", "blur.glass.light-angle", |c| {
-            c.blur.glass.light_angle
-        })
-        .range(0., 360., 1.)
-        .slider()
-        .format(|x| format!("{x:.0}°"))
-        .keywords(&["light direction"]),
     ]
 });
+
+/// How far the blur reaches, about `offset · 2^passes`, at a Blur Amount from 0 to 1: from 4 to
+/// 128, evenly on a log scale.
+fn reach(amount: f64) -> f64 {
+    4. * (5. * amount).exp2()
+}
+
+/// The Blur Amount that `blur` reaches as far as.
+fn amount(blur: &Blur) -> f64 {
+    let reach = blur.offset * f64::from(blur.passes).exp2();
+    ((reach / 4.).log2() / 5.).clamp(0., 1.)
+}
+
+/// The passes and offset that reach `reach`, with the offset in hundredths as it's saved.
+fn passes_and_offset(reach: f64) -> (f64, f64) {
+    let passes = (reach.log2() - 1.).round().clamp(1., 8.);
+    (passes, hundredths(reach / passes.exp2()))
+}
+
+fn hundredths(x: f64) -> f64 {
+    (x * 100.).round() / 100.
+}
+
+/// A look for glass, from its Preset slider.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Preset {
+    clarity: f64,
+    reach: f64,
+    noise: f64,
+    saturation: f64,
+}
+
+/// Clear, Regular and Hazy, at 0, 1 and 2 on the Preset slider.
+const PRESETS: [(&str, Preset); 3] = [
+    (
+        "Clear",
+        Preset {
+            clarity: 1.,
+            reach: 8.,
+            noise: 0.,
+            saturation: 1.2,
+        },
+    ),
+    (
+        "Regular",
+        Preset {
+            clarity: 0.5,
+            reach: 24.,
+            noise: 0.02,
+            saturation: 1.4,
+        },
+    ),
+    (
+        "Hazy",
+        Preset {
+            clarity: 0.,
+            reach: 72.,
+            noise: 0.04,
+            saturation: 1.5,
+        },
+    ),
+];
+
+/// The look at `position` on the Preset slider, between the two presets around it. The reach
+/// changes evenly on a log scale, like Blur Amount.
+fn preset_at(position: f64) -> Preset {
+    let last = (PRESETS.len() - 1) as f64;
+    let position = position.clamp(0., last);
+    let i = (position.floor() as usize).min(PRESETS.len() - 2);
+    let t = position - i as f64;
+    let (a, b) = (PRESETS[i].1, PRESETS[i + 1].1);
+    let lerp = |a: f64, b: f64| a + (b - a) * t;
+    Preset {
+        clarity: lerp(a.clarity, b.clarity),
+        reach: lerp(a.reach.log2(), b.reach.log2()).exp2(),
+        noise: lerp(a.noise, b.noise),
+        saturation: lerp(a.saturation, b.saturation),
+    }
+}
+
+/// Where `clarity` puts the Preset slider.
+fn preset_position(clarity: f64) -> f64 {
+    for (i, pair) in PRESETS.windows(2).enumerate() {
+        let (a, b) = (pair[0].1.clarity, pair[1].1.clarity);
+        if (b..=a).contains(&clarity) {
+            return i as f64 + (a - clarity) / (a - b);
+        }
+    }
+    if clarity > PRESETS[0].1.clarity {
+        0.
+    } else {
+        (PRESETS.len() - 1) as f64
+    }
+}
+
+/// A slider row of the page's own, like a setting's, with the label for its value.
+fn slider_row(
+    title: &str,
+    min: f64,
+    max: f64,
+    step: f64,
+) -> (adw::ActionRow, gtk::Scale, gtk::Label) {
+    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, step);
+    scale.set_draw_value(false);
+    scale.set_hexpand(true);
+    scale.set_valign(gtk::Align::Center);
+    scale.set_width_request(200);
+    let value = gtk::Label::builder()
+        .xalign(1.)
+        .width_chars(8)
+        .css_classes(["dim-label", "numeric"])
+        .build();
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(&value);
+    row.add_suffix(&scale);
+    (row, scale, value)
+}
 
 pub fn build(ctx: &PageContext) -> gtk::Widget {
     let group = adw::PreferencesGroup::builder().title("Blur").build();
     ctx.anchor("appearance.blur", &group);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    let (preview, live) = super::blur_preview::build(ctx);
+    let (preview, live) = super::blur_preview::build(ctx, &LIGHT_ANGLE);
     content.append(&preview);
     // Each control shows its value in the preview as it moves; the config saves it after.
     let row = |setting: &'static Setting| {
@@ -129,6 +267,14 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             };
             live.show(Unsaved::Setting(setting.path, value));
         })
+    };
+    // A raw slider that Blur Amount also sets.
+    let coupled = |setting: &'static Setting, other: &str| {
+        let widget = row(setting);
+        if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
+            row.set_subtitle(&format!("Blur Amount sets this together with {other}"));
+        }
+        widget
     };
 
     let material = adw::ToggleGroup::builder()
@@ -148,21 +294,33 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         .css_classes(["boxed-list"])
         .build();
     list.append(&row(&SWITCH));
-    let strength = row(&STRENGTH);
-    list.append(&strength);
+
+    // Its marks name its values, and its empty value label keeps it in line with Blur Amount.
+    let (preset_row, preset_scale, _) = slider_row("Preset", 0., (PRESETS.len() - 1) as f64, 0.01);
+    for (i, (name, _)) in PRESETS.iter().enumerate() {
+        preset_scale.add_mark(i as f64, gtk::PositionType::Bottom, Some(name));
+    }
+    ctx.anchor(PRESET_KEY, &preset_row);
+    list.append(&preset_row);
+
+    let (amount_row, amount_scale, amount_value) = slider_row("Blur Amount", 0., 1., 0.01);
+    ctx.anchor(AMOUNT_KEY, &amount_row);
+    list.append(&amount_row);
 
     let advanced = adw::ExpanderRow::builder().title("Advanced").build();
-    for setting in SHARED.iter() {
-        advanced.add_row(&row(setting));
+    advanced.add_row(&coupled(&PASSES, "Strength"));
+    advanced.add_row(&coupled(&STRENGTH, "Passes"));
+    advanced.add_row(&row(&NOISE));
+    advanced.add_row(&row(&SATURATION));
+    let mut glass_rows = vec![preset_row.clone().upcast::<gtk::Widget>()];
+    for setting in std::iter::once(&*CLARITY)
+        .chain(GLASS.iter())
+        .chain([&*LIGHT_ANGLE])
+    {
+        let row = row(setting);
+        advanced.add_row(&row);
+        glass_rows.push(row);
     }
-    let glass_rows: Vec<gtk::Widget> = GLASS
-        .iter()
-        .map(|setting| {
-            let row = row(setting);
-            advanced.add_row(&row);
-            row
-        })
-        .collect();
     let reset = adw::ButtonRow::builder().title("Reset to Defaults").build();
     advanced.add_row(&reset);
     list.append(&advanced);
@@ -180,8 +338,47 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         });
     }
 
-    // Set while the toggles show the config, so they don't write it back.
+    // Set while the controls show the config, so they don't write it back.
     let updating = Rc::new(Cell::new(false));
+    {
+        let (ctx, live, updating) = (ctx.clone(), live.clone(), updating.clone());
+        preset_scale.connect_value_changed(move |scale| {
+            if updating.get() {
+                return;
+            }
+            let preset = preset_at(scale.value());
+            let (passes, offset) = passes_and_offset(preset.reach);
+            edit_together(
+                &ctx,
+                &live,
+                PRESET_KEY,
+                [
+                    (&CLARITY, hundredths(preset.clarity)),
+                    (&PASSES, passes),
+                    (&STRENGTH, offset),
+                    (&NOISE, hundredths(preset.noise)),
+                    (&SATURATION, hundredths(preset.saturation)),
+                ],
+            );
+        });
+    }
+    {
+        let (ctx, live, updating) = (ctx.clone(), live.clone(), updating.clone());
+        let value = amount_value.clone();
+        amount_scale.connect_value_changed(move |scale| {
+            value.set_label(&percent(scale.value()));
+            if updating.get() {
+                return;
+            }
+            let (passes, offset) = passes_and_offset(reach(scale.value()));
+            edit_together(
+                &ctx,
+                &live,
+                AMOUNT_KEY,
+                [(&PASSES, passes), (&STRENGTH, offset)],
+            );
+        });
+    }
     {
         let (ctx, updating) = (ctx.clone(), updating.clone());
         material.connect_active_name_notify(move |material| {
@@ -208,17 +405,27 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         let ctx = ctx.clone();
         move || {
             let blur = ctx.store.config().blur;
+            updating.set(true);
             if !ctx.store.is_pending(MATERIAL_KEY) {
-                updating.set(true);
                 material.set_active_name(Some(match blur.material {
                     Material::Glass => "glass",
                     Material::Frosted => "frosted",
                 }));
-                updating.set(false);
             }
+            if !ctx.store.is_pending(PRESET_KEY) {
+                preset_scale.set_value(preset_position(blur.glass.clarity));
+            }
+            if !ctx.store.is_pending(AMOUNT_KEY) {
+                // Set the label too: the scale doesn't signal when the value stays the same.
+                let current = amount(&blur);
+                amount_scale.set_value(current);
+                amount_value.set_label(&percent(current));
+            }
+            updating.set(false);
             for widget in [
                 material.upcast_ref::<gtk::Widget>(),
-                &strength,
+                preset_row.upcast_ref(),
+                amount_row.upcast_ref(),
                 advanced.upcast_ref(),
             ] {
                 widget.set_sensitive(!blur.off);
@@ -226,6 +433,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             let defaults = Blur::default();
             reset.set_sensitive(
                 blur.passes != defaults.passes
+                    || blur.offset != defaults.offset
                     || blur.noise != defaults.noise
                     || blur.saturation != defaults.saturation
                     || blur.glass != defaults.glass,
@@ -236,4 +444,59 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     ctx.store.subscribe(show);
 
     group.upcast()
+}
+
+fn percent(x: f64) -> String {
+    format!("{:.0} %", x * 100.)
+}
+
+/// Saves several settings in one edit under `key`, showing them in the preview right away.
+fn edit_together<const N: usize>(
+    ctx: &PageContext,
+    live: &Handle,
+    key: &'static str,
+    values: [(&'static LazyLock<Setting>, f64); N],
+) {
+    let values = values.map(|(setting, x)| (&**setting, x));
+    live.show_edit(
+        key,
+        &values.map(|(setting, x)| Unsaved::Setting(setting.path, x)),
+    );
+    ctx.store.edit(key, move |doc| {
+        for (setting, x) in values {
+            setting.write(doc, Input::Number(x));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blur_amount_round_trips() {
+        for amount_in in [0., 0.25, 0.5, 0.75, 1.] {
+            let (passes, offset) = passes_and_offset(reach(amount_in));
+            let blur = Blur {
+                passes: passes as u8,
+                offset,
+                ..Blur::default()
+            };
+            assert!((amount(&blur) - amount_in).abs() < 0.005, "{amount_in}");
+        }
+        assert_eq!(passes_and_offset(4.), (1., 2.));
+        assert_eq!(passes_and_offset(128.), (6., 2.));
+    }
+
+    #[test]
+    fn presets_follow_clarity() {
+        for (i, (_, preset)) in PRESETS.iter().enumerate() {
+            let at = preset_at(i as f64);
+            assert_eq!((at.clarity, at.noise), (preset.clarity, preset.noise));
+            assert!((at.reach - preset.reach).abs() < 1e-9);
+            assert_eq!(preset_position(preset.clarity), i as f64);
+        }
+        assert!((preset_position(preset_at(1.5).clarity) - 1.5).abs() < 1e-9);
+        assert!((preset_at(0.5).reach - 8. * 3f64.sqrt()).abs() < 1e-9);
+    }
 }
