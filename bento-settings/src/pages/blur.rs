@@ -297,6 +297,15 @@ fn slider_row(
     max: f64,
     step: f64,
 ) -> (adw::ActionRow, gtk::Scale, gtk::Label) {
+    let (scale, value) = slider(min, max, step);
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(&value);
+    row.add_suffix(&scale);
+    (row, scale, value)
+}
+
+/// A slider and the label for its value, for a row's end.
+fn slider(min: f64, max: f64, step: f64) -> (gtk::Scale, gtk::Label) {
     let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, step);
     scale.set_draw_value(false);
     scale.set_hexpand(true);
@@ -307,10 +316,7 @@ fn slider_row(
         .width_chars(8)
         .css_classes(["dim-label", "numeric"])
         .build();
-    let row = adw::ActionRow::builder().title(title).build();
-    row.add_suffix(&value);
-    row.add_suffix(&scale);
-    (row, scale, value)
+    (scale, value)
 }
 
 pub fn build(ctx: &PageContext) -> gtk::Widget {
@@ -363,24 +369,24 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     list.append(&preset_row);
 
     let advanced = adw::ExpanderRow::builder().title("Advanced").build();
-    let (roughness_row, roughness_scale, roughness_value) = slider_row("Roughness", 0., 1., 0.01);
+    // Roughness holds the settings it sets, so expanding it shows them under it.
+    let (roughness_scale, roughness_value) = slider(0., 1., 0.01);
+    let roughness_row = adw::ExpanderRow::builder().title("Roughness").build();
+    roughness_row.add_suffix(&roughness_value);
+    roughness_row.add_suffix(&roughness_scale);
     ctx.anchor(ROUGHNESS_KEY, &roughness_row);
     advanced.add_row(&roughness_row);
     let passes = part(&PASSES);
     let strength = part(&STRENGTH);
     let sheen = part(&SHEEN);
-    advanced.add_row(&passes);
-    advanced.add_row(&strength);
-    advanced.add_row(&sheen);
+    for part in [&passes, &strength, &sheen] {
+        part.add_css_class("part");
+        roughness_row.add_row(part);
+    }
     // Roughness is glass's, which it sets sheen for too; plain has only the blur, so there it's
     // Blur Intensity.
     let name_roughness = {
-        let (roughness_row, passes, strength, sheen) = (
-            roughness_row.clone(),
-            passes.clone(),
-            strength.clone(),
-            sheen.clone(),
-        );
+        let roughness_row = roughness_row.clone();
         move |glass: bool| {
             let (title, subtitle) = if glass {
                 (
@@ -392,9 +398,6 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             };
             roughness_row.set_title(title);
             roughness_row.set_subtitle(subtitle);
-            for part in [&passes, &strength, &sheen] {
-                part.set_subtitle(&format!("Set by {title}, with the others"));
-            }
         }
     };
     advanced.add_row(&row(&SATURATION));

@@ -117,3 +117,8 @@ scale.custom slider,
 scale.custom highlight {
   opacity: 0;
 }
+
+/* Settings another slider sets, nested under it: indented, so they read as its parts. */
+row.part > box.header {
+  margin-left: 24px;
+}
