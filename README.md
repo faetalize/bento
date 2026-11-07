@@ -75,6 +75,7 @@ These may vary depending on your distribution.
 | `resources/bento-portals.conf` | `/usr/local/share/xdg-desktop-portal/` |
 | `resources/bento.service` (systemd) | `/etc/systemd/user/` |
 | `resources/bento-shutdown.target` (systemd) | `/etc/systemd/user/` |
+| `resources/xdg-desktop-portal-graphical-session.conf` (systemd) | `/etc/systemd/user/xdg-desktop-portal.service.d/graphical-session.conf` |
 | `resources/dinit/bento` (dinit) | `/etc/dinit.d/user/` |
 | `resources/dinit/bento.target` (dinit) | `/etc/dinit.d/user/` |
 | `target/release/bento-settings` (settings app) | `/usr/local/bin/` |
@@ -82,6 +83,8 @@ These may vary depending on your distribution.
 | `resources/io.github.faetalize.bento.Settings.desktop` (settings app) | `/usr/local/share/applications/` |
 
 Doing this will make bento appear in GDM and other display managers.
+
+The portal drop-in keeps xdg-desktop-portal from starting between sessions, when something on the bus asks for it after you log out and before bento has set `XDG_CURRENT_DESKTOP`. Started then, it can't find bento's portals, so screencasting fails for the whole next session.
 
 `bento.service` and the dinit service start `bento` by name rather than by full path, so put it in `/usr/local/bin/` or `/usr/bin/` where they'll find it.
 
