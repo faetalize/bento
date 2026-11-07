@@ -194,8 +194,20 @@ blur {
     offset 3.0
     noise 0.02
     saturation 1.5
+
+    // How glass bends and lights what's behind it.
+    glass {
+        bezel 20             // how far in from its edge it curves, in logical pixels
+        thickness 40         // how tall it is, in logical pixels
+        refractive-index 1.5 // 1 doesn't bend at all
+        dispersion 0.14      // how much more red bends than blue
+        highlight 0.6        // how bright the lit edge is
+        light-angle 315      // where the light comes from, clockwise from the top
+    }
 }
 ```
+
+Every setting left out keeps its default, shown here.
 
 A rule can pick the other material for some windows or surfaces:
 

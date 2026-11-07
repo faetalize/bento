@@ -2211,6 +2211,14 @@ mod tests {
                 noise: 0.02,
                 saturation: 1.5,
                 material: Glass,
+                glass: Glass {
+                    bezel: 20.0,
+                    thickness: 40.0,
+                    refractive_index: 1.5,
+                    dispersion: 0.14,
+                    highlight: 0.6,
+                    light_angle: 315.0,
+                },
             },
             gestures: Gestures {
                 dnd_edge_view_scroll: DndEdgeViewScroll {

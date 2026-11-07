@@ -204,7 +204,12 @@ impl BackgroundEffect {
             let (geo, radius) = params
                 .clip
                 .unwrap_or((params.geometry, CornerRadius::default()));
-            GlassShapes::filling(geo.size.w as f32, geo.size.h as f32, radius)
+            GlassShapes::filling(
+                geo.size.w as f32,
+                geo.size.h as f32,
+                radius,
+                self.blur_config.glass,
+            )
         });
 
         if self.options.xray {
@@ -220,7 +225,7 @@ impl BackgroundEffect {
                 blur,
                 noise,
                 saturation,
-                glass.is_some(),
+                glass.map(|shapes| shapes.glass),
                 &mut |elem| push(elem.into()),
             );
         } else if let (Some(shapes), Some(blur_options)) = (glass, blur_options) {

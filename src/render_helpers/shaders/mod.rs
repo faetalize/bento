@@ -143,6 +143,12 @@ impl Shaders {
             UniformName::new("noise", UniformType::_1f),
             UniformName::new("saturation", UniformType::_1f),
             UniformName::new("bg_color", UniformType::_4f),
+            UniformName::new("bezel", UniformType::_1f),
+            UniformName::new("thickness", UniformType::_1f),
+            UniformName::new("refractive_index", UniformType::_1f),
+            UniformName::new("dispersion", UniformType::_1f),
+            UniformName::new("highlight", UniformType::_1f),
+            UniformName::new("light_direction", UniformType::_2f),
         ];
         glass_uniforms.extend(
             GLASS_SHAPE_UNIFORMS

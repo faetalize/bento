@@ -105,11 +105,11 @@ impl Xray {
         blur: bool,
         noise: f32,
         saturation: f32,
-        glass: bool,
+        glass: Option<niri_config::Glass>,
         push: &mut dyn FnMut(XrayElement),
     ) {
         let shaders = Shaders::get(ctx.renderer);
-        let program = if glass {
+        let program = if glass.is_some() {
             // Without its shader, glass would be an unclipped rectangle.
             let Some(program) = shaders.glass.clone() else {
                 return;
@@ -214,8 +214,8 @@ impl Xray {
                     noise,
                     saturation,
                     bg_color: *bg_color,
-                    glass: glass.then(|| {
-                        GlassShapes::filling(clip_geo_size.x, clip_geo_size.y, corner_radius)
+                    glass: glass.map(|glass| {
+                        GlassShapes::filling(clip_geo_size.x, clip_geo_size.y, corner_radius, glass)
                     }),
                     program: program.clone(),
                 };
@@ -267,11 +267,12 @@ impl Xray {
                 noise,
                 saturation,
                 bg_color: self.backdrop_color,
-                glass: glass.then(|| {
+                glass: glass.map(|glass| {
                     GlassShapes::filling(
                         clip_geo_size.x,
                         clip_geo_size.y,
                         corner_radius.scaled_by(zoom as f32),
+                        glass,
                     )
                 }),
                 program: program.clone(),

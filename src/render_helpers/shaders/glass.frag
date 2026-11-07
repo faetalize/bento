@@ -45,16 +45,20 @@ uniform float saturation;
 // Drawn under what's behind where that's see-through, like where xray has no wallpaper.
 uniform vec4 bg_color;
 
+// How far in from its edge the glass curves, in logical pixels.
+uniform float bezel;
+// How tall the glass is where it's flat, in logical pixels.
+uniform float thickness;
+uniform float refractive_index;
+// How much more red bends than blue, as a fraction of the bend.
+uniform float dispersion;
+// How bright the lit edge is.
+uniform float highlight;
+// Towards the light, in screen coordinates.
+uniform vec2 light_direction;
+
 // Shapes closer than this melt into one piece.
 const float MELT = 20.0;
-// How far in from its edge the glass bends light.
-const float BEZEL = 20.0;
-// How far the very edge shifts what's behind it.
-const float REFRACTION = 16.0;
-// How much more red bends than blue.
-const float DISPERSION = 0.14;
-// Where the light comes from: the top left.
-const vec2 LIGHT = vec2(-0.6, -0.8);
 // The width of the lit edge.
 const float EDGE = 1.5;
 
@@ -109,16 +113,24 @@ void main() {
     );
     vec2 normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
 
-    // 0 in the flat middle, 1 at the edge: the bezel curves down like a lens's rim, so it
-    // magnifies what's behind it, more so the closer to the edge.
-    float rim = clamp(1.0 + d / BEZEL, 0.0, 1.0);
-    float bend = rim * rim * rim * REFRACTION;
+    // 1 at the edge, 0 where the bezel meets the flat middle. The bezel's surface is a quarter
+    // ellipse, rising from nothing at the edge to the full thickness.
+    float rim = clamp(1.0 + d / max(bezel, 1e-3), 0.0, 1.0);
+    float rise = sqrt(max(1.0 - rim * rim, 0.0));
+    float height = thickness * rise;
+    float slope = thickness / max(bezel, 1e-3) * rim / max(rise, 1e-4);
 
-    // What's behind, seen through the bezel: from further in, red bent more than blue.
+    // Looking straight down, the ray meets the surface tilted by `tilt` and bends towards its
+    // normal, so it lands on what's behind further in: the bezel magnifies.
+    float tilt = atan(slope);
+    float bent = asin(sin(tilt) / max(refractive_index, 1.0));
+    float bend = height * tan(tilt - bent);
+
+    // What's behind, seen through the bezel, red bent more than blue.
     vec2 shift = (geo_to_input * vec3(-normal * bend / geo_size, 0.0)).xy;
-    vec4 red = texture2D(tex, v_coords + shift * (1.0 + DISPERSION));
+    vec4 red = texture2D(tex, v_coords + shift * (1.0 + dispersion));
     vec4 green = texture2D(tex, v_coords + shift);
-    vec4 blue = texture2D(tex, v_coords + shift * (1.0 - DISPERSION));
+    vec4 blue = texture2D(tex, v_coords + shift * (1.0 - dispersion));
     vec4 behind = vec4(red.r, green.g, blue.b, green.a);
     behind = behind + bg_color * (1.0 - behind.a);
 
@@ -127,10 +139,10 @@ void main() {
     behind.rgb += (hash12(gl_FragCoord.xy) - 0.5) * noise * behind.a;
 
     // The edge catches the light where it faces it, and a little on the far side too.
-    float facing = dot(normal, normalize(LIGHT));
+    float facing = dot(normal, light_direction);
     float edge = 1.0 - smoothstep(0.0, EDGE, -d);
-    float lit = 0.16 + 0.6 * pow(max(facing, 0.0), 2.0) + 0.3 * pow(max(-facing, 0.0), 2.0);
-    float sheen = pow(rim, 4.0) * 0.12 * max(facing, 0.0);
+    float lit = highlight * (0.27 + pow(max(facing, 0.0), 2.0) + 0.5 * pow(max(-facing, 0.0), 2.0));
+    float sheen = pow(rim, 4.0) * 0.2 * highlight * max(facing, 0.0);
     float light = clamp(edge * lit + sheen, 0.0, 1.0);
 
     // The light goes over what's behind, both premultiplied.

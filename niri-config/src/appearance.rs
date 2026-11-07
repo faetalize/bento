@@ -855,6 +855,7 @@ pub struct Blur {
     pub noise: f64,
     pub saturation: f64,
     pub material: Material,
+    pub glass: Glass,
 }
 
 impl Default for Blur {
@@ -866,7 +867,67 @@ impl Default for Blur {
             noise: 0.02,
             saturation: 1.5,
             material: Material::Glass,
+            glass: Glass::default(),
         }
+    }
+}
+
+/// How glass bends and lights what's behind it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glass {
+    /// How far in from its edge the glass curves, in logical pixels.
+    pub bezel: f64,
+    /// How tall the glass is where it's flat, in logical pixels.
+    pub thickness: f64,
+    pub refractive_index: f64,
+    /// How much more red bends than blue, as a fraction of the bend.
+    pub dispersion: f64,
+    /// How bright the lit edge is.
+    pub highlight: f64,
+    /// Where the light comes from, in degrees clockwise from the top.
+    pub light_angle: f64,
+}
+
+impl Default for Glass {
+    fn default() -> Self {
+        Self {
+            bezel: 20.,
+            thickness: 40.,
+            refractive_index: 1.5,
+            dispersion: 0.14,
+            highlight: 0.6,
+            light_angle: 315.,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+pub struct GlassPart {
+    #[knuffel(child, unwrap(argument))]
+    pub bezel: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub thickness: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub refractive_index: Option<FloatOrInt<1, 10>>,
+    #[knuffel(child, unwrap(argument))]
+    pub dispersion: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub highlight: Option<FloatOrInt<0, 10>>,
+    #[knuffel(child, unwrap(argument))]
+    pub light_angle: Option<FloatOrInt<0, 360>>,
+}
+
+impl MergeWith<GlassPart> for Glass {
+    fn merge_with(&mut self, part: &GlassPart) {
+        merge!(
+            (self, part),
+            bezel,
+            thickness,
+            refractive_index,
+            dispersion,
+            highlight,
+            light_angle
+        );
     }
 }
 
@@ -897,6 +958,8 @@ pub struct BlurPart {
     pub saturation: Option<FloatOrInt<0, 1000>>,
     #[knuffel(child, unwrap(argument))]
     pub material: Option<Material>,
+    #[knuffel(child)]
+    pub glass: Option<GlassPart>,
 }
 
 impl MergeWith<BlurPart> for Blur {
@@ -908,6 +971,9 @@ impl MergeWith<BlurPart> for Blur {
 
         merge_clone!((self, part), passes, material);
         merge!((self, part), offset, noise, saturation);
+        if let Some(glass) = &part.glass {
+            self.glass.merge_with(glass);
+        }
     }
 }
 
@@ -970,6 +1036,28 @@ mod tests {
 
     use super::*;
     use crate::Config;
+
+    #[test]
+    fn glass_settings_left_out_keep_their_defaults() {
+        let config = Config::parse_mem(
+            "blur {
+                glass {
+                    thickness 30
+                    light-angle 90
+                }
+            }",
+        )
+        .unwrap();
+        assert_eq!(
+            config.blur.glass,
+            Glass {
+                thickness: 30.,
+                light_angle: 90.,
+                ..Glass::default()
+            }
+        );
+        assert_eq!(config.blur.material, Material::Glass);
+    }
 
     #[test]
     fn hex_colors_parse_in_all_three_spellings() {

@@ -23,13 +23,21 @@ pub struct GlassShapes {
     pub rects: [[f32; 4]; MAX_GLASS_SHAPES],
     pub radii: [f32; MAX_GLASS_SHAPES],
     pub count: usize,
+    /// How the glass bends and lights what's behind it.
+    pub glass: niri_config::Glass,
 }
 
 impl GlassShapes {
     /// One piece of glass filling a rounded geometry of this size.
-    pub fn filling(width: f32, height: f32, radius: CornerRadius) -> Self {
+    pub fn filling(
+        width: f32,
+        height: f32,
+        radius: CornerRadius,
+        glass: niri_config::Glass,
+    ) -> Self {
         let mut shapes = Self {
             count: 1,
+            glass,
             ..Self::default()
         };
         shapes.rects[0] = [0., 0., width, height];
@@ -51,6 +59,9 @@ pub fn uniforms(
     bg_color: [f32; 4],
 ) -> Vec<Uniform<'static>> {
     let radii = shapes.radii;
+    let glass = shapes.glass;
+    let angle = glass.light_angle.to_radians();
+    let light_direction = [angle.sin() as f32, -angle.cos() as f32];
     let mut uniforms = vec![
         Uniform::new("niri_scale", scale),
         Uniform::new("geo_size", <[f32; 2]>::from(geo_size)),
@@ -62,6 +73,12 @@ pub fn uniforms(
         Uniform::new("noise", noise),
         Uniform::new("saturation", saturation),
         Uniform::new("bg_color", bg_color),
+        Uniform::new("bezel", glass.bezel as f32),
+        Uniform::new("thickness", glass.thickness as f32),
+        Uniform::new("refractive_index", glass.refractive_index as f32),
+        Uniform::new("dispersion", glass.dispersion as f32),
+        Uniform::new("highlight", glass.highlight as f32),
+        Uniform::new("light_direction", light_direction),
     ];
     uniforms.extend(
         GLASS_SHAPE_UNIFORMS
@@ -124,6 +141,7 @@ pub fn render(
 
         let mut uniforms = GlassShapes {
             count: shapes.len(),
+            glass: blur.glass,
             ..GlassShapes::default()
         };
         for (i, shape) in shapes.iter().enumerate() {
