@@ -144,6 +144,14 @@ static GLASS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
         .slider()
         .format(|x| format!("{x:.2}"))
         .keywords(&["glare", "edge light", "shine"]),
+        Setting::number("Reflection", "blur.glass.reflection", |c| {
+            c.blur.glass.reflection
+        })
+        .range(0., 1., 0.01)
+        .digits(2)
+        .slider()
+        .format(|x| format!("{:.0} %", x * 100.))
+        .keywords(&["fresnel", "rim", "edge", "glow"]),
     ]
 });
 

@@ -151,6 +151,7 @@ impl Shaders {
             UniformName::new("refractive_index", UniformType::_1f),
             UniformName::new("dispersion", UniformType::_1f),
             UniformName::new("highlight", UniformType::_1f),
+            UniformName::new("reflection", UniformType::_1f),
             UniformName::new("sheen", UniformType::_1f),
             UniformName::new("light_size", UniformType::_1f),
             UniformName::new("light_direction", UniformType::_2f),

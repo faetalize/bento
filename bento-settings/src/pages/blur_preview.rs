@@ -629,6 +629,7 @@ fn pane_uniforms(
         ),
         ("dispersion", Uniform::Float(glass.dispersion as f32)),
         ("highlight", Uniform::Float(glass.highlight as f32)),
+        ("reflection", Uniform::Float(glass.reflection as f32)),
         ("sheen", Uniform::Float(glass.sheen as f32)),
         ("light_size", Uniform::Float(glass.light_size as f32)),
         (

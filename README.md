@@ -202,6 +202,7 @@ blur {
         refractive-index 1.5 // 1 doesn't bend at all
         dispersion 0.14      // how much more red bends than blue
         highlight 0.6        // how bright the light it reflects is
+        reflection 0.5       // how much it reflects where it's seen edge on, at its very edge
         sheen 0.6            // how shiny it is, from rough 0 to polished 1
         light-size 0.35      // how big the light looks, from a point 0 to a broad window 1
         light-angle 315      // where the light comes from, clockwise from the top

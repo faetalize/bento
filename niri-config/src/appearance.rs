@@ -885,6 +885,9 @@ pub struct Glass {
     pub dispersion: f64,
     /// How bright the light the bezel reflects is.
     pub highlight: f64,
+    /// How much of its surroundings the bezel reflects where it's seen edge on, at its very edge,
+    /// from 0 for none to 1.
+    pub reflection: f64,
     /// How shiny the surface is, from 0 for rough, which spreads the light it reflects into a
     /// broad dim glow, to 1 for polished, which keeps it a tight bright spot: the reflection's
     /// side of the roughness that blurs what's behind.
@@ -903,6 +906,7 @@ impl Default for Glass {
             refractive_index: 1.5,
             dispersion: 0.14,
             highlight: 0.6,
+            reflection: 0.5,
             sheen: 0.6,
             light_size: 0.35,
             light_angle: 315.,
@@ -923,6 +927,8 @@ pub struct GlassPart {
     #[knuffel(child, unwrap(argument))]
     pub highlight: Option<FloatOrInt<0, 10>>,
     #[knuffel(child, unwrap(argument))]
+    pub reflection: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
     pub sheen: Option<FloatOrInt<0, 1>>,
     #[knuffel(child, unwrap(argument))]
     pub light_size: Option<FloatOrInt<0, 1>>,
@@ -939,6 +945,7 @@ impl MergeWith<GlassPart> for Glass {
             refractive_index,
             dispersion,
             highlight,
+            reflection,
             sheen,
             light_size,
             light_angle

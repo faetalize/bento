@@ -61,6 +61,8 @@ uniform float refractive_index;
 uniform float dispersion;
 // How bright the light the bezel reflects is.
 uniform float highlight;
+// How much of its surroundings the bezel reflects where it's seen edge on.
+uniform float reflection;
 // How shiny the surface is, from rough 0 to polished 1.
 uniform float sheen;
 // How big the light looks, from a point 0 to a broad window 1.
@@ -74,8 +76,6 @@ const float MELT = 20.0;
 const float LIGHT_ELEVATION = 0.7;
 // How much the bezel darkens away from the light, and brightens towards it.
 const float SHADING = 0.35;
-// How much of the surroundings the bezel reflects where it's seen edge on.
-const float REFLECTION = 0.5;
 
 // The radius of the corner of a box nearest `q`, from the box's middle, fit to the box.
 float corner_radius(vec2 q, vec2 half_size, vec4 radii) {
@@ -247,7 +247,7 @@ void main() {
     float f0 = (refractive_index - 1.0) / (refractive_index + 1.0);
     f0 *= f0;
     float fresnel = f0 + (1.0 - f0) * pow(1.0 - surface.z, 5.0);
-    behind.rgb = mix(behind.rgb, vec3(behind.a), fresnel * REFLECTION);
+    behind.rgb = mix(behind.rgb, vec3(behind.a), fresnel * reflection);
 
     // The light's reflection where the bezel tilts towards it, and a weaker one from the far
     // side, as light that went through the glass comes back off its inside. A rough surface and

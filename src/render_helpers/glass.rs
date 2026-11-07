@@ -75,6 +75,7 @@ pub fn uniforms(
         Uniform::new("refractive_index", glass.refractive_index as f32),
         Uniform::new("dispersion", glass.dispersion as f32),
         Uniform::new("highlight", glass.highlight as f32),
+        Uniform::new("reflection", glass.reflection as f32),
         Uniform::new("sheen", glass.sheen as f32),
         Uniform::new("light_size", glass.light_size as f32),
         Uniform::new("light_direction", light_direction),

@@ -91,6 +91,11 @@ pub fn category() -> Category {
                     &["glare", "edge light", "shine"],
                 )
                 .search_item(
+                    "blur.glass.reflection",
+                    "Glass Reflection",
+                    &["fresnel", "rim", "edge", "glow"],
+                )
+                .search_item(
                     "blur.glass.light-size",
                     "Glass Light Size",
                     &["light", "softness", "highlight"],

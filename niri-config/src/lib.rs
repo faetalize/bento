@@ -2217,6 +2217,7 @@ mod tests {
                     refractive_index: 1.5,
                     dispersion: 0.14,
                     highlight: 0.6,
+                    reflection: 0.5,
                     sheen: 0.6,
                     light_size: 0.35,
                     light_angle: 315.0,
