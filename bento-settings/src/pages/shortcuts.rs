@@ -1318,6 +1318,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::store::on_own_context;
 
     fn close_window() -> ActionNode {
         ActionNode {
@@ -1329,25 +1330,28 @@ mod tests {
 
     #[test]
     fn resetting_puts_the_action_back_on_its_default_key() {
-        let dir = std::env::temp_dir().join(format!("bento-settings-reset-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.kdl");
+        on_own_context(|| {
+            let dir =
+                std::env::temp_dir().join(format!("bento-settings-reset-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config.kdl");
 
-        let moved = "binds {\n    Mod+Ctrl+Y repeat=false { close-window; }\n}\n";
-        fs::write(&path, moved).unwrap();
-        let store = Store::load_from(path.clone());
-        let key = parse_key("Mod+Ctrl+Y").unwrap();
-        let (bind, file) = default_bind(&store, key, &close_window()).unwrap();
-        assert_eq!((bind.key.as_str(), file), ("Mod+Q", File::Main));
+            let moved = "binds {\n    Mod+Ctrl+Y repeat=false { close-window; }\n}\n";
+            fs::write(&path, moved).unwrap();
+            let store = Store::load_from(path.clone());
+            let key = parse_key("Mod+Ctrl+Y").unwrap();
+            let (bind, file) = default_bind(&store, key, &close_window()).unwrap();
+            assert_eq!((bind.key.as_str(), file), ("Mod+Q", File::Main));
 
-        // Already on its default key, as shipped: nothing to reset.
-        let shipped = "binds {\n    Mod+Q repeat=false { close-window; }\n}\n";
-        fs::write(&path, shipped).unwrap();
-        let store = Store::load_from(path);
-        let key = parse_key("Mod+Q").unwrap();
-        assert_eq!(default_bind(&store, key, &close_window()), None);
+            // Already on its default key, as shipped: nothing to reset.
+            let shipped = "binds {\n    Mod+Q repeat=false { close-window; }\n}\n";
+            fs::write(&path, shipped).unwrap();
+            let store = Store::load_from(path);
+            let key = parse_key("Mod+Q").unwrap();
+            assert_eq!(default_bind(&store, key, &close_window()), None);
 
-        fs::remove_dir_all(&dir).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        });
     }
 
     #[test]
