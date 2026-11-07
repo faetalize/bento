@@ -3,7 +3,7 @@
 //! It draws with bento's own shaders: the background is blurred by the same passes with the same
 //! offset, and the pane is drawn by the glass or plain shader with the uniforms bento gives it.
 //! The pane can be dragged around, to watch the glass bend what's behind it, and on glass a handle
-//! beside it moves the light.
+//! beside it for each light that's on moves that light.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -15,7 +15,7 @@ use adw::prelude::*;
 use glow::HasContext;
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::{gdk, gio, glib};
-use niri_config::{Blur, CornerRadius, Material};
+use niri_config::{Blur, CornerRadius, Glass, Material, MAX_GLASS_LIGHTS};
 
 use super::blur_live::{Live, Unsaved};
 use super::layout::every_window;
@@ -32,9 +32,9 @@ const MAX_WIDTH: i32 = 800;
 const PANE: (f64, f64) = (240., 150.);
 /// The screen the wallpaper covers when the monitor isn't known, in logical pixels.
 const SCREEN: (i32, i32) = (1920, 1080);
-/// The light's handle, in logical pixels.
+/// A light's handle, in logical pixels.
 const LIGHT: i32 = 28;
-/// The space between the pane and the light's handle, in logical pixels.
+/// The space between the pane and a light's handle, in logical pixels.
 const LIGHT_GAP: f64 = 8.;
 
 const GLASS: &str = include_str!("../../../src/render_helpers/shaders/glass.frag");
@@ -95,22 +95,32 @@ void main() {
 }
 ";
 
-/// Builds the preview. Dragging the light's handle saves `light_angle`.
-pub fn build(ctx: &PageContext, live: &Live, light_angle: &'static Setting) -> gtk::Widget {
+/// Builds the preview. Dragging a light's handle saves its angle, the setting in `light_angles` at
+/// its place.
+pub fn build(
+    ctx: &PageContext,
+    live: &Live,
+    light_angles: [&'static Setting; MAX_GLASS_LIGHTS],
+) -> gtk::Widget {
     let area = gtk::GLArea::builder()
         .allowed_apis(gdk::GLAPI::GLES)
         .hexpand(true)
         .build();
-    let light = gtk::Image::builder()
-        .icon_name("ph-sun-symbolic")
-        .width_request(LIGHT)
-        .height_request(LIGHT)
-        .tooltip_text("Light Angle")
-        .css_classes(["blur-light"])
-        .build();
-    light.set_cursor_from_name(Some("grab"));
     let overlay = gtk::Overlay::builder().child(&area).build();
-    overlay.add_overlay(&light);
+    let lights: Vec<gtk::Image> = (1..=MAX_GLASS_LIGHTS)
+        .map(|n| {
+            let light = gtk::Image::builder()
+                .icon_name("ph-sun-symbolic")
+                .width_request(LIGHT)
+                .height_request(LIGHT)
+                .tooltip_text(format!("Light {n}"))
+                .css_classes(["blur-light"])
+                .build();
+            light.set_cursor_from_name(Some("grab"));
+            overlay.add_overlay(&light);
+            light
+        })
+        .collect();
     let fallback = gtk::Label::builder()
         .label("Preview Unavailable")
         .css_classes(["dim-label"])
@@ -126,7 +136,7 @@ pub fn build(ctx: &PageContext, live: &Live, light_angle: &'static Setting) -> g
     let preview = Rc::new(Preview {
         area: area.clone(),
         overlay: overlay.clone(),
-        light: light.clone(),
+        lights,
         stack: stack.clone(),
         store: ctx.store.clone(),
         gl: RefCell::new(None),
@@ -174,8 +184,10 @@ pub fn build(ctx: &PageContext, live: &Live, light_angle: &'static Setting) -> g
     }
     {
         let preview = Rc::downgrade(&preview);
-        overlay.connect_get_child_position(move |_, _| {
-            let (x, y) = preview.upgrade()?.light_position();
+        overlay.connect_get_child_position(move |_, widget| {
+            let preview = preview.upgrade()?;
+            let i = preview.lights.iter().position(|light| light == widget)?;
+            let (x, y) = preview.light_position(i);
             let half = f64::from(LIGHT) / 2.;
             Some(gdk::Rectangle::new(
                 (x - half).round() as i32,
@@ -186,7 +198,7 @@ pub fn build(ctx: &PageContext, live: &Live, light_angle: &'static Setting) -> g
         });
     }
     drag(&preview);
-    drag_light(&preview, ctx, light_angle);
+    drag_light(&preview, ctx, light_angles);
 
     let redraw = Rc::downgrade(&preview);
     ctx.store.subscribe(move || {
@@ -259,33 +271,47 @@ fn drag(preview: &Rc<Preview>) {
     area.add_controller(motion);
 }
 
-/// Dragging the light's handle points the light from the pane's middle towards the pointer.
-fn drag_light(preview: &Rc<Preview>, ctx: &PageContext, setting: &'static Setting) {
+/// Dragging a light's handle points that light from the pane's middle towards the pointer.
+fn drag_light(
+    preview: &Rc<Preview>,
+    ctx: &PageContext,
+    settings: [&'static Setting; MAX_GLASS_LIGHTS],
+) {
     let start = Rc::new(Cell::new((0., 0.)));
+    // The light whose handle is being dragged.
+    let dragged = Rc::new(Cell::new(0));
     let drag = gtk::GestureDrag::new();
     {
-        let (preview, start) = (Rc::downgrade(preview), start.clone());
+        let (preview, start, dragged) = (Rc::downgrade(preview), start.clone(), dragged.clone());
         drag.connect_drag_begin(move |gesture, x, y| {
             let Some(preview) = preview.upgrade() else {
                 return;
             };
-            let light = preview.light.upcast_ref::<gtk::Widget>();
             let picked = preview.overlay.pick(x, y, gtk::PickFlags::DEFAULT);
-            if !picked.is_some_and(|widget| widget == *light || widget.is_ancestor(light)) {
+            let i = picked.and_then(|widget| {
+                preview.lights.iter().position(|light| {
+                    let light = light.upcast_ref::<gtk::Widget>();
+                    widget == *light || widget.is_ancestor(light)
+                })
+            });
+            let Some(i) = i else {
                 gesture.set_state(gtk::EventSequenceState::Denied);
                 return;
-            }
-            start.set(preview.light_position());
+            };
+            dragged.set(i);
+            start.set(preview.light_position(i));
             gesture.set_state(gtk::EventSequenceState::Claimed);
-            preview.light.set_cursor_from_name(Some("grabbing"));
+            preview.lights[i].set_cursor_from_name(Some("grabbing"));
         });
     }
     {
-        let (preview, store) = (Rc::downgrade(preview), ctx.store.clone());
+        let (preview, store, dragged) =
+            (Rc::downgrade(preview), ctx.store.clone(), dragged.clone());
         drag.connect_drag_update(move |_, dx, dy| {
             let Some(preview) = preview.upgrade() else {
                 return;
             };
+            let (i, setting) = (dragged.get(), settings[dragged.get()]);
             let (x, y) = start.get();
             let (px, py, pw, ph) = preview.pane();
             let (dx, dy) = (x + dx - (px + pw / 2.), y + dy - (py + ph / 2.));
@@ -294,7 +320,8 @@ fn drag_light(preview: &Rc<Preview>, ctx: &PageContext, setting: &'static Settin
             }
             // Degrees clockwise from the top, in whole degrees like the setting.
             let angle = dx.atan2(-dy).to_degrees().round().rem_euclid(360.);
-            if angle == preview.look().blur.glass.light_angle {
+            let light = preview.look().blur.glass.lights[i];
+            if light.is_none_or(|light| angle == light.angle) {
                 return;
             }
             preview.live.show(Unsaved::Setting(setting.path, angle));
@@ -307,7 +334,7 @@ fn drag_light(preview: &Rc<Preview>, ctx: &PageContext, setting: &'static Settin
         let preview = Rc::downgrade(preview);
         drag.connect_drag_end(move |_, _, _| {
             if let Some(preview) = preview.upgrade() {
-                preview.light.set_cursor_from_name(Some("grab"));
+                preview.lights[dragged.get()].set_cursor_from_name(Some("grab"));
             }
         });
     }
@@ -317,8 +344,8 @@ fn drag_light(preview: &Rc<Preview>, ctx: &PageContext, setting: &'static Settin
 struct Preview {
     area: gtk::GLArea,
     overlay: gtk::Overlay,
-    /// The light's handle.
-    light: gtk::Image,
+    /// The lights' handles, one for each place in glass's list.
+    lights: Vec<gtk::Image>,
     stack: gtk::Stack,
     store: Store,
     gl: RefCell<Option<Gl>>,
@@ -453,18 +480,21 @@ impl Preview {
     /// Shows what the controls or the config changed.
     fn changed(&self) {
         let blur = self.look().blur;
-        // Only glass has a light.
-        self.light
-            .set_visible(!blur.off && blur.material == Material::Glass);
+        // Only glass has lights, and only those that are on have a handle.
+        let glass = !blur.off && blur.material == Material::Glass;
+        for (handle, light) in self.lights.iter().zip(blur.glass.lights) {
+            handle.set_visible(glass && light.is_some_and(|light| light.on));
+        }
         self.overlay.queue_allocate();
         self.area.queue_render();
     }
 
-    /// The middle of the light's handle, in logical pixels: beside the pane, towards the light,
-    /// and inside the preview.
-    fn light_position(&self) -> (f64, f64) {
+    /// The middle of the handle of the light at `i`, in logical pixels: beside the pane, towards
+    /// the light, and inside the preview.
+    fn light_position(&self, i: usize) -> (f64, f64) {
         let (px, py, pw, ph) = self.pane();
-        let angle = self.look().blur.glass.light_angle.to_radians();
+        let light = self.look().blur.glass.lights[i].unwrap_or_default();
+        let angle = light.angle.to_radians();
         let direction = (angle.sin(), -angle.cos());
         let reach = beside(
             (pw / 2., ph / 2.),
@@ -615,7 +645,7 @@ fn pane_uniforms(
     }
 
     let glass = look.blur.glass;
-    let angle = glass.light_angle.to_radians();
+    let (lights, sizes) = light_uniforms(&glass);
     uniforms.extend([
         ("geo_to_input", Uniform::Mat3(geo_to_input)),
         ("shape_count", Uniform::Float(1.)),
@@ -628,15 +658,18 @@ fn pane_uniforms(
             Uniform::Float(glass.refractive_index as f32),
         ),
         ("dispersion", Uniform::Float(glass.dispersion as f32)),
-        ("highlight", Uniform::Float(glass.highlight as f32)),
         ("reflection", Uniform::Float(glass.reflection as f32)),
         ("sheen", Uniform::Float(glass.sheen as f32)),
-        ("light_size", Uniform::Float(glass.light_size as f32)),
-        (
-            "light_direction",
-            Uniform::Vec2([angle.sin() as f32, -angle.cos() as f32]),
-        ),
+        ("light_count", Uniform::Float(lights.len() as f32)),
+        ("light_sizes", Uniform::Vec4(sizes)),
     ]);
+    for (i, name) in ["light0", "light1", "light2", "light3"]
+        .into_iter()
+        .enumerate()
+    {
+        let light = lights.get(i).copied().unwrap_or_default();
+        uniforms.push((name, Uniform::Vec4(light)));
+    }
     for name in [
         "shape1", "shape2", "shape3", "shape4", "shape5", "shape6", "shape7", "radii1", "radii2",
         "radii3", "radii4", "radii5", "radii6", "radii7",
@@ -644,6 +677,30 @@ fn pane_uniforms(
         uniforms.push((name, Uniform::Vec4([0.; 4])));
     }
     (gl.glass, uniforms)
+}
+
+/// The lights that shine, each towards it over the screen with its intensity, and their sizes, as
+/// `glass.rs` gives them.
+fn light_uniforms(glass: &Glass) -> (Vec<[f32; 4]>, [f32; 4]) {
+    let mut sizes = [0.; 4];
+    let lights = glass
+        .lights
+        .iter()
+        .flatten()
+        .filter(|light| light.on && light.intensity > 0.)
+        .enumerate()
+        .map(|(i, light)| {
+            sizes[i] = light.size as f32;
+            let (angle, height) = (light.angle.to_radians(), light.height.to_radians());
+            [
+                (angle.sin() * height.cos()) as f32,
+                (-angle.cos() * height.cos()) as f32,
+                height.sin() as f32,
+                light.intensity as f32,
+            ]
+        })
+        .collect();
+    (lights, sizes)
 }
 
 /// How far from the middle of a box with half its size `half`, along `direction`, a point is

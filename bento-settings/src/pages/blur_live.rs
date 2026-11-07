@@ -4,16 +4,19 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use niri_config::{Blur, Material};
+use niri_config::{Blur, GlassLight, Material, MAX_GLASS_LIGHTS};
 
 use crate::store::Store;
 
 /// A change the person made that isn't saved yet.
 #[derive(Debug, Clone, Copy)]
 pub enum Unsaved {
-    /// A number or switch, by its setting's path.
+    /// A number or switch, by its setting's path. A light's are under its place, like
+    /// `blur.glass.light.1.angle`, with `off` 1 for off.
     Setting(&'static str, f64),
     Material(Material),
+    /// Glass's lights, after adding or removing one.
+    Lights([Option<GlassLight>; MAX_GLASS_LIGHTS]),
 }
 
 impl Unsaved {
@@ -22,6 +25,7 @@ impl Unsaved {
         match self {
             Self::Setting(path, _) => path,
             Self::Material(_) => "blur.material",
+            Self::Lights(_) => "blur.glass.lights",
         }
     }
 
@@ -29,6 +33,7 @@ impl Unsaved {
         let glass = &mut blur.glass;
         match *self {
             Self::Material(material) => blur.material = material,
+            Self::Lights(lights) => glass.lights = lights,
             Self::Setting(path, x) => match path {
                 "blur" => blur.off = x == 0.,
                 "blur.offset" => blur.offset = x,
@@ -39,12 +44,25 @@ impl Unsaved {
                 "blur.glass.thickness" => glass.thickness = x,
                 "blur.glass.refractive-index" => glass.refractive_index = x,
                 "blur.glass.dispersion" => glass.dispersion = x,
-                "blur.glass.highlight" => glass.highlight = x,
                 "blur.glass.reflection" => glass.reflection = x,
                 "blur.glass.sheen" => glass.sheen = x,
-                "blur.glass.light-size" => glass.light_size = x,
-                "blur.glass.light-angle" => glass.light_angle = x,
-                _ => (),
+                _ => {
+                    let Some((i, field)) = light_field(path) else {
+                        return;
+                    };
+                    let Some(light) = glass.lights.get_mut(i) else {
+                        return;
+                    };
+                    let light = light.get_or_insert_with(GlassLight::default);
+                    match field {
+                        "off" => light.on = x == 0.,
+                        "intensity" => light.intensity = x,
+                        "angle" => light.angle = x,
+                        "height" => light.height = x,
+                        "size" => light.size = x,
+                        _ => (),
+                    }
+                }
             },
         }
     }
@@ -62,23 +80,37 @@ pub fn value(blur: &Blur, path: &str) -> Option<f64> {
         "blur.glass.thickness" => glass.thickness,
         "blur.glass.refractive-index" => glass.refractive_index,
         "blur.glass.dispersion" => glass.dispersion,
-        "blur.glass.highlight" => glass.highlight,
         "blur.glass.reflection" => glass.reflection,
         "blur.glass.sheen" => glass.sheen,
-        "blur.glass.light-size" => glass.light_size,
-        "blur.glass.light-angle" => glass.light_angle,
-        _ => return None,
+        _ => {
+            let (i, field) = light_field(path)?;
+            let light = glass.lights.get(i)?.as_ref()?;
+            match field {
+                "off" => f64::from(u8::from(!light.on)),
+                "intensity" => light.intensity,
+                "angle" => light.angle,
+                "height" => light.height,
+                "size" => light.size,
+                _ => return None,
+            }
+        }
     })
+}
+
+/// The light and its field a path like `blur.glass.light.1.angle` names.
+fn light_field(path: &str) -> Option<(usize, &str)> {
+    let (i, field) = path.strip_prefix("blur.glass.light.")?.split_once('.')?;
+    Some((i.parse().ok()?, field))
 }
 
 /// Called with the settings and the key of the edit that changed them, or `None` when the config
 /// did.
-type Listener = Box<dyn Fn(&Live, Option<&'static str>)>;
+type Listener = Box<dyn Fn(&Live, Option<&str>)>;
 
 struct Inner {
     store: Store,
     /// Changes not saved yet, by the store's key for their edit.
-    unsaved: RefCell<Vec<(&'static str, Unsaved)>>,
+    unsaved: RefCell<Vec<(String, Unsaved)>>,
     listeners: RefCell<Vec<Listener>>,
 }
 
@@ -116,10 +148,10 @@ impl Live {
     }
 
     /// Shows changes that one edit saves together, under the edit's `key`.
-    pub fn show_edit(&self, key: &'static str, changes: &[Unsaved]) {
+    pub fn show_edit(&self, key: &str, changes: &[Unsaved]) {
         let mut unsaved = self.0.unsaved.borrow_mut();
-        unsaved.retain(|(old, _)| *old != key);
-        unsaved.extend(changes.iter().map(|change| (key, *change)));
+        unsaved.retain(|(old, _)| old != key);
+        unsaved.extend(changes.iter().map(|change| (key.to_owned(), *change)));
         drop(unsaved);
         self.notify(Some(key));
     }
@@ -141,11 +173,11 @@ impl Live {
 
     /// Calls `f` after every change, with the settings and the key of the edit that made it, or
     /// `None` when it came from the config.
-    pub fn connect(&self, f: impl Fn(&Live, Option<&'static str>) + 'static) {
+    pub fn connect(&self, f: impl Fn(&Live, Option<&str>) + 'static) {
         self.0.listeners.borrow_mut().push(Box::new(f));
     }
 
-    fn notify(&self, key: Option<&'static str>) {
+    fn notify(&self, key: Option<&str>) {
         for listener in self.0.listeners.borrow().iter() {
             listener(self, key);
         }
@@ -182,5 +214,23 @@ mod tests {
 
             fs::remove_dir_all(&dir).unwrap();
         });
+    }
+
+    #[test]
+    fn a_lights_settings_reach_that_light() {
+        let mut blur = Blur::default();
+        Unsaved::Setting("blur.glass.light.0.angle", 90.).apply(&mut blur);
+        Unsaved::Setting("blur.glass.light.0.off", 1.).apply(&mut blur);
+        assert_eq!(
+            blur.glass.lights[0],
+            Some(GlassLight {
+                on: false,
+                angle: 90.,
+                ..GlassLight::default()
+            })
+        );
+        assert_eq!(value(&blur, "blur.glass.light.0.angle"), Some(90.));
+        assert_eq!(value(&blur, "blur.glass.light.0.off"), Some(1.));
+        assert_eq!(value(&blur, "blur.glass.light.1.angle"), None);
     }
 }

@@ -985,8 +985,10 @@ impl MergeWith<GlassPart> for Glass {
         if !part.lights.is_empty() {
             self.lights = [None; MAX_GLASS_LIGHTS];
             for (slot, light) in self.lights.iter_mut().zip(&part.lights) {
-                let mut merged = GlassLight::default();
-                merged.on = !light.off;
+                let mut merged = GlassLight {
+                    on: !light.off,
+                    ..GlassLight::default()
+                };
                 merge!((merged, light), intensity, angle, height, size);
                 *slot = Some(merged);
             }

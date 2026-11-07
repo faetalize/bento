@@ -86,24 +86,23 @@ pub fn category() -> Category {
                     &["chromatic aberration", "rainbow", "prism"],
                 )
                 .search_item(
-                    "blur.glass.highlight",
-                    "Glass Highlight",
-                    &["glare", "edge light", "shine"],
-                )
-                .search_item(
                     "blur.glass.reflection",
                     "Glass Reflection",
                     &["fresnel", "rim", "edge", "glow"],
                 )
                 .search_item(
-                    "blur.glass.light-size",
-                    "Glass Light Size",
-                    &["light", "softness", "highlight"],
-                )
-                .search_item(
-                    "blur.glass.light-angle",
-                    "Glass Light Angle",
-                    &["light direction"],
+                    "blur.glass.lights",
+                    "Glass Lights",
+                    &[
+                        "light",
+                        "highlight",
+                        "glare",
+                        "shine",
+                        "light direction",
+                        "light angle",
+                        "light size",
+                        "sun",
+                    ],
                 ),
         )
         .group(

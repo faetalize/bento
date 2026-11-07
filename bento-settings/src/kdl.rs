@@ -7,7 +7,8 @@
 //! Paths like `input.touchpad.tap` find the node bento actually uses: where a section appears more
 //! than once, the last one that has the setting wins, since later sections override earlier ones.
 //! Sections that bento replaces as a whole only count in their last copy, and window rules only
-//! count when they apply to every window.
+//! count when they apply to every window. Nodes that come as a list, like glass's lights, are
+//! reached by their place in it, as in `blur.glass.light.1.size`.
 
 use std::fmt::Write as _;
 
@@ -51,6 +52,11 @@ const WHOLE_SECTIONS: &[&str] = &[
     "input.touch",
     "layout.struts",
 ];
+
+/// Nodes that come as a list, where the section with any of them gives all of them, and later
+/// sections without any leave them alone. A path reaches one by its place, like
+/// `blur.glass.light.1`, and a new one goes after the others.
+const LISTS: &[&str] = &["blur.glass.light"];
 
 /// Sections that hold rules, where only rules without `match` or `exclude` apply to every window.
 const RULES: &[&str] = &["window-rule", "layer-rule"];
@@ -118,7 +124,13 @@ impl Document {
             args: &args,
             properties: &properties,
         };
-        let head = head_text(path[path.len() - 1], values);
+        let index = list_index(path);
+        // A list item named by its place is named like the list.
+        let name = match index {
+            Some(i) if i == path.len() - 1 => path[i - 1],
+            _ => path[path.len() - 1],
+        };
+        let head = head_text(name, values);
 
         if let Some(node) = find(&nodes, path, "").last() {
             self.text.replace_range(node.start..node.head_end, &head);
@@ -127,6 +139,19 @@ impl Document {
 
         // Add it to the deepest section that exists, creating the ones in between.
         for depth in (1..path.len()).rev() {
+            if index == Some(depth) {
+                // A list item that isn't there: add it after the others, or start the list.
+                let mut item = vec![path[depth - 1]];
+                item.extend_from_slice(&path[depth + 1..]);
+                if let Some(owner) = list_owner(&nodes, &path[..depth - 1], path[depth - 1]) {
+                    self.insert_child(owner, &item, values);
+                } else {
+                    let mut path = path[..depth].to_vec();
+                    path.extend_from_slice(&item[1..]);
+                    self.set_node(&path, args.clone(), properties.clone());
+                }
+                return;
+            }
             if let Some(parent) = find(&nodes, &path[..depth], "").last() {
                 self.insert_child(parent, &path[depth..], values);
                 return;
@@ -458,10 +483,21 @@ fn find<'a>(nodes: &'a [Node], path: &[&str], prefix: &str) -> Vec<&'a Node> {
         return candidates;
     }
 
+    // An item of a list, by its place.
+    if LISTS.contains(&full.as_str()) {
+        if let Ok(index) = rest[0].parse::<usize>() {
+            return match (candidates.get(index), &rest[1..]) {
+                (None, _) => Vec::new(),
+                (Some(item), []) => vec![item],
+                (Some(item), rest) => find(&item.children, rest, &full),
+            };
+        }
+    }
+
     // A section replaced as a whole further down, like `touchpad` under `input`: only its last
     // copy counts, wherever it is, so don't fall back to an earlier one that has the setting.
     let target = format!("{full}.{}", rest.join("."));
-    let whole_below = WHOLE_SECTIONS.iter().find(|section| {
+    let whole_below = WHOLE_SECTIONS.iter().chain(LISTS).find(|section| {
         section.starts_with(&format!("{full}."))
             && (target == **section || target.starts_with(&format!("{section}.")))
     });
@@ -482,6 +518,24 @@ fn find<'a>(nodes: &'a [Node], path: &[&str], prefix: &str) -> Vec<&'a Node> {
         .map(|node| find(&node.children, rest, &full))
         .find(|found| !found.is_empty())
         .unwrap_or_default()
+}
+
+/// Where `path` gives a list item's place, like the `1` in `blur.glass.light.1.size`.
+fn list_index(path: &[&str]) -> Option<usize> {
+    (1..path.len()).find(|&i| {
+        LISTS.contains(&path[..i].join(".").as_str()) && path[i].parse::<usize>().is_ok()
+    })
+}
+
+/// The section at `path` that has the `list` bento uses: the last one with any of it.
+fn list_owner<'a>(nodes: &'a [Node], path: &[&str], list: &str) -> Option<&'a Node> {
+    let (first, rest) = path.split_first()?;
+    let mut candidates = nodes.iter().rev().filter(|node| node.name == *first);
+    if rest.is_empty() {
+        candidates.find(|node| node.children.iter().any(|child| child.name == list))
+    } else {
+        candidates.find_map(|node| list_owner(&node.children, rest, list))
+    }
 }
 
 fn applies_to_everything(rule: &Node) -> bool {
@@ -873,5 +927,82 @@ mod tests {
             doc.set(&["Mod+T"], vec![Value::Bool(false)]);
         });
         assert_eq!(out, "a 2.0\n\nb \"x \\\"y\\\" \\\\z\"\n\nMod+T false\n");
+    }
+
+    #[test]
+    fn edits_a_list_item_by_its_place() {
+        let text = "blur {\n    glass {\n        light {\n            angle 90\n        }\n        // Fill.\n        light { off; angle 200; }\n    }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("blur.glass.light.1.angle"), vec![Value::Int(210)])
+        });
+        assert_eq!(out, text.replace("angle 200", "angle 210"));
+
+        // A field the item doesn't have yet.
+        let out = edit(text, |doc| {
+            doc.set(&split("blur.glass.light.0.size"), vec![Value::Float(0.5)])
+        });
+        assert_eq!(
+            out,
+            text.replace("angle 90\n", "angle 90\n            size 0.5\n")
+        );
+
+        let out = edit(text, |doc| {
+            assert!(doc.remove(&split("blur.glass.light.0")));
+            assert!(!doc.remove(&split("blur.glass.light.1")));
+        });
+        assert_eq!(
+            out,
+            "blur {\n    glass {\n        // Fill.\n        light { off; angle 200; }\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn adds_list_items_after_the_others() {
+        let text = "blur {\n    glass {\n        light { angle 90; }\n    }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("blur.glass.light.1.angle"), vec![Value::Int(270)])
+        });
+        assert_eq!(
+            out,
+            "blur {\n    glass {\n        light { angle 90; }\n        light {\n            angle 270\n        }\n    }\n}\n"
+        );
+
+        // The first one starts the list, in a section that exists and in one that doesn't.
+        let out = edit("blur {\n    glass {\n        bezel 8\n    }\n}\n", |doc| {
+            doc.set(&split("blur.glass.light.0.off"), Vec::new())
+        });
+        assert_eq!(
+            out,
+            "blur {\n    glass {\n        bezel 8\n        light {\n            off\n        }\n    }\n}\n"
+        );
+        let out = edit("", |doc| doc.set(&split("blur.glass.light.0"), Vec::new()));
+        assert_eq!(out, "blur {\n    glass {\n        light\n    }\n}\n");
+    }
+
+    #[test]
+    fn edits_the_list_bento_uses() {
+        // The last section with any of the list has it; a later one without leaves it be.
+        let text = "blur {\n    glass {\n        light { angle 90; }\n    }\n}\nblur {\n    glass {\n        bezel 8\n    }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("blur.glass.light.0.angle"), vec![Value::Int(80)]);
+            doc.set(&split("blur.glass.light.1.angle"), vec![Value::Int(270)]);
+        });
+        assert_eq!(
+            out,
+            "blur {\n    glass {\n        light { angle 80; }\n        light {\n            angle 270\n        }\n    }\n}\nblur {\n    glass {\n        bezel 8\n    }\n}\n"
+        );
+
+        // A later section with any replaces the whole list.
+        let text = "blur {\n    glass {\n        light { angle 90; }\n        light { angle 180; }\n    }\n    glass {\n        light { angle 270; }\n    }\n}\n";
+        let out = edit(text, |doc| {
+            doc.set(&split("blur.glass.light.0.angle"), vec![Value::Int(0)])
+        });
+        assert_eq!(out, text.replace("angle 270", "angle 0"));
+        let doc = Document::parse(text.to_owned()).unwrap();
+        assert!(doc.get(&split("blur.glass.light.1")).is_none());
+        assert_eq!(
+            doc.get(&split("blur.glass.light.0")).map(|node| node.name),
+            Some(String::from("light"))
+        );
     }
 }
