@@ -8,9 +8,9 @@ use std::sync::LazyLock;
 use adw::prelude::*;
 use niri_config::{Blur, Material};
 
-use super::blur_preview::{Handle, Unsaved};
+use super::blur_live::{Live, Unsaved};
 use crate::kdl::Value;
-use crate::model::{BoolStyle, Input, Setting};
+use crate::model::{BoolStyle, Control, Input, Setting};
 use crate::page::{setting_row_watched, PageContext};
 
 const MATERIAL_KEY: &str = "blur.material";
@@ -211,6 +211,12 @@ fn preset_at(position: f64) -> Preset {
     }
 }
 
+/// The name of the preset nearest `position` on the Preset slider.
+fn nearest_preset(position: f64) -> &'static str {
+    let i = position.round().clamp(0., (PRESETS.len() - 1) as f64) as usize;
+    PRESETS[i].0
+}
+
 /// Where `clarity` puts the Preset slider.
 fn preset_position(clarity: f64) -> f64 {
     for (i, pair) in PRESETS.windows(2).enumerate() {
@@ -254,27 +260,24 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     ctx.anchor("appearance.blur", &group);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    let (preview, live) = super::blur_preview::build(ctx, &LIGHT_ANGLE);
-    content.append(&preview);
-    // Each control shows its value in the preview as it moves; the config saves it after.
-    let row = |setting: &'static Setting| {
-        let live = live.clone();
-        setting_row_watched(setting, ctx, move |input| {
-            let value = match input {
-                Input::Number(x) => *x,
-                Input::Bool(on) => f64::from(u8::from(*on)),
-                _ => return,
-            };
-            live.show(Unsaved::Setting(setting.path, value));
-        })
-    };
+    let live = Live::new(&ctx.store);
+    content.append(&super::blur_preview::build(ctx, &live, &LIGHT_ANGLE));
+    // Each control shows its value in the preview, and in the other controls, as it moves; the
+    // config saves it after.
+    let row = |setting: &'static Setting| number_row(setting, ctx, &live);
     // A raw slider that Blur Amount also sets.
     let coupled = |setting: &'static Setting, other: &str| {
-        let widget = row(setting);
-        if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
-            row.set_subtitle(&format!("Blur Amount sets this together with {other}"));
-        }
-        widget
+        let row = number_row(setting, ctx, &live);
+        row.set_subtitle(&format!("Blur Amount sets this together with {other}"));
+        row
+    };
+    let switch = {
+        let live = live.clone();
+        setting_row_watched(&SWITCH, ctx, move |input| {
+            if let Input::Bool(on) = input {
+                live.show(Unsaved::Setting(SWITCH.path, f64::from(u8::from(*on))));
+            }
+        })
     };
 
     let material = adw::ToggleGroup::builder()
@@ -293,12 +296,14 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         .margin_top(6)
         .css_classes(["boxed-list"])
         .build();
-    list.append(&row(&SWITCH));
+    list.append(&switch);
 
-    // Its marks name its values, and its empty value label keeps it in line with Blur Amount.
-    let (preset_row, preset_scale, _) = slider_row("Preset", 0., (PRESETS.len() - 1) as f64, 0.01);
-    for (i, (name, _)) in PRESETS.iter().enumerate() {
-        preset_scale.add_mark(i as f64, gtk::PositionType::Bottom, Some(name));
+    // Its marks are bare, and its value label names the nearest preset, so its track lines up
+    // with Blur Amount's.
+    let (preset_row, preset_scale, preset_value) =
+        slider_row("Preset", 0., (PRESETS.len() - 1) as f64, 0.01);
+    for i in 0..PRESETS.len() {
+        preset_scale.add_mark(i as f64, gtk::PositionType::Bottom, None);
     }
     ctx.anchor(PRESET_KEY, &preset_row);
     list.append(&preset_row);
@@ -319,7 +324,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     {
         let row = row(setting);
         advanced.add_row(&row);
-        glass_rows.push(row);
+        glass_rows.push(row.upcast());
     }
     let reset = adw::ButtonRow::builder().title("Reset to Defaults").build();
     advanced.add_row(&reset);
@@ -342,7 +347,9 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     let updating = Rc::new(Cell::new(false));
     {
         let (ctx, live, updating) = (ctx.clone(), live.clone(), updating.clone());
+        let value = preset_value.clone();
         preset_scale.connect_value_changed(move |scale| {
+            value.set_label(nearest_preset(scale.value()));
             if updating.get() {
                 return;
             }
@@ -380,7 +387,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         });
     }
     {
-        let (ctx, updating) = (ctx.clone(), updating.clone());
+        let (ctx, live, updating) = (ctx.clone(), live.clone(), updating.clone());
         material.connect_active_name_notify(move |material| {
             let glass = material.active_name().as_deref() != Some("frosted");
             for row in &glass_rows {
@@ -402,7 +409,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     }
 
     let show = {
-        let ctx = ctx.clone();
+        let (ctx, updating) = (ctx.clone(), updating.clone());
         move || {
             let blur = ctx.store.config().blur;
             updating.set(true);
@@ -411,15 +418,6 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
                     Material::Glass => "glass",
                     Material::Frosted => "frosted",
                 }));
-            }
-            if !ctx.store.is_pending(PRESET_KEY) {
-                preset_scale.set_value(preset_position(blur.glass.clarity));
-            }
-            if !ctx.store.is_pending(AMOUNT_KEY) {
-                // Set the label too: the scale doesn't signal when the value stays the same.
-                let current = amount(&blur);
-                amount_scale.set_value(current);
-                amount_value.set_label(&percent(current));
             }
             updating.set(false);
             for widget in [
@@ -443,7 +441,107 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     show();
     ctx.store.subscribe(show);
 
+    let follow = {
+        let store = ctx.store.clone();
+        let (preset_scale, preset_value) = (preset_scale.downgrade(), preset_value.downgrade());
+        let (amount_scale, amount_value) = (amount_scale.downgrade(), amount_value.downgrade());
+        move |live: &Live, key: Option<&'static str>| {
+            let (Some(preset_scale), Some(preset_value), Some(amount_scale), Some(amount_value)) = (
+                preset_scale.upgrade(),
+                preset_value.upgrade(),
+                amount_scale.upgrade(),
+                amount_value.upgrade(),
+            ) else {
+                return;
+            };
+            let shown = |path| live.shown(path).unwrap_or_default();
+            updating.set(true);
+            // Not while it's the one moving, nor between its own saves.
+            if key != Some(PRESET_KEY) && !store.is_pending(PRESET_KEY) {
+                let position = preset_position(shown(CLARITY.path));
+                preset_scale.set_value(position);
+                // The scale doesn't signal when the value stays the same.
+                preset_value.set_label(nearest_preset(position));
+            }
+            if key != Some(AMOUNT_KEY) && !store.is_pending(AMOUNT_KEY) {
+                let blur = Blur {
+                    passes: shown(PASSES.path) as u8,
+                    offset: shown(STRENGTH.path),
+                    ..Blur::default()
+                };
+                // Set the label too: the scale doesn't signal when the value stays the same.
+                let current = amount(&blur);
+                amount_scale.set_value(current);
+                amount_value.set_label(&percent(current));
+            }
+            updating.set(false);
+        }
+    };
+    follow(&live, None);
+    live.connect(follow);
+
     group.upcast()
+}
+
+/// A setting's slider, which shows its value in the preview and the other controls as it moves,
+/// and follows them as they move.
+fn number_row(setting: &'static Setting, ctx: &PageContext, live: &Live) -> adw::ActionRow {
+    let Control::Number {
+        min,
+        max,
+        step,
+        format,
+        ..
+    } = setting.control
+    else {
+        unreachable!("blur's settings are numbers");
+    };
+    let format = format.unwrap_or(|x| format!("{x}"));
+    let (row, scale, value) = slider_row(setting.title, min, max, step);
+    ctx.anchor(setting.path, &row);
+
+    // Set while it follows the others, so it doesn't save what it's shown.
+    let updating = Rc::new(Cell::new(false));
+    {
+        let (ctx, live, updating, value) =
+            (ctx.clone(), live.clone(), updating.clone(), value.clone());
+        scale.connect_value_changed(move |scale| {
+            let x = scale.value();
+            value.set_label(&format(x));
+            if updating.get() {
+                return;
+            }
+            live.show(Unsaved::Setting(setting.path, x));
+            ctx.store.edit(setting.path, move |doc| {
+                setting.write(doc, Input::Number(x))
+            });
+        });
+    }
+
+    let follow = {
+        let store = ctx.store.clone();
+        let (scale, value) = (scale.downgrade(), value.downgrade());
+        move |live: &Live, key: Option<&'static str>| {
+            let (Some(scale), Some(value)) = (scale.upgrade(), value.upgrade()) else {
+                return;
+            };
+            // Not while it's the one moving, nor between its own saves.
+            if key == Some(setting.path) || store.is_pending(setting.path) {
+                return;
+            }
+            let Some(x) = live.shown(setting.path) else {
+                return;
+            };
+            updating.set(true);
+            scale.set_value(x);
+            // The scale doesn't signal when the value stays the same.
+            value.set_label(&format(x));
+            updating.set(false);
+        }
+    };
+    follow(live, None);
+    live.connect(follow);
+    row
 }
 
 fn percent(x: f64) -> String {
@@ -453,7 +551,7 @@ fn percent(x: f64) -> String {
 /// Saves several settings in one edit under `key`, showing them in the preview right away.
 fn edit_together<const N: usize>(
     ctx: &PageContext,
-    live: &Handle,
+    live: &Live,
     key: &'static str,
     values: [(&'static LazyLock<Setting>, f64); N],
 ) {

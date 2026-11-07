@@ -17,6 +17,7 @@ use gtk::gdk_pixbuf::Pixbuf;
 use gtk::{gdk, gio, glib};
 use niri_config::{Blur, CornerRadius, Material};
 
+use super::blur_live::{Live, Unsaved};
 use super::layout::every_window;
 use crate::model::{Input, Setting};
 use crate::page::{keep_alive, PageContext};
@@ -94,68 +95,8 @@ void main() {
 }
 ";
 
-/// A change the person made that isn't saved yet, which the preview shows right away.
-#[derive(Debug, Clone, Copy)]
-pub enum Unsaved {
-    /// A number or switch, by its setting's path.
-    Setting(&'static str, f64),
-    Material(Material),
-}
-
-/// Lets the controls show their changes in the preview before they're saved.
-#[derive(Clone)]
-pub struct Handle(Rc<Preview>);
-
-impl Handle {
-    /// Shows a change saved under its setting's own key.
-    pub fn show(&self, change: Unsaved) {
-        self.show_edit(change.key(), &[change]);
-    }
-
-    /// Shows changes that one edit saves together, under the edit's `key`.
-    pub fn show_edit(&self, key: &'static str, changes: &[Unsaved]) {
-        let mut unsaved = self.0.unsaved.borrow_mut();
-        unsaved.retain(|(old, _)| *old != key);
-        unsaved.extend(changes.iter().map(|change| (key, *change)));
-        drop(unsaved);
-        self.0.changed();
-    }
-}
-
-impl Unsaved {
-    /// The store's key for the change, which tells when it's saved.
-    fn key(&self) -> &'static str {
-        match self {
-            Self::Setting(path, _) => path,
-            Self::Material(_) => "blur.material",
-        }
-    }
-
-    fn apply(&self, blur: &mut Blur) {
-        let glass = &mut blur.glass;
-        match *self {
-            Self::Material(material) => blur.material = material,
-            Self::Setting(path, x) => match path {
-                "blur" => blur.off = x == 0.,
-                "blur.offset" => blur.offset = x,
-                "blur.passes" => blur.passes = x.round().clamp(0., 255.) as u8,
-                "blur.noise" => blur.noise = x,
-                "blur.saturation" => blur.saturation = x,
-                "blur.glass.bezel" => glass.bezel = x,
-                "blur.glass.thickness" => glass.thickness = x,
-                "blur.glass.refractive-index" => glass.refractive_index = x,
-                "blur.glass.dispersion" => glass.dispersion = x,
-                "blur.glass.highlight" => glass.highlight = x,
-                "blur.glass.light-angle" => glass.light_angle = x,
-                "blur.glass.clarity" => glass.clarity = x,
-                _ => (),
-            },
-        }
-    }
-}
-
 /// Builds the preview. Dragging the light's handle saves `light_angle`.
-pub fn build(ctx: &PageContext, light_angle: &'static Setting) -> (gtk::Widget, Handle) {
+pub fn build(ctx: &PageContext, live: &Live, light_angle: &'static Setting) -> gtk::Widget {
     let area = gtk::GLArea::builder()
         .allowed_apis(gdk::GLAPI::GLES)
         .hexpand(true)
@@ -192,7 +133,7 @@ pub fn build(ctx: &PageContext, light_angle: &'static Setting) -> (gtk::Widget, 
         center: Cell::new((0.5, 0.5)),
         picture: RefCell::new(None),
         wanted: RefCell::new(None),
-        unsaved: RefCell::default(),
+        live: live.clone(),
     });
 
     {
@@ -250,13 +191,12 @@ pub fn build(ctx: &PageContext, light_angle: &'static Setting) -> (gtk::Widget, 
     let redraw = Rc::downgrade(&preview);
     ctx.store.subscribe(move || {
         if let Some(preview) = redraw.upgrade() {
-            // Saved changes come from the config from now on.
-            let store = preview.store.clone();
-            preview
-                .unsaved
-                .borrow_mut()
-                .retain(|(key, _)| store.is_pending(key));
             preview.update_picture();
+        }
+    });
+    let redraw = Rc::downgrade(&preview);
+    live.connect(move |_, _| {
+        if let Some(preview) = redraw.upgrade() {
             preview.changed();
         }
     });
@@ -268,9 +208,8 @@ pub fn build(ctx: &PageContext, light_angle: &'static Setting) -> (gtk::Widget, 
         }
     });
 
-    let handle = Handle(preview.clone());
     keep_alive(&stack, preview);
-    (stack.upcast(), handle)
+    stack.upcast()
 }
 
 /// Dragging moves the pane. Pressing beside it brings it under the pointer first.
@@ -358,7 +297,7 @@ fn drag_light(preview: &Rc<Preview>, ctx: &PageContext, setting: &'static Settin
             if angle == preview.look().blur.glass.light_angle {
                 return;
             }
-            Handle(preview).show(Unsaved::Setting(setting.path, angle));
+            preview.live.show(Unsaved::Setting(setting.path, angle));
             store.edit(setting.path, move |doc| {
                 setting.write(doc, Input::Number(angle))
             });
@@ -389,8 +328,8 @@ struct Preview {
     picture: RefCell<Option<Rc<Picture>>>,
     /// The wallpaper being shown or loaded.
     wanted: RefCell<Option<Wanted>>,
-    /// Changes not saved yet, by the store's key for their edit, shown over the config.
-    unsaved: RefCell<Vec<(&'static str, Unsaved)>>,
+    /// The settings, with the changes not saved yet.
+    live: Live,
 }
 
 /// A wallpaper, with the screen's logical size and the scale it's loaded for.
@@ -443,11 +382,8 @@ impl Preview {
     }
 
     fn look(&self) -> Look {
+        let blur = self.live.blur();
         let config = self.store.config();
-        let mut blur = config.blur;
-        for (_, change) in self.unsaved.borrow().iter() {
-            change.apply(&mut blur);
-        }
         Look {
             blur,
             radius: every_window(&config, |rule| rule.geometry_corner_radius).unwrap_or_default(),

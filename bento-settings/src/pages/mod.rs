@@ -5,6 +5,7 @@ mod about;
 mod account;
 mod appearance;
 mod blur;
+mod blur_live;
 mod blur_preview;
 mod engine;
 mod input;
