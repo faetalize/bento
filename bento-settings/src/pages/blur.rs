@@ -407,7 +407,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             if updating.get() {
                 return;
             }
-            set_custom(scale, &value, None);
+            show_position(scale);
             value.set_label(nearest_preset(scale.value()));
             let preset = preset_at(snap_preset(scale.value()));
             let rough = rough_at(preset.roughness);
@@ -433,7 +433,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             if updating.get() {
                 return;
             }
-            set_custom(scale, &value, None);
+            show_position(scale);
             value.set_label(&percent(scale.value()));
             let rough = rough_at(scale.value());
             edit_together(
@@ -528,19 +528,23 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             updating.set(true);
             // Not while it's the one moving, nor between its own saves.
             if key != Some(PRESET_KEY) && !store.is_pending(PRESET_KEY) {
-                let position = preset_position(&blur);
-                set_custom(&preset_scale, &preset_value, position);
-                if let Some(position) = position {
-                    preset_scale.set_value(position);
-                    preset_value.set_label(nearest_preset(position));
+                match preset_position(&blur) {
+                    Some(position) => {
+                        show_position(&preset_scale);
+                        preset_scale.set_value(position);
+                        preset_value.set_label(nearest_preset(position));
+                    }
+                    None => show_custom(&preset_scale, &preset_value),
                 }
             }
             if key != Some(ROUGHNESS_KEY) && !store.is_pending(ROUGHNESS_KEY) {
-                let roughness = roughness(&blur);
-                set_custom(&roughness_scale, &roughness_value, roughness);
-                if let Some(roughness) = roughness {
-                    roughness_scale.set_value(roughness);
-                    roughness_value.set_label(&percent(roughness));
+                match roughness(&blur) {
+                    Some(roughness) => {
+                        show_position(&roughness_scale);
+                        roughness_scale.set_value(roughness);
+                        roughness_value.set_label(&percent(roughness));
+                    }
+                    None => show_custom(&roughness_scale, &roughness_value),
                 }
             }
             updating.set(false);
@@ -552,15 +556,16 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     group.upcast()
 }
 
-/// Shows a slider that sets several settings as Custom, without its knob, when `position` is
-/// `None`: the settings aren't those of any of its positions. Grabbing it sets them again.
-fn set_custom(scale: &gtk::Scale, value: &gtk::Label, position: Option<f64>) {
-    if position.is_some() {
-        scale.remove_css_class("custom");
-    } else {
-        scale.add_css_class("custom");
-        value.set_label("Custom");
-    }
+/// Shows a slider that sets several settings as Custom, without its knob: the settings aren't
+/// those of any of its positions. Grabbing it sets them again.
+fn show_custom(scale: &gtk::Scale, value: &gtk::Label) {
+    scale.add_css_class("custom");
+    value.set_label("Custom");
+}
+
+/// Shows a slider's knob again, at a position of its.
+fn show_position(scale: &gtk::Scale) {
+    scale.remove_css_class("custom");
 }
 
 /// A setting's slider, which shows its value in the preview and the other controls as it moves,
