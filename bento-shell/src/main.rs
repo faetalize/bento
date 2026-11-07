@@ -263,12 +263,22 @@ fn main() -> glib::ExitCode {
             return;
         }
 
+        let display = gdk::Display::default().expect("the shell needs a display");
         let css = gtk::CssProvider::new();
         css.load_from_string(include_str!("style.css"));
         gtk::style_context_add_provider_for_display(
-            &gdk::Display::default().expect("the shell needs a display"),
+            &display,
             &css,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        // Above the user's own CSS, which may give every window a background, as that would
+        // cover the glass.
+        let bare = gtk::CssProvider::new();
+        bare.load_from_string(include_str!("bare.css"));
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &bare,
+            gtk::STYLE_PROVIDER_PRIORITY_USER + 1,
         );
 
         // The shell runs as long as the session, with or without windows.

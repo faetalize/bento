@@ -1,9 +1,3 @@
-/* The shell's surfaces are glass: bento draws it, the stage tints it, so windows are bare. */
-window.bento-shell {
-  background: none;
-  box-shadow: none;
-}
-
 .bar {
   padding: 0 6px;
 }
