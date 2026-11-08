@@ -135,6 +135,8 @@ struct Island {
     done: Option<Box<dyn FnOnce()>>,
     /// Where each face puts it, from the last layout.
     places: Vec<Rect>,
+    /// The stage's width at the last layout.
+    width: f32,
 }
 
 impl Island {
@@ -229,7 +231,18 @@ impl Island {
 
     /// Lays it out with its faces at `places`: it heads for the one it shows, from where it is,
     /// or from the face it was added showing the first time.
-    fn place(&mut self, places: Vec<Rect>) {
+    fn place(&mut self, width: f32, places: Vec<Rect>) {
+        // A surface that changed width, like one shown on another monitor, takes its islands
+        // along at once: only their own changes move smoothly. Otherwise one at nothing would
+        // slide over from the old monitor's middle.
+        if self.placed && width != self.width {
+            let (old, new) = (self.places[self.shown], places[self.shown]);
+            for (i, by) in [(X, new.x - old.x), (Y, new.y - old.y)] {
+                self.springs[i].value += f64::from(by);
+                self.start[i] += f64::from(by);
+            }
+        }
+        self.width = width;
         self.places = places;
         let (first, shown) = (self.target(self.first), self.target(self.shown));
         if !self.placed {
@@ -403,7 +416,7 @@ mod imp {
                             );
                         }
                     }
-                    island.place(faces.iter().map(|(rect, _)| *rect).collect());
+                    island.place(width, faces.iter().map(|(rect, _)| *rect).collect());
                     moving |= !island.settled();
                 }
             }
@@ -516,6 +529,7 @@ impl Stage {
                 .collect(),
             done: None,
             places: vec![Rect::new(0., 0., 0., 0.); count],
+            width: 0.,
         };
         island.target_shown();
         islands.push(Some(island));
@@ -693,6 +707,7 @@ mod tests {
             faded_from: (0..count).map(|i| if i == 0 { 1. } else { 0. }).collect(),
             done: None,
             places: vec![Rect::new(0., 0., 0., 0.); count],
+            width: 0.,
         }
     }
 
@@ -703,7 +718,7 @@ mod tests {
         let shown = Rect::new(0., 0., 200., 100.);
         let mut island = island(&[nothing, shown]);
         island.pick(1);
-        island.place(vec![nothing, shown]);
+        island.place(0., vec![nothing, shown]);
 
         assert_eq!(island.rect(), nothing);
         assert_eq!(island.springs[W].target, 200.);
@@ -718,7 +733,7 @@ mod tests {
         let shown = Rect::new(0., 0., 200., 100.);
         let mut island = island(&[nothing, shown]);
         island.pick(1);
-        island.place(vec![nothing, shown]);
+        island.place(0., vec![nothing, shown]);
         for spring in &mut island.springs {
             spring.jump(spring.target);
         }
@@ -735,7 +750,7 @@ mod tests {
         island.faces[0] = Face::nothing(Rc::new(move |_| shown));
         island.faces[1].radius = 24.;
         island.pick(1);
-        island.place(vec![shown.middle(), shown]);
+        island.place(0., vec![shown.middle(), shown]);
         for spring in &mut island.springs {
             spring.jump(spring.target);
         }
@@ -760,9 +775,9 @@ mod tests {
         let shown = Rect::new(0., 0., 300., 100.);
         let mut island = island(&[shown, shown]);
         island.faces[0] = Face::nothing(Rc::new(move |_| shown));
-        island.place(vec![shown.middle(), shown]);
+        island.place(0., vec![shown.middle(), shown]);
         island.pick(1);
-        island.place(vec![shown.middle(), shown]);
+        island.place(0., vec![shown.middle(), shown]);
 
         let mut circles = 0;
         for _ in 0..240 {
@@ -780,5 +795,29 @@ mod tests {
         }
         assert!(circles > 0);
         assert_eq!(island.drawn(), shown);
+    }
+
+    #[test]
+    fn a_wider_surface_moves_nothing_along_rather_than_sliding_it_over() {
+        // Like the launcher, last shown on a monitor 1920 wide and now on one 2560 wide: it grows
+        // out of the new middle, not the old one.
+        let narrow = Rect::new(860., 0., 200., 100.);
+        let wide = Rect::new(1180., 0., 200., 100.);
+        let mut island = island(&[narrow, narrow]);
+        island.faces[0] = Face::nothing(Rc::new(move |_| narrow));
+        island.place(1920., vec![narrow.middle(), narrow]);
+        island.pick(1);
+        island.place(2560., vec![wide.middle(), wide]);
+
+        for _ in 0..60 {
+            let drawn = island.drawn();
+            assert!(
+                (drawn.x + drawn.width / 2. - 1280.).abs() < 0.5,
+                "it stays centred on the new middle: {drawn:?}"
+            );
+            for spring in &mut island.springs {
+                spring.step(1. / 60., RESPONSE);
+            }
+        }
     }
 }
