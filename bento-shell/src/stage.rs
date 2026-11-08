@@ -78,12 +78,14 @@ impl Face {
         }
     }
 
-    /// Nothing, at the middle of where `place` puts it.
+    /// Nothing, at the middle of where `place` puts it. Its corners are as round as can be, so
+    /// what shrinks into it rounds off on the way, into a drop, and what grows out of it starts
+    /// as one.
     pub fn nothing(place: Place) -> Self {
         Self {
             child: None,
             place: Rc::new(move |width| place(width).middle()),
-            radius: 0.,
+            radius: NOTHING_RADIUS,
             align: (0.5, 0.5),
         }
     }
@@ -93,6 +95,10 @@ impl Face {
         self
     }
 }
+
+/// The corner radius nothing heads for: past half of anything that shrinks into it, so it's round
+/// well before it's gone, but not so far past that it's round from the start.
+const NOTHING_RADIUS: f32 = 300.;
 
 /// An island, by the order it was added in.
 pub type IslandId = usize;
@@ -134,6 +140,15 @@ impl Island {
             s[W].value.max(0.) as f32,
             s[H].value.max(0.) as f32,
         )
+    }
+
+    /// Its corners' radius as it's drawn: never more than half its width or height.
+    fn radius(&self) -> f32 {
+        let rect = self.rect();
+        (self.springs[R].value as f32)
+            .min(rect.width / 2.)
+            .min(rect.height / 2.)
+            .max(0.)
     }
 
     /// How far along the island is from where it was to the face it's showing, 0 to 1.
@@ -367,10 +382,7 @@ mod imp {
                 if rect.width < 0.5 || rect.height < 0.5 {
                     continue;
                 }
-                let radius = (island.springs[R].value as f32)
-                    .min(rect.width / 2.)
-                    .min(rect.height / 2.)
-                    .max(0.);
+                let radius = island.radius();
                 shapes.push(Shape {
                     x: rect.x,
                     y: rect.y,
@@ -669,5 +681,32 @@ mod tests {
         island.pick(0);
         assert_eq!(island.springs[W].target, 0.);
         assert!(!island.settled(), "it has to shrink first");
+    }
+
+    #[test]
+    fn it_shrinks_into_nothing_as_a_drop() {
+        let shown = Rect::new(0., 0., 200., 100.);
+        let mut island = island(&[shown, shown]);
+        island.faces[0] = Face::nothing(Rc::new(move |_| shown));
+        island.faces[1].radius = 24.;
+        island.pick(1);
+        island.place(vec![shown.middle(), shown]);
+        for spring in &mut island.springs {
+            spring.jump(spring.target);
+        }
+
+        island.pick(0);
+        while island.rect().width > 20. {
+            for spring in &mut island.springs {
+                spring.step(1. / 60., RESPONSE);
+            }
+        }
+        let rect = island.rect();
+        let round = rect.width.min(rect.height) / 2.;
+        assert!(
+            island.radius() >= round - 0.01,
+            "{rect:?} with corners of {}",
+            island.radius()
+        );
     }
 }
