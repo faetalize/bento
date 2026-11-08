@@ -282,7 +282,11 @@ fn drag(preview: &Rc<Preview>) {
 
 /// The pointer's light follows it over the preview, light handles and all, and goes with it.
 fn follow_pointer(preview: &Rc<Preview>) {
-    let motion = gtk::EventControllerMotion::new();
+    // Before the drags see it: a drag that has claimed the pointer stops its motion from reaching
+    // the overlay after, which would leave the light behind while the pane moves.
+    let motion = gtk::EventControllerMotion::builder()
+        .propagation_phase(gtk::PropagationPhase::Capture)
+        .build();
     let moved = Rc::downgrade(preview);
     motion.connect_motion(move |_, x, y| {
         if let Some(preview) = moved.upgrade() {
