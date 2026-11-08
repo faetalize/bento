@@ -197,17 +197,35 @@ float glass(vec2 p) {
     return d;
 }
 
-// How deep the bezel's surface takes a point to be, as `glass` does the outline.
-float surface(vec2 p) {
+// Half a shape's narrowest side: the widest its bezel gets, as two sides' bezels would meet in a
+// ridge instead of rising to one rounded top, and the furthest its refraction reaches, past
+// which it would show the far side's background.
+float inradius_of(vec4 rect) {
+    return 0.5 * min(rect.z, rect.w);
+}
+
+// Melts the surface of a shape, `d2` deep with inradius `r2`, into `d` and `r`: the depths melt
+// as the outlines do, and the inradius follows the nearer shape, blended across the seam, so a
+// thin shape keeps its own beside a wide one.
+void melt(inout float d, inout float r, float d2, float r2) {
+    float nearer = clamp(0.5 + 0.5 * (d2 - d) / MELT, 0.0, 1.0);
+    r = mix(r2, r, nearer);
+    d = smooth_min(d, d2, MELT);
+}
+
+// How deep the bezel's surface takes a point to be, as `glass` does the outline, with the
+// inradius of the glass there.
+float surface(vec2 p, out float inradius) {
     vec2 slope;
     float d = surface_box(p, shape0, radii0, slope);
-    if (shape_count > 1.5) d = smooth_min(d, surface_box(p, shape1, radii1, slope), MELT);
-    if (shape_count > 2.5) d = smooth_min(d, surface_box(p, shape2, radii2, slope), MELT);
-    if (shape_count > 3.5) d = smooth_min(d, surface_box(p, shape3, radii3, slope), MELT);
-    if (shape_count > 4.5) d = smooth_min(d, surface_box(p, shape4, radii4, slope), MELT);
-    if (shape_count > 5.5) d = smooth_min(d, surface_box(p, shape5, radii5, slope), MELT);
-    if (shape_count > 6.5) d = smooth_min(d, surface_box(p, shape6, radii6, slope), MELT);
-    if (shape_count > 7.5) d = smooth_min(d, surface_box(p, shape7, radii7, slope), MELT);
+    inradius = inradius_of(shape0);
+    if (shape_count > 1.5) melt(d, inradius, surface_box(p, shape1, radii1, slope), inradius_of(shape1));
+    if (shape_count > 2.5) melt(d, inradius, surface_box(p, shape2, radii2, slope), inradius_of(shape2));
+    if (shape_count > 3.5) melt(d, inradius, surface_box(p, shape3, radii3, slope), inradius_of(shape3));
+    if (shape_count > 4.5) melt(d, inradius, surface_box(p, shape4, radii4, slope), inradius_of(shape4));
+    if (shape_count > 5.5) melt(d, inradius, surface_box(p, shape5, radii5, slope), inradius_of(shape5));
+    if (shape_count > 6.5) melt(d, inradius, surface_box(p, shape6, radii6, slope), inradius_of(shape6));
+    if (shape_count > 7.5) melt(d, inradius, surface_box(p, shape7, radii7, slope), inradius_of(shape7));
     return d;
 }
 
@@ -311,17 +329,20 @@ void main() {
         return;
     }
 
-    // How deep the bezel's surface is, and which way it faces: exact for one shape, from the
-    // distance's slope where shapes melt together.
+    // How deep the bezel's surface is, which way it faces, and the glass's inradius there: exact
+    // for one shape, from the distance's slope where shapes melt together.
     float depth;
     vec2 grad;
+    float inradius;
     if (shape_count < 1.5) {
         depth = surface_box(p, shape0, radii0, grad);
+        inradius = inradius_of(shape0);
     } else {
-        depth = surface(p);
+        depth = surface(p, inradius);
+        float r;
         grad = vec2(
-            surface(p + vec2(0.5, 0.0)) - surface(p - vec2(0.5, 0.0)),
-            surface(p + vec2(0.0, 0.5)) - surface(p - vec2(0.0, 0.5))
+            surface(p + vec2(0.5, 0.0), r) - surface(p - vec2(0.5, 0.0), r),
+            surface(p + vec2(0.0, 0.5), r) - surface(p - vec2(0.0, 0.5), r)
         );
     }
     vec2 normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
@@ -329,17 +350,7 @@ void main() {
     // 1 at the edge, 0 where the bezel meets the flat middle. The bezel's surface is a squircle,
     // rising from nothing at the edge to the full thickness: unlike a circle, its curvature fades
     // to nothing at the flat middle, so the magnification eases out instead of stopping at a
-    // crease.
-    // A bezel can't be wider than half the glass: two sides' bezels would meet in a ridge
-    // instead of rising to one rounded top.
-    float inradius = 0.5 * min(shape0.z, shape0.w);
-    if (shape_count > 1.5) inradius = max(inradius, 0.5 * min(shape1.z, shape1.w));
-    if (shape_count > 2.5) inradius = max(inradius, 0.5 * min(shape2.z, shape2.w));
-    if (shape_count > 3.5) inradius = max(inradius, 0.5 * min(shape3.z, shape3.w));
-    if (shape_count > 4.5) inradius = max(inradius, 0.5 * min(shape4.z, shape4.w));
-    if (shape_count > 5.5) inradius = max(inradius, 0.5 * min(shape5.z, shape5.w));
-    if (shape_count > 6.5) inradius = max(inradius, 0.5 * min(shape6.z, shape6.w));
-    if (shape_count > 7.5) inradius = max(inradius, 0.5 * min(shape7.z, shape7.w));
+    // crease. It's never wider than the glass's inradius where it is.
     float width = max(min(bezel, inradius), 1e-3);
 
     float rim = clamp(1.0 + depth / width, 0.0, 1.0);
@@ -359,7 +370,8 @@ void main() {
     // normal, so it lands on what's behind further in: the bezel magnifies.
     float tilt = atan(steepness);
     float bent = asin(sin(tilt) / max(refractive_index, 1.0));
-    // Never past the middle, where it would show the far side's background.
+    // Never past the middle of the glass where it is, where it would show the far side's
+    // background.
     float bend = min(height * tan(tilt - bent), max(inradius + depth, 0.0));
 
     // What's behind, seen through the bezel, red bent more than blue.
