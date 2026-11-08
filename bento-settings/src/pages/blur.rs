@@ -264,11 +264,13 @@ fn reach(roughness: f64) -> f64 {
     256f64.powf(roughness) - 1.
 }
 
-/// The settings at `roughness`. The passes are the ones that put the offset nearest 2, so it
-/// stays between about 1.4 and 2.8: further apart, a pass's samples skip what's between them,
-/// which shows as ghosting. The offset and sheen are in hundredths, as they're saved. A rough
-/// surface isn't shiny, so sheen falls as roughness rises.
+/// The settings at `roughness`, taken to the hundredth, the slider's step: a drag stops between
+/// steps, and only a hundredth's settings read back as that roughness. The passes are the ones
+/// that put the offset nearest 2, so it stays between about 1.4 and 2.8: further apart, a pass's
+/// samples skip what's between them, which shows as ghosting. The offset and sheen are in
+/// hundredths, as they're saved. A rough surface isn't shiny, so sheen falls as roughness rises.
 fn rough_at(roughness: f64) -> Rough {
+    let roughness = hundredths(roughness);
     let reach = reach(roughness);
     let passes = (reach / 2.).log2().round().clamp(1., 8.);
     Rough {
@@ -1034,6 +1036,20 @@ mod tests {
             blur.offset = rough.offset;
             blur.glass.sheen = rough.sheen;
             assert_eq!(roughness(&blur), Some(r), "{r}");
+        }
+    }
+
+    #[test]
+    fn roughness_reads_back_where_it_was_dragged() {
+        // A dragged slider stops between its steps, like at 0.618.
+        for i in 0..=1000 {
+            let dragged = f64::from(i) / 1000.;
+            let rough = rough_at(dragged);
+            let mut blur = Blur::default();
+            blur.passes = rough.passes as u8;
+            blur.offset = rough.offset;
+            blur.glass.sheen = rough.sheen;
+            assert_eq!(roughness(&blur), Some(hundredths(dragged)), "{dragged}");
         }
     }
 
