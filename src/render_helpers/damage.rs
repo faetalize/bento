@@ -29,6 +29,15 @@ impl ExtraDamage {
         this.geometry = geometry;
         this
     }
+
+    /// Damage over `geometry` whenever `commit` changes, as an element `id` of its own.
+    pub fn with_commit(id: Id, commit: CommitCounter, geometry: Rectangle<f64, Logical>) -> Self {
+        Self {
+            id,
+            commit,
+            geometry,
+        }
+    }
 }
 
 impl Default for ExtraDamage {

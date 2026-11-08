@@ -18,9 +18,9 @@ use crate::protocols::bento_shell::{
     glass_shapes, GlassCurve, GlassShape, DEFAULT_MELT, MAX_GLASS_CURVES, MAX_GLASS_PATHS,
     MAX_GLASS_SHAPES,
 };
-use crate::render_helpers::background_effect::RenderParams;
+use crate::render_helpers::background_effect::{BackgroundEffectElement, RenderParams};
 use crate::render_helpers::blur::BlurOptions;
-use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
+use crate::render_helpers::framebuffer_effect::FramebufferEffect;
 use crate::render_helpers::shaders::{mat3_uniform, GLASS_LIGHT_UNIFORMS};
 use crate::utils::region::TransformedRegion;
 
@@ -64,8 +64,8 @@ pub fn shade(blur: &niri_config::Blur) -> [f32; 4] {
 }
 
 /// The commit of an element drawing an effect at `commit`, with its glass, if it's glass, and
-/// its shade: it changes too when they do, which the effect doesn't count, like when the pointer
-/// moves within the glass's reach, or the accent or the style changes.
+/// its shade: it changes too when they do, which the effect doesn't count, like when the glass's
+/// shapes change, the pointer moves within its reach, or the accent or the style changes.
 pub fn effect_commit(
     commit: CommitCounter,
     glass: Option<&GlassShapes>,
@@ -80,6 +80,18 @@ pub fn effect_commit(
         .hash(&mut hasher);
     shade.map(f32::to_bits).hash(&mut hasher);
     if let Some(glass) = glass {
+        let count = glass.count;
+        for values in [
+            glass.rects[..count].as_flattened(),
+            glass.radii[..count].as_flattened(),
+            &glass.melts[..count],
+            glass.curves[..glass.curve_count].as_flattened(),
+            &glass.path_ends[..glass.path_count],
+        ] {
+            for value in values {
+                value.to_bits().hash(&mut hasher);
+            }
+        }
         glass.pointer.map(|p| p.map(f32::to_bits)).hash(&mut hasher);
         let tint = glass.glass.tint(glass.accent);
         tint.to_array_unpremul().map(f32::to_bits).hash(&mut hasher);
@@ -478,25 +490,20 @@ fn light_uniforms(glass: &niri_config::Glass) -> (Vec<[f32; 4]>, [f32; 4]) {
 /// How far past its shapes the glass reaches where nearby shapes melt together.
 const MELT_REACH: i32 = 6;
 
-#[derive(Debug)]
-struct Glass {
-    effect: FramebufferEffect,
-    shapes: Vec<GlassShape>,
-    paths: Vec<GlassCurve>,
-}
+/// The steps the glass's area grows and shrinks in, in logical pixels. What's behind it is
+/// captured again, into new textures, whenever the area changes, so a morph that changed it on
+/// every frame would blur on every frame and make new textures for it; in steps, it does that only
+/// now and then, and in between only draws the glass again from what it captured.
+const AREA_STEP: i32 = 64;
 
 /// Per-surface glass stored in its data map.
-struct SurfaceGlass(Mutex<Glass>);
+struct SurfaceGlass(Mutex<FramebufferEffect>);
 
 impl SurfaceGlass {
     fn get(states: &SurfaceData) -> &Self {
-        states.data_map.get_or_insert_threadsafe(|| {
-            SurfaceGlass(Mutex::new(Glass {
-                effect: FramebufferEffect::new(),
-                shapes: Vec::new(),
-                paths: Vec::new(),
-            }))
-        })
+        states
+            .data_map
+            .get_or_insert_threadsafe(|| SurfaceGlass(Mutex::new(FramebufferEffect::new())))
     }
 }
 
@@ -508,22 +515,17 @@ pub fn render(
     scale: f64,
     blur: niri_config::Blur,
     frame: GlassFrame,
-    push: &mut dyn FnMut(FramebufferEffectElement),
+    push: &mut dyn FnMut(BackgroundEffectElement),
 ) {
     let (mut shapes, paths) = glass_shapes(surface);
     shapes.retain(|shape| !shape.is_empty());
     let Some(bounds) = bounds(&shapes, &paths) else {
         return;
     };
+    let bounds = in_steps(bounds);
 
     with_states(surface, |states| {
-        let glass = SurfaceGlass::get(states);
-        let mut glass = glass.0.lock().unwrap();
-        if glass.shapes != shapes || glass.paths != paths {
-            glass.effect.damage();
-            glass.shapes = shapes.clone();
-            glass.paths = paths.clone();
-        }
+        let effect = SurfaceGlass::get(states).0.lock().unwrap();
 
         let geometry = Rectangle::new(location + bounds.loc.to_f64(), bounds.size.to_f64())
             .to_physical_precise_round(scale)
@@ -551,7 +553,7 @@ pub fn render(
             clip: None,
             scale,
         };
-        push(glass.effect.render_glass(
+        let elem = effect.render_glass(
             ns,
             params,
             BlurOptions::reaching(blur),
@@ -559,8 +561,24 @@ pub fn render(
             blur.saturation as f32,
             if blur.off { [0.; 4] } else { shade(&blur) },
             uniforms,
-        ));
+        );
+        if let Some(look) = elem.look() {
+            push(look.into());
+        }
+        push(elem.into());
     });
+}
+
+/// `bounds` grown out to whole steps of [`AREA_STEP`].
+fn in_steps(bounds: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    let down = |x: i32| x.div_euclid(AREA_STEP) * AREA_STEP;
+    let up = |x: i32| down(x + AREA_STEP - 1);
+    let (x0, y0) = (down(bounds.loc.x), down(bounds.loc.y));
+    let (x1, y1) = (
+        up(bounds.loc.x + bounds.size.w),
+        up(bounds.loc.y + bounds.size.h),
+    );
+    Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into())
 }
 
 /// The area the glass covers, in whole surface coordinates. A path's curves lie inside the box
@@ -596,4 +614,61 @@ fn bounds(shapes: &[GlassShape], paths: &[GlassCurve]) -> Option<Rectangle<i32, 
     let (x0, y0) = (x0.floor() as i32 - reach, y0.floor() as i32 - reach);
     let (x1, y1) = (x1.ceil() as i32 + reach, y1.ceil() as i32 + reach);
     Some(Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::backend::renderer::element::Element as _;
+
+    use super::*;
+    use crate::render_helpers::framebuffer_effect::FramebufferEffectElement;
+
+    fn glass_at(
+        effect: &FramebufferEffect,
+        pointer: Option<[f32; 2]>,
+        width: f32,
+    ) -> FramebufferEffectElement {
+        let mut shapes = GlassShapes {
+            count: 1,
+            pointer,
+            ..GlassShapes::default()
+        };
+        shapes.rects[0] = [0., 0., width, 36.];
+        let params = RenderParams {
+            geometry: Rectangle::new((0., 0.).into(), (600., 100.).into()),
+            subregion: None,
+            clip: None,
+            scale: 1.,
+        };
+        effect.render_glass(None, params, None, 0., 1., [0.; 4], shapes)
+    }
+
+    #[test]
+    fn the_pointer_and_the_shapes_change_how_glass_looks_without_capturing_again() {
+        let effect = FramebufferEffect::new();
+        let still = glass_at(&effect, Some([10., 10.]), 200.);
+        for moved in [
+            glass_at(&effect, Some([20., 10.]), 200.),
+            glass_at(&effect, Some([10., 10.]), 300.),
+        ] {
+            // What's behind is captured again only when the effect itself changes.
+            assert_eq!(moved.current_commit(), still.current_commit());
+            let commit = |elem: &FramebufferEffectElement| elem.look().unwrap().current_commit();
+            assert_ne!(commit(&moved), commit(&still));
+        }
+    }
+
+    #[test]
+    fn growing_glass_changes_its_area_only_now_and_then() {
+        let mut areas = Vec::new();
+        for width in 0..=560 {
+            let bounds = Rectangle::new((1000 - width / 2, 300).into(), (width, 120).into());
+            let area = in_steps(bounds);
+            assert!(area.contains_rect(bounds));
+            if areas.last() != Some(&area) {
+                areas.push(area);
+            }
+        }
+        assert!(areas.len() <= 12, "{} areas", areas.len());
+    }
 }

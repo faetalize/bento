@@ -17,6 +17,7 @@ use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::{Blur, BlurOptions};
+use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::glass::{self, GlassShapes};
 use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::shaders::{mat3_uniform, Shaders};
@@ -25,13 +26,17 @@ use crate::utils::region::TransformedRegion;
 #[derive(Debug, Clone)]
 pub struct FramebufferEffect {
     id: Id,
+    /// Changes when what's behind has to be captured again.
     commit: CommitCounter,
+    /// The id of the damage for a change of only how it looks.
+    look: Id,
 }
 
 #[derive(Debug)]
 pub struct FramebufferEffectElement {
     id: Id,
     commit: CommitCounter,
+    look: Id,
     geometry: Rectangle<f64, Logical>,
     clip_geo: Rectangle<f64, Logical>,
     corner_radius: CornerRadius,
@@ -61,6 +66,7 @@ impl FramebufferEffect {
         Self {
             id: Id::new(),
             commit: CommitCounter::default(),
+            look: Id::new(),
         }
     }
 
@@ -82,13 +88,16 @@ impl FramebufferEffect {
             .unwrap_or((params.geometry, CornerRadius::default()));
 
         let mut id = self.id.clone();
+        let mut look = self.look.clone();
         if let Some(ns) = ns {
             id = id.namespaced(ns);
+            look = look.namespaced(ns);
         }
 
         FramebufferEffectElement {
             id,
             commit: self.commit,
+            look,
             geometry: params.geometry,
             clip_geo,
             corner_radius,
@@ -122,6 +131,19 @@ impl FramebufferEffect {
 }
 
 impl FramebufferEffectElement {
+    /// The damage for a change of only how it looks, like its glass's shapes or the pointer's
+    /// light on it, to go in front of it.
+    ///
+    /// smithay captures what's behind an effect again whenever the effect itself is damaged, as
+    /// if what's behind had changed, and blurs it again. A change of its look damages this
+    /// instead, in front of it: what's there is drawn again, the effect from what it captured.
+    /// Without it, the pointer moving over glass blurred what's behind on every frame.
+    pub fn look(&self) -> Option<ExtraDamage> {
+        let commit = glass::effect_commit(self.commit, self.glass.as_ref(), self.shade);
+        (commit != self.commit)
+            .then(|| ExtraDamage::with_commit(self.look.clone(), commit, self.geometry))
+    }
+
     pub fn with_alpha(mut self, alpha: f32) -> Self {
         self.alpha = alpha;
         self
@@ -181,7 +203,8 @@ impl Element for FramebufferEffectElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        glass::effect_commit(self.commit, self.glass.as_ref(), self.shade)
+        // How it looks is in `look`'s.
+        self.commit
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {

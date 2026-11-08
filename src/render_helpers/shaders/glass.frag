@@ -459,8 +459,10 @@ void main() {
     // A path is as thick as it is where it is. Looking in from here as far as the bezel and the
     // glass's thickness reach, a point past the middle is nearer the far side, and the depths
     // here and there add up to how thick it is.
-    if (path_count > 0.5) {
-        float reach = max(bezel, thickness);
+    // Deeper in than that, without a pattern, the surface is flat, and how thick it is doesn't
+    // matter.
+    float reach = max(bezel, thickness);
+    if (path_count > 0.5 && (depth > -reach || pattern > 0.5)) {
         float outline2;
         float depth2;
         vec2 grad2;

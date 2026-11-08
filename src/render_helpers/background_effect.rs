@@ -251,12 +251,18 @@ impl BackgroundEffect {
                 shade,
                 shapes,
             );
+            if let Some(look) = elem.look() {
+                push(look.into());
+            }
             push(elem.into());
         } else {
             // Render non-xray effect.
             let elem = self
                 .nonxray
                 .render(ns, params, blur_options, noise, saturation, shade);
+            if let Some(look) = elem.look() {
+                push(look.into());
+            }
             push(elem.into());
         }
     }

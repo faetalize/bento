@@ -241,7 +241,7 @@ impl MappedLayer {
                 self.scale,
                 self.blur_config,
                 ctx.glass,
-                &mut |elem| push(BackgroundEffectElement::from(elem).into()),
+                &mut |elem| push(elem.into()),
             );
         }
 
