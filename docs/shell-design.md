@@ -61,9 +61,12 @@ calendar, and closing it morphs it back, one piece of glass changing shape rathe
 growing out of the clicked spot. Quick settings is the right island's panel. The motion is
 restrained, with no overshoot.
 
-## Notifications show at the top right
+## Notifications drip out of the right island
 
-Notifications and toasts show at the top right of the screen.
+Notifications and toasts show at the top right of the screen, out of the right island: each one
+melts down out of it like a drop of liquid, pulls away and settles into its toast, and goes back
+up into it the same way when it's dismissed. It has to feel like one liquid, never like a second
+panel sliding out of the first.
 
 ## On-screen indicators show at the bottom
 
