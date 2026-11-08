@@ -305,6 +305,9 @@ mod imp {
         pub glass: RefCell<Option<Glass>>,
         /// Room kept below the islands, for what grows out of them.
         pub room_below: Cell<f32>,
+        /// Whether it keeps the tallest size it has had.
+        pub hold_height: Cell<bool>,
+        pub tallest: Cell<i32>,
         pub(super) tick: RefCell<Option<gtk::TickCallbackId>>,
         pub(super) last_frame: Cell<Option<i64>>,
     }
@@ -361,7 +364,11 @@ mod imp {
                 .map(|place| place(width).bottom())
                 .fold(0f32, f32::max)
                 + self.room_below.get();
-            let height = height.ceil() as i32;
+            let mut height = height.ceil() as i32;
+            if self.hold_height.get() {
+                height = height.max(self.tallest.get());
+                self.tallest.set(height);
+            }
             (height, height, -1, -1)
         }
 
@@ -505,6 +512,13 @@ impl Stage {
     /// Keeps `height` free below the islands, for what grows out of them.
     pub fn set_room_below(&self, height: f32) {
         self.imp().room_below.set(height);
+        self.queue_resize();
+    }
+
+    /// Keeps the stage as tall as it has ever been, so that its surface doesn't resize, which
+    /// takes a round trip to bento, each time its islands' content changes height.
+    pub fn set_hold_height(&self, hold: bool) {
+        self.imp().hold_height.set(hold);
         self.queue_resize();
     }
 

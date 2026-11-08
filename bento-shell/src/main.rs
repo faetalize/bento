@@ -144,6 +144,14 @@ impl Shell {
         shell.update_islands(&monitors);
         shell.tick_clock();
 
+        // The launcher reads the apps once it's idle, rather than the first time it opens.
+        let weak = Rc::downgrade(&shell);
+        glib::idle_add_local_once(move || {
+            if let Some(shell) = weak.upgrade() {
+                shell.launcher().prepare();
+            }
+        });
+
         shell
     }
 
@@ -215,6 +223,10 @@ impl Shell {
 
     fn set_audio(&self, audio: &Audio) {
         let last = self.last_audio.replace(Some(*audio));
+        // The sound server tells of many changes to the speaker that don't touch its volume.
+        if last == Some(*audio) {
+            return;
+        }
         let changed = last.is_some_and(|last| {
             last.available && (last.volume != audio.volume || last.muted != audio.muted)
         });

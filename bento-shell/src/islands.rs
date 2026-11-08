@@ -58,6 +58,8 @@ pub struct Islands {
     middle: IslandId,
     right: IslandId,
     workspaces: gtk::Box,
+    /// The buttons the workspaces have, to rebuild them only when they'd change.
+    workspace_buttons: RefCell<Vec<WorkspaceButton>>,
     minimap: Minimap,
     clock: gtk::Label,
     tray: gtk::Box,
@@ -245,6 +247,7 @@ impl Islands {
             middle,
             right: right_island,
             workspaces,
+            workspace_buttons: RefCell::default(),
             minimap,
             clock,
             tray,
@@ -470,21 +473,24 @@ impl Islands {
     }
 
     pub fn set_workspaces(self: &Rc<Self>, workspaces: &[Workspace]) {
+        // Workspaces change far more often than their buttons do, like whenever the focus or the
+        // view moves, which only the minimap shows.
+        let buttons = workspace_buttons(workspaces, self.monitor.connector().as_deref());
+        if *self.workspace_buttons.borrow() != buttons {
+            self.set_workspace_buttons(&buttons);
+            self.workspace_buttons.replace(buttons);
+        }
+        self.update_minimap();
+    }
+
+    fn set_workspace_buttons(&self, buttons: &[WorkspaceButton]) {
         while let Some(child) = self.workspaces.first_child() {
             self.workspaces.remove(&child);
         }
 
-        let connector = self.monitor.connector();
-        for workspace in workspaces
-            .iter()
-            .filter(|ws| ws.monitor.as_deref() == connector.as_deref())
-        {
-            let label = workspace
-                .name
-                .clone()
-                .unwrap_or_else(|| (workspace.index + 1).to_string());
+        for workspace in buttons {
             let button = gtk::Button::builder()
-                .label(label)
+                .label(&workspace.label)
                 .css_classes(["flat", "workspace"])
                 .build();
             if workspace.active {
@@ -502,7 +508,6 @@ impl Islands {
             });
             self.workspaces.append(&button);
         }
-        self.update_minimap();
     }
 
     /// Shows where the view is on the monitor's active workspace.
@@ -580,9 +585,11 @@ impl Islands {
 
     pub fn set_audio(&self, audio: &Audio, show_osd: bool) {
         let icon = volume_icon(audio);
-        self.volume_icon.set_icon_name(Some(icon));
+        set_icon(&self.volume_icon, icon);
         self.volume_icon.set_visible(audio.available);
-        self.volume_mute.set_icon_name(icon);
+        if self.volume_mute.icon_name().as_deref() != Some(icon) {
+            self.volume_mute.set_icon_name(icon);
+        }
         self.volume_mute
             .set_tooltip_text(Some(if audio.muted { "Unmute" } else { "Mute" }));
 
@@ -605,8 +612,8 @@ impl Islands {
 
     pub fn set_network(&self, network: &Network) {
         let icon = network.icon_name();
-        self.network_icon.set_icon_name(Some(icon));
-        self.network_row_icon.set_icon_name(Some(icon));
+        set_icon(&self.network_icon, icon);
+        set_icon(&self.network_row_icon, icon);
         let label = match (&network.name, network.connected) {
             (Some(name), true) => name.clone(),
             (None, true) => String::from("Connected"),
@@ -624,10 +631,9 @@ impl Islands {
             return;
         }
         let percentage = format!("{}%", battery.percentage.round());
-        self.battery_icon.set_icon_name(Some(&battery.icon_name));
+        set_icon(&self.battery_icon, &battery.icon_name);
         self.battery_label.set_label(&percentage);
-        self.battery_row_icon
-            .set_icon_name(Some(&battery.icon_name));
+        set_icon(&self.battery_row_icon, &battery.icon_name);
         self.battery_row_label.set_label(&if battery.charging {
             format!("{percentage}, charging")
         } else {
@@ -814,6 +820,32 @@ fn at_right(content: &impl IsA<gtk::Widget>, panel: Option<f32>) -> Place {
     })
 }
 
+/// What a workspace's button shows.
+#[derive(Debug, Clone, PartialEq)]
+struct WorkspaceButton {
+    id: u64,
+    label: String,
+    active: bool,
+    urgent: bool,
+}
+
+/// The buttons for the workspaces on the monitor `connector`.
+fn workspace_buttons(workspaces: &[Workspace], connector: Option<&str>) -> Vec<WorkspaceButton> {
+    workspaces
+        .iter()
+        .filter(|ws| ws.monitor.as_deref() == connector)
+        .map(|ws| WorkspaceButton {
+            id: ws.id,
+            label: ws
+                .name
+                .clone()
+                .unwrap_or_else(|| (ws.index + 1).to_string()),
+            active: ws.active,
+            urgent: ws.urgent,
+        })
+        .collect()
+}
+
 /// Where the view is along a workspace's tiles, and the focused tile, as fractions of the whole
 /// stretch they and the view cover.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -944,14 +976,21 @@ impl Minimap {
 
     fn set(&self, span: Span) {
         let (focus_start, focus_width) = span.focused.unwrap_or_default();
-        self.has_focus.set(span.focused.is_some());
+        let targets = [span.view.0, span.view.1, focus_start, focus_width];
+        let has_focus = span.focused.is_some();
         {
             let mut springs = self.springs.borrow_mut();
-            let targets = [span.view.0, span.view.1, focus_start, focus_width];
+            // Most window changes, like a title, don't move anything here.
+            let same = springs.iter().zip(targets).all(|(s, t)| s.target == t);
+            if same && self.has_focus.get() == has_focus {
+                return;
+            }
             for (spring, target) in springs.iter_mut().zip(targets) {
                 spring.target = target;
             }
         }
+        self.has_focus.set(has_focus);
+        self.area.queue_draw();
         if self.tick.borrow().is_some() {
             return;
         }
@@ -998,6 +1037,14 @@ fn panel_box() -> gtk::Box {
 
 fn row() -> gtk::Box {
     gtk::Box::builder().spacing(12).css_classes(["row"]).build()
+}
+
+/// Shows icon `name` in `image`, unless it already does: setting an icon, even the same one,
+/// has the islands laid out again.
+fn set_icon(image: &gtk::Image, name: &str) {
+    if image.icon_name().as_deref() != Some(name) {
+        image.set_icon_name(Some(name));
+    }
 }
 
 pub fn volume_icon(audio: &Audio) -> &'static str {
@@ -1169,4 +1216,48 @@ fn show_menu(anchor: &gtk::Button, model: &gio::MenuModel, actions: &gio::Simple
         glib::idle_add_local_once(move || popover.unparent());
     });
     popover.popup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workspace(id: u64, monitor: &str, index: usize) -> Workspace {
+        Workspace {
+            id,
+            name: None,
+            monitor: Some(String::from(monitor)),
+            index,
+            windows: Vec::new(),
+            focused: None,
+            active: false,
+            urgent: false,
+            camera: bento_ipc::Point { x: 0., y: 0. },
+        }
+    }
+
+    #[test]
+    fn the_view_or_focus_moving_leaves_the_workspace_buttons_as_they_are() {
+        let before = [
+            workspace(1, "DP-2", 0),
+            workspace(2, "DP-2", 1),
+            workspace(3, "DP-3", 0),
+        ];
+        let mut after = before.clone();
+        after[0].camera.x = 640.;
+        after[0].focused = Some(7);
+        after[0].windows = vec![7];
+        assert_eq!(
+            workspace_buttons(&after, Some("DP-2")),
+            workspace_buttons(&before, Some("DP-2"))
+        );
+
+        after[1].active = true;
+        let buttons = workspace_buttons(&after, Some("DP-2"));
+        assert_ne!(buttons, workspace_buttons(&before, Some("DP-2")));
+        assert_eq!(
+            buttons.iter().map(|b| b.label.as_str()).collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+    }
 }

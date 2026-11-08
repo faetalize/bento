@@ -22,6 +22,28 @@ const MAX_RESULTS: usize = 8;
 /// How far down the screen the launcher sits.
 const TOP: f64 = 0.22;
 
+/// An app, with what a search matches it by.
+struct App {
+    info: gio::AppInfo,
+    /// Its name, in lower case.
+    name: String,
+    /// Its keywords, generic name and executable, in lower case.
+    words: Vec<String>,
+}
+
+impl App {
+    fn new(info: gio::AppInfo) -> Self {
+        let name = info.display_name().to_lowercase();
+        let mut words: Vec<String> = Vec::new();
+        if let Some(desktop) = info.downcast_ref::<gio::DesktopAppInfo>() {
+            words.extend(desktop.keywords().iter().map(|k| k.to_lowercase()));
+            words.extend(desktop.generic_name().map(|g| g.to_lowercase()));
+        }
+        words.push(info.executable().to_string_lossy().to_lowercase());
+        Self { info, name, words }
+    }
+}
+
 pub struct Launcher {
     shell: Weak<Shell>,
     window: gtk::Window,
@@ -29,7 +51,10 @@ pub struct Launcher {
     island: IslandId,
     entry: gtk::SearchEntry,
     results: gtk::ListBox,
-    apps: RefCell<Vec<gio::AppInfo>>,
+    /// The apps, sorted by name, read once and again only when they change: reading them takes
+    /// long enough to hold up the launcher growing in.
+    apps: RefCell<Option<Rc<Vec<App>>>>,
+    _apps_monitor: gio::AppInfoMonitor,
     shown: RefCell<Vec<gio::AppInfo>>,
 }
 
@@ -68,6 +93,8 @@ impl Launcher {
         content.append(&results);
 
         let stage = Stage::default();
+        // It keeps its tallest size, so that searching never resizes the surface.
+        stage.set_hold_height(true);
         window.set_child(Some(&stage));
 
         // In the middle, as large as it is.
@@ -95,6 +122,7 @@ impl Launcher {
             entry,
             results,
             apps: RefCell::default(),
+            _apps_monitor: gio::AppInfoMonitor::get(),
             shown: RefCell::default(),
         });
 
@@ -103,6 +131,13 @@ impl Launcher {
     }
 
     fn connect_signals(self: &Rc<Self>) {
+        let launcher = Rc::downgrade(self);
+        self._apps_monitor.connect_changed(move |_| {
+            if let Some(launcher) = launcher.upgrade() {
+                launcher.apps.take();
+            }
+        });
+
         let launcher = Rc::downgrade(self);
         self.window.connect_map(move |window| {
             let Some(launcher) = launcher.upgrade() else {
@@ -187,14 +222,28 @@ impl Launcher {
         }
     }
 
-    fn show(self: &Rc<Self>) {
-        let mut apps: Vec<_> = gio::AppInfo::all()
-            .into_iter()
-            .filter(|app| app.should_show())
-            .collect();
-        apps.sort_by_key(|app| app.display_name().to_lowercase());
-        self.apps.replace(apps);
+    /// Reads the apps ahead of the first time it's shown.
+    pub fn prepare(&self) {
+        self.apps();
+    }
 
+    /// The apps, read now if they aren't yet.
+    fn apps(&self) -> Rc<Vec<App>> {
+        self.apps
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                let mut apps: Vec<App> = gio::AppInfo::all()
+                    .into_iter()
+                    .filter(|app| app.should_show())
+                    .map(App::new)
+                    .collect();
+                apps.sort_by(|a, b| a.name.cmp(&b.name));
+                Rc::new(apps)
+            })
+            .clone()
+    }
+
+    fn show(self: &Rc<Self>) {
         self.entry.set_text("");
         self.search();
 
@@ -226,8 +275,8 @@ impl Launcher {
 
     fn search(&self) {
         let query = self.entry.text().to_lowercase();
-        let apps = self.apps.borrow();
-        let mut matches: Vec<(u8, &gio::AppInfo)> = apps
+        let apps = self.apps();
+        let mut matches: Vec<(u8, &App)> = apps
             .iter()
             .filter_map(|app| score(app, &query).map(|score| (score, app)))
             .collect();
@@ -240,7 +289,7 @@ impl Launcher {
         let shown: Vec<gio::AppInfo> = matches
             .into_iter()
             .take(MAX_RESULTS)
-            .map(|(_, app)| app.clone())
+            .map(|(_, app)| app.info.clone())
             .collect();
         for app in &shown {
             self.results.append(&result_row(app));
@@ -251,7 +300,6 @@ impl Launcher {
         }
         self.shown.replace(shown);
         self.stage.queue_resize();
-        self.window.set_default_size(1, 1);
     }
 
     fn move_selection(&self, by: i32) {
@@ -279,11 +327,11 @@ impl Launcher {
 }
 
 /// How well an app matches a query, lower is better, or `None` if it doesn't.
-fn score(app: &gio::AppInfo, query: &str) -> Option<u8> {
+fn score(app: &App, query: &str) -> Option<u8> {
     if query.is_empty() {
         return Some(0);
     }
-    let name = app.display_name().to_lowercase();
+    let name = &app.name;
     if name.starts_with(query) {
         return Some(0);
     }
@@ -293,18 +341,7 @@ fn score(app: &gio::AppInfo, query: &str) -> Option<u8> {
     if name.contains(query) {
         return Some(2);
     }
-    let desktop = app.downcast_ref::<gio::DesktopAppInfo>();
-    let extra = desktop
-        .map(|app| {
-            let mut words: Vec<String> = app.keywords().iter().map(|k| k.to_lowercase()).collect();
-            if let Some(generic) = app.generic_name() {
-                words.push(generic.to_lowercase());
-            }
-            words
-        })
-        .unwrap_or_default();
-    let executable = app.executable().to_string_lossy().to_lowercase();
-    if extra.iter().any(|word| word.contains(query)) || executable.contains(query) {
+    if app.words.iter().any(|word| word.contains(query)) {
         return Some(3);
     }
     None
