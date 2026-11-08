@@ -121,7 +121,6 @@ use smithay::wayland::xdg_activation::XdgActivationState;
 use smithay::wayland::xdg_foreign::XdgForeignState;
 use wayland_server::protocol::wl_output::WlOutput;
 
-#[cfg(feature = "dbus")]
 use crate::a11y::A11y;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
@@ -170,6 +169,8 @@ use crate::protocols::output_management::OutputManagementManagerState;
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::debug::push_opaque_regions;
+#[cfg(feature = "dbus")]
+use crate::render_helpers::glass::{self, GlassFrame};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
@@ -2385,6 +2386,7 @@ impl State {
                     target: RenderTarget::Output,
                     renderer,
                     xray: None,
+                    glass: GlassFrame::default(),
                 };
 
                 self.niri.fill_xray_elements(ctx.r(), output);
@@ -2536,11 +2538,19 @@ impl State {
 
     #[cfg(feature = "dbus")]
     pub fn on_portal_settings_msg(&mut self, msg: PortalSettingsToNiri) {
-        let PortalSettingsToNiri::IconTheme(theme) = msg;
-
-        trace!("portal icon theme: {theme:?}");
-        self.niri.icon_theme.set_portal(theme);
-        self.apply_icon_theme();
+        match msg {
+            PortalSettingsToNiri::IconTheme(theme) => {
+                trace!("portal icon theme: {theme:?}");
+                self.niri.icon_theme.set_portal(theme);
+                self.apply_icon_theme();
+            }
+            PortalSettingsToNiri::AccentColor(color) => {
+                trace!("portal accent colour: {color:?}");
+                if glass::set_accent(color) {
+                    self.niri.queue_redraw_all();
+                }
+            }
+        }
     }
 
     /// Gives the layout the icon theme that applies now, so that the engines' images follow it.
@@ -4788,10 +4798,22 @@ impl Niri {
         let mut ctx = ctx.r();
         let state = self.output_state.get(output).unwrap();
         ctx.xray = Some(&state.xray);
+        ctx.glass = self.glass_frame(output);
 
         self.render_inner(ctx, output, include_pointer, push);
 
         self.clear_xray_elements(output);
+    }
+
+    /// What glass on `output` takes from it: the pointer while it shows, which carries a light.
+    fn glass_frame(&self, output: &Output) -> GlassFrame {
+        let pointer = self
+            .pointer_visibility
+            .is_visible()
+            .then(|| self.global_space.output_geometry(output))
+            .flatten()
+            .map(|geo| self.seat.get_pointer().unwrap().current_location() - geo.loc.to_f64());
+        GlassFrame { pointer }
     }
 
     fn render_inner<R: NiriRenderer>(
@@ -5908,6 +5930,7 @@ impl Niri {
                         renderer,
                         target: RenderTarget::ScreenCapture,
                         xray: None,
+                        glass: GlassFrame::default(),
                     };
                     let offset = screencopy.region_loc().upscale(-1);
                     let mut elements = Vec::new();
@@ -5986,6 +6009,7 @@ impl Niri {
             renderer,
             target: RenderTarget::ScreenCapture,
             xray: None,
+            glass: GlassFrame::default(),
         };
         let offset = screencopy.region_loc().upscale(-1);
         let mut elements = Vec::new();
@@ -6073,6 +6097,7 @@ impl Niri {
                     renderer: &mut *renderer,
                     target: RenderTarget::ScreenCapture,
                     xray: None,
+                    glass: GlassFrame::default(),
                 };
                 let mut elements = Vec::new();
                 self.render(ctx, output, draw_cursor, &mut |elem| {
@@ -6505,6 +6530,7 @@ impl Niri {
                     renderer,
                     target,
                     xray: None,
+                    glass: GlassFrame::default(),
                 };
                 let elements = self.render_to_vec(ctx, &output, false);
                 let elements = elements.iter().rev();
@@ -6587,6 +6613,7 @@ impl Niri {
             renderer,
             target: RenderTarget::ScreenCapture,
             xray: None,
+            glass: GlassFrame::default(),
         };
         let elements = self.render_to_vec(ctx, output, include_pointer);
         let elements = elements.iter().rev();
@@ -6642,6 +6669,7 @@ impl Niri {
             renderer,
             target: RenderTarget::ScreenCapture,
             xray: None,
+            glass: GlassFrame::default(),
         };
         mapped.render(
             ctx,
@@ -6820,6 +6848,7 @@ impl Niri {
                 renderer,
                 target: RenderTarget::ScreenCapture,
                 xray: None,
+                glass: GlassFrame::default(),
             };
             let elements = self.render_to_vec(ctx, output, include_pointer);
 
@@ -7394,6 +7423,7 @@ impl Niri {
                         renderer,
                         target,
                         xray: None,
+                        glass: GlassFrame::default(),
                     };
                     let elements = self.render_to_vec(ctx, &output, false);
                     let elements = elements.iter().rev();

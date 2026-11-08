@@ -158,6 +158,10 @@ impl Shaders {
             UniformName::new("sheen", UniformType::_1f),
             UniformName::new("light_count", UniformType::_1f),
             UniformName::new("light_sizes", UniformType::_4f),
+            UniformName::new("absorbance", UniformType::_3f),
+            UniformName::new("pattern", UniformType::_1f),
+            UniformName::new("pattern_depth", UniformType::_1f),
+            UniformName::new("pointer", UniformType::_3f),
         ];
         glass_uniforms.extend(
             GLASS_SHAPE_UNIFORMS

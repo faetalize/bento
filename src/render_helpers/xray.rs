@@ -216,6 +216,7 @@ impl Xray {
                     bg_color: *bg_color,
                     glass: glass.map(|glass| {
                         GlassShapes::filling(clip_geo_size.x, clip_geo_size.y, corner_radius, glass)
+                            .lit(ctx.glass, clip_geo.loc, 1.)
                     }),
                     program: program.clone(),
                 };
@@ -274,6 +275,7 @@ impl Xray {
                         corner_radius.scaled_by(zoom as f32),
                         glass,
                     )
+                    .lit(ctx.glass, clip_geo.loc, zoom)
                 }),
                 program: program.clone(),
             };
@@ -314,7 +316,10 @@ impl Element for XrayElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.buffer.borrow().commit()
+        let commit = self.buffer.borrow().commit();
+        self.glass
+            .as_ref()
+            .map_or(commit, |glass| glass.commit(commit))
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {

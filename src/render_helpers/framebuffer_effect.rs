@@ -167,7 +167,9 @@ impl Element for FramebufferEffectElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.commit
+        self.glass
+            .as_ref()
+            .map_or(self.commit, |glass| glass.commit(self.commit))
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {

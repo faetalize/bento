@@ -24,6 +24,7 @@ use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::clipped_surface::{ClippedSurfaceRenderElement, RoundedCornerDamage};
 use crate::render_helpers::damage::ExtraDamage;
+use crate::render_helpers::glass::GlassFrame;
 use crate::render_helpers::offscreen::{OffscreenBuffer, OffscreenRenderElement};
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::resize::ResizeRenderElement;
@@ -1594,6 +1595,7 @@ impl<W: LayoutElement> Tile<W> {
                 target: RenderTarget::Output,
                 renderer,
                 xray: xray.as_deref(),
+                glass: GlassFrame::default(),
             },
             Point::from((0., 0.)),
             xray_pos,
@@ -1645,6 +1647,7 @@ impl<W: LayoutElement> Tile<W> {
                         target: RenderTarget::Output,
                         renderer,
                         xray: Some(xray),
+                        glass: GlassFrame::default(),
                     },
                     Point::from((0., 0.)),
                     xray_pos,
@@ -1665,6 +1668,7 @@ impl<W: LayoutElement> Tile<W> {
                 target: RenderTarget::Screencast,
                 renderer,
                 xray: xray.as_deref(),
+                glass: GlassFrame::default(),
             },
             Point::from((0., 0.)),
             xray_pos,

@@ -93,7 +93,9 @@ pub fn category() -> Category {
                 .search_item(
                     "blur.glass.pattern",
                     "Glass Pattern",
-                    &["texture", "surface", "reeded", "fluted", "hammered", "frosted"],
+                    &[
+                        "texture", "surface", "reeded", "fluted", "hammered", "frosted",
+                    ],
                 )
                 .search_item(
                     "blur.glass.pattern-depth",

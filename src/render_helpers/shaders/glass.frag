@@ -99,6 +99,10 @@ const float GRAIN = 3.0;
 // from it it fades to half, and how big it looks.
 const float POINTER_HEIGHT = 80.0;
 const float POINTER_SIZE = 0.15;
+// How far from the pointer its light reaches, in logical pixels, fading out on the way so it ends
+// without an edge; bento redraws glass for the pointer only within it, as `POINTER_REACH` in
+// `glass.rs` says.
+const float POINTER_REACH = 400.0;
 
 // The radius of the corner of a box nearest `q`, from the box's middle, fit to the box.
 float corner_radius(vec2 q, vec2 half_size, vec4 radii) {
@@ -391,7 +395,9 @@ void main() {
     // middle under it too, fading as they get further from it.
     if (pointer.z > 0.0) {
         vec3 to_pointer = vec3(pointer.xy - p, POINTER_HEIGHT);
-        float falloff = POINTER_HEIGHT * POINTER_HEIGHT / dot(to_pointer, to_pointer);
+        float h2 = POINTER_HEIGHT * POINTER_HEIGHT;
+        float at_reach = h2 / (POINTER_REACH * POINTER_REACH + h2);
+        float falloff = max(h2 / dot(to_pointer, to_pointer) - at_reach, 0.0) / (1.0 - at_reach);
         shine += pointer.z * falloff * specular(surface, normalize(to_pointer), POINTER_SIZE, 0.0);
     }
 

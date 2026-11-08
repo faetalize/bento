@@ -212,6 +212,7 @@ impl BackgroundEffect {
                 radius,
                 self.blur_config.glass,
             )
+            .lit(ctx.glass, geo.loc, 1.)
         });
 
         if self.options.xray {

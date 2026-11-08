@@ -18,6 +18,7 @@ use zbus::object_server::SignalEmitter;
 use crate::dbus::mutter_screen_cast::{self, CursorMode, ScreenCastToNiri, StreamTargetId};
 use crate::niri::{CastTarget, Niri, OutputRenderElements, PointerRenderElements, State};
 use crate::niri_render_elements;
+use crate::render_helpers::glass::GlassFrame;
 use crate::render_helpers::{RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, CastSessionId, CastStreamId};
 use crate::window::mapped::{MappedId, WindowCastRenderElements};
@@ -598,6 +599,7 @@ impl Niri {
                     renderer,
                     target: RenderTarget::Screencast,
                     xray: None,
+                    glass: GlassFrame::default(),
                 };
                 self.render(ctx, output, false, &mut |elem| elements.push(elem.into()));
 

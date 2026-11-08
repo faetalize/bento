@@ -32,6 +32,7 @@ use crate::layout::{
 use crate::niri_render_elements;
 use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::border::BorderRenderElement;
+use crate::render_helpers::glass::GlassFrame;
 use crate::render_helpers::offscreen::OffscreenData;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::snapshot::RenderSnapshot;
@@ -553,6 +554,7 @@ impl Mapped {
                 renderer,
                 target: RenderTarget::Screencast,
                 xray: None,
+                glass: GlassFrame::default(),
             },
             location,
             scale,

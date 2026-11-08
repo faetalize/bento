@@ -206,6 +206,12 @@ blur {
         dispersion 0.14      // how much more red bends than blue
         reflection 0.5       // how much it reflects where it's seen edge on, at its very edge
         sheen 0.6            // how shiny it is, from rough 0 to polished 1
+        color "#f0f7f4"      // the colour light takes on through it, deeper towards the edge;
+                             // its alpha is how strong, so "#ffffff00" is clear
+        // follow-accent     // take on the desktop's accent colour instead, faintly
+        pattern "smooth"     // or "reeded", "hammered" or "frosted", pressed into the top
+        pattern-depth 0.5    // how deep the pattern is, from flat 0 to 1
+        pointer-light 0.5    // how bright the light the pointer carries is, 0 for none
 
         // The lights it catches, up to four, far away like the sun. Any lights given replace
         // this one; `off` keeps a light without it shining.

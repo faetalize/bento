@@ -106,8 +106,12 @@ static PATTERN: LazyLock<Setting> = LazyLock::new(|| {
 });
 
 static COLOR: LazyLock<Setting> = LazyLock::new(|| {
-    Setting::color("Color", "blur.glass.color", |c| c.blur.glass.color)
-        .keywords(&["tint", "hue", "stained", "absorption"])
+    Setting::color("Color", "blur.glass.color", |c| c.blur.glass.color).keywords(&[
+        "tint",
+        "hue",
+        "stained",
+        "absorption",
+    ])
 });
 
 static FOLLOW_ACCENT: LazyLock<Setting> = LazyLock::new(|| {
@@ -563,7 +567,10 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         let live = live.clone();
         setting_row_watched(&FOLLOW_ACCENT, ctx, move |input| {
             if let Input::Bool(on) = input {
-                live.show(Unsaved::Setting(FOLLOW_ACCENT.path, f64::from(u8::from(*on))));
+                live.show(Unsaved::Setting(
+                    FOLLOW_ACCENT.path,
+                    f64::from(u8::from(*on)),
+                ));
             }
         })
     };

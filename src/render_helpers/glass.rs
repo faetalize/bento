@@ -2,11 +2,13 @@
 //! the edges. Background effects use it, and the shell gets it behind its layer surfaces in the
 //! shapes it gives through `bento_glass_v1`.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
 
 use glam::{Mat3, Vec2};
-use niri_config::CornerRadius;
+use niri_config::{Color, CornerRadius, GlassPattern};
 use smithay::backend::renderer::gles::Uniform;
+use smithay::backend::renderer::utils::CommitCounter;
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::compositor::{with_states, SurfaceData};
 use wayland_server::protocol::wl_surface::WlSurface;
@@ -19,6 +21,34 @@ use crate::render_helpers::shaders::{
     mat3_uniform, GLASS_LIGHT_UNIFORMS, GLASS_RADII_UNIFORMS, GLASS_SHAPE_UNIFORMS,
 };
 
+/// How far from the pointer its light reaches, in logical pixels, as `POINTER_REACH` in
+/// `glass.frag` says: glass further away doesn't need drawing again when the pointer moves.
+const POINTER_REACH: f64 = 400.;
+
+/// The desktop's accent colour, from the settings portal, which glass can take on. There's one
+/// for all of bento, so glass drawn outside an output's frame, like a closing window's last look,
+/// has it too.
+static ACCENT: Mutex<Option<Color>> = Mutex::new(None);
+
+/// Sets the accent colour, returning whether it changed.
+pub fn set_accent(accent: Option<Color>) -> bool {
+    let mut current = ACCENT.lock().unwrap();
+    let changed = *current != accent;
+    *current = accent;
+    changed
+}
+
+fn accent() -> Option<Color> {
+    *ACCENT.lock().unwrap()
+}
+
+/// What glass takes from the output it's drawn on.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GlassFrame {
+    /// Where the pointer is while it shows, in the output's logical coordinates.
+    pub pointer: Option<Point<f64, Logical>>,
+}
+
 /// Shapes of glass, in the coordinates of the geometry the shader clips to.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct GlassShapes {
@@ -28,6 +58,10 @@ pub struct GlassShapes {
     pub count: usize,
     /// How the glass bends and lights what's behind it.
     pub glass: niri_config::Glass,
+    /// The accent colour, for glass that follows it.
+    pub accent: Option<Color>,
+    /// Where the pointer is, in the shapes' coordinates, while its light reaches the glass.
+    pub pointer: Option<[f32; 2]>,
 }
 
 impl GlassShapes {
@@ -41,11 +75,51 @@ impl GlassShapes {
         let mut shapes = Self {
             count: 1,
             glass,
+            accent: accent(),
             ..Self::default()
         };
         shapes.rects[0] = [0., 0., width, height];
         shapes.radii[0] = radius.into();
         shapes
+    }
+
+    /// Gives the glass the pointer of `frame`. The shapes' coordinates start at `origin` in the
+    /// output's logical coordinates, `zoom` times as big as they show.
+    pub fn lit(mut self, frame: GlassFrame, origin: Point<f64, Logical>, zoom: f64) -> Self {
+        self.pointer = frame
+            .pointer
+            .filter(|_| self.glass.pointer_light > 0.)
+            .map(|pointer| (pointer - origin).upscale(zoom))
+            .filter(|pointer| self.reach(*pointer, POINTER_REACH * zoom))
+            .map(|pointer| [pointer.x as f32, pointer.y as f32]);
+        self
+    }
+
+    /// Whether a light at `point` reaching `reach` falls on any of the shapes.
+    fn reach(&self, point: Point<f64, Logical>, reach: f64) -> bool {
+        self.rects[..self.count].iter().any(|&[x, y, w, h]| {
+            let dx = (f64::from(x) - point.x)
+                .max(point.x - f64::from(x + w))
+                .max(0.);
+            let dy = (f64::from(y) - point.y)
+                .max(point.y - f64::from(y + h))
+                .max(0.);
+            dx.hypot(dy) < reach
+        })
+    }
+
+    /// The commit of an element drawing this glass for an effect at `commit`: it changes too
+    /// when the pointer moves within reach or the accent changes, which the effect doesn't
+    /// count.
+    pub fn commit(&self, commit: CommitCounter) -> CommitCounter {
+        let mut hasher = DefaultHasher::new();
+        commit
+            .distance(Some(CommitCounter::default()))
+            .hash(&mut hasher);
+        self.pointer.map(|p| p.map(f32::to_bits)).hash(&mut hasher);
+        let tint = self.glass.tint(self.accent);
+        tint.to_array_unpremul().map(f32::to_bits).hash(&mut hasher);
+        CommitCounter::from(hasher.finish() as usize)
     }
 }
 
@@ -79,6 +153,18 @@ pub fn uniforms(
         Uniform::new("sheen", glass.sheen as f32),
         Uniform::new("light_count", lights.len() as f32),
         Uniform::new("light_sizes", sizes),
+        Uniform::new(
+            "absorbance",
+            glass.absorbance(shapes.accent).map(|x| x as f32),
+        ),
+        Uniform::new("pattern", pattern_uniform(glass.pattern)),
+        Uniform::new("pattern_depth", glass.pattern_depth as f32),
+        Uniform::new(
+            "pointer",
+            shapes
+                .pointer
+                .map_or([0.; 3], |[x, y]| [x, y, glass.pointer_light as f32]),
+        ),
     ];
     uniforms.extend(
         GLASS_LIGHT_UNIFORMS
@@ -94,6 +180,16 @@ pub fn uniforms(
             .map(|(name, values)| Uniform::new(*name, values)),
     );
     uniforms
+}
+
+/// The pattern, as the shader numbers it.
+pub fn pattern_uniform(pattern: GlassPattern) -> f32 {
+    match pattern {
+        GlassPattern::Smooth => 0.,
+        GlassPattern::Reeded => 1.,
+        GlassPattern::Hammered => 2.,
+        GlassPattern::Frosted => 3.,
+    }
 }
 
 /// The lights that shine, each towards it over the screen with its intensity, and their sizes.
@@ -149,6 +245,7 @@ pub fn render(
     location: Point<f64, Logical>,
     scale: f64,
     blur: niri_config::Blur,
+    frame: GlassFrame,
     push: &mut dyn FnMut(FramebufferEffectElement),
 ) {
     let mut shapes = glass_shapes(surface);
@@ -172,6 +269,7 @@ pub fn render(
         let mut uniforms = GlassShapes {
             count: shapes.len(),
             glass: blur.glass,
+            accent: accent(),
             ..GlassShapes::default()
         };
         for (i, shape) in shapes.iter().enumerate() {
@@ -185,6 +283,7 @@ pub fn render(
             ];
             uniforms.radii[i] = [shape.radius as f32; 4];
         }
+        let uniforms = uniforms.lit(frame, geometry.loc, 1.);
 
         let params = RenderParams {
             geometry,
