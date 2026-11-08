@@ -386,15 +386,6 @@ impl Bar {
                 shell.audio.set_muted(!audio.muted);
             }
         });
-
-        let manager = adw::StyleManager::default();
-        let bar = Rc::downgrade(self);
-        manager.connect_dark_notify(move |_| {
-            if let Some(bar) = bar.upgrade() {
-                bar.update_tint();
-            }
-        });
-        self.update_tint();
     }
 
     fn setup_power_buttons(&self, row: &gtk::Box) {
@@ -460,15 +451,6 @@ impl Bar {
         self.window.set_margin(Edge::Left, gaps);
         self.window.set_margin(Edge::Right, gaps);
         self.stage.queue_resize();
-    }
-
-    fn update_tint(&self) {
-        let tint = if adw::StyleManager::default().is_dark() {
-            gdk::RGBA::new(0.08, 0.08, 0.1, 0.32)
-        } else {
-            gdk::RGBA::new(1., 1., 1., 0.32)
-        };
-        self.stage.set_tint(tint);
     }
 
     fn toggle_panel(&self, panel: &gtk::Box) {

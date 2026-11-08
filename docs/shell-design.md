@@ -41,11 +41,12 @@ Workspaces show as their numbers, or names when they have one, with the current 
 ## The shell is made of glass
 
 The shell's surfaces, the bar, its popovers, the launcher and notifications, are glass: bento
-blurs and refracts what's behind them, and they have a light edge highlight. Text and icons sit
-on a tinted layer so they read on any wallpaper or window.
+blurs and refracts what's behind them, and they have a light edge highlight.
 
-The glass is tinted light or dark with the system style, and the shell's highlights use
-libadwaita's accent colour, so the shell matches the settings app and GTK apps.
+The glass is bento's material, the same behind the shell as behind apps, and bento's settings set
+it. bento shades it towards libadwaita's window colour, light or dark with the system style, so
+text and icons read on any wallpaper or window; the shell draws no tint of its own. The shell's
+highlights use libadwaita's accent colour, so the shell matches the settings app and GTK apps.
 
 ## The bar morphs into its panels
 

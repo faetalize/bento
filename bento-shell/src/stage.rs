@@ -1,13 +1,14 @@
 //! The stage: a surface's content as pieces of glass. A piece grows out of a spot, like a bar
 //! item, into its own place, and shrinks back into it when it closes. Each frame the stage draws
-//! the pieces' tint and content, and gives bento the same shapes as glass and as input region.
+//! the pieces' content, and gives bento the same shapes as glass and as input region. bento shades
+//! the glass itself, so the content goes straight on it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::subclass::prelude::*;
-use gtk::{gdk, graphene, gsk};
+use gtk::{graphene, gsk};
 
 use crate::wayland::{Glass, Shape};
 
@@ -71,7 +72,6 @@ mod imp {
     pub struct Stage {
         pub(super) pieces: RefCell<Vec<Piece>>,
         pub glass: RefCell<Option<Glass>>,
-        pub tint: Cell<Option<gdk::RGBA>>,
         pub on_resize: RefCell<Option<Box<dyn Fn()>>>,
     }
 
@@ -147,7 +147,6 @@ mod imp {
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let obj = self.obj();
-            let tint = self.tint.get();
             let mut shapes = Vec::new();
 
             for piece in self.pieces.borrow().iter() {
@@ -168,9 +167,6 @@ mod imp {
 
                 let clip = gsk::RoundedRect::from_rect(rect.graphene(), radius);
                 snapshot.push_rounded_clip(&clip);
-                if let Some(tint) = &tint {
-                    snapshot.append_color(tint, &rect.graphene());
-                }
                 // The content shows once the piece is mostly grown.
                 let shown = ((t - 0.35) / 0.65).clamp(0., 1.);
                 if shown > 0. {
@@ -205,12 +201,6 @@ impl Stage {
     /// The glass behind the stage's surface.
     pub fn set_glass(&self, glass: Option<Glass>) {
         self.imp().glass.replace(glass);
-        self.queue_draw();
-    }
-
-    /// The color drawn over the glass in each piece, under its content.
-    pub fn set_tint(&self, tint: gdk::RGBA) {
-        self.imp().tint.set(Some(tint));
         self.queue_draw();
     }
 
