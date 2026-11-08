@@ -9,13 +9,12 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
-use smithay::utils::{Logical, Rectangle};
 use smithay::wayland::compositor::{with_states, Cacheable};
 use smithay::wayland::{Dispatch2, GlobalDispatch2};
 
 use super::raw::bento_shell::v1::server::{bento_glass_v1, bento_shell_v1};
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 /// The most shapes a surface's glass has.
 pub const MAX_GLASS_SHAPES: usize = 8;
@@ -23,11 +22,23 @@ pub const MAX_GLASS_SHAPES: usize = 8;
 pub const MAX_GLASS_PATHS: usize = 8;
 pub const MAX_GLASS_CURVES: usize = 64;
 
+/// How close glass comes for set_shapes' shapes to melt into it.
+pub const DEFAULT_MELT: f32 = 20.;
+
 /// One shape of a surface's glass: a rounded rectangle in surface-local logical coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlassShape {
-    pub rect: Rectangle<i32, Logical>,
-    pub radius: i32,
+    /// x, y, width and height.
+    pub rect: [f32; 4],
+    pub radius: f32,
+    /// How close other glass comes for it to melt into it.
+    pub melt: f32,
+}
+
+impl GlassShape {
+    pub fn is_empty(&self) -> bool {
+        self.rect[2] <= 0. || self.rect[3] <= 0.
+    }
 }
 
 /// One curve of a path of a surface's glass: a quadratic Bézier curve from `points[0]` to
@@ -210,6 +221,24 @@ where
                         .shapes = shapes;
                 });
             }
+            bento_glass_v1::Request::SetRects { rects } => {
+                let Some(shapes) = parse_rects(&rects) else {
+                    resource.post_error(
+                        bento_glass_v1::Error::InvalidRects,
+                        "rects must be at most 8 whole sextuples of finite numbers \
+                         with no negative sizes, radii or melts",
+                    );
+                    return;
+                };
+
+                with_states(&self.surface, |states| {
+                    states
+                        .cached_state
+                        .get::<GlassCachedState>()
+                        .pending()
+                        .shapes = shapes;
+                });
+            }
             bento_glass_v1::Request::SetPaths { paths } => {
                 let Some(paths) = parse_paths(&paths) else {
                     resource.post_error(
@@ -268,8 +297,35 @@ fn parse_shapes(bytes: &[u8]) -> Option<Vec<GlassShape>> {
                 return None;
             }
             Some(GlassShape {
-                rect: Rectangle::new((x, y).into(), (w, h).into()),
-                radius,
+                rect: [x, y, w, h].map(|x| x as f32),
+                radius: radius as f32,
+                melt: DEFAULT_MELT,
+            })
+        })
+        .collect()
+}
+
+/// Reads `set_rects`' array: native-endian float32 sextuples.
+fn parse_rects(bytes: &[u8]) -> Option<Vec<GlassShape>> {
+    const SEXTUPLE: usize = 6 * 4;
+    if bytes.len() % SEXTUPLE != 0 || bytes.len() / SEXTUPLE > MAX_GLASS_SHAPES {
+        return None;
+    }
+
+    bytes
+        .chunks_exact(SEXTUPLE)
+        .map(|chunk| {
+            let f: Vec<f32> = chunk
+                .chunks_exact(4)
+                .map(|float| f32::from_ne_bytes(float.try_into().unwrap()))
+                .collect();
+            if !f.iter().all(|x| x.is_finite()) || f[2..].iter().any(|x| *x < 0.) {
+                return None;
+            }
+            Some(GlassShape {
+                rect: [f[0], f[1], f[2], f[3]],
+                radius: f[4],
+                melt: f[5],
             })
         })
         .collect()
@@ -343,15 +399,46 @@ mod tests {
             shapes,
             [
                 GlassShape {
-                    rect: Rectangle::new((1, 2).into(), (30, 40).into()),
-                    radius: 5,
+                    rect: [1., 2., 30., 40.],
+                    radius: 5.,
+                    melt: DEFAULT_MELT,
                 },
                 GlassShape {
-                    rect: Rectangle::new((0, 50).into(), (10, 10).into()),
-                    radius: 0,
+                    rect: [0., 50., 10., 10.],
+                    radius: 0.,
+                    melt: DEFAULT_MELT,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn rects_are_read_as_sextuples() {
+        let shapes = parse_rects(&float_bytes(&[0.5, 1.25, 30., 40., 5., 48.])).unwrap();
+        assert_eq!(
+            shapes,
+            [GlassShape {
+                rect: [0.5, 1.25, 30., 40.],
+                radius: 5.,
+                melt: 48.,
+            }]
+        );
+    }
+
+    #[test]
+    fn broken_rects_are_refused() {
+        assert_eq!(parse_rects(&float_bytes(&[0.; 5])), None);
+        assert_eq!(parse_rects(&float_bytes(&[0., 0., 1., 1., 0., -1.])), None);
+        assert_eq!(parse_rects(&float_bytes(&[0., 0., -1., 1., 0., 0.])), None);
+        assert_eq!(
+            parse_rects(&float_bytes(&[f32::INFINITY, 0., 1., 1., 0., 0.])),
+            None
+        );
+        assert_eq!(
+            parse_rects(&float_bytes(&[0., 0., 1., 1., 0., 0.].repeat(9))),
+            None
+        );
+        assert_eq!(parse_rects(&[]), Some(Vec::new()));
     }
 
     #[test]

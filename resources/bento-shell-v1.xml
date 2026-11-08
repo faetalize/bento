@@ -16,7 +16,7 @@
     glass behind its surfaces.
   </description>
 
-  <interface name="bento_shell_v1" version="2">
+  <interface name="bento_shell_v1" version="3">
     <description summary="the shell's commands and requests">
       Bound once by the shell.
     </description>
@@ -59,7 +59,7 @@
     </event>
   </interface>
 
-  <interface name="bento_glass_v1" version="2">
+  <interface name="bento_glass_v1" version="3">
     <description summary="glass behind a layer surface">
       bento draws glass behind the surface in the shapes and paths it's given: it refracts and
       blurs what's behind them and lights their edges. Shapes and paths that come close melt into
@@ -85,6 +85,19 @@
       <arg name="shapes" type="array"/>
     </request>
 
+    <request name="set_rects" since="3">
+      <description summary="set the glass's shapes, to fractions of a pixel">
+        The shapes, as set_shapes sets them, as an array of native-endian float32 sextuples: x,
+        y, width, height, corner radius and melt, in the surface's logical coordinates. A
+        shape's melt is how close another piece of glass has to come for it to melt into it,
+        with the wider join a wider melt gives, from 0 for not at all; it melts into the shapes
+        and paths before it in the array. set_shapes' shapes melt at 20.
+
+        Double-buffered: it applies on the surface's next commit, and replaces set_shapes'.
+      </description>
+      <arg name="rects" type="array"/>
+    </request>
+
     <request name="set_paths" since="2">
       <description summary="set the glass's paths">
         Glass in any shape: closed paths of quadratic Bézier curves, in the surface's logical
@@ -106,6 +119,8 @@
              summary="the array isn't whole quintuples, has more than 8 shapes, or a shape has a negative size or radius"/>
       <entry name="invalid_paths" value="1"
              summary="the array isn't whole septuples, has more than 64 curves or 8 paths, a number isn't finite, or the paths aren't numbered from 0 up in order"/>
+      <entry name="invalid_rects" value="2"
+             summary="the array isn't whole sextuples, has more than 8 shapes, a number isn't finite, or a shape has a negative size, radius or melt"/>
     </enum>
   </interface>
 </protocol>

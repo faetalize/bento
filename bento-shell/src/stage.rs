@@ -14,6 +14,8 @@ use crate::wayland::{Glass, Shape};
 
 /// How long a piece takes to grow, and to shrink back.
 const OPEN_MS: u32 = 320;
+/// How close pieces come to melt together, as bento's glass did before shapes had their own.
+const MELT: f32 = 20.;
 const CLOSE_MS: u32 = 220;
 
 /// Where a piece sits once open, and where it grows from.
@@ -157,12 +159,15 @@ mod imp {
 
                 let rect = piece.from.lerp(piece.to, t);
                 let radius = piece.radius.min(rect.width / 2.).min(rect.height / 2.);
+                // To fractions of a pixel, so the glass moves with the content, which GTK
+                // draws there too.
                 shapes.push(Shape {
-                    x: rect.x.round() as i32,
-                    y: rect.y.round() as i32,
-                    width: rect.width.round() as i32,
-                    height: rect.height.round() as i32,
-                    radius: radius.round() as i32,
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                    radius,
+                    melt: MELT,
                 });
 
                 let clip = gsk::RoundedRect::from_rect(rect.graphene(), radius);
@@ -354,10 +359,10 @@ impl Stage {
         let region = gtk::cairo::Region::create();
         for shape in shapes {
             let _ = region.union_rectangle(&gtk::cairo::RectangleInt::new(
-                shape.x,
-                shape.y,
-                shape.width,
-                shape.height,
+                shape.x.floor() as i32,
+                shape.y.floor() as i32,
+                (shape.x + shape.width).ceil() as i32 - shape.x.floor() as i32,
+                (shape.y + shape.height).ceil() as i32 - shape.y.floor() as i32,
             ));
         }
         surface.set_input_region(&region);

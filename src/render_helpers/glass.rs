@@ -15,7 +15,8 @@ use smithay::wayland::compositor::{with_states, SurfaceData};
 use wayland_server::protocol::wl_surface::WlSurface;
 
 use crate::protocols::bento_shell::{
-    glass_shapes, GlassCurve, GlassShape, MAX_GLASS_CURVES, MAX_GLASS_PATHS, MAX_GLASS_SHAPES,
+    glass_shapes, GlassCurve, GlassShape, DEFAULT_MELT, MAX_GLASS_CURVES, MAX_GLASS_PATHS,
+    MAX_GLASS_SHAPES,
 };
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::BlurOptions;
@@ -101,6 +102,8 @@ pub struct GlassShapes {
     pub rects: [[f32; 4]; MAX_GLASS_SHAPES],
     /// Top left, top right, bottom right and bottom left.
     pub radii: [[f32; 4]; MAX_GLASS_SHAPES],
+    /// How close other glass comes for each to melt into it.
+    pub melts: [f32; MAX_GLASS_SHAPES],
     pub count: usize,
     /// The paths' curves, in order of their paths: each its start, control point and end.
     pub curves: [[f32; 6]; MAX_GLASS_CURVES],
@@ -121,6 +124,7 @@ impl Default for GlassShapes {
         Self {
             rects: Default::default(),
             radii: Default::default(),
+            melts: [DEFAULT_MELT; MAX_GLASS_SHAPES],
             count: 0,
             curves: [[0.; 6]; MAX_GLASS_CURVES],
             curve_count: 0,
@@ -184,6 +188,9 @@ impl GlassShapes {
         }
         for radii in &mut self.radii[..self.count] {
             *radii = radii.map(|r| r * zoom);
+        }
+        for melt in &mut self.melts[..self.count] {
+            *melt *= zoom;
         }
         for curve in &mut self.curves[..self.curve_count] {
             *curve = curve.map(|x| x * zoom);
@@ -381,6 +388,11 @@ pub fn uniforms(
             .chain(GLASS_RADII_UNIFORMS.iter().zip(shapes.radii))
             .map(|(name, values)| Uniform::new(*name, values)),
     );
+    let [m0, m1, m2, m3, m4, m5, m6, m7] = shapes.melts;
+    uniforms.extend([
+        Uniform::new("melts0", [m0, m1, m2, m3]),
+        Uniform::new("melts1", [m4, m5, m6, m7]),
+    ]);
     let [e0, e1, e2, e3, e4, e5, e6, e7] = shapes.path_ends;
     uniforms.extend([
         Uniform::new("path_count", shapes.path_count as f32),
@@ -482,7 +494,7 @@ pub fn render(
     push: &mut dyn FnMut(FramebufferEffectElement),
 ) {
     let (mut shapes, paths) = glass_shapes(surface);
-    shapes.retain(|shape| !shape.rect.is_empty());
+    shapes.retain(|shape| !shape.is_empty());
     let Some(bounds) = bounds(&shapes, &paths) else {
         return;
     };
@@ -506,16 +518,12 @@ pub fn render(
             accent: accent(),
             ..GlassShapes::default()
         };
+        let origin = [bounds.loc.x as f32, bounds.loc.y as f32];
         for (i, shape) in shapes.iter().enumerate() {
-            let rect = shape.rect;
-            let loc = rect.loc - bounds.loc;
-            uniforms.rects[i] = [
-                loc.x as f32,
-                loc.y as f32,
-                rect.size.w as f32,
-                rect.size.h as f32,
-            ];
-            uniforms.radii[i] = [shape.radius as f32; 4];
+            let [x, y, w, h] = shape.rect;
+            uniforms.rects[i] = [x - origin[0], y - origin[1], w, h];
+            uniforms.radii[i] = [shape.radius; 4];
+            uniforms.melts[i] = shape.melt;
         }
         uniforms.add_paths(&paths, [-bounds.loc.x as f32, -bounds.loc.y as f32]);
         let uniforms = uniforms.lit(frame, geometry.loc, 1.);
@@ -538,11 +546,16 @@ pub fn render(
     });
 }
 
-/// The area the glass covers, in surface coordinates. A path's curves lie inside the box around
-/// their points.
+/// The area the glass covers, in whole surface coordinates. A path's curves lie inside the box
+/// around their points, and where shapes melt, the glass swells past them by up to a quarter of
+/// their melt.
 fn bounds(shapes: &[GlassShape], paths: &[GlassCurve]) -> Option<Rectangle<i32, Logical>> {
+    let shape_boxes = shapes.iter().map(|shape| {
+        let [x, y, w, h] = shape.rect;
+        [x, y, x + w, y + h]
+    });
     let path_boxes = paths.iter().map(|curve| {
-        let [x0, y0, x1, y1] = curve.points.iter().fold(
+        curve.points.iter().fold(
             [
                 f32::INFINITY,
                 f32::INFINITY,
@@ -550,18 +563,20 @@ fn bounds(shapes: &[GlassShape], paths: &[GlassCurve]) -> Option<Rectangle<i32, 
                 f32::NEG_INFINITY,
             ],
             |[x0, y0, x1, y1], &[x, y]| [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
-        );
-        let (x0, y0) = (x0.floor() as i32, y0.floor() as i32);
-        let (x1, y1) = (x1.ceil() as i32, y1.ceil() as i32);
-        Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into())
+        )
     });
-    let bounds = shapes
+    let [x0, y0, x1, y1] =
+        shape_boxes
+            .chain(path_boxes)
+            .reduce(|[a0, b0, a1, b1], [c0, d0, c1, d1]| {
+                [a0.min(c0), b0.min(d0), a1.max(c1), b1.max(d1)]
+            })?;
+    let melt = shapes
         .iter()
-        .map(|shape| shape.rect)
-        .chain(path_boxes)
-        .reduce(|a, b| a.merge(b))?;
-    Some(Rectangle::new(
-        bounds.loc - Point::from((MELT_REACH, MELT_REACH)),
-        bounds.size + (MELT_REACH * 2, MELT_REACH * 2).into(),
-    ))
+        .map(|shape| shape.melt)
+        .fold(DEFAULT_MELT, f32::max);
+    let reach = MELT_REACH.max((melt / 4.).ceil() as i32);
+    let (x0, y0) = (x0.floor() as i32 - reach, y0.floor() as i32 - reach);
+    let (x1, y1) = (x1.ceil() as i32 + reach, y1.ceil() as i32 + reach);
+    Some(Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()))
 }

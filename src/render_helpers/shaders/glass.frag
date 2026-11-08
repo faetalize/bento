@@ -46,6 +46,9 @@ uniform vec4 radii4;
 uniform vec4 radii5;
 uniform vec4 radii6;
 uniform vec4 radii7;
+// How close other glass comes for each shape to melt into it.
+uniform vec4 melts0;
+uniform vec4 melts1;
 
 // Glass in any shape: closed paths of quadratic Bézier curves, in the element's logical pixels.
 // The curves come two to a matrix, each in two columns: its start and control point, then its
@@ -96,7 +99,7 @@ uniform float pattern_depth;
 // 0 for none.
 uniform vec3 pointer;
 
-// Shapes closer than this melt into one piece.
+// Paths closer than this melt into one piece; each shape has its own melt.
 const float MELT = 20.0;
 // How much a light of intensity 1 darkens the bezel away from it and brightens it towards it.
 const float SHADING = 0.6;
@@ -211,20 +214,21 @@ float inradius_of(vec4 rect) {
 // by the same weight the smooth minimum gives each, so a thin piece keeps its own beside a wide
 // one and the slope stays the depth's exact slope.
 void melt(inout float outline, inout float depth, inout vec2 slope, inout float inradius,
-          float outline2, float depth2, vec2 slope2, float inradius2) {
-    float nearer = clamp(0.5 + 0.5 * (depth2 - depth) / MELT, 0.0, 1.0);
+          float outline2, float depth2, vec2 slope2, float inradius2, float k) {
+    k = max(k, 1e-3);
+    float nearer = clamp(0.5 + 0.5 * (depth2 - depth) / k, 0.0, 1.0);
     slope = mix(slope2, slope, nearer);
     inradius = mix(inradius2, inradius, nearer);
-    depth = smooth_min(depth, depth2, MELT);
-    outline = smooth_min(outline, outline2, MELT);
+    depth = smooth_min(depth, depth2, k);
+    outline = smooth_min(outline, outline2, k);
 }
 
-void melt_box(vec2 p, vec4 rect, vec4 radii, inout float outline, inout float depth,
+void melt_box(vec2 p, vec4 rect, vec4 radii, float k, inout float outline, inout float depth,
               inout vec2 slope, inout float inradius) {
     vec2 slope2;
     float depth2 = surface_box(p, rect, radii, slope2);
     melt(outline, depth, slope, inradius, rounded_box(p, rect, radii), depth2, slope2,
-         inradius_of(rect));
+         inradius_of(rect), k);
 }
 
 // The point on a quadratic Bézier curve from `a` to `c`, with control point `b`, nearest `p`.
@@ -308,7 +312,7 @@ void melt_path(vec2 p, float nearest2, vec2 nearest, float crossed, inout float 
     float d = sqrt(nearest2) * side;
     vec2 away = p - nearest;
     vec2 slope2 = dot(away, away) > 1e-12 ? normalize(away) * side : vec2(0.0);
-    melt(outline, depth, slope, inradius, d, d, slope2, NOWHERE);
+    melt(outline, depth, slope, inradius, d, d, slope2, NOWHERE, MELT);
 }
 
 void melt_paths(vec2 p, inout float outline, inout float depth, inout vec2 slope,
@@ -354,14 +358,14 @@ void pieces(vec2 p, out float outline, out float depth, out vec2 slope, out floa
     depth = NOWHERE;
     slope = vec2(0.0);
     inradius = 0.0;
-    if (shape_count > 0.5) melt_box(p, shape0, radii0, outline, depth, slope, inradius);
-    if (shape_count > 1.5) melt_box(p, shape1, radii1, outline, depth, slope, inradius);
-    if (shape_count > 2.5) melt_box(p, shape2, radii2, outline, depth, slope, inradius);
-    if (shape_count > 3.5) melt_box(p, shape3, radii3, outline, depth, slope, inradius);
-    if (shape_count > 4.5) melt_box(p, shape4, radii4, outline, depth, slope, inradius);
-    if (shape_count > 5.5) melt_box(p, shape5, radii5, outline, depth, slope, inradius);
-    if (shape_count > 6.5) melt_box(p, shape6, radii6, outline, depth, slope, inradius);
-    if (shape_count > 7.5) melt_box(p, shape7, radii7, outline, depth, slope, inradius);
+    if (shape_count > 0.5) melt_box(p, shape0, radii0, melts0.x, outline, depth, slope, inradius);
+    if (shape_count > 1.5) melt_box(p, shape1, radii1, melts0.y, outline, depth, slope, inradius);
+    if (shape_count > 2.5) melt_box(p, shape2, radii2, melts0.z, outline, depth, slope, inradius);
+    if (shape_count > 3.5) melt_box(p, shape3, radii3, melts0.w, outline, depth, slope, inradius);
+    if (shape_count > 4.5) melt_box(p, shape4, radii4, melts1.x, outline, depth, slope, inradius);
+    if (shape_count > 5.5) melt_box(p, shape5, radii5, melts1.y, outline, depth, slope, inradius);
+    if (shape_count > 6.5) melt_box(p, shape6, radii6, melts1.z, outline, depth, slope, inradius);
+    if (shape_count > 7.5) melt_box(p, shape7, radii7, melts1.w, outline, depth, slope, inradius);
     if (path_count > 0.5) melt_paths(p, outline, depth, slope, inradius);
 }
 

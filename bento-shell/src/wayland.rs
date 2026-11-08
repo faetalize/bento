@@ -49,14 +49,17 @@ impl Default for Style {
     }
 }
 
-/// A rounded rectangle of glass, in the surface's logical coordinates.
+/// A rounded rectangle of glass, in the surface's logical coordinates, to fractions of a pixel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shape {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-    pub radius: i32,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub radius: f32,
+    /// How close other glass comes for it to melt into it, with the wider join a wider melt
+    /// gives; it melts into the shapes before it.
+    pub melt: f32,
 }
 
 enum Event {
@@ -205,12 +208,33 @@ impl Glass {
     pub fn set_shapes(&self, shapes: &[Shape], paths: &[gsk::Path]) {
         if *self.shapes.borrow() != shapes {
             *self.shapes.borrow_mut() = shapes.to_vec();
-            let bytes = shapes
-                .iter()
-                .flat_map(|s| [s.x, s.y, s.width.max(0), s.height.max(0), s.radius.max(0)])
-                .flat_map(i32::to_ne_bytes)
-                .collect();
-            self.glass.set_shapes(bytes);
+            if self.glass.version() >= 3 {
+                let bytes = shapes
+                    .iter()
+                    .flat_map(|s| {
+                        [s.x, s.y, s.width, s.height, s.radius, s.melt].map(|x| x.max(0.))
+                    })
+                    .flat_map(f32::to_ne_bytes)
+                    .collect();
+                self.glass.set_rects(bytes);
+            } else {
+                // Whole pixels, melting at bento's own distance.
+                let bytes = shapes
+                    .iter()
+                    .flat_map(|s| {
+                        [
+                            s.x,
+                            s.y,
+                            s.width.max(0.),
+                            s.height.max(0.),
+                            s.radius.max(0.),
+                        ]
+                        .map(|x| x.round() as i32)
+                    })
+                    .flat_map(i32::to_ne_bytes)
+                    .collect();
+                self.glass.set_shapes(bytes);
+            }
         }
 
         if self.glass.version() < 2 {
@@ -309,8 +333,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         } = event
         {
             if interface == BentoShellV1::interface().name {
-                // Version 2 takes glass's paths.
-                state.shell = Some(registry.bind(name, version.min(2), handle, ()));
+                // Version 2 takes glass's paths, and 3 its shapes to fractions of a pixel with
+                // their melts.
+                state.shell = Some(registry.bind(name, version.min(3), handle, ()));
             }
         }
     }
