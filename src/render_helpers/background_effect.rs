@@ -18,7 +18,7 @@ use crate::render_helpers::RenderCtx;
 use crate::utils::region::TransformedRegion;
 use crate::utils::surface_geo;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BackgroundEffect {
     nonxray: FramebufferEffect,
     /// Damage when options change.
@@ -52,7 +52,7 @@ impl Options {
 }
 
 /// Render-time parameters.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RenderParams {
     /// Geometry of the background effect.
     pub geometry: Rectangle<f64, Logical>,
@@ -82,6 +82,17 @@ niri_render_elements! {
         FramebufferEffect = FramebufferEffectElement,
         Xray = XrayElement,
         ExtraDamage = ExtraDamage,
+    }
+}
+
+impl BackgroundEffectElement {
+    /// The effect as opaque as `alpha`, for one that fades with the window it's behind.
+    pub fn with_alpha(self, alpha: f32) -> Self {
+        match self {
+            Self::FramebufferEffect(elem) => Self::FramebufferEffect(elem.with_alpha(alpha)),
+            Self::Xray(elem) => Self::Xray(elem.with_alpha(alpha)),
+            Self::ExtraDamage(elem) => Self::ExtraDamage(elem),
+        }
     }
 }
 
@@ -339,8 +350,120 @@ pub fn damage_surface(states: &SurfaceData) {
     }
 }
 
-// Silence, Clippy
-// A Smithay user is talking
+/// A window's background effect, ready to draw: the effect with its settings, and where it
+/// goes. It's taken from the window's surface each frame, and kept when the window closes, so its
+/// closing animation goes on drawing it after the surface is gone.
+#[derive(Debug, Clone)]
+pub struct CapturedEffect {
+    effect: BackgroundEffect,
+    params: RenderParams,
+    outer_clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+    /// Where the window's geometry starts, which `xray_pos` is for.
+    origin: Point<f64, Logical>,
+}
+
+impl CapturedEffect {
+    /// Where the window's geometry starts.
+    pub fn origin(&self) -> Point<f64, Logical> {
+        self.origin
+    }
+
+    /// The effect moved by `offset`, then scaled by `zoom` about `middle`, for a window drawn
+    /// moved and scaled so.
+    pub fn transformed(
+        &self,
+        offset: Point<f64, Logical>,
+        middle: Point<f64, Logical>,
+        zoom: f64,
+    ) -> Self {
+        let point = |p: Point<f64, Logical>| middle + (p + offset - middle).upscale(zoom);
+        let rect = |r: Rectangle<f64, Logical>| Rectangle::new(point(r.loc), r.size.upscale(zoom));
+        let clip = |(r, radius): (Rectangle<f64, Logical>, CornerRadius)| {
+            (rect(r), radius.scaled_by(zoom as f32))
+        };
+        let mut captured = self.clone();
+        captured.params.geometry = rect(self.params.geometry);
+        captured.params.clip = self.params.clip.map(clip);
+        if let Some(region) = &mut captured.params.subregion {
+            region.offset = point(region.offset);
+            region.scale = Scale::from((region.scale.x * zoom, region.scale.y * zoom));
+        }
+        captured.outer_clip = self.outer_clip.map(clip);
+        captured.origin = point(self.origin);
+        captured
+    }
+
+    /// Draws the effect, with `xray_pos` where the window's geometry starts in the backdrop.
+    pub fn render(
+        &self,
+        ctx: RenderCtx<GlesRenderer>,
+        ns: Option<usize>,
+        xray_pos: XrayPos,
+        push: &mut dyn FnMut(BackgroundEffectElement),
+    ) {
+        let xray_pos = xray_pos.offset(self.params.geometry.loc - self.origin);
+        self.effect.render(
+            ctx,
+            ns,
+            self.params.clone(),
+            self.outer_clip,
+            xray_pos,
+            push,
+        );
+    }
+}
+
+/// A window's background effect as it is now, if it shows.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_for_tile(
+    geometry: Rectangle<f64, Logical>,
+    scale: f64,
+    clip_to_geometry: bool,
+    surface: &WlSurface,
+    surface_off: Point<f64, Logical>,
+    surface_anim_scale: Scale<f64>,
+    blur_config: niri_config::Blur,
+    radius: CornerRadius,
+    effect: niri_config::BackgroundEffect,
+    should_block_out: bool,
+    outer_clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+) -> Option<CapturedEffect> {
+    with_states(surface, |states| {
+        let background_effect = SurfaceBackgroundEffect::get(states);
+        let mut background_effect = background_effect.0.lock().unwrap();
+
+        let blur_region = get_cached_blur_region(states);
+        let has_blur_region = blur_region.as_ref().is_some_and(|r| !r.is_empty());
+
+        background_effect.update_config(blur_config);
+        background_effect.update_render_elements(radius, effect, has_blur_region);
+
+        if !background_effect.is_visible() {
+            return None;
+        }
+
+        let mut surface_geo = surface_geo(states).unwrap_or_default().to_f64();
+        surface_geo.loc += surface_off;
+
+        let params = render_params_for_tile(
+            geometry,
+            scale,
+            clip_to_geometry,
+            should_block_out,
+            blur_region,
+            surface_geo,
+            surface_anim_scale,
+        )?;
+
+        Some(CapturedEffect {
+            effect: background_effect.clone(),
+            params,
+            outer_clip,
+            origin: geometry.loc,
+        })
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_for_tile(
     ctx: RenderCtx<GlesRenderer>,
@@ -359,38 +482,22 @@ pub fn render_for_tile(
     xray_pos: XrayPos,
     push: &mut dyn FnMut(BackgroundEffectElement),
 ) {
-    with_states(surface, |states| {
-        let background_effect = SurfaceBackgroundEffect::get(states);
-        let mut background_effect = background_effect.0.lock().unwrap();
-
-        let blur_region = get_cached_blur_region(states);
-        let has_blur_region = blur_region.as_ref().is_some_and(|r| !r.is_empty());
-
-        background_effect.update_config(blur_config);
-        background_effect.update_render_elements(radius, effect, has_blur_region);
-
-        if !background_effect.is_visible() {
-            return;
-        }
-
-        let mut surface_geo = surface_geo(states).unwrap_or_default().to_f64();
-        surface_geo.loc += surface_off;
-
-        let Some(params) = render_params_for_tile(
-            geometry,
-            scale,
-            clip_to_geometry,
-            should_block_out,
-            blur_region,
-            surface_geo,
-            surface_anim_scale,
-        ) else {
-            return;
-        };
-
-        let xray_pos = xray_pos.offset(params.geometry.loc - geometry.loc);
-        background_effect.render(ctx, ns, params, outer_clip, xray_pos, push);
-    });
+    let captured = capture_for_tile(
+        geometry,
+        scale,
+        clip_to_geometry,
+        surface,
+        surface_off,
+        surface_anim_scale,
+        blur_config,
+        radius,
+        effect,
+        should_block_out,
+        outer_clip,
+    );
+    if let Some(captured) = captured {
+        captured.render(ctx, ns, xray_pos, push);
+    }
 }
 
 #[cfg(test)]

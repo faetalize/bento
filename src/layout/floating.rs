@@ -620,7 +620,14 @@ impl<W: LayoutElement> FloatingSpace<W> {
 
         let scale = Scale::from(self.scale);
         let res = ClosingWindow::new(
-            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+            renderer,
+            snapshot.contents,
+            snapshot.effect,
+            scale,
+            tile_size,
+            tile_pos,
+            blocker,
+            anim,
         );
         match res {
             Ok(closing) => {
@@ -969,8 +976,9 @@ impl<W: LayoutElement> FloatingSpace<W> {
         // FIXME: I guess this should rather preserve the stacking order when the window is closed.
         if layer.is_normal() {
             for closing in self.closing_windows.iter().rev() {
-                let elem = closing.render(ctx.as_gles(), view_rect, scale);
-                push(elem.into());
+                closing.render(ctx.as_gles(), view_rect, scale, xray_pos, &mut |elem| {
+                    push(elem.into())
+                });
             }
         }
 

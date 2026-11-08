@@ -20,7 +20,7 @@ use super::{
 use crate::animation::{Animation, Clock};
 use crate::layout::SizingMode;
 use crate::niri_render_elements;
-use crate::render_helpers::background_effect::BackgroundEffectElement;
+use crate::render_helpers::background_effect::{BackgroundEffectElement, CapturedEffect};
 use crate::render_helpers::border::BorderRenderElement;
 use crate::render_helpers::clipped_surface::{ClippedSurfaceRenderElement, RoundedCornerDamage};
 use crate::render_helpers::damage::ExtraDamage;
@@ -191,8 +191,15 @@ niri_render_elements! {
     }
 }
 
-pub type TileRenderSnapshot =
-    RenderSnapshot<TileRenderElement<GlesRenderer>, TileRenderElement<GlesRenderer>>;
+/// A tile as it last looked, for its closing animation: its picture, and its window's background
+/// effect, which is drawn on the screen apart from the picture, as the picture has nothing
+/// behind it.
+#[derive(Debug)]
+pub struct TileRenderSnapshot {
+    pub contents: RenderSnapshot<TileRenderElement<GlesRenderer>, TileRenderElement<GlesRenderer>>,
+    /// The effect, with the tile at the origin.
+    pub effect: Option<CapturedEffect>,
+}
 
 #[derive(Debug)]
 struct ResizeAnimation {
@@ -1130,6 +1137,10 @@ impl<W: LayoutElement> Tile<W> {
 
     /// Renders the tile, with the window's popups if `popups`.
     #[allow(clippy::too_many_arguments)]
+    /// Renders the tile. Its window's background effect is left out unless `effect`, for a tile
+    /// drawn through a buffer, which can't see what's behind it; the effect is drawn on the
+    /// screen apart from it then, see `render_effect`.
+    #[allow(clippy::too_many_arguments)]
     fn render_inner<R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
@@ -1138,9 +1149,11 @@ impl<W: LayoutElement> Tile<W> {
         focus_ring: bool,
         popups: bool,
         clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+        effect: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render_inner");
+        let (tile_location, tile_xray_pos) = (location, xray_pos);
 
         let scale = Scale::from(self.scale);
         let fullscreen_progress = self.fullscreen_progress();
@@ -1406,18 +1419,76 @@ impl<W: LayoutElement> Tile<W> {
                 .render(ctx.renderer, location, &mut |elem| push(elem.into()));
         }
 
-        let surface_anim_scale = animated_window_size / window_size;
-        self.window.render_background_effect(
-            ctx.as_gles(),
+        if effect {
+            self.render_effect(
+                ctx.as_gles(),
+                tile_location,
+                tile_xray_pos,
+                clip,
+                1.,
+                1.,
+                &mut |elem| push(elem.into()),
+            );
+        }
+    }
+
+    /// Renders the window's background effect, scaled by `zoom` about the tile's middle and as
+    /// opaque as `alpha`, as the opening animation and fades draw the rest of the tile. An effect
+    /// shows what's behind the window, so it's drawn on the screen, never into the buffer those
+    /// draw the tile through, which has nothing behind it.
+    #[allow(clippy::too_many_arguments)]
+    fn render_effect(
+        &self,
+        ctx: RenderCtx<GlesRenderer>,
+        location: Point<f64, Logical>,
+        xray_pos: XrayPos,
+        clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+        zoom: f64,
+        alpha: f32,
+        push: &mut dyn FnMut(BackgroundEffectElement),
+    ) {
+        let should_block_out = ctx
+            .target
+            .should_block_out(self.window.rules().block_out_from);
+        let Some(captured) = self.capture_effect(location, clip, should_block_out) else {
+            return;
+        };
+
+        let bob_offset = self.bob_offset();
+        let xray_pos = xray_pos.offset(bob_offset).offset(self.window_loc());
+        let middle = location + bob_offset + self.animated_tile_size().to_point().downscale(2.);
+        let zoomed = captured.transformed(Point::default(), middle, zoom);
+        let xray_pos = xray_pos.offset(zoomed.origin() - captured.origin());
+        zoomed.render(ctx, None, xray_pos, &mut |elem| {
+            push(elem.with_alpha(alpha))
+        });
+    }
+
+    /// The window's background effect as the tile at `location` draws it now.
+    fn capture_effect(
+        &self,
+        location: Point<f64, Logical>,
+        clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+        should_block_out: bool,
+    ) -> Option<CapturedEffect> {
+        let location = location + self.bob_offset();
+        let animated_window_size = self.animated_window_size();
+        let area = Rectangle::new(location + self.window_loc(), animated_window_size);
+        let clip_to_geometry =
+            self.fullscreen_progress() < 1. && self.window.rules().clip_to_geometry == Some(true);
+        let radius = self
+            .window
+            .geometry_corner_radius()
+            .scaled_by(1. - self.expanded_progress() as f32);
+        self.window.capture_background_effect(
             area,
             self.scale,
             clip_to_geometry,
-            surface_anim_scale,
+            animated_window_size / self.window_size(),
             radius,
+            should_block_out,
             clip.map(|(rect, radius)| (Rectangle::new(rect.loc + location, rect.size), radius)),
-            xray_pos,
-            &mut |elem| push(elem.into()),
-        );
+        )
     }
 
     pub fn render<R: NiriRenderer>(
@@ -1470,6 +1541,25 @@ impl<W: LayoutElement> Tile<W> {
     #[allow(clippy::too_many_arguments)]
     pub fn render_with_opacity<R: NiriRenderer>(
         &self,
+        ctx: RenderCtx<R>,
+        location: Point<f64, Logical>,
+        xray_pos: XrayPos,
+        focus_ring: bool,
+        opacity: f32,
+        popups: bool,
+        clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+        push: &mut dyn FnMut(TileRenderElement<R>),
+    ) {
+        self.render_tile(
+            ctx, location, xray_pos, focus_ring, opacity, popups, clip, true, push,
+        );
+    }
+
+    /// Renders the tile as `render_with_opacity` does, with its window's background effect
+    /// unless `effect` is false.
+    #[allow(clippy::too_many_arguments)]
+    fn render_tile<R: NiriRenderer>(
+        &self,
         mut ctx: RenderCtx<R>,
         location: Point<f64, Logical>,
         xray_pos: XrayPos,
@@ -1477,6 +1567,7 @@ impl<W: LayoutElement> Tile<W> {
         opacity: f32,
         popups: bool,
         clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+        effect: bool,
         push: &mut dyn FnMut(TileRenderElement<R>),
     ) {
         let _span = tracy_client::span!("Tile::render");
@@ -1502,6 +1593,7 @@ impl<W: LayoutElement> Tile<W> {
                 focus_ring,
                 popups,
                 clip,
+                false,
                 &mut |elem| elements.push(elem),
             );
             match open.render(
@@ -1516,6 +1608,20 @@ impl<W: LayoutElement> Tile<W> {
                     self.window().set_offscreen_data(Some(data));
                     push(elem.into());
                     pushed = true;
+
+                    // Under the tile, scaled and faded in with it.
+                    let (zoom, alpha) = open.effect_transform(ctx.renderer);
+                    if effect {
+                        self.render_effect(
+                            ctx.r(),
+                            location,
+                            xray_pos,
+                            clip,
+                            zoom,
+                            alpha * tile_alpha,
+                            &mut |elem| push(elem.into()),
+                        );
+                    }
                 }
                 Err(err) => {
                     warn!("error rendering window opening animation: {err:?}");
@@ -1535,6 +1641,7 @@ impl<W: LayoutElement> Tile<W> {
                 focus_ring,
                 popups,
                 clip,
+                false,
                 &mut |elem| elements.push(elem),
             );
             match offscreen.render(ctx.renderer, scale, &elements) {
@@ -1545,6 +1652,19 @@ impl<W: LayoutElement> Tile<W> {
                     self.window().set_offscreen_data(Some(data));
                     push(elem.into());
                     pushed = true;
+
+                    // Under the tile, fading with it.
+                    if effect {
+                        self.render_effect(
+                            ctx.r(),
+                            location,
+                            xray_pos,
+                            clip,
+                            1.,
+                            tile_alpha,
+                            &mut |elem| push(elem.into()),
+                        );
+                    }
                 }
                 Err(err) => {
                     warn!("error rendering tile to offscreen for alpha animation: {err:?}");
@@ -1560,6 +1680,7 @@ impl<W: LayoutElement> Tile<W> {
                 focus_ring,
                 popups,
                 clip,
+                effect,
                 &mut |elem| push(elem),
             );
         }
@@ -1590,7 +1711,7 @@ impl<W: LayoutElement> Tile<W> {
         let _span = tracy_client::span!("Tile::render_snapshot");
 
         let mut contents = Vec::new();
-        self.render(
+        self.render_tile(
             RenderCtx {
                 target: RenderTarget::Output,
                 renderer,
@@ -1599,6 +1720,11 @@ impl<W: LayoutElement> Tile<W> {
             },
             Point::from((0., 0.)),
             xray_pos,
+            false,
+            1.,
+            true,
+            None,
+            // Drawn on the screen apart from the snapshot, see `capture_effect`.
             false,
             &mut |elem| contents.push(elem),
         );
@@ -1642,7 +1768,7 @@ impl<W: LayoutElement> Tile<W> {
                 xray.backdrop[output_idx] = screencast_backdrop.clone().unwrap();
 
                 let mut contents = Vec::new();
-                self.render(
+                self.render_tile(
                     RenderCtx {
                         target: RenderTarget::Output,
                         renderer,
@@ -1651,6 +1777,11 @@ impl<W: LayoutElement> Tile<W> {
                     },
                     Point::from((0., 0.)),
                     xray_pos,
+                    false,
+                    1.,
+                    true,
+                    None,
+                    // Drawn on the screen apart from the snapshot, see `capture_effect`.
                     false,
                     &mut |elem| contents.push(elem),
                 );
@@ -1663,7 +1794,7 @@ impl<W: LayoutElement> Tile<W> {
 
         // A bit of a hack to render blocked out as for screencast, but I think it's fine here.
         let mut blocked_out_contents = Vec::new();
-        self.render(
+        self.render_tile(
             RenderCtx {
                 target: RenderTarget::Screencast,
                 renderer,
@@ -1672,6 +1803,11 @@ impl<W: LayoutElement> Tile<W> {
             },
             Point::from((0., 0.)),
             xray_pos,
+            false,
+            1.,
+            true,
+            None,
+            // Drawn on the screen apart from the snapshot, see `capture_effect`.
             false,
             &mut |elem| blocked_out_contents.push(elem),
         );
@@ -1687,15 +1823,20 @@ impl<W: LayoutElement> Tile<W> {
             }
         }
 
-        RenderSnapshot {
-            contents,
-            contents_with_blocked_out_bg,
-            blocked_out_contents,
-            block_out_from: self.window.rules().block_out_from,
-            size: self.animated_tile_size(),
-            texture: Default::default(),
-            texture_with_blocked_out_bg: Default::default(),
-            blocked_out_texture: Default::default(),
+        TileRenderSnapshot {
+            contents: RenderSnapshot {
+                contents,
+                contents_with_blocked_out_bg,
+                blocked_out_contents,
+                block_out_from: self.window.rules().block_out_from,
+                size: self.animated_tile_size(),
+                texture: Default::default(),
+                texture_with_blocked_out_bg: Default::default(),
+                blocked_out_texture: Default::default(),
+            },
+            // For the screen; where the window is blocked out, its blocked-out picture is drawn
+            // without one.
+            effect: self.capture_effect(Point::from((0., 0.)), None, false),
         }
     }
 

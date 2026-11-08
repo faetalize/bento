@@ -85,6 +85,8 @@ pub struct XrayElement {
     /// Draws glass filling the clip geometry instead of the plain effect.
     glass: Option<GlassShapes>,
     program: Option<GlesTexProgram>,
+    /// How opaque it's drawn, as the window it's behind fades.
+    alpha: f32,
 }
 
 impl Xray {
@@ -219,6 +221,7 @@ impl Xray {
                     bg_color: *bg_color,
                     glass: glass.map(|shapes| shapes.lit(ctx.glass, clip_geo.loc, 1.)),
                     program: program.clone(),
+                    alpha: 1.,
                 };
                 push(elem);
             }
@@ -275,6 +278,7 @@ impl Xray {
                         .lit(ctx.glass, clip_geo.loc, zoom)
                 }),
                 program: program.clone(),
+                alpha: 1.,
             };
             push(elem);
         }
@@ -282,6 +286,11 @@ impl Xray {
 }
 
 impl XrayElement {
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
     fn compute_uniforms(&self) -> Vec<Uniform<'static>> {
         if let Some(shapes) = &self.glass {
             return glass::uniforms(
@@ -391,7 +400,7 @@ impl RenderElement<GlesRenderer> for XrayElement {
             // FIXME: opaque regions need to be filtered like damage.
             &[],
             Transform::Normal,
-            1.,
+            self.alpha,
             self.program.as_ref(),
             uniforms,
         )

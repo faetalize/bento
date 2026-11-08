@@ -1162,7 +1162,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         // Closing windows live in view coordinates, so they stay put as the camera moves.
         let scale = Scale::from(self.scale);
         let res = ClosingWindow::new(
-            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+            renderer,
+            snapshot.contents,
+            snapshot.effect,
+            scale,
+            tile_size,
+            tile_pos,
+            blocker,
+            anim,
         );
         match res {
             Ok(closing) => self.closing_windows.push(closing),
@@ -1294,14 +1301,16 @@ impl<W: LayoutElement> TilingSpace<W> {
         if layer.is_normal() {
             let view_rect = Rectangle::from_size(self.view_size);
             for closing in self.closing_windows.iter().rev() {
-                let elem = closing.render(ctx.as_gles(), view_rect, scale);
-                if zoom == 1. {
-                    push(elem.into());
-                } else {
-                    // They're in view coordinates, which the zoom scales around the view's origin.
-                    let origin = Point::<i32, Physical>::from((0, 0));
-                    push(RescaleRenderElement::from_element(elem, origin, zoom).into());
-                }
+                closing.render(ctx.as_gles(), view_rect, scale, xray_pos, &mut |elem| {
+                    if zoom == 1. {
+                        push(elem.into());
+                    } else {
+                        // They're in view coordinates, which the zoom scales around the view's
+                        // origin.
+                        let origin = Point::<i32, Physical>::from((0, 0));
+                        push(RescaleRenderElement::from_element(elem, origin, zoom).into());
+                    }
+                });
             }
         }
 

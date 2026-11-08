@@ -22,7 +22,7 @@ use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 use crate::utils::region::TransformedRegion;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FramebufferEffect {
     id: Id,
     commit: CommitCounter,
@@ -43,6 +43,8 @@ pub struct FramebufferEffectElement {
     shade: [f32; 4],
     /// Draws glass in these shapes instead of the plain effect.
     glass: Option<GlassShapes>,
+    /// How opaque it's drawn, as the window it's behind fades.
+    alpha: f32,
 }
 
 #[derive(Debug)]
@@ -97,6 +99,7 @@ impl FramebufferEffect {
             saturation,
             shade,
             glass: None,
+            alpha: 1.,
         }
     }
 
@@ -119,6 +122,11 @@ impl FramebufferEffect {
 }
 
 impl FramebufferEffectElement {
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
     fn compute_uniforms(
         &self,
         crop: Rectangle<f64, Logical>,
@@ -459,7 +467,7 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             &[],
             // The intermediate texture has the same transform as the frame.
             frame.transformation().invert(),
-            1.,
+            self.alpha,
             program.as_ref(),
             uniforms,
         )
