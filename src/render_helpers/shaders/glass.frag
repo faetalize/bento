@@ -207,8 +207,10 @@ float surface(vec2 p) {
 // A light's reflection on the surface: where the bezel tilts towards it, and weaker from the far
 // side, as light that went through the glass comes back off its inside. A rough surface and a
 // big light both spread it, broader and dimmer, the same light spread over more of the bezel; a
-// polished surface and a small light keep it tight and bright.
-float specular(vec3 surface, vec3 light, float size) {
+// polished surface and a small light keep it tight and bright. With `on_bezel` 1, the even glow
+// a broad reflection gives the flat middle is left out, so a far light stays on the bezel; a near
+// light keeps it, as its spot on the flat middle is under it.
+float specular(vec3 surface, vec3 light, float size, float on_bezel) {
     float roughness = 1.0 - sheen;
     float spread = 0.06 + 0.6 * sqrt(roughness * roughness + size * size);
     float shininess = 2.0 / (spread * spread) - 2.0;
@@ -219,10 +221,8 @@ float specular(vec3 surface, vec3 light, float size) {
     vec3 back_halfway = normalize(vec3(-light.xy, light.z) + view);
     float reflected = pow(max(dot(surface, halfway), 0.0), shininess)
         + 0.5 * pow(max(dot(surface, back_halfway), 0.0), shininess);
-    // A broad reflection reaches the flat middle too; that even glow is left out, so the light
-    // stays on the bezel.
     float on_flat = pow(halfway.z, shininess) + 0.5 * pow(back_halfway.z, shininess);
-    return max(reflected - on_flat, 0.0) * brightness;
+    return max(reflected - on_flat * on_bezel, 0.0) * brightness;
 }
 
 // Sin-less white noise by David Hoskins (MIT License).
@@ -383,16 +383,16 @@ void main() {
         float size = i == 0 ? light_sizes.x : i == 1 ? light_sizes.y
             : i == 2 ? light_sizes.z : light_sizes.w;
         shade += light.w * clamp(dot(surface, light.xyz) - light.z, -1.0, 1.0);
-        shine += light.w * specular(surface, light.xyz, size);
+        shine += light.w * specular(surface, light.xyz, size, 1.0);
     }
     behind.rgb *= max(1.0 + SHADING * shade, 0.0);
 
-    // The pointer's light, over it: it glints on the parts of the surface facing it, fading as
-    // they get further from it.
+    // The pointer's light, over it: it glints on the parts of the surface facing it, the flat
+    // middle under it too, fading as they get further from it.
     if (pointer.z > 0.0) {
         vec3 to_pointer = vec3(pointer.xy - p, POINTER_HEIGHT);
         float falloff = POINTER_HEIGHT * POINTER_HEIGHT / dot(to_pointer, to_pointer);
-        shine += pointer.z * falloff * specular(surface, normalize(to_pointer), POINTER_SIZE);
+        shine += pointer.z * falloff * specular(surface, normalize(to_pointer), POINTER_SIZE, 0.0);
     }
 
     // Seen edge on, glass reflects more and lets less through (Schlick's Fresnel).

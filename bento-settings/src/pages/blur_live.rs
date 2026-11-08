@@ -53,6 +53,7 @@ impl Unsaved {
                 "blur.glass.reflection" => glass.reflection = x,
                 "blur.glass.sheen" => glass.sheen = x,
                 "blur.glass.pattern-depth" => glass.pattern_depth = x,
+                "blur.glass.follow-accent" => glass.follow_accent = x != 0.,
                 "blur.glass.pointer-light" => glass.pointer_light = x,
                 _ => {
                     let Some((i, field)) = light_field(path) else {
@@ -91,6 +92,7 @@ pub fn value(blur: &Blur, path: &str) -> Option<f64> {
         "blur.glass.reflection" => glass.reflection,
         "blur.glass.sheen" => glass.sheen,
         "blur.glass.pattern-depth" => glass.pattern_depth,
+        "blur.glass.follow-accent" => f64::from(u8::from(glass.follow_accent)),
         "blur.glass.pointer-light" => glass.pointer_light,
         _ => {
             let (i, field) = light_field(path)?;

@@ -16,7 +16,7 @@ use adw::prelude::*;
 use glow::HasContext;
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::{gdk, gio, glib};
-use niri_config::{Blur, CornerRadius, Glass, GlassPattern, Material, MAX_GLASS_LIGHTS};
+use niri_config::{Blur, Color, CornerRadius, Glass, GlassPattern, Material, MAX_GLASS_LIGHTS};
 
 use super::blur_live::{Live, Unsaved};
 use super::layout::every_window;
@@ -222,6 +222,12 @@ pub fn build(
             preview.area.queue_render();
         }
     });
+    let redraw = Rc::downgrade(&preview);
+    adw::StyleManager::default().connect_accent_color_rgba_notify(move |_| {
+        if let Some(preview) = redraw.upgrade() {
+            preview.area.queue_render();
+        }
+    });
 
     keep_alive(&stack, preview);
     stack.upcast()
@@ -392,6 +398,8 @@ struct Look {
     blur: Blur,
     radius: CornerRadius,
     dark: bool,
+    /// libadwaita's accent colour, which glass can take on.
+    accent: Color,
 }
 
 impl Preview {
@@ -440,6 +448,10 @@ impl Preview {
             blur,
             radius: every_window(&config, |rule| rule.geometry_corner_radius).unwrap_or_default(),
             dark: adw::StyleManager::default().is_dark(),
+            accent: {
+                let rgba = adw::StyleManager::default().accent_color_rgba();
+                Color::from_array_unpremul([rgba.red(), rgba.green(), rgba.blue(), rgba.alpha()])
+            },
         }
     }
 
@@ -701,7 +713,7 @@ fn pane_uniforms(
         ("light_sizes", Uniform::Vec4(sizes)),
         (
             "absorbance",
-            Uniform::Vec3(glass.absorbance().map(|x| x as f32)),
+            Uniform::Vec3(glass.absorbance(Some(look.accent)).map(|x| x as f32)),
         ),
         ("pattern", Uniform::Float(pattern)),
         ("pattern_depth", Uniform::Float(glass.pattern_depth as f32)),

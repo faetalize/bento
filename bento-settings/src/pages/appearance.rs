@@ -106,6 +106,11 @@ pub fn category() -> Category {
                     &["tint", "hue", "stained", "absorption"],
                 )
                 .search_item(
+                    "blur.glass.follow-accent",
+                    "Glass Follows Accent Color",
+                    &["tint", "theme", "hue"],
+                )
+                .search_item(
                     "blur.glass.pointer-light",
                     "Glass Pointer Light",
                     &["cursor", "mouse", "glint", "hover"],

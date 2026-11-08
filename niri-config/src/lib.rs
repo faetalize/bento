@@ -2235,6 +2235,7 @@ mod tests {
                         b: 0.95686275,
                         a: 1.0,
                     },
+                    follow_accent: false,
                     pattern: Smooth,
                     pattern_depth: 0.5,
                     pointer_light: 0.5,

@@ -5,7 +5,7 @@ use knuffel::errors::DecodeError;
 use miette::{miette, IntoDiagnostic as _};
 use smithay::backend::renderer::Color32F;
 
-use crate::utils::MergeWith;
+use crate::utils::{Flag, MergeWith};
 use crate::FloatOrInt;
 
 pub const DEFAULT_BACKGROUND_COLOR: Color = Color::from_array_unpremul([0.25, 0.25, 0.25, 1.]);
@@ -897,6 +897,8 @@ pub struct Glass {
     /// thick, deeper where it comes through more, as along inside the bezel. Its alpha is how
     /// strong the colour is, from 0 for clear.
     pub color: Color,
+    /// Whether the glass takes on the accent colour instead of `color`, faintly.
+    pub follow_accent: bool,
     /// The pattern pressed into the glass's surface, which bends what's behind and catches the
     /// light like its edge does.
     pub pattern: GlassPattern,
@@ -921,6 +923,7 @@ impl Default for Glass {
             // Soda-lime glass, like a window's: faintly green, most where light comes along
             // inside it.
             color: Color::from_rgba8_unpremul(0xf0, 0xf7, 0xf4, 0xff),
+            follow_accent: false,
             pattern: GlassPattern::Smooth,
             pattern_depth: 0.5,
             pointer_light: 0.5,
@@ -929,11 +932,26 @@ impl Default for Glass {
     }
 }
 
+/// How strongly glass that follows the accent colour takes it on, like a colour's alpha: a
+/// saturated accent at full strength would hide what's behind.
+pub const GLASS_ACCENT_STRENGTH: f32 = 0.2;
+
 impl Glass {
+    /// The glass's colour: the accent's, when it follows the accent and the accent is known.
+    pub fn tint(&self, accent: Option<Color>) -> Color {
+        match accent {
+            Some(accent) if self.follow_accent => Color {
+                a: accent.a * GLASS_ACCENT_STRENGTH,
+                ..accent
+            },
+            _ => self.color,
+        }
+    }
+
     /// How much of each of red, green and blue glass as thick as it is takes out of the light
     /// coming through: minus the log of its colour, made as clear as its alpha says.
-    pub fn absorbance(&self) -> [f64; 3] {
-        let [r, g, b, a] = self.color.to_array_unpremul().map(f64::from);
+    pub fn absorbance(&self, accent: Option<Color>) -> [f64; 3] {
+        let [r, g, b, a] = self.tint(accent).to_array_unpremul().map(f64::from);
         // Glass that lets nothing of a colour through would make what's behind black.
         [r, g, b].map(|x| -(1. - a * (1. - x)).max(1. / 255.).ln())
     }
@@ -994,6 +1012,8 @@ pub struct GlassPart {
     pub sheen: Option<FloatOrInt<0, 1>>,
     #[knuffel(child)]
     pub color: Option<Color>,
+    #[knuffel(child)]
+    pub follow_accent: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub pattern: Option<GlassPattern>,
     #[knuffel(child, unwrap(argument))]
@@ -1029,6 +1049,7 @@ impl MergeWith<GlassPart> for Glass {
             dispersion,
             reflection,
             sheen,
+            follow_accent,
             pattern_depth,
             pointer_light
         );

@@ -110,6 +110,14 @@ static COLOR: LazyLock<Setting> = LazyLock::new(|| {
         .keywords(&["tint", "hue", "stained", "absorption"])
 });
 
+static FOLLOW_ACCENT: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::switch("Follow Accent Color", "blur.glass.follow-accent", |c| {
+        c.blur.glass.follow_accent
+    })
+    .style(BoolStyle::Flag)
+    .keywords(&["tint", "theme", "hue"])
+});
+
 static PATTERN_DEPTH: LazyLock<Setting> = LazyLock::new(|| {
     Setting::number("Pattern Depth", "blur.glass.pattern-depth", |c| {
         c.blur.glass.pattern_depth
@@ -551,6 +559,26 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         })
     };
     list.append(&color);
+    let follow_accent = {
+        let live = live.clone();
+        setting_row_watched(&FOLLOW_ACCENT, ctx, move |input| {
+            if let Input::Bool(on) = input {
+                live.show(Unsaved::Setting(FOLLOW_ACCENT.path, f64::from(u8::from(*on))));
+            }
+        })
+    };
+    list.append(&follow_accent);
+    // Glass that follows the accent doesn't have a colour of its own.
+    let follow_color = {
+        let color = color.downgrade();
+        move |live: &Live, _: Option<&str>| {
+            if let Some(color) = color.upgrade() {
+                color.set_sensitive(!live.blur().glass.follow_accent);
+            }
+        }
+    };
+    follow_color(&live, None);
+    live.connect(follow_color);
 
     let advanced = adw::ExpanderRow::builder().title("Advanced").build();
     // Roughness holds the settings it sets, so expanding it shows them under it.
@@ -582,6 +610,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         preset_row.clone().upcast(),
         pattern,
         color,
+        follow_accent,
         sheen.upcast(),
     ];
     for setting in GLASS.iter() {
