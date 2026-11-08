@@ -14,7 +14,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 use crate::osd::Osd;
 use crate::services::{Audio, Battery, Network, Notification, TrayIcon, TrayItem};
-use crate::spring::{Spring, RESPONSE};
+use crate::spring::Spring;
 use crate::stage::{natural_size, Face, IslandId, Place, Rect, Stage};
 use crate::wayland::Style;
 use crate::Shell;
@@ -965,7 +965,7 @@ impl Minimap {
             let mut springs = springs.borrow_mut();
             let mut settled = true;
             for spring in springs.iter_mut() {
-                spring.step(dt, RESPONSE);
+                spring.advance(dt);
                 settled &= spring.settle(0.001);
             }
             area.queue_draw();

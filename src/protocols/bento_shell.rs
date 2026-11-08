@@ -14,7 +14,7 @@ use smithay::wayland::{Dispatch2, GlobalDispatch2};
 
 use super::raw::bento_shell::v1::server::{bento_glass_v1, bento_shell_v1};
 
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 /// The most shapes a surface's glass has, as many as the glass shader takes.
 pub const MAX_GLASS_SHAPES: usize = 16;
@@ -86,10 +86,28 @@ pub struct GlassData {
     surface: WlSurface,
 }
 
+/// What the shell lines its look and motion up with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellStyle {
+    /// The gaps between windows and their corner radius.
+    pub gaps: f64,
+    pub corner_radius: f64,
+    /// Whether animations are on, and how much slower they run.
+    pub animations: bool,
+    pub slowdown: f64,
+}
+
 pub trait BentoShellHandler {
     fn bento_shell_state(&mut self) -> &mut BentoShellState;
-    /// The gaps between windows and their corner radius.
-    fn shell_style(&self) -> (f64, f64);
+    fn shell_style(&self) -> ShellStyle;
+}
+
+/// Tells a shell the style, and the animations if it's new enough to hear them.
+fn send_style(shell: &BentoShellV1, style: ShellStyle) {
+    shell.style(style.gaps, style.corner_radius);
+    if shell.version() >= 4 {
+        shell.animations(u32::from(style.animations), style.slowdown);
+    }
 }
 
 impl BentoShellState {
@@ -109,9 +127,9 @@ impl BentoShellState {
         Self { shells: Vec::new() }
     }
 
-    pub fn send_style(&self, gaps: f64, corner_radius: f64) {
+    pub fn send_style(&self, style: ShellStyle) {
         for shell in &self.shells {
-            shell.style(gaps, corner_radius);
+            send_style(shell, style);
         }
     }
 
@@ -136,8 +154,7 @@ where
         data_init: &mut DataInit<'_, D>,
     ) {
         let shell = data_init.init(resource, ShellData);
-        let (gaps, corner_radius) = state.shell_style();
-        shell.style(gaps, corner_radius);
+        send_style(&shell, state.shell_style());
         state.bento_shell_state().shells.push(shell);
     }
 

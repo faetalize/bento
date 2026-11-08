@@ -2,10 +2,22 @@
 //! going past where they're headed, and they keep their speed when they're sent somewhere else
 //! on the way, so a reversed morph turns around instead of starting over.
 
+use std::cell::Cell;
 use std::f64::consts::TAU;
 
-/// How long a spring takes to mostly settle, in seconds.
+/// How long a spring takes to mostly settle, in seconds, at normal speed.
 pub const RESPONSE: f64 = 0.42;
+
+thread_local! {
+    /// How much slower than normal the shell moves, as bento's animations do, or `None` when
+    /// they're off. It's one for the whole shell, like the setting it follows.
+    static MOTION: Cell<Option<f64>> = const { Cell::new(Some(1.)) };
+}
+
+/// Sets how the shell moves: `Some` slowdown, or `None` for not at all.
+pub fn set_motion(slowdown: Option<f64>) {
+    MOTION.set(slowdown.filter(|slowdown| *slowdown > 0.));
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spring {
@@ -28,6 +40,15 @@ impl Spring {
         self.value = value;
         self.target = value;
         self.velocity = 0.;
+    }
+
+    /// Moves `dt` seconds on as the shell moves now: at its speed, or straight to its target when
+    /// animations are off.
+    pub fn advance(&mut self, dt: f64) {
+        match MOTION.get() {
+            Some(slowdown) => self.step(dt, RESPONSE * slowdown),
+            None => self.jump(self.target),
+        }
     }
 
     /// Moves `dt` seconds on. A critically damped spring has an exact solution, so a long frame
@@ -66,6 +87,25 @@ mod tests {
             assert!(spring.value <= 100. + 1e-9, "{}", spring.value);
         }
         assert!(spring.settle(0.05));
+    }
+
+    #[test]
+    fn with_animations_off_it_arrives_at_once_and_slowdown_slows_it() {
+        let mut spring = Spring::new(0.);
+        spring.target = 100.;
+        set_motion(None);
+        spring.advance(1. / 60.);
+        assert_eq!(spring.value, 100.);
+
+        let (mut normal, mut slow) = (Spring::new(0.), Spring::new(0.));
+        normal.target = 100.;
+        slow.target = 100.;
+        set_motion(Some(1.));
+        normal.advance(0.1);
+        set_motion(Some(4.));
+        slow.advance(0.1);
+        assert!(slow.value < normal.value);
+        set_motion(Some(1.));
     }
 
     #[test]

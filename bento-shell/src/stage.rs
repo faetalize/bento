@@ -18,7 +18,7 @@ use adw::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{graphene, gsk};
 
-use crate::spring::{Spring, RESPONSE};
+use crate::spring::Spring;
 use crate::wayland::{Glass, Shape};
 
 /// A rectangle on the stage, in logical pixels.
@@ -66,6 +66,8 @@ pub struct Face {
     /// Where the content sits in the island while the island isn't its size yet, from 0 at the
     /// left or top to 1 at the right or bottom: the side the island grows from.
     pub align: (f32, f32),
+    /// Whether it's nothing, a point, which what grows out of it leaves as a drop.
+    pub nothing: bool,
 }
 
 impl Face {
@@ -75,6 +77,7 @@ impl Face {
             place,
             radius,
             align: (0.5, 0.),
+            nothing: false,
         }
     }
 
@@ -87,6 +90,7 @@ impl Face {
             place: Rc::new(move |width| place(width).middle()),
             radius: NOTHING_RADIUS,
             align: (0.5, 0.5),
+            nothing: true,
         }
     }
 
@@ -116,6 +120,8 @@ struct Island {
     /// The face it was added showing, where its first layout puts it, so that one shown before
     /// then still grows into place.
     first: usize,
+    /// The face it's coming from, until it settles at the one it shows.
+    from: usize,
     /// How close other glass comes for it to melt into it.
     melt: f32,
     springs: [Spring; 5],
@@ -142,9 +148,41 @@ impl Island {
         )
     }
 
+    /// Where it's drawn: where its springs have it, but out of nothing it grows as a circle as
+    /// wide as its narrower side, then stretches to its proportions, and into nothing the other
+    /// way, so it comes and goes as a drop.
+    fn drawn(&self) -> Rect {
+        let rect = self.rect();
+        let nothing = |face: usize| self.faces[face].nothing;
+        let whole = match (nothing(self.from), nothing(self.shown)) {
+            (true, false) => self.places[self.shown],
+            (false, true) => self.places[self.from],
+            _ => return rect,
+        };
+        if whole.width <= 0. || whole.height <= 0. {
+            return rect;
+        }
+        let grown = (rect.width / whole.width)
+            .max(rect.height / whole.height)
+            .clamp(0., 1.);
+        let narrow = whole.width.min(whole.height);
+        let (width, height) = if grown < 0.5 {
+            let diameter = narrow * grown / 0.5;
+            (diameter, diameter)
+        } else {
+            let t = (grown - 0.5) / 0.5;
+            (
+                narrow + (whole.width - narrow) * t,
+                narrow + (whole.height - narrow) * t,
+            )
+        };
+        let (cx, cy) = (rect.x + rect.width / 2., rect.y + rect.height / 2.);
+        Rect::new(cx - width / 2., cy - height / 2., width, height)
+    }
+
     /// Its corners' radius as it's drawn: never more than half its width or height.
     fn radius(&self) -> f32 {
-        let rect = self.rect();
+        let rect = self.drawn();
         (self.springs[R].value as f32)
             .min(rect.width / 2.)
             .min(rect.height / 2.)
@@ -216,6 +254,7 @@ impl Island {
         }
         self.faded_from = (0..self.faces.len()).map(|i| self.opacity(i)).collect();
         self.start = [X, Y, W, H].map(|i| self.springs[i].value);
+        self.from = self.shown;
         self.shown = face;
         self.target_shown();
         // It heads there now, from where the last layout put the face: the stage's frame tick
@@ -378,7 +417,7 @@ mod imp {
             let mut shapes = Vec::new();
 
             for island in self.islands.borrow().iter().flatten() {
-                let rect = island.rect();
+                let rect = island.drawn();
                 if rect.width < 0.5 || rect.height < 0.5 {
                     continue;
                 }
@@ -467,6 +506,7 @@ impl Stage {
             faces,
             shown,
             first: shown,
+            from: shown,
             melt,
             springs: [Spring::new(0.); 5],
             placed: false,
@@ -556,9 +596,11 @@ impl Stage {
             let mut moving = false;
             for island in imp.islands.borrow_mut().iter_mut().flatten() {
                 for spring in &mut island.springs {
-                    spring.step(dt, RESPONSE);
+                    spring.advance(dt);
                 }
                 if island.settled() {
+                    // Settled, a later change of its size is a plain one, not out of nothing.
+                    island.from = island.shown;
                     island.start = [X, Y, W, H].map(|i| island.springs[i].value);
                     island.faded_from = (0..island.faces.len())
                         .map(|i| if i == island.shown { 1. } else { 0. })
@@ -622,6 +664,7 @@ pub fn natural_size(widget: &impl IsA<gtk::Widget>) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spring::RESPONSE;
 
     fn island(faces: &[Rect]) -> Island {
         let count = faces.len();
@@ -634,6 +677,7 @@ mod tests {
                     place: Rc::new(move |_| rect),
                     radius: 0.,
                     align: (0.5, 0.5),
+                    nothing: false,
                 }
             })
             .collect();
@@ -641,6 +685,7 @@ mod tests {
             faces,
             shown: 0,
             first: 0,
+            from: 0,
             melt: 0.,
             springs: [Spring::new(0.); 5],
             placed: false,
@@ -708,5 +753,32 @@ mod tests {
             "{rect:?} with corners of {}",
             island.radius()
         );
+    }
+
+    #[test]
+    fn it_grows_out_of_nothing_as_a_circle_then_stretches() {
+        let shown = Rect::new(0., 0., 300., 100.);
+        let mut island = island(&[shown, shown]);
+        island.faces[0] = Face::nothing(Rc::new(move |_| shown));
+        island.place(vec![shown.middle(), shown]);
+        island.pick(1);
+        island.place(vec![shown.middle(), shown]);
+
+        let mut circles = 0;
+        for _ in 0..240 {
+            for spring in &mut island.springs {
+                spring.step(1. / 60., RESPONSE);
+            }
+            let drawn = island.drawn();
+            if drawn.height < 99. && drawn.width > 1. {
+                assert!(
+                    (drawn.width - drawn.height).abs() < 0.01,
+                    "a circle until it's as tall as it gets: {drawn:?}"
+                );
+                circles += 1;
+            }
+        }
+        assert!(circles > 0);
+        assert_eq!(island.drawn(), shown);
     }
 }

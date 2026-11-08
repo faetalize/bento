@@ -13,6 +13,7 @@ use smithay::reexports::wayland_server::backend::{ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
 
 use crate::niri::{ClientState, State};
+use crate::protocols::bento_shell::ShellStyle;
 use crate::utils::spawning::spawn_with_wayland_socket;
 
 /// How long bento waits before starting the shell again after it exits.
@@ -30,7 +31,7 @@ pub struct Shell {
     /// Told the shell's client when it disconnects.
     exited: Sender<ClientId>,
     /// The style last sent to the shell.
-    style: Option<(f64, f64)>,
+    style: Option<ShellStyle>,
 }
 
 impl Shell {
@@ -135,8 +136,9 @@ impl Shell {
 }
 
 impl crate::niri::Niri {
-    /// The gaps between windows and the corner radius the config gives every window.
-    pub fn shell_style(&self) -> (f64, f64) {
+    /// The gaps between windows, the corner radius the config gives every window, and how
+    /// bento animates.
+    pub fn shell_style(&self) -> ShellStyle {
         let config = self.config.borrow();
         let radius = config
             .window_rules
@@ -145,7 +147,12 @@ impl crate::niri::Niri {
             .filter_map(|rule| rule.geometry_corner_radius)
             .next_back()
             .map_or(0., |radius| f64::from(radius.top_left));
-        (config.layout.gaps, radius)
+        ShellStyle {
+            gaps: config.layout.gaps,
+            corner_radius: radius,
+            animations: !config.animations.off,
+            slowdown: config.animations.slowdown,
+        }
     }
 
     /// Starts the shell the config names, or replaces the running one, and tells it the style.
@@ -163,7 +170,7 @@ impl crate::niri::Niri {
         let style = self.shell_style();
         if self.shell.style != Some(style) {
             self.shell.style = Some(style);
-            self.bento_shell_state.send_style(style.0, style.1);
+            self.bento_shell_state.send_style(style);
         }
     }
 

@@ -837,7 +837,7 @@ impl BentoShellHandler for State {
         &mut self.niri.bento_shell_state
     }
 
-    fn shell_style(&self) -> (f64, f64) {
+    fn shell_style(&self) -> crate::protocols::bento_shell::ShellStyle {
         self.niri.shell_style()
     }
 }

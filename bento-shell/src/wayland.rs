@@ -33,11 +33,14 @@ mod protocol {
     wayland_scanner::generate_client_code!("../resources/bento-shell-v1.xml");
 }
 
-/// How bento lays out windows, for the shell to line up with them.
+/// How bento lays out and animates windows, for the shell to line up and move with them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Style {
     pub gaps: f64,
     pub corner_radius: f64,
+    /// Whether animations are on, and how much slower they run.
+    pub animations: bool,
+    pub slowdown: f64,
 }
 
 impl Default for Style {
@@ -45,6 +48,8 @@ impl Default for Style {
         Self {
             gaps: 8.,
             corner_radius: 12.,
+            animations: true,
+            slowdown: 1.,
         }
     }
 }
@@ -63,7 +68,10 @@ pub struct Shape {
 }
 
 enum Event {
-    Style(Style),
+    /// The gaps and the corner radius.
+    Style(f64, f64),
+    /// Whether animations are on, and their slowdown.
+    Animations(bool, f64),
     ToggleLauncher,
 }
 
@@ -147,8 +155,21 @@ impl Bento {
         let events = std::mem::take(&mut self.state.borrow_mut().events);
         for event in events {
             match event {
-                Event::Style(style) => {
+                Event::Style(..) | Event::Animations(..) => {
+                    let mut style = self.style.get();
+                    match event {
+                        Event::Style(gaps, corner_radius) => {
+                            style.gaps = gaps;
+                            style.corner_radius = corner_radius;
+                        }
+                        Event::Animations(on, slowdown) => {
+                            style.animations = on;
+                            style.slowdown = slowdown;
+                        }
+                        Event::ToggleLauncher => unreachable!(),
+                    }
                     self.style.set(style);
+                    crate::spring::set_motion(style.animations.then_some(style.slowdown));
                     for f in self.on_style.borrow().iter() {
                         f(style);
                     }
@@ -347,9 +368,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         } = event
         {
             if interface == BentoShellV1::interface().name {
-                // Version 2 takes glass's paths, and 3 its shapes to fractions of a pixel with
-                // their melts.
-                state.shell = Some(registry.bind(name, version.min(3), handle, ()));
+                // Version 2 takes glass's paths, 3 its shapes to fractions of a pixel with their
+                // melts, and 4 tells how bento animates.
+                state.shell = Some(registry.bind(name, version.min(4), handle, ()));
             }
         }
     }
@@ -368,10 +389,10 @@ impl Dispatch<BentoShellV1, ()> for State {
             bento_shell_v1::Event::Style {
                 gaps,
                 corner_radius,
-            } => state.events.push(Event::Style(Style {
-                gaps,
-                corner_radius,
-            })),
+            } => state.events.push(Event::Style(gaps, corner_radius)),
+            bento_shell_v1::Event::Animations { on, slowdown } => {
+                state.events.push(Event::Animations(on != 0, slowdown));
+            }
             bento_shell_v1::Event::ToggleLauncher => state.events.push(Event::ToggleLauncher),
         }
     }
