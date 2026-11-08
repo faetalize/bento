@@ -107,6 +107,9 @@ const R: usize = 4;
 struct Island {
     faces: Vec<Face>,
     shown: usize,
+    /// The face it was added showing, where its first layout puts it, so that one shown before
+    /// then still grows into place.
+    first: usize,
     /// How close other glass comes for it to melt into it.
     melt: f32,
     springs: [Spring; 5],
@@ -162,6 +165,52 @@ impl Island {
 
     fn settled(&mut self) -> bool {
         self.springs.iter_mut().all(|spring| spring.settle(0.05))
+    }
+
+    /// Lays it out with its faces at `places`: it heads for the one it shows, from where it is,
+    /// or from the face it was added showing the first time.
+    fn place(&mut self, places: Vec<Rect>) {
+        self.places = places;
+        let target = |face: usize| {
+            let rect = self.places[face];
+            let radius = self.faces[face].radius;
+            [rect.x, rect.y, rect.width, rect.height, radius].map(f64::from)
+        };
+        let (first, shown) = (target(self.first), target(self.shown));
+        if !self.placed {
+            self.placed = true;
+            for (spring, value) in self.springs.iter_mut().zip(first) {
+                spring.jump(value);
+            }
+            self.start = [X, Y, W, H].map(|i| self.springs[i].value);
+            self.faded_from = (0..self.faces.len())
+                .map(|i| if i == self.first { 1. } else { 0. })
+                .collect();
+        }
+        for (spring, value) in self.springs.iter_mut().zip(shown) {
+            spring.target = value;
+        }
+    }
+
+    /// Sets off for face `face`, from where it is.
+    fn pick(&mut self, face: usize) {
+        if self.shown == face {
+            return;
+        }
+        self.faded_from = (0..self.faces.len()).map(|i| self.opacity(i)).collect();
+        self.start = [X, Y, W, H].map(|i| self.springs[i].value);
+        self.shown = face;
+        self.target_shown();
+    }
+
+    /// Only the face it shows takes the pointer: the others are laid out in their places too,
+    /// drawn faded out or not at all, and would take clicks meant for it.
+    fn target_shown(&self) {
+        for (i, face) in self.faces.iter().enumerate() {
+            if let Some(child) = &face.child {
+                child.set_can_target(i == self.shown);
+            }
+        }
     }
 }
 
@@ -281,21 +330,7 @@ mod imp {
                             );
                         }
                     }
-                    island.places = faces.iter().map(|(rect, _)| *rect).collect();
-                    let rect = faces[island.shown].0;
-                    let radius = island.faces[island.shown].radius;
-                    let target = [rect.x, rect.y, rect.width, rect.height, radius];
-                    for (spring, target) in island.springs.iter_mut().zip(target) {
-                        if island.placed {
-                            spring.target = f64::from(target);
-                        } else {
-                            spring.jump(f64::from(target));
-                        }
-                    }
-                    if !island.placed {
-                        island.placed = true;
-                        island.start = [X, Y, W, H].map(|i| island.springs[i].value);
-                    }
+                    island.place(faces.iter().map(|(rect, _)| *rect).collect());
                     moving |= !island.settled();
                 }
             }
@@ -397,9 +432,10 @@ impl Stage {
         }
         let count = faces.len();
         let mut islands = self.imp().islands.borrow_mut();
-        islands.push(Some(Island {
+        let island = Island {
             faces,
             shown,
+            first: shown,
             melt,
             springs: [Spring::new(0.); 5],
             placed: false,
@@ -409,7 +445,9 @@ impl Stage {
                 .collect(),
             done: None,
             places: vec![Rect::new(0., 0., 0., 0.); count],
-        }));
+        };
+        island.target_shown();
+        islands.push(Some(island));
         let id = islands.len() - 1;
         drop(islands);
         self.queue_resize();
@@ -455,11 +493,7 @@ impl Stage {
             let Some(Some(island)) = islands.get_mut(id) else {
                 return;
             };
-            if island.shown != face {
-                island.faded_from = (0..island.faces.len()).map(|i| island.opacity(i)).collect();
-                island.start = [X, Y, W, H].map(|i| island.springs[i].value);
-                island.shown = face;
-            }
+            island.pick(face);
             island.done = done.map(|done| Box::new(done) as Box<dyn FnOnce()>);
         }
         // Its new face's place is set when it's laid out.
@@ -552,4 +586,51 @@ pub fn natural_size(widget: &impl IsA<gtk::Widget>) -> (f32, f32) {
     let (_, width, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
     let (_, height, _, _) = widget.measure(gtk::Orientation::Vertical, width);
     (width as f32, height as f32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn island(faces: &[Rect]) -> Island {
+        let count = faces.len();
+        let faces: Vec<Face> = faces
+            .iter()
+            .map(|rect| {
+                let rect = *rect;
+                Face {
+                    child: None,
+                    place: Rc::new(move |_| rect),
+                    radius: 0.,
+                    align: (0.5, 0.5),
+                }
+            })
+            .collect();
+        Island {
+            faces,
+            shown: 0,
+            first: 0,
+            melt: 0.,
+            springs: [Spring::new(0.); 5],
+            placed: false,
+            start: [0.; 4],
+            faded_from: (0..count).map(|i| if i == 0 { 1. } else { 0. }).collect(),
+            done: None,
+            places: vec![Rect::new(0., 0., 0., 0.); count],
+        }
+    }
+
+    #[test]
+    fn a_face_shown_before_the_first_layout_still_grows_into_place() {
+        // Like the launcher: added as nothing, and shown before GTK has laid it out.
+        let nothing = Rect::new(100., 50., 0., 0.);
+        let shown = Rect::new(0., 0., 200., 100.);
+        let mut island = island(&[nothing, shown]);
+        island.pick(1);
+        island.place(vec![nothing, shown]);
+
+        assert_eq!(island.rect(), nothing);
+        assert_eq!(island.springs[W].target, 200.);
+        assert_eq!(island.opacity(1), 0.);
+    }
 }
