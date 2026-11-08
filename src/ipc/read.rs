@@ -36,6 +36,13 @@ pub fn workspaces(state: &State) -> BTreeMap<u64, Workspace> {
                 focused: ws.active_window().map(|win| win.id().get()),
                 active: mon.is_some_and(|mon| mon.active_workspace_idx() == index),
                 urgent: ws.is_urgent(),
+                camera: {
+                    let camera = ws.camera();
+                    Point {
+                        x: camera.x,
+                        y: camera.y,
+                    }
+                },
             };
             (id, workspace)
         })

@@ -234,6 +234,7 @@ mod tests {
             focused: None,
             active: true,
             urgent: false,
+            camera: bento_ipc::Point { x: 0., y: 0. },
         }
     }
 

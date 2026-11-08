@@ -494,6 +494,12 @@ impl<W: LayoutElement> Workspace<W> {
             .find_map(|id| outputs.clone().position(|output| id.matches(output)))
     }
 
+    /// Where the top-left corner of the view is on the canvas, where the camera is going while
+    /// it moves.
+    pub fn camera(&self) -> Point<f64, Logical> {
+        self.scrolling.camera_target()
+    }
+
     pub fn active_window(&self) -> Option<&W> {
         if self.floating_is_active.get() {
             self.floating.active_window()

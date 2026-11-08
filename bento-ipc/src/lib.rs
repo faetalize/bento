@@ -331,6 +331,9 @@ pub struct Workspace {
     pub active: bool,
     /// Whether a window on it asks for attention.
     pub urgent: bool,
+    /// Where the top-left corner of the view is on its canvas, in the coordinates of its windows'
+    /// `rect`s; where the camera is going while it moves.
+    pub camera: Point,
 }
 
 /// How a window is sized.
