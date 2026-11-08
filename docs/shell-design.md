@@ -61,12 +61,20 @@ calendar, and closing it morphs it back, one piece of glass changing shape rathe
 growing out of the clicked spot. Quick settings is the right island's panel. The motion is
 restrained, with no overshoot.
 
-Notifications come out of the centre island the same way.
+## Notifications show at the top right
 
-## The launcher is the centre island
+Notifications and toasts show at the top right of the screen.
 
-The launcher is a glass search field with its results that the centre island morphs into, and
-back into the clock when it closes. It's keyboard first: typing finds apps.
+## On-screen indicators show at the bottom
+
+On-screen indicators, like volume, brightness and caps lock, show at the bottom middle of the
+screen, as on Windows 11. Each grows out of nothing and shrinks back into nothing.
+
+## The launcher is a centred palette
+
+The launcher is a glass search field with its results, in the middle of the screen, apart from
+the islands. It grows out of nothing and shrinks back into nothing, like the on-screen
+indicators. It's keyboard first: typing finds apps.
 
 ## bento starts the shell the config names
 
