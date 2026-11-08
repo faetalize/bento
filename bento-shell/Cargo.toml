@@ -11,7 +11,7 @@ rust-version.workspace = true
 [dependencies]
 adw = { version = "0.8.1", package = "libadwaita", features = ["v1_7"] }
 async-channel = "2.5.0"
-gdk-wayland = { version = "0.10", package = "gdk4-wayland", features = ["wayland_crate"] }
+gdk-wayland = { version = "0.10", package = "gdk4-wayland", features = ["wayland_crate", "v4_18"] }
 gio = { version = "0.21", features = ["v2_80"] }
 glib = "0.21"
 gtk = { version = "0.10.3", package = "gtk4", features = ["v4_14"] }

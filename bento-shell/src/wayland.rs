@@ -184,6 +184,7 @@ impl Bento {
         let glass = shell.get_glass(&wl_surface, &self.handle, ());
         Some(Glass {
             glass,
+            surface: surface.clone(),
             shapes: RefCell::default(),
             curves: RefCell::default(),
         })
@@ -193,6 +194,7 @@ impl Bento {
 /// Glass behind one surface.
 pub struct Glass {
     glass: BentoGlassV1,
+    surface: gdk_wayland::WaylandSurface,
     shapes: RefCell<Vec<Shape>>,
     curves: RefCell<Vec<[f32; 7]>>,
 }
@@ -235,6 +237,7 @@ impl Glass {
                     .collect();
                 self.glass.set_shapes(bytes);
             }
+            self.commit();
         }
 
         if self.glass.version() < 2 {
@@ -249,7 +252,18 @@ impl Glass {
                 .collect();
             *self.curves.borrow_mut() = curves;
             self.glass.set_paths(bytes);
+            self.commit();
         }
+    }
+}
+
+impl Glass {
+    /// Makes sure the new shapes reach bento with this frame. They only apply when the surface
+    /// commits, and GTK skips committing a frame whose drawing didn't change, like the glass of
+    /// a launcher shrinking away after its content faded out, which would leave the glass stuck
+    /// at its last size.
+    fn commit(&self) {
+        self.surface.force_next_commit();
     }
 }
 
