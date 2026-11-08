@@ -28,15 +28,21 @@ Effects that use what's behind the shell, like blur, frosted or liquid glass and
 bento's: no program can see what's under its own surfaces. The shell asks bento for them on its
 surfaces, in the shapes it gives, the way windows ask for background blur.
 
-## The bar floats along the top
+## Islands float along the top
 
-The shell's bar runs along the top of each output, always on screen. It floats: it's inset from
-the screen's edges by bento's gaps and rounded like the windows, so it sits in the layout as one
-more tile rather than a strip glued to the edge.
+Along the top of each output, always on screen, float three islands of glass instead of one bar.
+They're inset from the screen's edges by bento's gaps and rounded like the windows, and the
+wallpaper shows between them.
 
-The bar shows the output's workspaces, the clock, the status icons (network, sound, battery and
-the like) and the tray of apps' status icons. It doesn't show the focused window or a taskbar.
-Workspaces show as their numbers, or names when they have one, with the current one highlighted.
+- The left island shows the output's workspaces, as their numbers, or names when they have
+  one, with the current one highlighted, and the minimap: a track of the active workspace with
+  the part the view shows highlighted, from where bento says each tile sits.
+- The centre island shows the clock.
+- The right island shows the status icons (network, sound, battery and the like) and the tray
+  of apps' status icons.
+
+They don't show the focused window or a taskbar. The islands are one surface, so where one grows
+near another they melt together, as one piece of glass.
 
 ## The shell is made of glass
 
@@ -48,20 +54,19 @@ it. bento shades it towards libadwaita's window colour, light or dark with the s
 text and icons read on any wallpaper or window; the shell draws no tint of its own. The shell's
 highlights use libadwaita's accent colour, so the shell matches the settings app and GTK apps.
 
-## The bar morphs into its panels
+## Islands morph into their panels
 
-Opening something from the bar, like quick settings or the calendar, grows the part of the bar
-that was clicked down into its panel, as one piece of glass, and closing it shrinks it back. The
-bar and its open panel are one surface, whose glass shape the shell gives bento as it changes.
-The motion is restrained, with no overshoot.
+An island becomes its panel: clicking the clock morphs the centre island itself into the
+calendar, and closing it morphs it back, one piece of glass changing shape rather than a panel
+growing out of the clicked spot. Quick settings is the right island's panel. The motion is
+restrained, with no overshoot.
 
-Notifications and on-screen indicators, like volume and brightness, morph out of the bar the same
-way, so everything the shell shows comes from the bar and moves alike.
+Notifications come out of the centre island the same way.
 
-## The launcher is a centred palette
+## The launcher is the centre island
 
-The launcher is a glass search field with its results, in the middle of the screen, apart from
-the bar. It's keyboard first: typing finds apps.
+The launcher is a glass search field with its results that the centre island morphs into, and
+back into the clock when it closes. It's keyboard first: typing finds apps.
 
 ## bento starts the shell the config names
 
