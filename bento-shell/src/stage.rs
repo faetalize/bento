@@ -167,16 +167,18 @@ impl Island {
         self.springs.iter_mut().all(|spring| spring.settle(0.05))
     }
 
+    /// Where face `face` puts it, as its springs' targets, from the last layout.
+    fn target(&self, face: usize) -> [f64; 5] {
+        let rect = self.places[face];
+        let radius = self.faces[face].radius;
+        [rect.x, rect.y, rect.width, rect.height, radius].map(f64::from)
+    }
+
     /// Lays it out with its faces at `places`: it heads for the one it shows, from where it is,
     /// or from the face it was added showing the first time.
     fn place(&mut self, places: Vec<Rect>) {
         self.places = places;
-        let target = |face: usize| {
-            let rect = self.places[face];
-            let radius = self.faces[face].radius;
-            [rect.x, rect.y, rect.width, rect.height, radius].map(f64::from)
-        };
-        let (first, shown) = (target(self.first), target(self.shown));
+        let (first, shown) = (self.target(self.first), self.target(self.shown));
         if !self.placed {
             self.placed = true;
             for (spring, value) in self.springs.iter_mut().zip(first) {
@@ -201,6 +203,14 @@ impl Island {
         self.start = [X, Y, W, H].map(|i| self.springs[i].value);
         self.shown = face;
         self.target_shown();
+        // It heads there now, from where the last layout put the face: the stage's frame tick
+        // comes before the next layout, and would take it as arrived at the old face.
+        if self.placed {
+            let target = self.target(face);
+            for (spring, value) in self.springs.iter_mut().zip(target) {
+                spring.target = value;
+            }
+        }
     }
 
     /// Only the face it shows takes the pointer: the others are laid out in their places too,
@@ -252,6 +262,15 @@ mod imp {
     }
 
     impl WidgetImpl for Stage {
+        fn unmap(&self) {
+            // A hidden surface draws no frames, so the tick would never run again, and the stage
+            // would take it as still going.
+            if let Some(tick) = self.tick.take() {
+                tick.remove();
+            }
+            self.parent_unmap();
+        }
+
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             if orientation == gtk::Orientation::Horizontal {
                 return (0, 0, -1, -1);
@@ -632,5 +651,23 @@ mod tests {
         assert_eq!(island.rect(), nothing);
         assert_eq!(island.springs[W].target, 200.);
         assert_eq!(island.opacity(1), 0.);
+    }
+
+    #[test]
+    fn a_picked_face_is_where_it_heads_before_the_next_layout() {
+        // Like the launcher closing: it's at its face, and is sent back to nothing, which the
+        // stage's frame tick sees before GTK lays it out again.
+        let nothing = Rect::new(100., 50., 0., 0.);
+        let shown = Rect::new(0., 0., 200., 100.);
+        let mut island = island(&[nothing, shown]);
+        island.pick(1);
+        island.place(vec![nothing, shown]);
+        for spring in &mut island.springs {
+            spring.jump(spring.target);
+        }
+
+        island.pick(0);
+        assert_eq!(island.springs[W].target, 0.);
+        assert!(!island.settled(), "it has to shrink first");
     }
 }
