@@ -4,7 +4,8 @@
 //! offset, and the pane is drawn by the glass or plain shader with the uniforms bento gives it.
 //! The pane can be dragged around, to watch the glass bend what's behind it, and on glass a handle
 //! beside it for each light that's on moves that light. The pointer carries its light over the
-//! preview, as it would over the screen.
+//! preview, as it would over the screen. The pane can be a window, or glass of another shape, a
+//! circle or a star, drawn from paths as the shell's can be.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -122,6 +123,19 @@ pub fn build(
             light
         })
         .collect();
+    // Over the preview, as libadwaita puts controls over content; only glass has other shapes.
+    let shapes = adw::ToggleGroup::builder()
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Start)
+        .margin_top(8)
+        .margin_end(8)
+        .css_classes(["osd"])
+        .build();
+    for (name, label) in [("window", "Window"), ("circle", "Circle"), ("star", "Star")] {
+        shapes.add(adw::Toggle::builder().name(name).label(label).build());
+    }
+    shapes.set_active_name(Some("window"));
+    overlay.add_overlay(&shapes);
     let fallback = gtk::Label::builder()
         .label("Preview Unavailable")
         .css_classes(["dim-label"])
@@ -138,11 +152,13 @@ pub fn build(
         area: area.clone(),
         overlay: overlay.clone(),
         lights,
+        shapes: shapes.clone(),
         stack: stack.clone(),
         store: ctx.store.clone(),
         gl: RefCell::new(None),
         center: Cell::new((0.5, 0.5)),
         pointer: Cell::new(None),
+        shape: Cell::new(Shape::Window),
         picture: RefCell::new(None),
         wanted: RefCell::new(None),
         live: live.clone(),
@@ -202,6 +218,19 @@ pub fn build(
     drag(&preview);
     drag_light(&preview, ctx, light_angles);
     follow_pointer(&preview);
+    {
+        let preview = Rc::downgrade(&preview);
+        shapes.connect_active_name_notify(move |shapes| {
+            if let Some(preview) = preview.upgrade() {
+                preview.shape.set(match shapes.active_name().as_deref() {
+                    Some("circle") => Shape::Circle,
+                    Some("star") => Shape::Star,
+                    _ => Shape::Window,
+                });
+                preview.area.queue_render();
+            }
+        });
+    }
 
     let redraw = Rc::downgrade(&preview);
     ctx.store.subscribe(move || {
@@ -379,6 +408,8 @@ struct Preview {
     overlay: gtk::Overlay,
     /// The lights' handles, one for each place in glass's list.
     lights: Vec<gtk::Image>,
+    /// The choice of the pane's shape.
+    shapes: adw::ToggleGroup,
     stack: gtk::Stack,
     store: Store,
     gl: RefCell<Option<Gl>>,
@@ -386,6 +417,8 @@ struct Preview {
     center: Cell<(f64, f64)>,
     /// Where the pointer is over the preview, in logical pixels.
     pointer: Cell<Option<(f64, f64)>>,
+    /// What shape of glass the pane is.
+    shape: Cell<Shape>,
     /// The wallpaper, or `None` for the built-in picture.
     picture: RefCell<Option<Rc<Picture>>>,
     /// The wallpaper being shown or loaded.
@@ -526,6 +559,7 @@ impl Preview {
         for (handle, light) in self.lights.iter().zip(blur.glass.lights) {
             handle.set_visible(glass && light.is_some_and(|light| light.on));
         }
+        self.shapes.set_visible(glass);
         self.overlay.queue_allocate();
         self.area.queue_render();
     }
@@ -643,8 +677,15 @@ impl Preview {
             gl.gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
         }
         let pane = self.pane();
-        let (program, uniforms) =
-            pane_uniforms(gl, &look, pane, self.pointer.get(), (lw, lh), scale);
+        let (program, uniforms) = pane_uniforms(
+            gl,
+            &look,
+            pane,
+            self.shape.get(),
+            self.pointer.get(),
+            (lw, lh),
+            scale,
+        );
         gl.draw(program, Some(behind), -1., &uniforms);
         unsafe { gl.gl.disable(glow::BLEND) };
         Ok(())
@@ -656,6 +697,7 @@ fn pane_uniforms(
     gl: &Gl,
     look: &Look,
     (px, py, pw, ph): (f64, f64, f64, f64),
+    shape: Shape,
     pointer: Option<(f64, f64)>,
     (lw, lh): (i32, i32),
     scale: i32,
@@ -707,9 +749,24 @@ fn pane_uniforms(
         GlassPattern::Hammered => 2.,
         GlassPattern::Frosted => 3.,
     };
+    // A window is a rounded rectangle; other shapes are paths.
+    let curves = shape.curves(pw, ph);
+    let mut matrices = vec![0f32; 32 * 16];
+    for (i, curve) in curves.iter().enumerate() {
+        matrices[i * 8..i * 8 + 6].copy_from_slice(curve);
+    }
+    let path = !curves.is_empty();
     uniforms.extend([
         ("geo_to_input", Uniform::Mat3(geo_to_input)),
-        ("shape_count", Uniform::Float(1.)),
+        ("shape_count", Uniform::Float(if path { 0. } else { 1. })),
+        ("path_count", Uniform::Float(if path { 1. } else { 0. })),
+        ("curve_count", Uniform::Float(curves.len() as f32)),
+        (
+            "path_ends0",
+            Uniform::Vec4([curves.len() as f32, 0., 0., 0.]),
+        ),
+        ("path_ends1", Uniform::Vec4([0.; 4])),
+        ("curves", Uniform::Mat4s(matrices)),
         ("shape0", Uniform::Vec4([0., 0., pw, ph])),
         ("radii0", Uniform::Vec4(<[f32; 4]>::from(radius))),
         ("bezel", Uniform::Float(glass.bezel as f32)),
@@ -836,13 +893,70 @@ fn decode(path: &Path, screen: (i32, i32), region: (i32, i32)) -> Option<Picture
     })
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Uniform {
     Float(f32),
     Vec2([f32; 2]),
     Vec3([f32; 3]),
     Vec4([f32; 4]),
     Mat3([f32; 9]),
+    /// An array of 4×4 matrices, one after another, each by columns.
+    Mat4s(Vec<f32>),
+}
+
+/// The shapes the pane can be.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Shape {
+    Window,
+    Circle,
+    Star,
+}
+
+impl Shape {
+    /// The shape's path in a pane of `width` and `height`, as glass takes it: quadratic curves,
+    /// each its start, control point and end, none for a window.
+    fn curves(self, width: f32, height: f32) -> Vec<[f32; 6]> {
+        let (cx, cy) = (width / 2., height / 2.);
+        let radius = width.min(height) / 2.;
+        let at = |r: f32, angle: f32| [cx + r * angle.cos(), cy + r * angle.sin()];
+        match self {
+            Self::Window => Vec::new(),
+            // Eight arcs of 45°, each a curve whose control point is where the tangents at its
+            // ends meet.
+            Self::Circle => (0..8)
+                .map(|i| {
+                    let step = std::f32::consts::FRAC_PI_4;
+                    let start = i as f32 * step;
+                    let [a, b, c] = [
+                        at(radius, start),
+                        at(radius / (step / 2.).cos(), start + step / 2.),
+                        at(radius, start + step),
+                    ];
+                    [a[0], a[1], b[0], b[1], c[0], c[1]]
+                })
+                .collect(),
+            // Five points, from the top, with straight edges between their tips and the
+            // corners between them.
+            Self::Star => {
+                let points: Vec<[f32; 2]> = (0..10)
+                    .map(|i| {
+                        let r = if i % 2 == 0 { radius } else { radius * 0.45 };
+                        at(
+                            r,
+                            -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.,
+                        )
+                    })
+                    .collect();
+                (0..10)
+                    .map(|i| {
+                        let (a, c) = (points[i], points[(i + 1) % 10]);
+                        let b = [(a[0] + c[0]) / 2., (a[1] + c[1]) / 2.];
+                        [a[0], a[1], b[0], b[1], c[0], c[1]]
+                    })
+                    .collect()
+            }
+        }
+    }
 }
 
 struct Target {
@@ -1101,12 +1215,13 @@ impl Gl {
             for (name, value) in common.iter().chain(uniforms) {
                 let location = location(name);
                 let location = location.as_ref();
-                match *value {
-                    Uniform::Float(x) => gl.uniform_1_f32(location, x),
-                    Uniform::Vec2([x, y]) => gl.uniform_2_f32(location, x, y),
-                    Uniform::Vec3([x, y, z]) => gl.uniform_3_f32(location, x, y, z),
-                    Uniform::Vec4([x, y, z, w]) => gl.uniform_4_f32(location, x, y, z, w),
-                    Uniform::Mat3(m) => gl.uniform_matrix_3_f32_slice(location, false, &m),
+                match value {
+                    Uniform::Float(x) => gl.uniform_1_f32(location, *x),
+                    Uniform::Vec2([x, y]) => gl.uniform_2_f32(location, *x, *y),
+                    Uniform::Vec3([x, y, z]) => gl.uniform_3_f32(location, *x, *y, *z),
+                    Uniform::Vec4([x, y, z, w]) => gl.uniform_4_f32(location, *x, *y, *z, *w),
+                    Uniform::Mat3(m) => gl.uniform_matrix_3_f32_slice(location, false, m),
+                    Uniform::Mat4s(m) => gl.uniform_matrix_4_f32_slice(location, false, m),
                 }
             }
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.quad));
