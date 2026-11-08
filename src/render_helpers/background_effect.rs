@@ -12,7 +12,7 @@ use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::clipped_surface::rounded_overlap;
 use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
-use crate::render_helpers::glass::GlassShapes;
+use crate::render_helpers::glass::{self, GlassShapes};
 use crate::render_helpers::xray::{XrayElement, XrayPos};
 use crate::render_helpers::RenderCtx;
 use crate::utils::region::TransformedRegion;
@@ -199,6 +199,12 @@ impl BackgroundEffect {
             1.
         };
         let saturation = self.options.saturation.unwrap_or(saturation) as f32;
+        // Only what's blurred is shaded: what shows through as it is reads as it is.
+        let shade = if blur {
+            glass::shade(&self.blur_config)
+        } else {
+            [0.; 4]
+        };
 
         // Glass is a material for blur; without blur, what's behind shows as it is.
         let material = self.options.material.unwrap_or(self.blur_config.material);
@@ -218,21 +224,28 @@ impl BackgroundEffect {
                 blur_options.is_some(),
                 noise,
                 saturation,
+                shade,
                 glass,
                 &mut |elem| push(elem.into()),
             );
         } else if let Some(shapes) = glass {
             let origin = params.clip.map_or(params.geometry.loc, |(geo, _)| geo.loc);
             let shapes = shapes.lit(ctx.glass, origin, 1.);
-            let elem =
-                self.nonxray
-                    .render_glass(ns, params, blur_options, noise, saturation, shapes);
+            let elem = self.nonxray.render_glass(
+                ns,
+                params,
+                blur_options,
+                noise,
+                saturation,
+                shade,
+                shapes,
+            );
             push(elem.into());
         } else {
             // Render non-xray effect.
             let elem = self
                 .nonxray
-                .render(ns, params, blur_options, noise, saturation);
+                .render(ns, params, blur_options, noise, saturation, shade);
             push(elem.into());
         }
     }

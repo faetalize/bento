@@ -65,6 +65,11 @@ pub fn category() -> Category {
                 .search_item("blur.noise", "Blur Noise", &["grain", "dither"])
                 .search_item("blur.saturation", "Blur Saturation", &["vibrancy", "color"])
                 .search_item(
+                    "blur.shade",
+                    "Blur Shade",
+                    &["opacity", "dim", "legibility", "contrast", "window color"],
+                )
+                .search_item(
                     "blur.glass.sheen",
                     "Glass Sheen",
                     &["gloss", "polish", "reflection"],

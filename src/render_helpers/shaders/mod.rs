@@ -133,6 +133,7 @@ impl Shaders {
                     UniformName::new("input_to_geo", UniformType::Matrix3x3),
                     UniformName::new("noise", UniformType::_1f),
                     UniformName::new("saturation", UniformType::_1f),
+                    UniformName::new("shade", UniformType::_4f),
                     UniformName::new("bg_color", UniformType::_4f),
                 ],
             )
@@ -149,6 +150,7 @@ impl Shaders {
             UniformName::new("shape_count", UniformType::_1f),
             UniformName::new("noise", UniformType::_1f),
             UniformName::new("saturation", UniformType::_1f),
+            UniformName::new("shade", UniformType::_4f),
             UniformName::new("bg_color", UniformType::_4f),
             UniformName::new("bezel", UniformType::_1f),
             UniformName::new("thickness", UniformType::_1f),

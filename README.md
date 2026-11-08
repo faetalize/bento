@@ -197,6 +197,10 @@ blur {
     offset 2.05  // 0 doesn't blur at all; above about 3 a pass ghosts, so add a pass instead
     noise 0.01
     saturation 1.15
+    shade 0.7    // how far what's blurred is taken towards the window colour, so text on it
+                 // reads over any wallpaper; bento follows the desktop's light or dark style
+    shade-dark "#222226"  // the window colour in dark style, libadwaita's
+    shade-light "#fafafb" // and in light style
 
     // How glass bends and lights what's behind it.
     glass {

@@ -673,12 +673,20 @@ fn pane_uniforms(
     } else {
         (0., 1.)
     };
+    // As bento shades what it blurs: towards the window colour of the style libadwaita is in.
+    let shade = if blur {
+        let [r, g, b, _] = look.blur.shade_color(look.dark).to_array_unpremul();
+        [r, g, b, look.blur.shade as f32]
+    } else {
+        [0.; 4]
+    };
     let mut uniforms = vec![
         ("niri_scale", Uniform::Float(scale as f32)),
         ("geo_size", Uniform::Vec2([pw, ph])),
         ("input_to_geo", Uniform::Mat3(input_to_geo)),
         ("noise", Uniform::Float(noise)),
         ("saturation", Uniform::Float(saturation)),
+        ("shade", Uniform::Vec4(shade)),
         ("bg_color", Uniform::Vec4([0.; 4])),
     ];
 

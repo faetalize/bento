@@ -2221,6 +2221,19 @@ mod tests {
                 offset: 2.05,
                 noise: 0.01,
                 saturation: 1.15,
+                shade: 0.7,
+                shade_dark: Color {
+                    r: 0.13333334,
+                    g: 0.13333334,
+                    b: 0.14901961,
+                    a: 1.0,
+                },
+                shade_light: Color {
+                    r: 0.98039216,
+                    g: 0.98039216,
+                    b: 0.9843137,
+                    a: 1.0,
+                },
                 material: Glass,
                 glass: Glass {
                     bezel: 20.0,

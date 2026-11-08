@@ -1,5 +1,8 @@
 uniform float noise;
 uniform float saturation;
+// The window colour, and in alpha how far what's behind is taken towards it, so what's on it
+// reads over anything.
+uniform vec4 shade;
 uniform vec4 bg_color;
 
 // Sin-less white noise by David Hoskins (MIT License).
@@ -27,6 +30,8 @@ vec4 postprocess(vec4 color) {
 
     // Mix bg_color behind the texture (both premultiplied alpha).
     color = color + bg_color * (1.0 - color.a);
+
+    color.rgb = mix(color.rgb, shade.rgb * color.a, shade.a);
 
     return color;
 }

@@ -80,6 +80,7 @@ pub struct XrayElement {
     blur: bool,
     noise: f32,
     saturation: f32,
+    shade: [f32; 4],
     bg_color: Color32F,
     /// Draws glass filling the clip geometry instead of the plain effect.
     glass: Option<GlassShapes>,
@@ -105,6 +106,7 @@ impl Xray {
         blur: bool,
         noise: f32,
         saturation: f32,
+        shade: [f32; 4],
         glass: Option<GlassShapes>,
         push: &mut dyn FnMut(XrayElement),
     ) {
@@ -213,6 +215,7 @@ impl Xray {
                     blur,
                     noise,
                     saturation,
+                    shade,
                     bg_color: *bg_color,
                     glass: glass.map(|shapes| shapes.lit(ctx.glass, clip_geo.loc, 1.)),
                     program: program.clone(),
@@ -264,6 +267,7 @@ impl Xray {
                 blur,
                 noise,
                 saturation,
+                shade,
                 bg_color: self.backdrop_color,
                 glass: glass.map(|shapes| {
                     shapes
@@ -287,6 +291,7 @@ impl XrayElement {
                 self.input_to_clip_geo,
                 self.noise,
                 self.saturation,
+                self.shade,
                 self.bg_color.components(),
             );
         }
@@ -298,6 +303,7 @@ impl XrayElement {
             mat3_uniform("input_to_geo", self.input_to_clip_geo),
             Uniform::new("noise", self.noise),
             Uniform::new("saturation", self.saturation),
+            Uniform::new("shade", self.shade),
             Uniform::new("bg_color", self.bg_color.components()),
         ]
     }
@@ -309,10 +315,11 @@ impl Element for XrayElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        let commit = self.buffer.borrow().commit();
-        self.glass
-            .as_ref()
-            .map_or(commit, |glass| glass.commit(commit))
+        glass::effect_commit(
+            self.buffer.borrow().commit(),
+            self.glass.as_ref(),
+            self.shade,
+        )
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {

@@ -854,6 +854,12 @@ pub struct Blur {
     pub offset: f64,
     pub noise: f64,
     pub saturation: f64,
+    /// How far what's blurred is taken towards the window colour, from 0 for not at all to 1
+    /// for the window colour, so what's on it reads over any wallpaper.
+    pub shade: f64,
+    /// The window colour in dark style and in light style, libadwaita's.
+    pub shade_dark: Color,
+    pub shade_light: Color,
     pub material: Material,
     pub glass: Glass,
 }
@@ -867,6 +873,9 @@ impl Default for Blur {
             offset: 2.05,
             noise: 0.01,
             saturation: 1.15,
+            shade: 0.7,
+            shade_dark: Color::from_rgba8_unpremul(0x22, 0x22, 0x26, 0xff),
+            shade_light: Color::from_rgba8_unpremul(0xfa, 0xfa, 0xfb, 0xff),
             material: Material::Glass,
             glass: Glass::default(),
         }
@@ -928,6 +937,17 @@ impl Default for Glass {
             pattern_depth: 0.5,
             pointer_light: 0.5,
             lights: [Some(GlassLight::default()), None, None, None],
+        }
+    }
+}
+
+impl Blur {
+    /// The window colour in dark style or in light style.
+    pub fn shade_color(&self, dark: bool) -> Color {
+        if dark {
+            self.shade_dark
+        } else {
+            self.shade_light
         }
     }
 }
@@ -1095,6 +1115,12 @@ pub struct BlurPart {
     #[knuffel(child, unwrap(argument))]
     pub saturation: Option<FloatOrInt<0, 1000>>,
     #[knuffel(child, unwrap(argument))]
+    pub shade: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub shade_dark: Option<Color>,
+    #[knuffel(child)]
+    pub shade_light: Option<Color>,
+    #[knuffel(child, unwrap(argument))]
     pub material: Option<Material>,
     #[knuffel(child)]
     pub glass: Option<GlassPart>,
@@ -1107,8 +1133,8 @@ impl MergeWith<BlurPart> for Blur {
             self.off = false;
         }
 
-        merge_clone!((self, part), passes, material);
-        merge!((self, part), offset, noise, saturation);
+        merge_clone!((self, part), passes, material, shade_dark, shade_light);
+        merge!((self, part), offset, noise, saturation, shade);
         if let Some(glass) = &part.glass {
             self.glass.merge_with(glass);
         }

@@ -2550,6 +2550,12 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            PortalSettingsToNiri::Dark(dark) => {
+                trace!("portal dark style: {dark}");
+                if glass::set_dark(dark) {
+                    self.niri.queue_redraw_all();
+                }
+            }
         }
     }
 

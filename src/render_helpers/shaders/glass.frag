@@ -49,6 +49,9 @@ uniform vec4 radii7;
 
 uniform float noise;
 uniform float saturation;
+// The window colour, and in alpha how far what's behind is taken towards it, so what's on the
+// glass reads over anything.
+uniform vec4 shade;
 // Drawn under what's behind where that's see-through, like where xray has no wallpaper.
 uniform vec4 bg_color;
 
@@ -370,6 +373,7 @@ void main() {
     const vec3 luma = vec3(0.2126, 0.7152, 0.0722);
     behind.rgb = mix(vec3(dot(behind.rgb, luma)), behind.rgb, saturation);
     behind.rgb += (hash12(gl_FragCoord.xy) - 0.5) * noise * behind.a;
+    behind.rgb = mix(behind.rgb, shade.rgb * behind.a, shade.a);
 
     // Light takes on the glass's colour the further it comes through it: down through it, along
     // the bent ray, and, the more the surface faces sideways, along inside the bezel from the

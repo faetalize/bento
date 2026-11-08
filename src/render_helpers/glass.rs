@@ -3,6 +3,7 @@
 //! shapes it gives through `bento_glass_v1`.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use glam::{Mat3, Vec2};
@@ -41,6 +42,48 @@ pub fn set_accent(accent: Option<Color>) -> bool {
 
 fn accent() -> Option<Color> {
     *ACCENT.lock().unwrap()
+}
+
+/// Whether the desktop is in dark style, from the settings portal; light, libadwaita's default,
+/// until it says. One for all of bento, like the accent.
+static DARK: AtomicBool = AtomicBool::new(false);
+
+/// Sets whether the desktop is in dark style, returning whether it changed.
+pub fn set_dark(dark: bool) -> bool {
+    DARK.swap(dark, Ordering::Relaxed) != dark
+}
+
+/// The shade of an effect blurred with `blur`, as the shaders take it: the window colour for the
+/// desktop's style, and how far towards it in alpha.
+pub fn shade(blur: &niri_config::Blur) -> [f32; 4] {
+    let [r, g, b, _] = blur
+        .shade_color(DARK.load(Ordering::Relaxed))
+        .to_array_unpremul();
+    [r, g, b, blur.shade as f32]
+}
+
+/// The commit of an element drawing an effect at `commit`, with its glass, if it's glass, and
+/// its shade: it changes too when they do, which the effect doesn't count, like when the pointer
+/// moves within the glass's reach, or the accent or the style changes.
+pub fn effect_commit(
+    commit: CommitCounter,
+    glass: Option<&GlassShapes>,
+    shade: [f32; 4],
+) -> CommitCounter {
+    if glass.is_none() && shade[3] == 0. {
+        return commit;
+    }
+    let mut hasher = DefaultHasher::new();
+    commit
+        .distance(Some(CommitCounter::default()))
+        .hash(&mut hasher);
+    shade.map(f32::to_bits).hash(&mut hasher);
+    if let Some(glass) = glass {
+        glass.pointer.map(|p| p.map(f32::to_bits)).hash(&mut hasher);
+        let tint = glass.glass.tint(glass.accent);
+        tint.to_array_unpremul().map(f32::to_bits).hash(&mut hasher);
+    }
+    CommitCounter::from(hasher.finish() as usize)
 }
 
 /// What glass takes from the output it's drawn on.
@@ -144,20 +187,6 @@ impl GlassShapes {
             dx.hypot(dy) < reach
         })
     }
-
-    /// The commit of an element drawing this glass for an effect at `commit`: it changes too
-    /// when the pointer moves within reach or the accent changes, which the effect doesn't
-    /// count.
-    pub fn commit(&self, commit: CommitCounter) -> CommitCounter {
-        let mut hasher = DefaultHasher::new();
-        commit
-            .distance(Some(CommitCounter::default()))
-            .hash(&mut hasher);
-        self.pointer.map(|p| p.map(f32::to_bits)).hash(&mut hasher);
-        let tint = self.glass.tint(self.accent);
-        tint.to_array_unpremul().map(f32::to_bits).hash(&mut hasher);
-        CommitCounter::from(hasher.finish() as usize)
-    }
 }
 
 /// The pieces of glass a region makes, each with the radii of its top left, top right, bottom
@@ -252,6 +281,7 @@ pub fn uniforms(
     input_to_geo: Mat3,
     noise: f32,
     saturation: f32,
+    shade: [f32; 4],
     bg_color: [f32; 4],
 ) -> Vec<Uniform<'static>> {
     let glass = shapes.glass;
@@ -264,6 +294,7 @@ pub fn uniforms(
         Uniform::new("shape_count", shapes.count as f32),
         Uniform::new("noise", noise),
         Uniform::new("saturation", saturation),
+        Uniform::new("shade", shade),
         Uniform::new("bg_color", bg_color),
         Uniform::new("bezel", glass.bezel as f32),
         Uniform::new("thickness", glass.thickness as f32),
@@ -417,6 +448,7 @@ pub fn render(
             BlurOptions::reaching(blur),
             blur.noise as f32,
             blur.saturation as f32,
+            if blur.off { [0.; 4] } else { shade(&blur) },
             uniforms,
         ));
     });

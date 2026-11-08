@@ -40,6 +40,7 @@ pub struct FramebufferEffectElement {
     blur_options: Option<BlurOptions>,
     noise: f32,
     saturation: f32,
+    shade: [f32; 4],
     /// Draws glass in these shapes instead of the plain effect.
     glass: Option<GlassShapes>,
 }
@@ -72,6 +73,7 @@ impl FramebufferEffect {
         blur_options: Option<BlurOptions>,
         noise: f32,
         saturation: f32,
+        shade: [f32; 4],
     ) -> FramebufferEffectElement {
         let (clip_geo, corner_radius) = params
             .clip
@@ -93,6 +95,7 @@ impl FramebufferEffect {
             blur_options,
             noise,
             saturation,
+            shade,
             glass: None,
         }
     }
@@ -106,9 +109,10 @@ impl FramebufferEffect {
         blur_options: Option<BlurOptions>,
         noise: f32,
         saturation: f32,
+        shade: [f32; 4],
         shapes: GlassShapes,
     ) -> FramebufferEffectElement {
-        let mut elem = self.render(ns, params, blur_options, noise, saturation);
+        let mut elem = self.render(ns, params, blur_options, noise, saturation, shade);
         elem.glass = Some(shapes);
         elem
     }
@@ -145,6 +149,7 @@ impl FramebufferEffectElement {
                 input_to_clip_geo,
                 self.noise,
                 self.saturation,
+                self.shade,
                 [0., 0., 0., 0.],
             );
         }
@@ -156,6 +161,7 @@ impl FramebufferEffectElement {
             mat3_uniform("input_to_geo", input_to_clip_geo),
             Uniform::new("noise", self.noise),
             Uniform::new("saturation", self.saturation),
+            Uniform::new("shade", self.shade),
             Uniform::new("bg_color", [0f32, 0., 0., 0.]),
         ]
     }
@@ -167,9 +173,7 @@ impl Element for FramebufferEffectElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.glass
-            .as_ref()
-            .map_or(self.commit, |glass| glass.commit(self.commit))
+        glass::effect_commit(self.commit, self.glass.as_ref(), self.shade)
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {

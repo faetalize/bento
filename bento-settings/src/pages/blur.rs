@@ -94,6 +94,15 @@ static SATURATION: LazyLock<Setting> = LazyLock::new(|| {
         .keywords(&["vibrancy", "color"])
 });
 
+static SHADE: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Shade", "blur.shade", |c| c.blur.shade)
+        .range(0., 1., 0.01)
+        .digits(2)
+        .slider()
+        .format(percent)
+        .keywords(&["opacity", "dim", "legibility", "contrast", "window color"])
+});
+
 static PATTERN: LazyLock<Setting> = LazyLock::new(|| {
     Setting::choice("Pattern", "blur.glass.pattern", |c| {
         Some(pattern_name(c.blur.glass.pattern))
@@ -545,6 +554,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     }
     ctx.anchor(PRESET_KEY, &preset_row);
     list.append(&preset_row);
+    list.append(&row(&SHADE));
     let pattern = {
         let live = live.clone();
         setting_row_watched(&PATTERN, ctx, move |input| {

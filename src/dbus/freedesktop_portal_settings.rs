@@ -8,12 +8,15 @@ const NAMESPACE: &str = "org.gnome.desktop.interface";
 const ICON_THEME: &str = "icon-theme";
 const APPEARANCE: &str = "org.freedesktop.appearance";
 const ACCENT_COLOR: &str = "accent-color";
+const COLOR_SCHEME: &str = "color-scheme";
 
 pub enum PortalSettingsToNiri {
     /// The icon theme from GNOME's interface settings; `None` if the portal has no value for it.
     IconTheme(Option<String>),
     /// The accent colour; `None` if the portal has none or the person didn't pick one.
     AccentColor(Option<Color>),
+    /// Whether the person prefers dark style.
+    Dark(bool),
 }
 
 /// The message for a setting the portal gave, if it's one bento follows.
@@ -21,7 +24,18 @@ fn message(namespace: &str, key: &str, value: &Value) -> Option<PortalSettingsTo
     match (namespace, key) {
         (NAMESPACE, ICON_THEME) => Some(PortalSettingsToNiri::IconTheme(string_of(value))),
         (APPEARANCE, ACCENT_COLOR) => Some(PortalSettingsToNiri::AccentColor(color_of(value))),
+        (APPEARANCE, COLOR_SCHEME) => Some(PortalSettingsToNiri::Dark(dark_of(value))),
         _ => None,
+    }
+}
+
+/// Whether a color-scheme value prefers dark style: 1 does, 2 prefers light, and 0 has no
+/// preference, which is light like libadwaita's default.
+fn dark_of(value: &Value) -> bool {
+    match value {
+        Value::Value(inner) => dark_of(inner),
+        Value::U32(scheme) => *scheme == 1,
+        _ => false,
     }
 }
 
@@ -93,14 +107,18 @@ pub fn start(
                     .get(NAMESPACE)
                     .and_then(|settings| settings.get(ICON_THEME))
                     .and_then(|value| string_of(value));
-                let accent = all
-                    .get(APPEARANCE)
+                let appearance = all.get(APPEARANCE);
+                let accent = appearance
                     .and_then(|settings| settings.get(ACCENT_COLOR))
                     .and_then(|value| color_of(value));
-                trace!("initial icon theme: {theme:?}, accent colour: {accent:?}");
+                let dark = appearance
+                    .and_then(|settings| settings.get(COLOR_SCHEME))
+                    .is_some_and(|value| dark_of(value));
+                trace!("initial icon theme: {theme:?}, accent colour: {accent:?}, dark: {dark}");
                 for msg in [
                     PortalSettingsToNiri::IconTheme(theme),
                     PortalSettingsToNiri::AccentColor(accent),
+                    PortalSettingsToNiri::Dark(dark),
                 ] {
                     if let Err(err) = to_niri.send(msg) {
                         warn!("error sending message to niri: {err:?}");
