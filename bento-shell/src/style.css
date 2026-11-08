@@ -1,12 +1,18 @@
-.bar {
-  padding: 0 6px;
+.island {
+  padding: 0 4px;
 }
 
-.bar-item {
+.island-button {
   min-height: 28px;
   padding: 2px 12px;
   border-radius: 99px;
   font-weight: 600;
+}
+
+/* The clock is its whole island. */
+button.island {
+  padding: 0 16px;
+  border-radius: 0;
 }
 
 .tray-item {

@@ -1,4 +1,5 @@
-//! The launcher: a glass search field in the middle of the screen that finds apps.
+//! The launcher: a glass search field in the middle of the screen that finds apps. It grows out of
+//! nothing in its middle, and shrinks back into nothing.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -7,11 +8,16 @@ use adw::prelude::*;
 use gtk::{gdk, gio};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
-use crate::stage::{natural_size, Place, Rect, Stage};
+use crate::stage::{natural_size, Face, IslandId, Place, Rect, Stage};
 use crate::Shell;
 
 const WIDTH: i32 = 560;
 const RADIUS: f32 = 26.;
+/// How close other glass comes for it to melt into it.
+const MELT: f32 = 24.;
+/// Its faces.
+const NOTHING: usize = 0;
+const SHOWN: usize = 1;
 const MAX_RESULTS: usize = 8;
 /// How far down the screen the launcher sits.
 const TOP: f64 = 0.22;
@@ -20,7 +26,7 @@ pub struct Launcher {
     shell: Weak<Shell>,
     window: gtk::Window,
     stage: Stage,
-    content: gtk::Box,
+    island: IslandId,
     entry: gtk::SearchEntry,
     results: gtk::ListBox,
     apps: RefCell<Vec<gio::AppInfo>>,
@@ -36,7 +42,10 @@ impl Launcher {
         window.init_layer_shell();
         window.set_namespace(Some("bento-shell-launcher"));
         window.set_layer(Layer::Overlay);
+        // Across the screen, letting the pointer through everywhere but the glass.
         window.set_anchor(Edge::Top, true);
+        window.set_anchor(Edge::Left, true);
+        window.set_anchor(Edge::Right, true);
         window.set_keyboard_mode(KeyboardMode::Exclusive);
         window.set_default_size(1, 1);
 
@@ -61,26 +70,34 @@ impl Launcher {
         let stage = Stage::default();
         window.set_child(Some(&stage));
 
+        // In the middle, as large as it is.
+        let place: Place = {
+            let content = content.clone();
+            Rc::new(move |width| {
+                let (w, h) = natural_size(&content);
+                Rect::new((width - w) / 2., 0., w, h)
+            })
+        };
+        let island = stage.add_island(
+            vec![
+                Face::nothing(place.clone()),
+                Face::new(&content, RADIUS, place).align(0.5, 0.5),
+            ],
+            NOTHING,
+            MELT,
+        );
+
         let this = Rc::new(Self {
             shell: Rc::downgrade(shell),
             window,
             stage,
-            content,
+            island,
             entry,
             results,
             apps: RefCell::default(),
             shown: RefCell::default(),
         });
 
-        // It grows out of a sliver in its middle.
-        let content = this.content.clone();
-        let place: Place = Rc::new(move |_, _| {
-            let (width, height) = natural_size(&content);
-            let to = Rect::new(0., 0., width, height);
-            let from = Rect::new(width * 0.3, height * 0.5 - 12., width * 0.4, 24.);
-            (from, to)
-        });
-        this.stage.add_piece(&this.content, RADIUS, place);
         this.connect_signals();
         this
     }
@@ -102,13 +119,6 @@ impl Launcher {
         self.window.connect_unmap(move |_| {
             if let Some(launcher) = launcher.upgrade() {
                 launcher.stage.set_glass(None);
-            }
-        });
-
-        let launcher = Rc::downgrade(self);
-        self.stage.connect_resize(move || {
-            if let Some(launcher) = launcher.upgrade() {
-                launcher.window.set_default_size(1, 1);
             }
         });
 
@@ -170,7 +180,7 @@ impl Launcher {
     }
 
     pub fn toggle(self: &Rc<Self>) {
-        if self.stage.is_open(&self.content) {
+        if self.stage.shown(self.island) == Some(SHOWN) {
             self.hide();
         } else {
             self.show();
@@ -198,13 +208,14 @@ impl Launcher {
             .set_margin(Edge::Top, (f64::from(height) * TOP).round() as i32);
         self.window.present();
         self.entry.grab_focus();
-        self.stage.open(&self.content);
+        self.stage.show(self.island, SHOWN);
     }
 
     fn hide(self: &Rc<Self>) {
         let window = self.window.downgrade();
-        self.stage.close(
-            &self.content,
+        self.stage.show_then(
+            self.island,
+            NOTHING,
             Some(move || {
                 if let Some(window) = window.upgrade() {
                     window.set_visible(false);

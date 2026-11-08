@@ -1,8 +1,10 @@
-//! bento's shell: the bar, the launcher and notifications around the workspaces.
+//! bento's shell: the islands, the launcher and notifications around the workspaces.
 
-mod bar;
+mod islands;
 mod launcher;
+mod osd;
 mod services;
+mod spring;
 mod stage;
 mod wayland;
 
@@ -13,7 +15,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use gtk::{gdk, gio};
 
-use crate::bar::Bar;
+use crate::islands::Islands;
 use crate::launcher::Launcher;
 use crate::services::{
     Audio, AudioService, BatteryService, NetworkService, NotificationEvent, Notifications, Tray,
@@ -27,7 +29,7 @@ pub struct Shell {
     pub app: adw::Application,
     /// bento's private connection, when bento started the shell.
     pub bento: Option<Rc<Bento>>,
-    bars: RefCell<Vec<Rc<Bar>>>,
+    islands: RefCell<Vec<Rc<Islands>>>,
     launcher: RefCell<Option<Rc<Launcher>>>,
     pub workspaces: Rc<Workspaces>,
     pub audio: Rc<AudioService>,
@@ -46,13 +48,23 @@ impl Shell {
 
         let shell = Rc::new_cyclic(|weak: &Weak<Self>| {
             let w = weak.clone();
-            let workspaces = Workspaces::start(move |workspaces| {
-                if let Some(shell) = w.upgrade() {
-                    for bar in shell.bars() {
-                        bar.set_workspaces(workspaces);
+            let w_ = weak.clone();
+            let workspaces = Workspaces::start(
+                move |workspaces| {
+                    if let Some(shell) = w.upgrade() {
+                        for islands in shell.islands() {
+                            islands.set_workspaces(workspaces);
+                        }
                     }
-                }
-            });
+                },
+                move || {
+                    if let Some(shell) = w_.upgrade() {
+                        for islands in shell.islands() {
+                            islands.update_minimap();
+                        }
+                    }
+                },
+            );
             let w = weak.clone();
             let audio = AudioService::start(move |audio| {
                 if let Some(shell) = w.upgrade() {
@@ -62,16 +74,16 @@ impl Shell {
             let w = weak.clone();
             let network = NetworkService::start(move |network| {
                 if let Some(shell) = w.upgrade() {
-                    for bar in shell.bars() {
-                        bar.set_network(network);
+                    for islands in shell.islands() {
+                        islands.set_network(network);
                     }
                 }
             });
             let w = weak.clone();
             let battery = BatteryService::start(move |battery| {
                 if let Some(shell) = w.upgrade() {
-                    for bar in shell.bars() {
-                        bar.set_battery(battery);
+                    for islands in shell.islands() {
+                        islands.set_battery(battery);
                     }
                 }
             });
@@ -84,8 +96,8 @@ impl Shell {
             let w = weak.clone();
             let tray = Tray::start(move |items| {
                 if let Some(shell) = w.upgrade() {
-                    for bar in shell.bars() {
-                        bar.set_tray(items);
+                    for islands in shell.islands() {
+                        islands.set_tray(items);
                     }
                 }
             });
@@ -93,7 +105,7 @@ impl Shell {
             Self {
                 app: app.clone(),
                 bento,
-                bars: RefCell::default(),
+                islands: RefCell::default(),
                 launcher: RefCell::default(),
                 workspaces,
                 audio,
@@ -109,8 +121,8 @@ impl Shell {
             let weak = Rc::downgrade(&shell);
             bento.connect_style(move |style| {
                 if let Some(shell) = weak.upgrade() {
-                    for bar in shell.bars() {
-                        bar.set_style(style);
+                    for islands in shell.islands() {
+                        islands.set_style(style);
                     }
                 }
             });
@@ -126,17 +138,17 @@ impl Shell {
         let weak = Rc::downgrade(&shell);
         monitors.connect_items_changed(move |monitors, _, _, _| {
             if let Some(shell) = weak.upgrade() {
-                shell.update_bars(monitors);
+                shell.update_islands(monitors);
             }
         });
-        shell.update_bars(&monitors);
+        shell.update_islands(&monitors);
         shell.tick_clock();
 
         shell
     }
 
-    fn bars(&self) -> Vec<Rc<Bar>> {
-        self.bars.borrow().clone()
+    fn islands(&self) -> Vec<Rc<Islands>> {
+        self.islands.borrow().clone()
     }
 
     pub fn bento_style(&self) -> Style {
@@ -153,51 +165,51 @@ impl Shell {
     /// The monitor that has the keyboard focus, as bento last said.
     pub fn focused_monitor(&self) -> Option<gdk::Monitor> {
         let name = self.workspaces.focused_monitor()?;
-        self.bars()
+        self.islands()
             .into_iter()
-            .map(|bar| bar.monitor.clone())
+            .map(|islands| islands.monitor.clone())
             .find(|monitor| monitor.connector().as_deref() == Some(name.as_str()))
     }
 
-    /// The bar where notifications and indicators show: the focused monitor's.
-    fn focused_bar(&self) -> Option<Rc<Bar>> {
-        let bars = self.bars();
+    /// The islands where notifications and indicators show: the focused monitor's.
+    fn focused_islands(&self) -> Option<Rc<Islands>> {
+        let all = self.islands();
         let focused = self.focused_monitor();
-        bars.iter()
-            .find(|bar| Some(&bar.monitor) == focused.as_ref())
-            .or(bars.first())
+        all.iter()
+            .find(|islands| Some(&islands.monitor) == focused.as_ref())
+            .or(all.first())
             .cloned()
     }
 
-    /// One bar per monitor.
-    fn update_bars(self: &Rc<Self>, monitors: &gio::ListModel) {
+    /// One islands per monitor.
+    fn update_islands(self: &Rc<Self>, monitors: &gio::ListModel) {
         let monitors: Vec<gdk::Monitor> = (0..monitors.n_items())
             .filter_map(|i| monitors.item(i).and_downcast::<gdk::Monitor>())
             .collect();
 
-        let mut bars = self.bars.borrow_mut();
-        bars.retain(|bar| {
-            let keep = monitors.contains(&bar.monitor);
+        let mut all = self.islands.borrow_mut();
+        all.retain(|islands| {
+            let keep = monitors.contains(&islands.monitor);
             if !keep {
-                bar.destroy();
+                islands.destroy();
             }
             keep
         });
         let new: Vec<_> = monitors
             .iter()
-            .filter(|monitor| !bars.iter().any(|bar| &bar.monitor == *monitor))
+            .filter(|monitor| !all.iter().any(|islands| &islands.monitor == *monitor))
             .cloned()
             .collect();
-        drop(bars);
+        drop(all);
 
         for monitor in new {
-            let bar = Bar::new(self, &monitor);
-            bar.set_workspaces(&self.workspaces.current());
-            bar.set_network(&self.network.state());
-            bar.set_battery(&self.battery.state());
-            bar.set_audio(&self.audio.state(), false);
-            bar.set_tray(&self.tray.items());
-            self.bars.borrow_mut().push(bar);
+            let islands = Islands::new(self, &monitor);
+            islands.set_workspaces(&self.workspaces.current());
+            islands.set_network(&self.network.state());
+            islands.set_battery(&self.battery.state());
+            islands.set_audio(&self.audio.state(), false);
+            islands.set_tray(&self.tray.items());
+            self.islands.borrow_mut().push(islands);
         }
     }
 
@@ -206,33 +218,33 @@ impl Shell {
         let changed = last.is_some_and(|last| {
             last.available && (last.volume != audio.volume || last.muted != audio.muted)
         });
-        let focused = self.focused_bar();
-        for bar in self.bars() {
-            let show = changed && focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, &bar));
-            bar.set_audio(audio, show);
+        let focused = self.focused_islands();
+        for islands in self.islands() {
+            let show = changed && focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, &islands));
+            islands.set_audio(audio, show);
         }
     }
 
     fn notification(&self, event: &NotificationEvent) {
         match event {
             NotificationEvent::Shown(notification) => {
-                if let Some(bar) = self.focused_bar() {
-                    bar.show_notification(notification);
+                if let Some(islands) = self.focused_islands() {
+                    islands.show_notification(notification);
                 }
             }
             NotificationEvent::Replaced(notification) => {
                 // It's updated where it shows, or shown again if it went.
-                let bars = self.bars();
-                let showing = bars
+                let all = self.islands();
+                let showing = all
                     .iter()
-                    .find(|bar| bar.has_notification(notification.id));
-                if let Some(bar) = showing.cloned().or_else(|| self.focused_bar()) {
-                    bar.show_notification(notification);
+                    .find(|islands| islands.has_notification(notification.id));
+                if let Some(islands) = showing.cloned().or_else(|| self.focused_islands()) {
+                    islands.show_notification(notification);
                 }
             }
             NotificationEvent::Closed(id) => {
-                for bar in self.bars() {
-                    bar.hide_notification(*id);
+                for islands in self.islands() {
+                    islands.hide_notification(*id);
                 }
             }
         }
@@ -240,8 +252,8 @@ impl Shell {
 
     /// Updates the clocks now and then at the start of every minute.
     fn tick_clock(self: &Rc<Self>) {
-        for bar in self.bars() {
-            bar.update_clock();
+        for islands in self.islands() {
+            islands.update_clock();
         }
         let seconds = glib::DateTime::now_local().map_or(0., |now| now.seconds());
         let wait = Duration::from_secs_f64((60. - seconds).max(0.05));

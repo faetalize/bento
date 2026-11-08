@@ -1,12 +1,13 @@
 //! bento's workspaces and actions, through its private socket.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 use std::thread;
 use std::time::Duration;
 
 use bento_ipc::socket::{Socket, SOCKET_PATH_ENV};
-use bento_ipc::{Event, EventKind, Request, Response, Workspace};
+use bento_ipc::{Event, EventKind, Request, Response, Window, Workspace};
 use serde_json::{Map, Value};
 
 /// The shortest and longest wait before connecting to bento again.
@@ -24,6 +25,9 @@ enum Message {
     Removed(u64),
     /// The keyboard focus moved to this monitor, or off every monitor.
     Focus(Option<String>),
+    /// A window appeared or changed, which includes moving.
+    Window(Window),
+    WindowRemoved(u64),
 }
 
 impl Message {
@@ -34,25 +38,34 @@ impl Message {
             }
             Event::WorkspaceRemoved { id } => Some(Self::Removed(id)),
             Event::FocusChanged { monitor, .. } => Some(Self::Focus(monitor)),
+            Event::WindowAdded { window } | Event::WindowChanged { window } => {
+                Some(Self::Window(window))
+            }
+            Event::WindowRemoved { id } => Some(Self::WindowRemoved(id)),
             _ => None,
         }
     }
 }
 
-/// The workspaces on every monitor, kept up to date from bento's event stream.
+/// The workspaces on every monitor, and their windows, kept up to date from bento's event stream.
 pub struct Workspaces {
     workspaces: RefCell<Vec<Workspace>>,
+    windows: RefCell<BTreeMap<u64, Window>>,
     /// The monitor that has the keyboard focus.
     focused_monitor: RefCell<Option<String>>,
 }
 
 impl Workspaces {
-    /// Subscribes to bento's workspace events and calls `on_change` with the workspaces, sorted by
-    /// monitor and then by their place on it, whenever they change. It connects again when bento
-    /// restarts.
-    pub fn start(on_change: impl Fn(&[Workspace]) + 'static) -> Rc<Self> {
+    /// Subscribes to bento's workspace and window events and calls `on_change` with the
+    /// workspaces, sorted by monitor and then by their place on it, whenever they change, and
+    /// `on_windows` whenever windows do. It connects again when bento restarts.
+    pub fn start(
+        on_change: impl Fn(&[Workspace]) + 'static,
+        on_windows: impl Fn() + 'static,
+    ) -> Rc<Self> {
         let this = Rc::new(Self {
             workspaces: RefCell::default(),
+            windows: RefCell::default(),
             focused_monitor: RefCell::default(),
         });
 
@@ -76,21 +89,25 @@ impl Workspaces {
         glib::spawn_future_local(async move {
             while let Ok(message) = receiver.recv().await {
                 let Some(this) = weak.upgrade() else { break };
-                let workspaces = {
+                let (workspaces, windows_changed) = {
                     let mut workspaces = this.workspaces.borrow_mut();
-                    let mut changed = this.apply(&mut workspaces, message);
+                    let (mut changed, mut windows_changed) = this.apply(&mut workspaces, message);
                     // Events come in bursts, like the whole state after connecting; one call
                     // covers it.
                     while let Ok(message) = receiver.try_recv() {
-                        changed |= this.apply(&mut workspaces, message);
-                    }
-                    if !changed {
-                        continue;
+                        let (more, more_windows) = this.apply(&mut workspaces, message);
+                        changed |= more;
+                        windows_changed |= more_windows;
                     }
                     sort(&mut workspaces);
-                    workspaces.clone()
+                    (changed.then(|| workspaces.clone()), windows_changed)
                 };
-                on_change(&workspaces);
+                if let Some(workspaces) = workspaces {
+                    on_change(&workspaces);
+                }
+                if windows_changed {
+                    on_windows();
+                }
             }
         });
 
@@ -108,13 +125,34 @@ impl Workspaces {
         self.focused_monitor.borrow().clone()
     }
 
-    /// Keeps the focus, or applies a workspace change and says whether the workspaces changed.
-    fn apply(&self, workspaces: &mut Vec<Workspace>, message: Message) -> bool {
-        if let Message::Focus(monitor) = message {
-            self.focused_monitor.replace(monitor);
-            return false;
+    /// The windows as they were last reported.
+    pub fn windows(&self) -> Vec<Window> {
+        self.windows.borrow().values().cloned().collect()
+    }
+
+    /// Keeps the focus or a window, or applies a workspace change, and says whether the
+    /// workspaces changed and whether the windows did.
+    fn apply(&self, workspaces: &mut Vec<Workspace>, message: Message) -> (bool, bool) {
+        match message {
+            Message::Focus(monitor) => {
+                self.focused_monitor.replace(monitor);
+                (false, false)
+            }
+            Message::Window(window) => {
+                let mut windows = self.windows.borrow_mut();
+                let changed = windows.get(&window.id) != Some(&window);
+                windows.insert(window.id, window);
+                (false, changed)
+            }
+            Message::WindowRemoved(id) => (false, self.windows.borrow_mut().remove(&id).is_some()),
+            Message::Connected | Message::Lost => {
+                let mut windows = self.windows.borrow_mut();
+                let had_windows = !windows.is_empty();
+                windows.clear();
+                (apply(workspaces, message), had_windows)
+            }
+            message => (apply(workspaces, message), false),
         }
-        apply(workspaces, message)
     }
 
     pub fn focus(&self, id: u64) {
@@ -204,6 +242,9 @@ fn open_stream() -> Result<impl FnMut() -> std::io::Result<Event>, String> {
             EventKind::WorkspaceChanged,
             EventKind::WorkspaceRemoved,
             EventKind::FocusChanged,
+            EventKind::WindowAdded,
+            EventKind::WindowChanged,
+            EventKind::WindowRemoved,
         ]),
     };
     match socket.send(&request) {
@@ -233,7 +274,7 @@ fn apply(workspaces: &mut Vec<Workspace>, message: Message) -> bool {
                 true
             }
         },
-        Message::Focus(_) => false,
+        Message::Focus(_) | Message::Window(_) | Message::WindowRemoved(_) => false,
         Message::Removed(id) => {
             let len = workspaces.len();
             workspaces.retain(|w| w.id != id);

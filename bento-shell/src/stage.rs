@@ -1,7 +1,15 @@
-//! The stage: a surface's content as pieces of glass. A piece grows out of a spot, like a bar
-//! item, into its own place, and shrinks back into it when it closes. Each frame the stage draws
-//! the pieces' content, and gives bento the same shapes as glass and as input region. bento shades
-//! the glass itself, so the content goes straight on it.
+//! The stage: a surface's content as islands of glass.
+//!
+//! An island is one rounded rectangle of glass that takes the shape of one of its faces: its
+//! resting face, like the clock, or a panel it opens into, like the calendar. Showing a face
+//! springs the island's shape from where it is to that face's place, and the faces' content fades
+//! across as the shape travels: the old one early, the new one late, so it reads as one piece of
+//! glass becoming something else. A face can be nothing, a point, for something that grows out
+//! of nothing and shrinks back into it.
+//!
+//! Each frame the stage draws the islands' content, and gives bento the same shapes as glass and
+//! as the input region. The surface keeps its size while islands change shape, so a morph never
+//! waits on bento; bento shades the glass itself, so the content goes straight on it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -10,15 +18,10 @@ use adw::prelude::*;
 use gtk::subclass::prelude::*;
 use gtk::{graphene, gsk};
 
+use crate::spring::{Spring, RESPONSE};
 use crate::wayland::{Glass, Shape};
 
-/// How long a piece takes to grow, and to shrink back.
-const OPEN_MS: u32 = 320;
-/// How close pieces come to melt together, as bento's glass did before shapes had their own.
-const MELT: f32 = 20.;
-const CLOSE_MS: u32 = 220;
-
-/// Where a piece sits once open, and where it grows from.
+/// A rectangle on the stage, in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f32,
@@ -37,14 +40,13 @@ impl Rect {
         }
     }
 
-    fn lerp(self, to: Self, t: f32) -> Self {
-        let mix = |a: f32, b: f32| a + (b - a) * t;
-        Self::new(
-            mix(self.x, to.x),
-            mix(self.y, to.y),
-            mix(self.width, to.width),
-            mix(self.height, to.height),
-        )
+    /// Nothing, at the middle of `self`, for what grows out of nothing there.
+    pub fn middle(self) -> Self {
+        Self::new(self.x + self.width / 2., self.y + self.height / 2., 0., 0.)
+    }
+
+    pub fn bottom(self) -> f32 {
+        self.y + self.height
     }
 
     fn graphene(self) -> graphene::Rect {
@@ -52,19 +54,120 @@ impl Rect {
     }
 }
 
-/// Lays out a piece for the stage's width: from where it grows, to where it sits.
-pub type Place = Rc<dyn Fn(&Stage, f32) -> (Rect, Rect)>;
+/// Where a face puts its island, for the stage's width.
+pub type Place = Rc<dyn Fn(f32) -> Rect>;
 
-struct Piece {
-    child: gtk::Widget,
-    place: Place,
-    radius: f32,
-    /// 0 when it's shut into its source, 1 when open.
-    progress: Rc<Cell<f64>>,
-    animation: Option<adw::TimedAnimation>,
-    open: bool,
-    from: Rect,
-    to: Rect,
+/// One shape an island can take.
+pub struct Face {
+    /// What shows in it, or `None` for nothing.
+    pub child: Option<gtk::Widget>,
+    pub place: Place,
+    pub radius: f32,
+    /// Where the content sits in the island while the island isn't its size yet, from 0 at the
+    /// left or top to 1 at the right or bottom: the side the island grows from.
+    pub align: (f32, f32),
+}
+
+impl Face {
+    pub fn new(child: &impl IsA<gtk::Widget>, radius: f32, place: Place) -> Self {
+        Self {
+            child: Some(child.clone().upcast()),
+            place,
+            radius,
+            align: (0.5, 0.),
+        }
+    }
+
+    /// Nothing, at the middle of where `place` puts it.
+    pub fn nothing(place: Place) -> Self {
+        Self {
+            child: None,
+            place: Rc::new(move |width| place(width).middle()),
+            radius: 0.,
+            align: (0.5, 0.5),
+        }
+    }
+
+    pub fn align(mut self, x: f32, y: f32) -> Self {
+        self.align = (x, y);
+        self
+    }
+}
+
+/// An island, by the order it was added in.
+pub type IslandId = usize;
+
+/// An island's x, y, width, height and corner radius.
+const X: usize = 0;
+const Y: usize = 1;
+const W: usize = 2;
+const H: usize = 3;
+const R: usize = 4;
+
+struct Island {
+    faces: Vec<Face>,
+    shown: usize,
+    /// How close other glass comes for it to melt into it.
+    melt: f32,
+    springs: [Spring; 5],
+    /// Whether it has been laid out yet: until then it's put straight at its face.
+    placed: bool,
+    /// Its rectangle when the face it's showing was picked, to tell how far along it is.
+    start: [f64; 4],
+    /// How opaque each face's content was when the face it's showing was picked.
+    faded_from: Vec<f64>,
+    /// Called once it has settled into the face it's showing.
+    done: Option<Box<dyn FnOnce()>>,
+    /// Where each face puts it, from the last layout.
+    places: Vec<Rect>,
+}
+
+impl Island {
+    fn rect(&self) -> Rect {
+        let s = &self.springs;
+        Rect::new(
+            s[X].value as f32,
+            s[Y].value as f32,
+            s[W].value.max(0.) as f32,
+            s[H].value.max(0.) as f32,
+        )
+    }
+
+    /// How far along the island is from where it was to the face it's showing, 0 to 1.
+    fn progress(&self) -> f64 {
+        let distance = |from: &[f64; 4]| {
+            (0..4)
+                .map(|i| (from[i] - self.springs[i].target).abs())
+                .fold(0., f64::max)
+        };
+        let whole = distance(&self.start);
+        if whole < 0.5 {
+            return 1.;
+        }
+        let now = [X, Y, W, H].map(|i| self.springs[i].value);
+        (1. - distance(&now) / whole).clamp(0., 1.)
+    }
+
+    /// How opaque face `i`'s content is: the face it's leaving fades out over the first third of
+    /// the way, and the one it's going to fades in over the last half.
+    fn opacity(&self, i: usize) -> f64 {
+        let p = self.progress();
+        let from = self.faded_from[i];
+        if i == self.shown {
+            from + (1. - from) * smoothstep(0.35, 0.85, p)
+        } else {
+            from * (1. - smoothstep(0., 0.35, p))
+        }
+    }
+
+    fn settled(&mut self) -> bool {
+        self.springs.iter_mut().all(|spring| spring.settle(0.05))
+    }
+}
+
+fn smoothstep(from: f64, to: f64, x: f64) -> f64 {
+    let t = ((x - from) / (to - from)).clamp(0., 1.);
+    t * t * (3. - 2. * t)
 }
 
 mod imp {
@@ -72,9 +175,12 @@ mod imp {
 
     #[derive(Default)]
     pub struct Stage {
-        pub(super) pieces: RefCell<Vec<Piece>>,
+        pub(super) islands: RefCell<Vec<Option<Island>>>,
         pub glass: RefCell<Option<Glass>>,
-        pub on_resize: RefCell<Option<Box<dyn Fn()>>>,
+        /// Room kept below the islands, for what grows out of them.
+        pub room_below: Cell<f32>,
+        pub(super) tick: RefCell<Option<gtk::TickCallbackId>>,
+        pub(super) last_frame: Cell<Option<i64>>,
     }
 
     #[glib::object_subclass]
@@ -86,64 +192,115 @@ mod imp {
 
     impl ObjectImpl for Stage {
         fn dispose(&self) {
-            for piece in self.pieces.take() {
-                piece.child.unparent();
+            for island in self.islands.take().into_iter().flatten() {
+                for face in island.faces {
+                    if let Some(child) = face.child {
+                        child.unparent();
+                    }
+                }
             }
         }
     }
 
     impl WidgetImpl for Stage {
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
-            let obj = self.obj();
-            let width = if for_size >= 0 { for_size } else { obj.width() } as f32;
-            // Only showing pieces take room, so the surface shrinks when they've closed.
-            let showing: Vec<Place> = self
-                .pieces
+            if orientation == gtk::Orientation::Horizontal {
+                return (0, 0, -1, -1);
+            }
+            // As tall as any face reaches, open or not, so that opening one never has to wait for
+            // the surface to grow.
+            let width = if for_size >= 0 {
+                for_size
+            } else {
+                self.obj().width()
+            } as f32;
+            let places: Vec<Place> = self
+                .islands
                 .borrow()
                 .iter()
-                .filter(|piece| piece.open || piece.progress.get() > 0.)
-                .map(|piece| piece.place.clone())
+                .flatten()
+                .flat_map(|island| island.faces.iter().map(|face| face.place.clone()))
                 .collect();
-            let size = showing
+            let height = places
                 .iter()
-                .map(|place| {
-                    let (_, to) = place(&obj, width);
-                    match orientation {
-                        gtk::Orientation::Horizontal => to.width,
-                        _ => to.y + to.height,
-                    }
-                })
+                .map(|place| place(width).bottom())
                 .fold(0f32, f32::max)
-                .ceil() as i32;
-            (size, size, -1, -1)
+                + self.room_below.get();
+            let height = height.ceil() as i32;
+            (height, height, -1, -1)
         }
 
         fn size_allocate(&self, width: i32, _height: i32, _baseline: i32) {
-            let obj = self.obj();
-            let places: Vec<Place> = self
-                .pieces
+            let width = width as f32;
+            // The places measure the faces, so they're asked with nothing borrowed.
+            let places: Vec<Option<Vec<(Place, Option<gtk::Widget>)>>> = self
+                .islands
                 .borrow()
                 .iter()
-                .map(|piece| piece.place.clone())
+                .map(|island| {
+                    island.as_ref().map(|island| {
+                        island
+                            .faces
+                            .iter()
+                            .map(|face| (face.place.clone(), face.child.clone()))
+                            .collect()
+                    })
+                })
                 .collect();
-            let placed: Vec<(Rect, Rect)> = places
-                .iter()
-                .map(|place| place(&obj, width as f32))
+            let placed: Vec<Option<Vec<(Rect, Option<gtk::Widget>)>>> = places
+                .into_iter()
+                .map(|faces| {
+                    faces.map(|faces| {
+                        faces
+                            .into_iter()
+                            .map(|(place, child)| (place(width), child))
+                            .collect()
+                    })
+                })
                 .collect();
 
-            let mut pieces = self.pieces.borrow_mut();
-            for (piece, (from, to)) in pieces.iter_mut().zip(placed) {
-                piece.from = from;
-                piece.to = to;
-                piece.child.size_allocate(
-                    &gtk::Allocation::new(
-                        to.x.round() as i32,
-                        to.y.round() as i32,
-                        to.width.round() as i32,
-                        to.height.round() as i32,
-                    ),
-                    -1,
-                );
+            let mut moving = false;
+            {
+                let mut islands = self.islands.borrow_mut();
+                for (island, faces) in islands.iter_mut().zip(&placed) {
+                    let (Some(island), Some(faces)) = (island, faces) else {
+                        continue;
+                    };
+                    // Each face's content sits where the island has it once there, so that it
+                    // takes clicks there; while the island moves, it's drawn where it is then.
+                    for (rect, child) in faces {
+                        if let Some(child) = child {
+                            child.size_allocate(
+                                &gtk::Allocation::new(
+                                    rect.x.round() as i32,
+                                    rect.y.round() as i32,
+                                    rect.width.round() as i32,
+                                    rect.height.round() as i32,
+                                ),
+                                -1,
+                            );
+                        }
+                    }
+                    island.places = faces.iter().map(|(rect, _)| *rect).collect();
+                    let rect = faces[island.shown].0;
+                    let radius = island.faces[island.shown].radius;
+                    let target = [rect.x, rect.y, rect.width, rect.height, radius];
+                    for (spring, target) in island.springs.iter_mut().zip(target) {
+                        if island.placed {
+                            spring.target = f64::from(target);
+                        } else {
+                            spring.jump(f64::from(target));
+                        }
+                    }
+                    if !island.placed {
+                        island.placed = true;
+                        island.start = [X, Y, W, H].map(|i| island.springs[i].value);
+                    }
+                    moving |= !island.settled();
+                }
+            }
+            if moving {
+                self.obj().ensure_ticking();
             }
         }
 
@@ -151,33 +308,51 @@ mod imp {
             let obj = self.obj();
             let mut shapes = Vec::new();
 
-            for piece in self.pieces.borrow().iter() {
-                let t = piece.progress.get() as f32;
-                if t <= 0. {
+            for island in self.islands.borrow().iter().flatten() {
+                let rect = island.rect();
+                if rect.width < 0.5 || rect.height < 0.5 {
                     continue;
                 }
-
-                let rect = piece.from.lerp(piece.to, t);
-                let radius = piece.radius.min(rect.width / 2.).min(rect.height / 2.);
-                // To fractions of a pixel, so the glass moves with the content, which GTK
-                // draws there too.
+                let radius = (island.springs[R].value as f32)
+                    .min(rect.width / 2.)
+                    .min(rect.height / 2.)
+                    .max(0.);
                 shapes.push(Shape {
                     x: rect.x,
                     y: rect.y,
                     width: rect.width,
                     height: rect.height,
                     radius,
-                    melt: MELT,
+                    melt: island.melt,
                 });
 
-                let clip = gsk::RoundedRect::from_rect(rect.graphene(), radius);
-                snapshot.push_rounded_clip(&clip);
-                // The content shows once the piece is mostly grown.
-                let shown = ((t - 0.35) / 0.65).clamp(0., 1.);
-                if shown > 0. {
-                    snapshot.push_opacity(shown as f64);
-                    obj.snapshot_child(&piece.child, snapshot);
+                snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(rect.graphene(), radius));
+                for (i, face) in island.faces.iter().enumerate() {
+                    let Some(child) = &face.child else {
+                        continue;
+                    };
+                    let opacity = island.opacity(i);
+                    if opacity <= 0.003 {
+                        continue;
+                    }
+                    // Where the island holds the content while it isn't its size: on the side it
+                    // grows from, a little smaller while it fades in.
+                    let at = island.places[i];
+                    let (w, h) = (at.width.round(), at.height.round());
+                    let x = rect.x + (rect.width - w) * face.align.0;
+                    let y = rect.y + (rect.height - h) * face.align.1;
+                    let pivot = graphene::Point::new(x + w * face.align.0, y + h * face.align.1);
+                    let scale = 0.94 + 0.06 * opacity as f32;
+
+                    snapshot.save();
+                    snapshot.translate(&pivot);
+                    snapshot.scale(scale, scale);
+                    snapshot.translate(&graphene::Point::new(-pivot.x(), -pivot.y()));
+                    snapshot.translate(&graphene::Point::new(x - at.x.round(), y - at.y.round()));
+                    snapshot.push_opacity(opacity);
+                    obj.snapshot_child(child, snapshot);
                     snapshot.pop();
+                    snapshot.restore();
                 }
                 snapshot.pop();
             }
@@ -209,161 +384,153 @@ impl Stage {
         self.queue_draw();
     }
 
-    /// Called when the stage needs a different size, as pieces open and close.
-    pub fn connect_resize(&self, f: impl Fn() + 'static) {
-        self.imp().on_resize.replace(Some(Box::new(f)));
-    }
-
-    /// Adds a piece that's already open, like the bar itself.
-    pub fn add_fixed(&self, child: &impl IsA<gtk::Widget>, radius: f32, place: Place) {
-        self.add(child.as_ref(), radius, place, 1.);
-    }
-
-    /// Adds a piece, shut, so `open` grows it.
-    pub fn add_piece(&self, child: &impl IsA<gtk::Widget>, radius: f32, place: Place) {
-        self.add(child.as_ref(), radius, place, 0.);
-    }
-
-    fn add(&self, child: &gtk::Widget, radius: f32, place: Place, progress: f64) {
-        child.set_parent(self);
-        self.imp().pieces.borrow_mut().push(Piece {
-            child: child.clone(),
-            place,
-            radius,
-            progress: Rc::new(Cell::new(progress)),
-            animation: None,
-            open: progress > 0.,
-            from: Rect::new(0., 0., 0., 0.),
-            to: Rect::new(0., 0., 0., 0.),
-        });
+    /// Keeps `height` free below the islands, for what grows out of them.
+    pub fn set_room_below(&self, height: f32) {
+        self.imp().room_below.set(height);
         self.queue_resize();
     }
 
-    pub fn remove(&self, child: &impl IsA<gtk::Widget>) {
-        let child = child.as_ref();
-        let mut pieces = self.imp().pieces.borrow_mut();
-        if let Some(i) = pieces.iter().position(|p| &p.child == child) {
-            let piece = pieces.remove(i);
-            if let Some(animation) = piece.animation {
-                animation.pause();
-            }
-            piece.child.unparent();
+    /// Adds an island showing face `shown`, melting into other glass that comes `melt` close.
+    pub fn add_island(&self, faces: Vec<Face>, shown: usize, melt: f32) -> IslandId {
+        for child in faces.iter().filter_map(|face| face.child.as_ref()) {
+            child.set_parent(self);
         }
-        drop(pieces);
-        self.resized();
+        let count = faces.len();
+        let mut islands = self.imp().islands.borrow_mut();
+        islands.push(Some(Island {
+            faces,
+            shown,
+            melt,
+            springs: [Spring::new(0.); 5],
+            placed: false,
+            start: [0.; 4],
+            faded_from: (0..count)
+                .map(|i| if i == shown { 1. } else { 0. })
+                .collect(),
+            done: None,
+            places: vec![Rect::new(0., 0., 0., 0.); count],
+        }));
+        let id = islands.len() - 1;
+        drop(islands);
+        self.queue_resize();
+        id
     }
 
-    pub fn is_open(&self, child: &impl IsA<gtk::Widget>) -> bool {
-        let child = child.as_ref();
+    /// Takes an island away at once.
+    pub fn remove(&self, id: IslandId) {
+        let island = self
+            .imp()
+            .islands
+            .borrow_mut()
+            .get_mut(id)
+            .and_then(Option::take);
+        if let Some(island) = island {
+            for child in island.faces.into_iter().filter_map(|face| face.child) {
+                child.unparent();
+            }
+        }
+        self.queue_resize();
+    }
+
+    /// Which face an island shows, or is going to.
+    pub fn shown(&self, id: IslandId) -> Option<usize> {
         self.imp()
-            .pieces
+            .islands
             .borrow()
-            .iter()
-            .any(|p| &p.child == child && p.open)
+            .get(id)
+            .and_then(Option::as_ref)
+            .map(|island| island.shown)
     }
 
-    /// Whether any piece besides the always-open ones is showing.
-    pub fn is_showing(&self, child: &impl IsA<gtk::Widget>) -> bool {
-        let child = child.as_ref();
-        self.imp()
-            .pieces
-            .borrow()
-            .iter()
-            .any(|p| &p.child == child && p.progress.get() > 0.)
+    /// Morphs an island into face `face`.
+    pub fn show(&self, id: IslandId, face: usize) {
+        self.show_then(id, face, None::<fn()>);
     }
 
-    /// Grows the piece out of its source.
-    pub fn open(&self, child: &impl IsA<gtk::Widget>) {
-        self.animate(child.as_ref(), true, None::<fn()>);
-    }
-
-    /// Shrinks the piece back into its source, then calls `done`.
-    pub fn close(&self, child: &impl IsA<gtk::Widget>, done: Option<impl FnOnce() + 'static>) {
-        self.animate(child.as_ref(), false, done);
-    }
-
-    fn animate(&self, child: &gtk::Widget, open: bool, done: Option<impl FnOnce() + 'static>) {
-        let mut pieces = self.imp().pieces.borrow_mut();
-        let Some(piece) = pieces.iter_mut().find(|p| &p.child == child) else {
-            return;
-        };
-        if piece.open == open {
-            drop(pieces);
-            if let Some(done) = done {
-                done();
+    /// Morphs an island into face `face`, then calls `done` once it has settled there, unless it's
+    /// sent elsewhere first.
+    pub fn show_then(&self, id: IslandId, face: usize, done: Option<impl FnOnce() + 'static>) {
+        {
+            let mut islands = self.imp().islands.borrow_mut();
+            let Some(Some(island)) = islands.get_mut(id) else {
+                return;
+            };
+            if island.shown != face {
+                island.faded_from = (0..island.faces.len()).map(|i| island.opacity(i)).collect();
+                island.start = [X, Y, W, H].map(|i| island.springs[i].value);
+                island.shown = face;
             }
+            island.done = done.map(|done| Box::new(done) as Box<dyn FnOnce()>);
+        }
+        // Its new face's place is set when it's laid out.
+        self.queue_resize();
+        self.ensure_ticking();
+    }
+
+    /// Lays the islands out again, as when what decides their places changed.
+    pub fn relayout(&self) {
+        self.queue_resize();
+    }
+
+    /// Moves the islands on each frame until they've settled.
+    fn ensure_ticking(&self) {
+        let imp = self.imp();
+        if imp.tick.borrow().is_some() {
             return;
         }
-        piece.open = open;
-        if let Some(animation) = piece.animation.take() {
-            animation.pause();
-        }
+        imp.last_frame.set(None);
+        let id = self.add_tick_callback(|stage, clock| {
+            let imp = stage.imp();
+            let now = clock.frame_time();
+            let dt = imp
+                .last_frame
+                .replace(Some(now))
+                .map_or(1. / 60., |last| ((now - last) as f64 / 1e6).clamp(0., 0.05));
 
-        let progress = piece.progress.clone();
-        let stage = self.downgrade();
-        let target = adw::CallbackAnimationTarget::new(move |value| {
-            progress.set(value);
-            if let Some(stage) = stage.upgrade() {
-                stage.queue_draw();
-            }
-        });
-        let (to, duration, easing) = if open {
-            (1., OPEN_MS, adw::Easing::EaseOutCubic)
-        } else {
-            (0., CLOSE_MS, adw::Easing::EaseInOutCubic)
-        };
-        let animation = adw::TimedAnimation::builder()
-            .widget(self)
-            .value_from(piece.progress.get())
-            .value_to(to)
-            .duration(duration)
-            .easing(easing)
-            .target(&target)
-            .build();
-
-        let done = RefCell::new(done);
-        let stage = self.downgrade();
-        animation.connect_done(move |_| {
-            if let Some(stage) = stage.upgrade() {
-                if !open {
-                    stage.resized();
+            let mut done = Vec::new();
+            let mut moving = false;
+            for island in imp.islands.borrow_mut().iter_mut().flatten() {
+                for spring in &mut island.springs {
+                    spring.step(dt, RESPONSE);
+                }
+                if island.settled() {
+                    island.start = [X, Y, W, H].map(|i| island.springs[i].value);
+                    island.faded_from = (0..island.faces.len())
+                        .map(|i| if i == island.shown { 1. } else { 0. })
+                        .collect();
+                    done.extend(island.done.take());
+                } else {
+                    moving = true;
                 }
             }
-            if let Some(done) = done.take() {
+            stage.queue_draw();
+            for done in done {
                 done();
             }
+            if moving {
+                glib::ControlFlow::Continue
+            } else {
+                imp.tick.take();
+                glib::ControlFlow::Break
+            }
         });
-        piece.animation = Some(animation.clone());
-        drop(pieces);
-
-        if open {
-            self.resized();
-        }
-        animation.play();
+        imp.tick.replace(Some(id));
     }
 
-    /// The stage's size follows its open pieces: it grows before one opens and shrinks after one
-    /// closes.
-    fn resized(&self) {
-        self.queue_resize();
-        if let Some(f) = &*self.imp().on_resize.borrow() {
-            f();
-        }
-    }
-
-    /// The pieces' current shapes take the input; the rest of the surface lets it through.
+    /// The islands' current shapes take the input; the rest of the surface lets it through.
     fn set_input(&self, shapes: &[Shape]) {
         let Some(surface) = self.native().and_then(|native| native.surface()) else {
             return;
         };
         let region = gtk::cairo::Region::create();
         for shape in shapes {
-            let _ = region.union_rectangle(&gtk::cairo::RectangleInt::new(
-                shape.x.floor() as i32,
-                shape.y.floor() as i32,
-                (shape.x + shape.width).ceil() as i32 - shape.x.floor() as i32,
-                (shape.y + shape.height).ceil() as i32 - shape.y.floor() as i32,
-            ));
+            let (x0, y0) = (shape.x.floor() as i32, shape.y.floor() as i32);
+            let (x1, y1) = (
+                (shape.x + shape.width).ceil() as i32,
+                (shape.y + shape.height).ceil() as i32,
+            );
+            let _ =
+                region.union_rectangle(&gtk::cairo::RectangleInt::new(x0, y0, x1 - x0, y1 - y0));
         }
         surface.set_input_region(&region);
     }
@@ -380,7 +547,7 @@ impl Stage {
     }
 }
 
-/// A piece's natural size.
+/// A widget's natural size.
 pub fn natural_size(widget: &impl IsA<gtk::Widget>) -> (f32, f32) {
     let (_, width, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
     let (_, height, _, _) = widget.measure(gtk::Orientation::Vertical, width);
