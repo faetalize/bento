@@ -27,6 +27,9 @@ pub struct Debug {
     pub skip_cursor_only_updates_during_vrr: bool,
     pub disable_10bit_output: bool,
     pub nested_show_host_cursor: bool,
+    /// A glass shader to draw glass with instead of bento's own, compiled again whenever its
+    /// file changes.
+    pub glass_shader: Option<PathBuf>,
 }
 
 #[derive(knuffel::Decode, Debug, Default, PartialEq)]
@@ -77,6 +80,8 @@ pub struct DebugPart {
     pub disable_10bit_output: Option<Flag>,
     #[knuffel(child)]
     pub nested_show_host_cursor: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub glass_shader: Option<PathBuf>,
 }
 
 impl MergeWith<DebugPart> for Debug {
@@ -105,7 +110,12 @@ impl MergeWith<DebugPart> for Debug {
             nested_show_host_cursor,
         );
 
-        merge_clone_opt!((self, part), preview_render, render_drm_device);
+        merge_clone_opt!(
+            (self, part),
+            preview_render,
+            render_drm_device,
+            glass_shader
+        );
 
         self.ignored_drm_devices
             .extend(part.ignored_drm_devices.iter().cloned());

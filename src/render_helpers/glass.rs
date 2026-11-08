@@ -21,9 +21,7 @@ use crate::protocols::bento_shell::{
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
-use crate::render_helpers::shaders::{
-    mat3_uniform, GLASS_LIGHT_UNIFORMS, GLASS_RADII_UNIFORMS, GLASS_SHAPE_UNIFORMS,
-};
+use crate::render_helpers::shaders::{mat3_uniform, GLASS_LIGHT_UNIFORMS};
 use crate::utils::region::TransformedRegion;
 
 /// How far from the pointer its light reaches, in logical pixels, as `POINTER_REACH` in
@@ -381,18 +379,37 @@ pub fn uniforms(
             .enumerate()
             .map(|(i, name)| Uniform::new(*name, lights.get(i).copied().unwrap_or_default())),
     );
-    uniforms.extend(
-        GLASS_SHAPE_UNIFORMS
-            .iter()
-            .zip(shapes.rects)
-            .chain(GLASS_RADII_UNIFORMS.iter().zip(shapes.radii))
-            .map(|(name, values)| Uniform::new(*name, values)),
-    );
-    let [m0, m1, m2, m3, m4, m5, m6, m7] = shapes.melts;
-    uniforms.extend([
-        Uniform::new("melts0", [m0, m1, m2, m3]),
-        Uniform::new("melts1", [m4, m5, m6, m7]),
-    ]);
+    // Each shape a matrix: its rectangle, its corners' radii, then its melt.
+    let shape_matrices = (0..MAX_GLASS_SHAPES)
+        .map(|i| {
+            let ([x, y, w, h], [r0, r1, r2, r3]) = (shapes.rects[i], shapes.radii[i]);
+            [
+                x,
+                y,
+                w,
+                h,
+                r0,
+                r1,
+                r2,
+                r3,
+                shapes.melts[i],
+                0.,
+                0.,
+                0.,
+                0.,
+                0.,
+                0.,
+                0.,
+            ]
+        })
+        .collect();
+    uniforms.push(Uniform::new(
+        "shapes",
+        UniformValue::Matrix4x4 {
+            matrices: shape_matrices,
+            transpose: false,
+        },
+    ));
     let [e0, e1, e2, e3, e4, e5, e6, e7] = shapes.path_ends;
     uniforms.extend([
         Uniform::new("path_count", shapes.path_count as f32),

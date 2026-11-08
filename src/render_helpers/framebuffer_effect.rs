@@ -447,10 +447,10 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
         let shaders = Shaders::get_from_frame(frame);
         let program = if self.glass.is_some() {
             // Without its shader, glass would be a blurred rectangle.
-            if shaders.glass.is_none() {
+            if shaders.glass.borrow().is_none() {
                 return Ok(());
             }
-            shaders.glass.clone()
+            shaders.glass.borrow().clone()
         } else {
             shaders.postprocess_and_clip.clone()
         };

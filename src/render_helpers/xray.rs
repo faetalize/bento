@@ -115,7 +115,7 @@ impl Xray {
         let shaders = Shaders::get(ctx.renderer);
         let program = if glass.is_some() {
             // Without its shader, glass would be an unclipped rectangle.
-            let Some(program) = shaders.glass.clone() else {
+            let Some(program) = shaders.glass.borrow().clone() else {
                 return;
             };
             Some(program)

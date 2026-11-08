@@ -196,8 +196,8 @@ use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
-    center, center_f64, get_monotonic_time, ipc_transform_to_smithay, is_mapped, logical_output,
-    make_screenshot_path, output_matches_name, output_size, panel_orientation,
+    center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
+    logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
     send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::wallpaper::Wallpapers;
@@ -2559,6 +2559,20 @@ impl State {
         }
     }
 
+    /// Draws glass with the config's debug glass shader, if it names one and its file changed, or
+    /// with bento's own again once it doesn't.
+    fn follow_glass_shader(&mut self) {
+        let path = self.niri.config.borrow().debug.glass_shader.clone();
+        let path = path.map(|path| expand_home(&path).ok().flatten().unwrap_or(path));
+        let mut swapped = false;
+        self.backend.with_primary_renderer(|renderer| {
+            swapped = shaders::follow_glass_shader(renderer, path.as_deref());
+        });
+        if swapped {
+            self.niri.queue_redraw_all();
+        }
+    }
+
     /// Gives the layout the icon theme that applies now, so that the engines' images follow it.
     fn apply_icon_theme(&mut self) {
         if self.niri.layout.set_icon_theme(self.niri.icon_theme.name()) {
@@ -2816,6 +2830,17 @@ impl Niri {
                 |_, _, state| {
                     state.niri.send_frame_callbacks_on_fallback_timer();
                     TimeoutAction::ToDuration(Duration::from_secs(1))
+                },
+            )
+            .unwrap();
+
+        // A glass shader from the config's debug section is compiled again when its file changes.
+        event_loop
+            .insert_source(
+                Timer::from_duration(Duration::from_millis(500)),
+                |_, _, state| {
+                    state.follow_glass_shader();
+                    TimeoutAction::ToDuration(Duration::from_millis(500))
                 },
             )
             .unwrap();

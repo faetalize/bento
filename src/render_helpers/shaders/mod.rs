@@ -1,4 +1,7 @@
 use std::cell::RefCell;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use glam::Mat3;
 use smithay::backend::renderer::gles::{
@@ -10,26 +13,19 @@ use super::renderer::NiriRenderer;
 use super::shader_element::ShaderProgram;
 use crate::render_helpers::blur::BlurProgram;
 
-/// The glass shader's shape uniforms, one per shape it takes.
-pub const GLASS_SHAPE_UNIFORMS: [&str; 8] = [
-    "shape0", "shape1", "shape2", "shape3", "shape4", "shape5", "shape6", "shape7",
-];
-
 /// The glass shader's light uniforms, one per light it takes.
 pub const GLASS_LIGHT_UNIFORMS: [&str; niri_config::MAX_GLASS_LIGHTS] =
     ["light0", "light1", "light2", "light3"];
-
-/// The glass shader's corner radii uniforms, one per shape.
-pub const GLASS_RADII_UNIFORMS: [&str; 8] = [
-    "radii0", "radii1", "radii2", "radii3", "radii4", "radii5", "radii6", "radii7",
-];
 
 pub struct Shaders {
     pub border: Option<ShaderProgram>,
     pub shadow: Option<ShaderProgram>,
     pub clipped_surface: Option<GlesTexProgram>,
     pub postprocess_and_clip: Option<GlesTexProgram>,
-    pub glass: Option<GlesTexProgram>,
+    /// The glass shader, which `follow_glass_shader` can swap.
+    pub glass: RefCell<Option<GlesTexProgram>>,
+    /// Where the glass shader came from and when its file changed, or `None` for bento's own.
+    glass_from: RefCell<Option<(PathBuf, Option<SystemTime>)>>,
     pub resize: Option<ShaderProgram>,
     pub gradient_fade: Option<GlesTexProgram>,
     pub blur: Option<BlurProgram>,
@@ -142,45 +138,7 @@ impl Shaders {
             })
             .ok();
 
-        let mut glass_uniforms = vec![
-            UniformName::new("niri_scale", UniformType::_1f),
-            UniformName::new("geo_size", UniformType::_2f),
-            UniformName::new("input_to_geo", UniformType::Matrix3x3),
-            UniformName::new("geo_to_input", UniformType::Matrix3x3),
-            UniformName::new("shape_count", UniformType::_1f),
-            UniformName::new("noise", UniformType::_1f),
-            UniformName::new("saturation", UniformType::_1f),
-            UniformName::new("shade", UniformType::_4f),
-            UniformName::new("bg_color", UniformType::_4f),
-            UniformName::new("bezel", UniformType::_1f),
-            UniformName::new("thickness", UniformType::_1f),
-            UniformName::new("refractive_index", UniformType::_1f),
-            UniformName::new("dispersion", UniformType::_1f),
-            UniformName::new("reflection", UniformType::_1f),
-            UniformName::new("sheen", UniformType::_1f),
-            UniformName::new("light_count", UniformType::_1f),
-            UniformName::new("light_sizes", UniformType::_4f),
-            UniformName::new("absorbance", UniformType::_3f),
-            UniformName::new("pattern", UniformType::_1f),
-            UniformName::new("pattern_depth", UniformType::_1f),
-            UniformName::new("pointer", UniformType::_3f),
-            UniformName::new("melts0", UniformType::_4f),
-            UniformName::new("melts1", UniformType::_4f),
-            UniformName::new("path_count", UniformType::_1f),
-            UniformName::new("curve_count", UniformType::_1f),
-            UniformName::new("path_ends0", UniformType::_4f),
-            UniformName::new("path_ends1", UniformType::_4f),
-            UniformName::new("curves", UniformType::Matrix4x4),
-        ];
-        glass_uniforms.extend(
-            GLASS_SHAPE_UNIFORMS
-                .iter()
-                .chain(&GLASS_RADII_UNIFORMS)
-                .chain(&GLASS_LIGHT_UNIFORMS)
-                .map(|name| UniformName::new(*name, UniformType::_4f)),
-        );
-        let glass = renderer
-            .compile_custom_texture_shader(include_str!("glass.frag"), &glass_uniforms)
+        let glass = compile_glass_program(renderer, include_str!("glass.frag"))
             .map_err(|err| {
                 warn!("error compiling glass shader: {err:?}");
             })
@@ -213,7 +171,8 @@ impl Shaders {
             shadow,
             clipped_surface,
             postprocess_and_clip,
-            glass,
+            glass: RefCell::new(glass),
+            glass_from: RefCell::new(None),
             resize,
             gradient_fade,
             blur,
@@ -410,6 +369,88 @@ pub fn set_custom_open_program(renderer: &mut GlesRenderer, src: Option<&str>) {
     if let Some(prev) = Shaders::get(renderer).replace_custom_open_program(program) {
         if let Err(err) = prev.destroy(renderer) {
             warn!("error destroying previous custom open shader: {err:?}");
+        }
+    }
+}
+
+/// Compiles the glass shader from `src`.
+fn compile_glass_program(
+    renderer: &mut GlesRenderer,
+    src: &str,
+) -> Result<GlesTexProgram, GlesError> {
+    let mut uniforms = vec![
+        UniformName::new("niri_scale", UniformType::_1f),
+        UniformName::new("geo_size", UniformType::_2f),
+        UniformName::new("input_to_geo", UniformType::Matrix3x3),
+        UniformName::new("geo_to_input", UniformType::Matrix3x3),
+        UniformName::new("shape_count", UniformType::_1f),
+        UniformName::new("noise", UniformType::_1f),
+        UniformName::new("saturation", UniformType::_1f),
+        UniformName::new("shade", UniformType::_4f),
+        UniformName::new("bg_color", UniformType::_4f),
+        UniformName::new("bezel", UniformType::_1f),
+        UniformName::new("thickness", UniformType::_1f),
+        UniformName::new("refractive_index", UniformType::_1f),
+        UniformName::new("dispersion", UniformType::_1f),
+        UniformName::new("reflection", UniformType::_1f),
+        UniformName::new("sheen", UniformType::_1f),
+        UniformName::new("light_count", UniformType::_1f),
+        UniformName::new("light_sizes", UniformType::_4f),
+        UniformName::new("absorbance", UniformType::_3f),
+        UniformName::new("pattern", UniformType::_1f),
+        UniformName::new("pattern_depth", UniformType::_1f),
+        UniformName::new("pointer", UniformType::_3f),
+        UniformName::new("shapes", UniformType::Matrix4x4),
+        UniformName::new("path_count", UniformType::_1f),
+        UniformName::new("curve_count", UniformType::_1f),
+        UniformName::new("path_ends0", UniformType::_4f),
+        UniformName::new("path_ends1", UniformType::_4f),
+        UniformName::new("curves", UniformType::Matrix4x4),
+    ];
+    uniforms.extend(
+        GLASS_LIGHT_UNIFORMS
+            .iter()
+            .map(|name| UniformName::new(*name, UniformType::_4f)),
+    );
+    renderer.compile_custom_texture_shader(src, &uniforms)
+}
+
+/// Draws glass with the shader at `path`, compiled when its file changes, or with bento's own
+/// with none: for working on the glass shader without restarting bento. A shader that doesn't
+/// compile leaves the one before it.
+///
+/// Returns whether it swapped the shader.
+pub fn follow_glass_shader(renderer: &mut GlesRenderer, path: Option<&Path>) -> bool {
+    let modified = path.and_then(|path| fs::metadata(path).and_then(|m| m.modified()).ok());
+    let wanted = path.map(|path| (path.to_owned(), modified));
+    let shaders = Shaders::get(renderer);
+    if *shaders.glass_from.borrow() == wanted {
+        return false;
+    }
+    shaders.glass_from.replace(wanted);
+
+    let src = match path {
+        Some(path) => match fs::read_to_string(path) {
+            Ok(src) => src,
+            Err(err) => {
+                warn!("error reading glass shader {path:?}: {err:?}");
+                return false;
+            }
+        },
+        None => include_str!("glass.frag").to_owned(),
+    };
+    match compile_glass_program(renderer, &src) {
+        Ok(program) => {
+            Shaders::get(renderer).glass.replace(Some(program));
+            info!(
+                "compiled glass shader {:?}",
+                path.unwrap_or(Path::new("(built in)"))
+            );
+            true
+        }
+        Err(err) => {
+            warn!("error compiling glass shader {path:?}: {err:?}");
+            false
         }
     }
 }

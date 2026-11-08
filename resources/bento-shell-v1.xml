@@ -116,11 +116,11 @@
 
     <enum name="error">
       <entry name="invalid_shapes" value="0"
-             summary="the array isn't whole quintuples, has more than 8 shapes, or a shape has a negative size or radius"/>
+             summary="the array isn't whole quintuples, has more than 16 shapes, or a shape has a negative size or radius"/>
       <entry name="invalid_paths" value="1"
              summary="the array isn't whole septuples, has more than 64 curves or 8 paths, a number isn't finite, or the paths aren't numbered from 0 up in order"/>
       <entry name="invalid_rects" value="2"
-             summary="the array isn't whole sextuples, has more than 8 shapes, a number isn't finite, or a shape has a negative size, radius or melt"/>
+             summary="the array isn't whole sextuples, has more than 16 shapes, a number isn't finite, or a shape has a negative size, radius or melt"/>
     </enum>
   </interface>
 </protocol>

@@ -767,8 +767,10 @@ fn pane_uniforms(
         ),
         ("path_ends1", Uniform::Vec4([0.; 4])),
         ("curves", Uniform::Mat4s(matrices)),
-        ("shape0", Uniform::Vec4([0., 0., pw, ph])),
-        ("radii0", Uniform::Vec4(<[f32; 4]>::from(radius))),
+        (
+            "shapes",
+            Uniform::Mat4s(window_shape(pw, ph, radius.into())),
+        ),
         ("bezel", Uniform::Float(glass.bezel as f32)),
         ("thickness", Uniform::Float(glass.thickness as f32)),
         (
@@ -795,13 +797,16 @@ fn pane_uniforms(
         let light = lights.get(i).copied().unwrap_or_default();
         uniforms.push((name, Uniform::Vec4(light)));
     }
-    for name in [
-        "shape1", "shape2", "shape3", "shape4", "shape5", "shape6", "shape7", "radii1", "radii2",
-        "radii3", "radii4", "radii5", "radii6", "radii7",
-    ] {
-        uniforms.push((name, Uniform::Vec4([0.; 4])));
-    }
     (gl.glass, uniforms)
+}
+
+/// The glass shader's shapes, as bento gives them: each a matrix of its rectangle, its corners'
+/// radii and its melt, here the one pane filling `width` and `height`.
+fn window_shape(width: f32, height: f32, radii: [f32; 4]) -> Vec<f32> {
+    let mut shapes = vec![0.; 16 * 16];
+    let [r0, r1, r2, r3] = radii;
+    shapes[..9].copy_from_slice(&[0., 0., width, height, r0, r1, r2, r3, 20.]);
+    shapes
 }
 
 /// The lights that shine, each towards it over the screen with its intensity, and their sizes, as

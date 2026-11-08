@@ -16,8 +16,8 @@ use super::raw::bento_shell::v1::server::{bento_glass_v1, bento_shell_v1};
 
 const VERSION: u32 = 3;
 
-/// The most shapes a surface's glass has.
-pub const MAX_GLASS_SHAPES: usize = 8;
+/// The most shapes a surface's glass has, as many as the glass shader takes.
+pub const MAX_GLASS_SHAPES: usize = 16;
 /// The most paths a surface's glass has, and the most curves they have in all.
 pub const MAX_GLASS_PATHS: usize = 8;
 pub const MAX_GLASS_CURVES: usize = 64;
@@ -208,7 +208,7 @@ where
                 let Some(shapes) = parse_shapes(&shapes) else {
                     resource.post_error(
                         bento_glass_v1::Error::InvalidShapes,
-                        "shapes must be at most 8 whole quintuples with no negative sizes",
+                        "shapes must be at most 16 whole quintuples with no negative sizes",
                     );
                     return;
                 };
@@ -225,7 +225,7 @@ where
                 let Some(shapes) = parse_rects(&rects) else {
                     resource.post_error(
                         bento_glass_v1::Error::InvalidRects,
-                        "rects must be at most 8 whole sextuples of finite numbers \
+                        "rects must be at most 16 whole sextuples of finite numbers \
                          with no negative sizes, radii or melts",
                     );
                     return;
@@ -435,7 +435,7 @@ mod tests {
             None
         );
         assert_eq!(
-            parse_rects(&float_bytes(&[0., 0., 1., 1., 0., 0.].repeat(9))),
+            parse_rects(&float_bytes(&[0., 0., 1., 1., 0., 0.].repeat(17))),
             None
         );
         assert_eq!(parse_rects(&[]), Some(Vec::new()));
@@ -446,7 +446,7 @@ mod tests {
         assert_eq!(parse_shapes(&bytes(&[1, 2, 3, 4])), None);
         assert_eq!(parse_shapes(&bytes(&[0, 0, -1, 4, 0])), None);
         assert_eq!(parse_shapes(&bytes(&[0, 0, 1, 4, -2])), None);
-        assert_eq!(parse_shapes(&bytes(&[0, 0, 1, 1, 0].repeat(9))), None);
+        assert_eq!(parse_shapes(&bytes(&[0, 0, 1, 1, 0].repeat(17))), None);
         assert_eq!(parse_shapes(&[]), Some(Vec::new()));
     }
 

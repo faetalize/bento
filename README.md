@@ -231,6 +231,14 @@ blur {
 
 Every setting left out keeps its default, shown here.
 
+To work on the glass shader itself, point bento at a copy of it; bento compiles it again whenever the file changes, and keeps the one before when it doesn't compile:
+
+```kdl
+debug {
+    glass-shader "~/Source/bento/src/render_helpers/shaders/glass.frag"
+}
+```
+
 A rule can pick the other material for some windows or surfaces:
 
 ```kdl

@@ -27,28 +27,11 @@ uniform vec2 geo_size;
 uniform mat3 input_to_geo;
 uniform mat3 geo_to_input;
 
-// The shapes: x, y, width and height in the element's logical pixels, with the radii of their
-// top left, top right, bottom right and bottom left corners.
+// The shapes, each a matrix: x, y, width and height in the element's logical pixels; the radii
+// of its top left, top right, bottom right and bottom left corners; then first in the third
+// column, how close other glass comes for it to melt into it.
 uniform float shape_count;
-uniform vec4 shape0;
-uniform vec4 shape1;
-uniform vec4 shape2;
-uniform vec4 shape3;
-uniform vec4 shape4;
-uniform vec4 shape5;
-uniform vec4 shape6;
-uniform vec4 shape7;
-uniform vec4 radii0;
-uniform vec4 radii1;
-uniform vec4 radii2;
-uniform vec4 radii3;
-uniform vec4 radii4;
-uniform vec4 radii5;
-uniform vec4 radii6;
-uniform vec4 radii7;
-// How close other glass comes for each shape to melt into it.
-uniform vec4 melts0;
-uniform vec4 melts1;
+uniform mat4 shapes[16];
 
 // Glass in any shape: closed paths of quadratic Bézier curves, in the element's logical pixels.
 // The curves come two to a matrix, each in two columns: its start and control point, then its
@@ -358,14 +341,11 @@ void pieces(vec2 p, out float outline, out float depth, out vec2 slope, out floa
     depth = NOWHERE;
     slope = vec2(0.0);
     inradius = 0.0;
-    if (shape_count > 0.5) melt_box(p, shape0, radii0, melts0.x, outline, depth, slope, inradius);
-    if (shape_count > 1.5) melt_box(p, shape1, radii1, melts0.y, outline, depth, slope, inradius);
-    if (shape_count > 2.5) melt_box(p, shape2, radii2, melts0.z, outline, depth, slope, inradius);
-    if (shape_count > 3.5) melt_box(p, shape3, radii3, melts0.w, outline, depth, slope, inradius);
-    if (shape_count > 4.5) melt_box(p, shape4, radii4, melts1.x, outline, depth, slope, inradius);
-    if (shape_count > 5.5) melt_box(p, shape5, radii5, melts1.y, outline, depth, slope, inradius);
-    if (shape_count > 6.5) melt_box(p, shape6, radii6, melts1.z, outline, depth, slope, inradius);
-    if (shape_count > 7.5) melt_box(p, shape7, radii7, melts1.w, outline, depth, slope, inradius);
+    for (int i = 0; i < 16; i++) {
+        if (float(i) >= shape_count) break;
+        mat4 shape = shapes[i];
+        melt_box(p, shape[0], shape[1], shape[2].x, outline, depth, slope, inradius);
+    }
     if (path_count > 0.5) melt_paths(p, outline, depth, slope, inradius);
 }
 
