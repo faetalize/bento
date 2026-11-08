@@ -202,18 +202,8 @@ impl BackgroundEffect {
 
         // Glass is a material for blur; without blur, what's behind shows as it is.
         let material = self.options.material.unwrap_or(self.blur_config.material);
-        let glass = (blur && material == Material::Glass).then(|| {
-            let (geo, radius) = params
-                .clip
-                .unwrap_or((params.geometry, CornerRadius::default()));
-            GlassShapes::filling(
-                geo.size.w as f32,
-                geo.size.h as f32,
-                radius,
-                self.blur_config.glass,
-            )
-            .lit(ctx.glass, geo.loc, 1.)
-        });
+        let glass = (blur && material == Material::Glass)
+            .then(|| glass_shapes(&params, self.blur_config.glass));
 
         if self.options.xray {
             let Some(xray) = ctx.xray else {
@@ -228,10 +218,12 @@ impl BackgroundEffect {
                 blur_options.is_some(),
                 noise,
                 saturation,
-                glass.map(|shapes| shapes.glass),
+                glass,
                 &mut |elem| push(elem.into()),
             );
         } else if let Some(shapes) = glass {
+            let origin = params.clip.map_or(params.geometry.loc, |(geo, _)| geo.loc);
+            let shapes = shapes.lit(ctx.glass, origin, 1.);
             let elem =
                 self.nonxray
                     .render_glass(ns, params, blur_options, noise, saturation, shapes);
@@ -244,6 +236,21 @@ impl BackgroundEffect {
             push(elem.into());
         }
     }
+}
+
+/// The glass for an effect drawn with `params`, in the coordinates of its clip geometry, or of its
+/// geometry without one.
+fn glass_shapes(params: &RenderParams, glass: niri_config::Glass) -> GlassShapes {
+    // An app's own region, unclipped, is the glass's shape: the surface around it can hold more,
+    // like the shadow GTK draws, where an edge would never show.
+    if let (None, Some(region)) = (&params.clip, &params.subregion) {
+        return GlassShapes::following(region, params.geometry.loc, glass);
+    }
+
+    let (geo, radius) = params
+        .clip
+        .unwrap_or((params.geometry, CornerRadius::default()));
+    GlassShapes::filling(geo.size.w as f32, geo.size.h as f32, radius, glass)
 }
 
 fn render_params_for_tile(
@@ -371,4 +378,64 @@ pub fn render_for_tile(
         let xray_pos = xray_pos.offset(params.geometry.loc - geometry.loc);
         background_effect.render(ctx, ns, params, outer_clip, xray_pos, push);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rounded rectangle's region as GTK gives it, from the rounded rectangle drawn in whole
+    /// pixels: a row for each pixel row of the corners, and one rectangle between.
+    fn rounded_region(rect: Rectangle<i32, Logical>, radius: i32) -> Vec<Rectangle<i32, Logical>> {
+        let (x, y, w, h) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+        let r = f64::from(radius);
+        let inset = |row: i32| {
+            let dy = r - f64::from(row) - 0.5;
+            (r - (r * r - dy * dy).sqrt()).round() as i32
+        };
+        let mut rects = Vec::new();
+        for row in 0..radius {
+            let i = inset(row);
+            rects.push(Rectangle::new(
+                (x + i, y + row).into(),
+                (w - 2 * i, 1).into(),
+            ));
+        }
+        rects.push(Rectangle::new(
+            (x, y + radius).into(),
+            (w, h - 2 * radius).into(),
+        ));
+        for row in (0..radius).rev() {
+            let i = inset(row);
+            rects.push(Rectangle::new(
+                (x + i, y + h - 1 - row).into(),
+                (w - 2 * i, 1).into(),
+            ));
+        }
+        rects
+    }
+
+    #[test]
+    fn glass_an_app_asks_for_takes_its_regions_shape() {
+        // A GTK window with rounded corners, in a surface with room for its shadow around it.
+        let geometry = Rectangle::new((100., 50.).into(), (440., 340.).into());
+        let rects = rounded_region(Rectangle::new((20, 20).into(), (400, 300).into()), 12);
+        let params = RenderParams {
+            geometry,
+            subregion: Some(TransformedRegion {
+                rects: Arc::new(rects),
+                scale: Scale::from(1.),
+                offset: geometry.loc,
+            }),
+            clip: None,
+            scale: 1.,
+        };
+
+        let shapes = glass_shapes(&params, niri_config::Glass::default());
+        assert_eq!(shapes.count, 1);
+        assert_eq!(shapes.rects[0], [20., 20., 400., 300.]);
+        for radius in shapes.radii[0] {
+            assert!((radius - 12.).abs() < 0.75, "{:?}", shapes.radii[0]);
+        }
+    }
 }

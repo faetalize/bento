@@ -105,7 +105,7 @@ impl Xray {
         blur: bool,
         noise: f32,
         saturation: f32,
-        glass: Option<niri_config::Glass>,
+        glass: Option<GlassShapes>,
         push: &mut dyn FnMut(XrayElement),
     ) {
         let shaders = Shaders::get(ctx.renderer);
@@ -214,10 +214,7 @@ impl Xray {
                     noise,
                     saturation,
                     bg_color: *bg_color,
-                    glass: glass.map(|glass| {
-                        GlassShapes::filling(clip_geo_size.x, clip_geo_size.y, corner_radius, glass)
-                            .lit(ctx.glass, clip_geo.loc, 1.)
-                    }),
+                    glass: glass.map(|shapes| shapes.lit(ctx.glass, clip_geo.loc, 1.)),
                     program: program.clone(),
                 };
                 push(elem);
@@ -268,14 +265,10 @@ impl Xray {
                 noise,
                 saturation,
                 bg_color: self.backdrop_color,
-                glass: glass.map(|glass| {
-                    GlassShapes::filling(
-                        clip_geo_size.x,
-                        clip_geo_size.y,
-                        corner_radius.scaled_by(zoom as f32),
-                        glass,
-                    )
-                    .lit(ctx.glass, clip_geo.loc, zoom)
+                glass: glass.map(|shapes| {
+                    shapes
+                        .scaled(zoom as f32)
+                        .lit(ctx.glass, clip_geo.loc, zoom)
                 }),
                 program: program.clone(),
             };

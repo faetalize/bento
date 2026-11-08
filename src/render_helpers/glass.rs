@@ -20,6 +20,7 @@ use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEf
 use crate::render_helpers::shaders::{
     mat3_uniform, GLASS_LIGHT_UNIFORMS, GLASS_RADII_UNIFORMS, GLASS_SHAPE_UNIFORMS,
 };
+use crate::utils::region::TransformedRegion;
 
 /// How far from the pointer its light reaches, in logical pixels, as `POINTER_REACH` in
 /// `glass.frag` says: glass further away doesn't need drawing again when the pointer moves.
@@ -83,6 +84,42 @@ impl GlassShapes {
         shapes
     }
 
+    /// Glass in the shape of `region`, an app's region for its background effect, in coordinates
+    /// that start at `origin` in the region's: a piece for each part of the region, see
+    /// `region_pieces`.
+    pub fn following(
+        region: &TransformedRegion,
+        origin: Point<f64, Logical>,
+        glass: niri_config::Glass,
+    ) -> Self {
+        let scale = region.scale.x.min(region.scale.y);
+        let pieces = region_pieces(&region.rects);
+        let mut shapes = Self {
+            count: pieces.len(),
+            glass,
+            accent: accent(),
+            ..Self::default()
+        };
+        for (i, (rect, radii)) in pieces.into_iter().enumerate() {
+            let loc = rect.loc.to_f64().upscale(region.scale) + region.offset - origin;
+            let size = rect.size.to_f64().upscale(region.scale);
+            shapes.rects[i] = [loc.x, loc.y, size.w, size.h].map(|x| x as f32);
+            shapes.radii[i] = radii.map(|r| (r * scale) as f32);
+        }
+        shapes
+    }
+
+    /// The shapes `zoom` times as big.
+    pub fn scaled(mut self, zoom: f32) -> Self {
+        for rect in &mut self.rects[..self.count] {
+            *rect = rect.map(|x| x * zoom);
+        }
+        for radii in &mut self.radii[..self.count] {
+            *radii = radii.map(|r| r * zoom);
+        }
+        self
+    }
+
     /// Gives the glass the pointer of `frame`. The shapes' coordinates start at `origin` in the
     /// output's logical coordinates, `zoom` times as big as they show.
     pub fn lit(mut self, frame: GlassFrame, origin: Point<f64, Logical>, zoom: f64) -> Self {
@@ -121,6 +158,89 @@ impl GlassShapes {
         tint.to_array_unpremul().map(f32::to_bits).hash(&mut hasher);
         CommitCounter::from(hasher.finish() as usize)
     }
+}
+
+/// The pieces of glass a region makes, each with the radii of its top left, top right, bottom
+/// right and bottom left corners.
+///
+/// Rectangles that touch make one piece: their bounding box, with each corner as round as the
+/// region's. An app's region has a rounded corner drawn in whole pixels, as rows that step in,
+/// and a corner of radius r leaves out r²(1 − π/4) of the box, so the area left out of each
+/// quarter of the box gives its corner's radius. A region in more pieces than glass takes is one
+/// piece around them all.
+pub fn region_pieces(
+    rects: &[Rectangle<i32, Logical>],
+) -> Vec<(Rectangle<i32, Logical>, [f64; 4])> {
+    // Touching along an edge, or overlapping: sharing more than a point.
+    let touch = |a: &Rectangle<i32, Logical>, b: &Rectangle<i32, Logical>| {
+        let (a0, a1) = (a.loc, a.loc + a.size.to_point());
+        let (b0, b1) = (b.loc, b.loc + b.size.to_point());
+        let over_x = a0.x < b1.x && b0.x < a1.x;
+        let over_y = a0.y < b1.y && b0.y < a1.y;
+        let meet_x = a0.x <= b1.x && b0.x <= a1.x;
+        let meet_y = a0.y <= b1.y && b0.y <= a1.y;
+        (over_x && meet_y) || (meet_x && over_y)
+    };
+
+    let rects: Vec<_> = rects.iter().filter(|r| !r.is_empty()).copied().collect();
+    let mut piece: Vec<usize> = (0..rects.len()).collect();
+    fn root(piece: &mut [usize], mut i: usize) -> usize {
+        while piece[i] != i {
+            piece[i] = piece[piece[i]];
+            i = piece[i];
+        }
+        i
+    }
+    for i in 0..rects.len() {
+        for j in i + 1..rects.len() {
+            if touch(&rects[i], &rects[j]) {
+                let (a, b) = (root(&mut piece, i), root(&mut piece, j));
+                piece[a.max(b)] = a.min(b);
+            }
+        }
+    }
+
+    let mut groups: Vec<(usize, Vec<Rectangle<i32, Logical>>)> = Vec::new();
+    for (i, rect) in rects.iter().enumerate() {
+        let r = root(&mut piece, i);
+        match groups.iter_mut().find(|(g, _)| *g == r) {
+            Some((_, group)) => group.push(*rect),
+            None => groups.push((r, vec![*rect])),
+        }
+    }
+    let mut groups: Vec<_> = groups.into_iter().map(|(_, group)| group).collect();
+    if groups.len() > MAX_GLASS_SHAPES {
+        groups = vec![rects];
+    }
+
+    groups
+        .into_iter()
+        .filter_map(|group| {
+            let bounds = group.iter().copied().reduce(|a, b| a.merge(b))?;
+            Some((bounds, corner_radii(bounds, &group)))
+        })
+        .collect()
+}
+
+/// The radii of the corners of `bounds` that `rects` round off, from the area each quarter of it
+/// leaves out.
+fn corner_radii(bounds: Rectangle<i32, Logical>, rects: &[Rectangle<i32, Logical>]) -> [f64; 4] {
+    let (w, h) = (bounds.size.w / 2, bounds.size.h / 2);
+    let (x0, y0) = (bounds.loc.x, bounds.loc.y);
+    let (x1, y1) = (x0 + bounds.size.w - w, y0 + bounds.size.h - h);
+    let largest = f64::from(w.min(h));
+    [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|(x, y)| {
+        let quarter = Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into());
+        let covered: i64 = rects
+            .iter()
+            .filter_map(|rect| rect.intersection(quarter))
+            .map(|r| i64::from(r.size.w) * i64::from(r.size.h))
+            .sum();
+        let left_out = (i64::from(w) * i64::from(h) - covered).max(0) as f64;
+        (left_out / (1. - std::f64::consts::FRAC_PI_4))
+            .sqrt()
+            .min(largest)
+    })
 }
 
 /// The glass shader's uniforms.
