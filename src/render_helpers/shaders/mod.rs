@@ -164,6 +164,11 @@ impl Shaders {
             UniformName::new("pattern", UniformType::_1f),
             UniformName::new("pattern_depth", UniformType::_1f),
             UniformName::new("pointer", UniformType::_3f),
+            UniformName::new("path_count", UniformType::_1f),
+            UniformName::new("curve_count", UniformType::_1f),
+            UniformName::new("path_ends0", UniformType::_4f),
+            UniformName::new("path_ends1", UniformType::_4f),
+            UniformName::new("curves", UniformType::Matrix4x4),
         ];
         glass_uniforms.extend(
             GLASS_SHAPE_UNIFORMS

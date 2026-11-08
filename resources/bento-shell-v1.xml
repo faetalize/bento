@@ -16,7 +16,7 @@
     glass behind its surfaces.
   </description>
 
-  <interface name="bento_shell_v1" version="1">
+  <interface name="bento_shell_v1" version="2">
     <description summary="the shell's commands and requests">
       Bound once by the shell.
     </description>
@@ -59,13 +59,14 @@
     </event>
   </interface>
 
-  <interface name="bento_glass_v1" version="1">
+  <interface name="bento_glass_v1" version="2">
     <description summary="glass behind a layer surface">
-      bento draws glass behind the surface in the shapes it's given: it refracts and blurs what's
-      behind them and lights their edges. Shapes that come close melt into one piece of glass,
-      so a surface can grow one shape out of another.
+      bento draws glass behind the surface in the shapes and paths it's given: it refracts and
+      blurs what's behind them and lights their edges. Shapes and paths that come close melt into
+      one piece of glass, so a surface can grow one out of another.
 
-      The surface draws its own tint over the glass.
+      bento shades the glass itself, like everything it blurs, so the surface draws its content
+      straight on it.
     </description>
 
     <request name="destroy" type="destructor">
@@ -84,9 +85,27 @@
       <arg name="shapes" type="array"/>
     </request>
 
+    <request name="set_paths" since="2">
+      <description summary="set the glass's paths">
+        Glass in any shape: closed paths of quadratic Bézier curves, in the surface's logical
+        coordinates, as an array of native-endian float32 septuples, one for each curve: its
+        start's x and y, its control point's x and y, its end's x and y, and the number of the
+        path it's in. A straight line is a curve with its control point on it. A path's curves
+        come together, and the paths are numbered from 0 up in the order they come. A path's
+        inside is where a line out of it crosses its curves an odd number of times.
+
+        Paths melt with each other and with the shapes as shapes do. An empty array removes them.
+
+        Double-buffered: it applies on the surface's next commit.
+      </description>
+      <arg name="paths" type="array"/>
+    </request>
+
     <enum name="error">
       <entry name="invalid_shapes" value="0"
              summary="the array isn't whole quintuples, has more than 8 shapes, or a shape has a negative size or radius"/>
+      <entry name="invalid_paths" value="1"
+             summary="the array isn't whole septuples, has more than 64 curves or 8 paths, a number isn't finite, or the paths aren't numbered from 0 up in order"/>
     </enum>
   </interface>
 </protocol>

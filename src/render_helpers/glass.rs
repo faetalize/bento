@@ -8,13 +8,15 @@ use std::sync::Mutex;
 
 use glam::{Mat3, Vec2};
 use niri_config::{Color, CornerRadius, GlassPattern};
-use smithay::backend::renderer::gles::Uniform;
+use smithay::backend::renderer::gles::{Uniform, UniformValue};
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::utils::{Logical, Point, Rectangle};
 use smithay::wayland::compositor::{with_states, SurfaceData};
 use wayland_server::protocol::wl_surface::WlSurface;
 
-use crate::protocols::bento_shell::{glass_shapes, GlassShape, MAX_GLASS_SHAPES};
+use crate::protocols::bento_shell::{
+    glass_shapes, GlassCurve, GlassShape, MAX_GLASS_CURVES, MAX_GLASS_PATHS, MAX_GLASS_SHAPES,
+};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
@@ -93,19 +95,42 @@ pub struct GlassFrame {
     pub pointer: Option<Point<f64, Logical>>,
 }
 
-/// Shapes of glass, in the coordinates of the geometry the shader clips to.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// Shapes and paths of glass, in the coordinates of the geometry the shader clips to.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlassShapes {
     pub rects: [[f32; 4]; MAX_GLASS_SHAPES],
     /// Top left, top right, bottom right and bottom left.
     pub radii: [[f32; 4]; MAX_GLASS_SHAPES],
     pub count: usize,
+    /// The paths' curves, in order of their paths: each its start, control point and end.
+    pub curves: [[f32; 6]; MAX_GLASS_CURVES],
+    pub curve_count: usize,
+    /// How many curves come before the end of each path.
+    pub path_ends: [f32; MAX_GLASS_PATHS],
+    pub path_count: usize,
     /// How the glass bends and lights what's behind it.
     pub glass: niri_config::Glass,
     /// The accent colour, for glass that follows it.
     pub accent: Option<Color>,
     /// Where the pointer is, in the shapes' coordinates, while its light reaches the glass.
     pub pointer: Option<[f32; 2]>,
+}
+
+impl Default for GlassShapes {
+    fn default() -> Self {
+        Self {
+            rects: Default::default(),
+            radii: Default::default(),
+            count: 0,
+            curves: [[0.; 6]; MAX_GLASS_CURVES],
+            curve_count: 0,
+            path_ends: [0.; MAX_GLASS_PATHS],
+            path_count: 0,
+            glass: Default::default(),
+            accent: None,
+            pointer: None,
+        }
+    }
 }
 
 impl GlassShapes {
@@ -160,7 +185,22 @@ impl GlassShapes {
         for radii in &mut self.radii[..self.count] {
             *radii = radii.map(|r| r * zoom);
         }
+        for curve in &mut self.curves[..self.curve_count] {
+            *curve = curve.map(|x| x * zoom);
+        }
         self
+    }
+
+    /// Adds the curves of paths, moved by `offset`.
+    fn add_paths(&mut self, curves: &[GlassCurve], offset: [f32; 2]) {
+        let curves = &curves[..curves.len().min(MAX_GLASS_CURVES)];
+        for (i, curve) in curves.iter().enumerate() {
+            let [a, b, c] = curve.points.map(|[x, y]| [x + offset[0], y + offset[1]]);
+            self.curves[i] = [a[0], a[1], b[0], b[1], c[0], c[1]];
+            self.path_ends[curve.path] = (i + 1) as f32;
+            self.path_count = self.path_count.max(curve.path + 1);
+        }
+        self.curve_count = curves.len();
     }
 
     /// Gives the glass the pointer of `frame`. The shapes' coordinates start at `origin` in the
@@ -175,9 +215,20 @@ impl GlassShapes {
         self
     }
 
-    /// Whether a light at `point` reaching `reach` falls on any of the shapes.
+    /// Whether a light at `point` reaching `reach` falls on any of the shapes or paths. A path's
+    /// curves lie inside the box around their points.
     fn reach(&self, point: Point<f64, Logical>, reach: f64) -> bool {
-        self.rects[..self.count].iter().any(|&[x, y, w, h]| {
+        let path_box = self.curves[..self.curve_count]
+            .iter()
+            .flat_map(|c| [[c[0], c[1]], [c[2], c[3]], [c[4], c[5]]])
+            .fold(None, |bounds: Option<[f32; 4]>, [x, y]| {
+                Some(bounds.map_or([x, y, x, y], |[x0, y0, x1, y1]| {
+                    [x0.min(x), y0.min(y), x1.max(x), y1.max(y)]
+                }))
+            })
+            .map(|[x0, y0, x1, y1]| [x0, y0, x1 - x0, y1 - y0]);
+        let mut boxes = self.rects[..self.count].iter().chain(&path_box);
+        boxes.any(|&[x, y, w, h]| {
             let dx = (f64::from(x) - point.x)
                 .max(point.x - f64::from(x + w))
                 .max(0.);
@@ -330,7 +381,36 @@ pub fn uniforms(
             .chain(GLASS_RADII_UNIFORMS.iter().zip(shapes.radii))
             .map(|(name, values)| Uniform::new(*name, values)),
     );
+    let [e0, e1, e2, e3, e4, e5, e6, e7] = shapes.path_ends;
+    uniforms.extend([
+        Uniform::new("path_count", shapes.path_count as f32),
+        Uniform::new("curve_count", shapes.curve_count as f32),
+        Uniform::new("path_ends0", [e0, e1, e2, e3]),
+        Uniform::new("path_ends1", [e4, e5, e6, e7]),
+        Uniform::new(
+            "curves",
+            UniformValue::Matrix4x4 {
+                matrices: curve_matrices(&shapes.curves),
+                transpose: false,
+            },
+        ),
+    ]);
     uniforms
+}
+
+/// The curves as the shader takes them: two to a matrix, each in two columns, its start and
+/// control point in the first and its end in the second.
+pub fn curve_matrices(curves: &[[f32; 6]; MAX_GLASS_CURVES]) -> Vec<[f32; 16]> {
+    curves
+        .chunks_exact(2)
+        .map(|pair| {
+            let [a, b] = [pair[0], pair[1]];
+            [
+                a[0], a[1], a[2], a[3], a[4], a[5], 0., 0., //
+                b[0], b[1], b[2], b[3], b[4], b[5], 0., 0.,
+            ]
+        })
+        .collect()
 }
 
 /// The pattern, as the shader numbers it.
@@ -373,6 +453,7 @@ const MELT_REACH: i32 = 6;
 struct Glass {
     effect: FramebufferEffect,
     shapes: Vec<GlassShape>,
+    paths: Vec<GlassCurve>,
 }
 
 /// Per-surface glass stored in its data map.
@@ -384,6 +465,7 @@ impl SurfaceGlass {
             SurfaceGlass(Mutex::new(Glass {
                 effect: FramebufferEffect::new(),
                 shapes: Vec::new(),
+                paths: Vec::new(),
             }))
         })
     }
@@ -399,18 +481,19 @@ pub fn render(
     frame: GlassFrame,
     push: &mut dyn FnMut(FramebufferEffectElement),
 ) {
-    let mut shapes = glass_shapes(surface);
+    let (mut shapes, paths) = glass_shapes(surface);
     shapes.retain(|shape| !shape.rect.is_empty());
-    let Some(bounds) = bounds(&shapes) else {
+    let Some(bounds) = bounds(&shapes, &paths) else {
         return;
     };
 
     with_states(surface, |states| {
         let glass = SurfaceGlass::get(states);
         let mut glass = glass.0.lock().unwrap();
-        if glass.shapes != shapes {
+        if glass.shapes != shapes || glass.paths != paths {
             glass.effect.damage();
             glass.shapes = shapes.clone();
+            glass.paths = paths.clone();
         }
 
         let geometry = Rectangle::new(location + bounds.loc.to_f64(), bounds.size.to_f64())
@@ -434,6 +517,7 @@ pub fn render(
             ];
             uniforms.radii[i] = [shape.radius as f32; 4];
         }
+        uniforms.add_paths(&paths, [-bounds.loc.x as f32, -bounds.loc.y as f32]);
         let uniforms = uniforms.lit(frame, geometry.loc, 1.);
 
         let params = RenderParams {
@@ -454,11 +538,27 @@ pub fn render(
     });
 }
 
-/// The area the glass covers, in surface coordinates.
-fn bounds(shapes: &[GlassShape]) -> Option<Rectangle<i32, Logical>> {
+/// The area the glass covers, in surface coordinates. A path's curves lie inside the box around
+/// their points.
+fn bounds(shapes: &[GlassShape], paths: &[GlassCurve]) -> Option<Rectangle<i32, Logical>> {
+    let path_boxes = paths.iter().map(|curve| {
+        let [x0, y0, x1, y1] = curve.points.iter().fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |[x0, y0, x1, y1], &[x, y]| [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
+        );
+        let (x0, y0) = (x0.floor() as i32, y0.floor() as i32);
+        let (x1, y1) = (x1.ceil() as i32, y1.ceil() as i32);
+        Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into())
+    });
     let bounds = shapes
         .iter()
         .map(|shape| shape.rect)
+        .chain(path_boxes)
         .reduce(|a, b| a.merge(b))?;
     Some(Rectangle::new(
         bounds.loc - Point::from((MELT_REACH, MELT_REACH)),

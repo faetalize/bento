@@ -9,7 +9,7 @@ use std::os::fd::AsRawFd as _;
 use std::rc::Rc;
 
 use gdk_wayland::prelude::*;
-use gtk::gdk;
+use gtk::{gdk, gsk};
 use wayland_client::protocol::wl_registry;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
@@ -182,6 +182,7 @@ impl Bento {
         Some(Glass {
             glass,
             shapes: RefCell::default(),
+            curves: RefCell::default(),
         })
     }
 }
@@ -190,23 +191,98 @@ impl Bento {
 pub struct Glass {
     glass: BentoGlassV1,
     shapes: RefCell<Vec<Shape>>,
+    curves: RefCell<Vec<[f32; 7]>>,
 }
 
+/// The most curves bento takes for a surface's paths, and the most paths.
+const MAX_CURVES: usize = 64;
+const MAX_PATHS: usize = 8;
+
 impl Glass {
-    /// Sets the shapes, for the surface's next commit.
-    pub fn set_shapes(&self, shapes: &[Shape]) {
-        if *self.shapes.borrow() == shapes {
+    /// Sets the glass's rounded rectangles and paths of any shape, for the surface's next
+    /// commit. They melt together where they come close. A bento that doesn't take paths gets
+    /// only the rectangles.
+    pub fn set_shapes(&self, shapes: &[Shape], paths: &[gsk::Path]) {
+        if *self.shapes.borrow() != shapes {
+            *self.shapes.borrow_mut() = shapes.to_vec();
+            let bytes = shapes
+                .iter()
+                .flat_map(|s| [s.x, s.y, s.width.max(0), s.height.max(0), s.radius.max(0)])
+                .flat_map(i32::to_ne_bytes)
+                .collect();
+            self.glass.set_shapes(bytes);
+        }
+
+        if self.glass.version() < 2 {
             return;
         }
-        *self.shapes.borrow_mut() = shapes.to_vec();
-
-        let bytes = shapes
-            .iter()
-            .flat_map(|s| [s.x, s.y, s.width.max(0), s.height.max(0), s.radius.max(0)])
-            .flat_map(i32::to_ne_bytes)
-            .collect();
-        self.glass.set_shapes(bytes);
+        let curves = path_curves(paths);
+        if *self.curves.borrow() != curves {
+            let bytes = curves
+                .iter()
+                .flatten()
+                .flat_map(|x| x.to_ne_bytes())
+                .collect();
+            *self.curves.borrow_mut() = curves;
+            self.glass.set_paths(bytes);
+        }
     }
+}
+
+/// The paths as bento takes them: each curve a quadratic one, its start, control point and end,
+/// and the number of its path. GTK turns cubic curves and arcs into quadratic ones, and a line
+/// is a curve with its control point in its middle. Each path is closed. Paths past bento's
+/// limits are left out whole.
+fn path_curves(paths: &[gsk::Path]) -> Vec<[f32; 7]> {
+    let mut curves: Vec<[f32; 7]> = Vec::new();
+    for path in paths.iter().take(MAX_PATHS) {
+        let number = curves.last().map_or(0., |last| last[6] + 1.);
+        let mut own: Vec<[f32; 7]> = Vec::new();
+        let line = |own: &mut Vec<[f32; 7]>, a: [f32; 2], b: [f32; 2]| {
+            if a != b {
+                let mid = [(a[0] + b[0]) / 2., (a[1] + b[1]) / 2.];
+                own.push([a[0], a[1], mid[0], mid[1], b[0], b[1], number]);
+            }
+        };
+        let mut start = [0f32; 2];
+        let mut at = [0f32; 2];
+        path.foreach(gsk::PathForeachFlags::QUAD, |op, first, n, _| {
+            // SAFETY: GTK hands `n` points in a row, and `graphene::Point` is laid out as
+            // graphene's point.
+            let points =
+                unsafe { std::slice::from_raw_parts(first as *const gtk::graphene::Point, n) };
+            let point = |i: usize| [points[i].x(), points[i].y()];
+            match op {
+                gsk::PathOperation::Move => {
+                    line(&mut own, at, start);
+                    start = point(0);
+                    at = start;
+                }
+                gsk::PathOperation::Line => {
+                    line(&mut own, point(0), point(1));
+                    at = point(1);
+                }
+                gsk::PathOperation::Quad => {
+                    let [a, b, c] = [point(0), point(1), point(2)];
+                    own.push([a[0], a[1], b[0], b[1], c[0], c[1], number]);
+                    at = c;
+                }
+                gsk::PathOperation::Close => {
+                    line(&mut own, at, start);
+                    at = start;
+                }
+                _ => (),
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+        line(&mut own, at, start);
+
+        if curves.len() + own.len() > MAX_CURVES {
+            break;
+        }
+        curves.extend(own);
+    }
+    curves
 }
 
 impl Drop for Glass {
@@ -227,11 +303,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         handle: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
-            name, interface, ..
+            name,
+            interface,
+            version,
         } = event
         {
             if interface == BentoShellV1::interface().name {
-                state.shell = Some(registry.bind(name, 1, handle, ()));
+                // Version 2 takes glass's paths.
+                state.shell = Some(registry.bind(name, version.min(2), handle, ()));
             }
         }
     }

@@ -178,7 +178,7 @@ mod imp {
             }
 
             if let Some(glass) = &*self.glass.borrow() {
-                glass.set_shapes(&shapes);
+                glass.set_shapes(&shapes, &[]);
             }
             obj.set_input(&shapes);
         }

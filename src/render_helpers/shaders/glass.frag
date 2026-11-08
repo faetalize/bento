@@ -47,6 +47,15 @@ uniform vec4 radii5;
 uniform vec4 radii6;
 uniform vec4 radii7;
 
+// Glass in any shape: closed paths of quadratic Bézier curves, in the element's logical pixels.
+// The curves come two to a matrix, each in two columns: its start and control point, then its
+// end. Path i's curves come before the curve `path_ends[i]`.
+uniform float path_count;
+uniform float curve_count;
+uniform vec4 path_ends0;
+uniform vec4 path_ends1;
+uniform mat4 curves[32];
+
 uniform float noise;
 uniform float saturation;
 // The window colour, and in alpha how far what's behind is taken towards it, so what's on the
@@ -184,18 +193,11 @@ float surface_box(vec2 p, vec4 rect, vec4 radii, out vec2 slope) {
     return -depth;
 }
 
-// Signed distance to the glass's edge, negative inside.
-float glass(vec2 p) {
-    float d = rounded_box(p, shape0, radii0);
-    if (shape_count > 1.5) d = smooth_min(d, rounded_box(p, shape1, radii1), MELT);
-    if (shape_count > 2.5) d = smooth_min(d, rounded_box(p, shape2, radii2), MELT);
-    if (shape_count > 3.5) d = smooth_min(d, rounded_box(p, shape3, radii3), MELT);
-    if (shape_count > 4.5) d = smooth_min(d, rounded_box(p, shape4, radii4), MELT);
-    if (shape_count > 5.5) d = smooth_min(d, rounded_box(p, shape5, radii5), MELT);
-    if (shape_count > 6.5) d = smooth_min(d, rounded_box(p, shape6, radii6), MELT);
-    if (shape_count > 7.5) d = smooth_min(d, rounded_box(p, shape7, radii7), MELT);
-    return d;
-}
+// Far enough outside to stand for no glass.
+const float NOWHERE = 1e6;
+// How far above `p` the line that counts a path's crossings runs, so it never passes exactly
+// through where two curves meet, which pixels and points often line up on.
+const float RAY_NUDGE = 0.00137;
 
 // Half a shape's narrowest side: the widest its bezel gets, as two sides' bezels would meet in a
 // ridge instead of rising to one rounded top, and the furthest its refraction reaches, past
@@ -204,29 +206,163 @@ float inradius_of(vec4 rect) {
     return 0.5 * min(rect.z, rect.w);
 }
 
-// Melts the surface of a shape, `d2` deep with inradius `r2`, into `d` and `r`: the depths melt
-// as the outlines do, and the inradius follows the nearer shape, blended across the seam, so a
-// thin shape keeps its own beside a wide one.
-void melt(inout float d, inout float r, float d2, float r2) {
-    float nearer = clamp(0.5 + 0.5 * (d2 - d) / MELT, 0.0, 1.0);
-    r = mix(r2, r, nearer);
-    d = smooth_min(d, d2, MELT);
+// Melts a piece of glass into the glass so far: its outline and the depth of its surface melt as
+// shapes do, and the slope and inradius there follow the nearer piece, blended across the seam
+// by the same weight the smooth minimum gives each, so a thin piece keeps its own beside a wide
+// one and the slope stays the depth's exact slope.
+void melt(inout float outline, inout float depth, inout vec2 slope, inout float inradius,
+          float outline2, float depth2, vec2 slope2, float inradius2) {
+    float nearer = clamp(0.5 + 0.5 * (depth2 - depth) / MELT, 0.0, 1.0);
+    slope = mix(slope2, slope, nearer);
+    inradius = mix(inradius2, inradius, nearer);
+    depth = smooth_min(depth, depth2, MELT);
+    outline = smooth_min(outline, outline2, MELT);
 }
 
-// How deep the bezel's surface takes a point to be, as `glass` does the outline, with the
-// inradius of the glass there.
-float surface(vec2 p, out float inradius) {
-    vec2 slope;
-    float d = surface_box(p, shape0, radii0, slope);
-    inradius = inradius_of(shape0);
-    if (shape_count > 1.5) melt(d, inradius, surface_box(p, shape1, radii1, slope), inradius_of(shape1));
-    if (shape_count > 2.5) melt(d, inradius, surface_box(p, shape2, radii2, slope), inradius_of(shape2));
-    if (shape_count > 3.5) melt(d, inradius, surface_box(p, shape3, radii3, slope), inradius_of(shape3));
-    if (shape_count > 4.5) melt(d, inradius, surface_box(p, shape4, radii4, slope), inradius_of(shape4));
-    if (shape_count > 5.5) melt(d, inradius, surface_box(p, shape5, radii5, slope), inradius_of(shape5));
-    if (shape_count > 6.5) melt(d, inradius, surface_box(p, shape6, radii6, slope), inradius_of(shape6));
-    if (shape_count > 7.5) melt(d, inradius, surface_box(p, shape7, radii7, slope), inradius_of(shape7));
-    return d;
+void melt_box(vec2 p, vec4 rect, vec4 radii, inout float outline, inout float depth,
+              inout vec2 slope, inout float inradius) {
+    vec2 slope2;
+    float depth2 = surface_box(p, rect, radii, slope2);
+    melt(outline, depth, slope, inradius, rounded_box(p, rect, radii), depth2, slope2,
+         inradius_of(rect));
+}
+
+// The point on a quadratic Bézier curve from `a` to `c`, with control point `b`, nearest `p`.
+// Closed form by Inigo Quilez (MIT License): https://www.shadertoy.com/view/MlKcDD
+vec2 nearest_on_curve(vec2 p, vec2 a, vec2 b, vec2 c) {
+    vec2 ab = b - a;
+    vec2 bend = a - 2.0 * b + c;
+    float bend2 = dot(bend, bend);
+    if (bend2 < 1e-6) {
+        // A straight line.
+        vec2 ac = c - a;
+        float t = clamp(dot(p - a, ac) / max(dot(ac, ac), 1e-6), 0.0, 1.0);
+        return a + ac * t;
+    }
+    vec2 d = a - p;
+    float kk = 1.0 / bend2;
+    float kx = kk * dot(ab, bend);
+    float ky = kk * (2.0 * dot(ab, ab) + dot(d, bend)) / 3.0;
+    float kz = kk * dot(d, ab);
+    float pp = ky - kx * kx;
+    float q = kx * (2.0 * kx * kx - 3.0 * ky) + kz;
+    float h = q * q + 4.0 * pp * pp * pp;
+    if (h >= 0.0) {
+        h = sqrt(h);
+        vec2 x = (vec2(h, -h) - q) / 2.0;
+        vec2 uv = sign(x) * pow(abs(x), vec2(1.0 / 3.0));
+        float t = clamp(uv.x + uv.y - kx, 0.0, 1.0);
+        return a + (2.0 * ab + bend * t) * t;
+    }
+    float z = sqrt(-pp);
+    float v = acos(q / (pp * z * 2.0)) / 3.0;
+    float m = cos(v);
+    float n = sin(v) * 1.732050808;
+    vec2 t = clamp(vec2(m + m, -n - m) * z - kx, 0.0, 1.0);
+    vec2 q1 = a + (2.0 * ab + bend * t.x) * t.x;
+    vec2 q2 = a + (2.0 * ab + bend * t.y) * t.y;
+    return dot(p - q1, p - q1) < dot(p - q2, p - q2) ? q1 : q2;
+}
+
+// Whether the curve at `t` is crossed by the line going right from `p`: counting where a curve
+// starts but not where it ends, so where two curves meet counts once.
+float crossed_at(float t, vec2 p, vec2 a, vec2 b, vec2 c) {
+    if (t < 0.0 || t >= 1.0) {
+        return 0.0;
+    }
+    float x = a.x + 2.0 * t * (b.x - a.x) + t * t * (a.x - 2.0 * b.x + c.x);
+    return x > p.x ? 1.0 : 0.0;
+}
+
+// How many times the line going right from `p` crosses the curve: where its height,
+// bend t² + 2 ab t + k, is 0, solved so that a nearly straight curve stays exact.
+float crossings(vec2 p, vec2 a, vec2 b, vec2 c) {
+    float ab = b.y - a.y;
+    float bend = a.y - 2.0 * b.y + c.y;
+    float k = a.y - p.y;
+    float disc = ab * ab - bend * k;
+    if (disc < 0.0) {
+        return 0.0;
+    }
+    float q = -(ab + (ab < 0.0 ? -1.0 : 1.0) * sqrt(disc));
+    float n = 0.0;
+    if (abs(bend) > 1e-9) n += crossed_at(q / bend, p, a, b, c);
+    if (abs(q) > 1e-9) n += crossed_at(k / q, p, a, b, c);
+    return n;
+}
+
+// Where path `i`'s curves end.
+float path_end(float i) {
+    vec4 ends = i < 3.5 ? path_ends0 : path_ends1;
+    float j = i < 3.5 ? i : i - 4.0;
+    return j < 0.5 ? ends.x : j < 1.5 ? ends.y : j < 2.5 ? ends.z : ends.w;
+}
+
+// Melts a path whose nearest point to `p` is `nearest`, `nearest2` away, crossed `crossed` times
+// by the line going right from `p`: inside it, an odd number. Its outline and its surface are
+// both its distance, so its bezel follows its outline in, and the probe in `main` finds how
+// thick it is.
+void melt_path(vec2 p, float nearest2, vec2 nearest, float crossed, inout float outline,
+               inout float depth, inout vec2 slope, inout float inradius) {
+    float side = mod(crossed, 2.0) > 0.5 ? -1.0 : 1.0;
+    float d = sqrt(nearest2) * side;
+    vec2 away = p - nearest;
+    vec2 slope2 = dot(away, away) > 1e-12 ? normalize(away) * side : vec2(0.0);
+    melt(outline, depth, slope, inradius, d, d, slope2, NOWHERE);
+}
+
+void melt_paths(vec2 p, inout float outline, inout float depth, inout vec2 slope,
+                inout float inradius) {
+    vec2 ray = p + vec2(0.0, RAY_NUDGE);
+    float path = 0.0;
+    float end = path_end(0.0);
+    float nearest2 = NOWHERE * NOWHERE;
+    vec2 nearest = vec2(0.0);
+    float crossed = 0.0;
+    for (int m = 0; m < 32; m++) {
+        mat4 pair = curves[m];
+        for (int k = 0; k < 2; k++) {
+            float i = float(m * 2 + k);
+            if (i >= curve_count) break;
+            if (i >= end) {
+                melt_path(p, nearest2, nearest, crossed, outline, depth, slope, inradius);
+                path += 1.0;
+                end = path_end(path);
+                nearest2 = NOWHERE * NOWHERE;
+                crossed = 0.0;
+            }
+            vec4 first = k == 0 ? pair[0] : pair[2];
+            vec2 c = k == 0 ? pair[1].xy : pair[3].xy;
+            vec2 q = nearest_on_curve(p, first.xy, first.zw, c);
+            float d2 = dot(p - q, p - q);
+            if (d2 < nearest2) {
+                nearest2 = d2;
+                nearest = q;
+            }
+            crossed += crossings(ray, first.xy, first.zw, c);
+        }
+        if (float(m * 2 + 2) >= curve_count) break;
+    }
+    melt_path(p, nearest2, nearest, crossed, outline, depth, slope, inradius);
+}
+
+// The glass at `p`: the signed distance to its edge, negative inside; how deep its bezel's
+// surface takes the point to be, as a signed distance like the edge's; that surface's slope,
+// pointing out; and the glass's inradius there.
+void pieces(vec2 p, out float outline, out float depth, out vec2 slope, out float inradius) {
+    outline = NOWHERE;
+    depth = NOWHERE;
+    slope = vec2(0.0);
+    inradius = 0.0;
+    if (shape_count > 0.5) melt_box(p, shape0, radii0, outline, depth, slope, inradius);
+    if (shape_count > 1.5) melt_box(p, shape1, radii1, outline, depth, slope, inradius);
+    if (shape_count > 2.5) melt_box(p, shape2, radii2, outline, depth, slope, inradius);
+    if (shape_count > 3.5) melt_box(p, shape3, radii3, outline, depth, slope, inradius);
+    if (shape_count > 4.5) melt_box(p, shape4, radii4, outline, depth, slope, inradius);
+    if (shape_count > 5.5) melt_box(p, shape5, radii5, outline, depth, slope, inradius);
+    if (shape_count > 6.5) melt_box(p, shape6, radii6, outline, depth, slope, inradius);
+    if (shape_count > 7.5) melt_box(p, shape7, radii7, outline, depth, slope, inradius);
+    if (path_count > 0.5) melt_paths(p, outline, depth, slope, inradius);
 }
 
 // A light's reflection on the surface: where the bezel tilts towards it, and weaker from the far
@@ -321,31 +457,33 @@ vec2 pattern_gradient(vec2 p) {
 
 void main() {
     vec2 p = (input_to_geo * vec3(v_coords, 1.0)).xy * geo_size;
-    float d = glass(p);
+    // The edge, and how deep the bezel's surface is, which way it faces and the glass's inradius
+    // there.
+    float outline;
+    float depth;
+    vec2 grad;
+    float inradius;
+    pieces(p, outline, depth, grad, inradius);
 
-    float coverage = clamp(0.5 - d * niri_scale, 0.0, 1.0);
+    float coverage = clamp(0.5 - outline * niri_scale, 0.0, 1.0);
     if (coverage <= 0.0) {
         gl_FragColor = vec4(0.0);
         return;
     }
-
-    // How deep the bezel's surface is, which way it faces, and the glass's inradius there: exact
-    // for one shape, from the distance's slope where shapes melt together.
-    float depth;
-    vec2 grad;
-    float inradius;
-    if (shape_count < 1.5) {
-        depth = surface_box(p, shape0, radii0, grad);
-        inradius = inradius_of(shape0);
-    } else {
-        depth = surface(p, inradius);
-        float r;
-        grad = vec2(
-            surface(p + vec2(0.5, 0.0), r) - surface(p - vec2(0.5, 0.0), r),
-            surface(p + vec2(0.0, 0.5), r) - surface(p - vec2(0.0, 0.5), r)
-        );
-    }
     vec2 normal = dot(grad, grad) > 1e-8 ? normalize(grad) : vec2(0.0);
+
+    // A path is as thick as it is where it is. Looking in from here as far as the bezel and the
+    // glass's thickness reach, a point past the middle is nearer the far side, and the depths
+    // here and there add up to how thick it is.
+    if (path_count > 0.5) {
+        float reach = max(bezel, thickness);
+        float outline2;
+        float depth2;
+        vec2 grad2;
+        float inradius2;
+        pieces(p - normal * reach, outline2, depth2, grad2, inradius2);
+        inradius = min(inradius, max(0.5 * (reach - depth - depth2), 0.0));
+    }
 
     // 1 at the edge, 0 where the bezel meets the flat middle. The bezel's surface is a squircle,
     // rising from nothing at the edge to the full thickness: unlike a circle, its curvature fades

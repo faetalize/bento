@@ -15,10 +15,13 @@ use smithay::wayland::{Dispatch2, GlobalDispatch2};
 
 use super::raw::bento_shell::v1::server::{bento_glass_v1, bento_shell_v1};
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// The most shapes a surface's glass has.
 pub const MAX_GLASS_SHAPES: usize = 8;
+/// The most paths a surface's glass has, and the most curves they have in all.
+pub const MAX_GLASS_PATHS: usize = 8;
+pub const MAX_GLASS_CURVES: usize = 64;
 
 /// One shape of a surface's glass: a rounded rectangle in surface-local logical coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,10 +30,21 @@ pub struct GlassShape {
     pub radius: i32,
 }
 
-/// A surface's glass shapes, double-buffered with its commits. Empty means no glass.
+/// One curve of a path of a surface's glass: a quadratic Bézier curve from `points[0]` to
+/// `points[2]` with `points[1]` its control point, in surface-local logical coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlassCurve {
+    pub points: [[f32; 2]; 3],
+    /// The number of the path it's in.
+    pub path: usize,
+}
+
+/// A surface's glass shapes and paths, double-buffered with its commits. Neither means no
+/// glass.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct GlassCachedState {
     pub shapes: Vec<GlassShape>,
+    pub paths: Vec<GlassCurve>,
 }
 
 impl Cacheable for GlassCachedState {
@@ -196,6 +210,24 @@ where
                         .shapes = shapes;
                 });
             }
+            bento_glass_v1::Request::SetPaths { paths } => {
+                let Some(paths) = parse_paths(&paths) else {
+                    resource.post_error(
+                        bento_glass_v1::Error::InvalidPaths,
+                        "paths must be at most 64 whole septuples of finite numbers, \
+                         in at most 8 paths numbered from 0 up in order",
+                    );
+                    return;
+                };
+
+                with_states(&self.surface, |states| {
+                    states
+                        .cached_state
+                        .get::<GlassCachedState>()
+                        .pending()
+                        .paths = paths;
+                });
+            }
         }
     }
 
@@ -205,12 +237,11 @@ where
         }
 
         with_states(&self.surface, |states| {
-            states
-                .cached_state
-                .get::<GlassCachedState>()
-                .pending()
-                .shapes
-                .clear();
+            let mut cached = states.cached_state.get::<GlassCachedState>();
+            let pending = cached.pending();
+            pending.shapes.clear();
+            pending.paths.clear();
+            drop(cached);
             if let Some(has) = states.data_map.get::<HasGlass>() {
                 *has.0.lock().unwrap() = false;
             }
@@ -244,15 +275,56 @@ fn parse_shapes(bytes: &[u8]) -> Option<Vec<GlassShape>> {
         .collect()
 }
 
-/// A surface's current glass shapes.
-pub fn glass_shapes(surface: &WlSurface) -> Vec<GlassShape> {
+/// Reads `set_paths`' array: native-endian float32 septuples.
+fn parse_paths(bytes: &[u8]) -> Option<Vec<GlassCurve>> {
+    const SEPTUPLE: usize = 7 * 4;
+    if bytes.len() % SEPTUPLE != 0 || bytes.len() / SEPTUPLE > MAX_GLASS_CURVES {
+        return None;
+    }
+
+    let mut last_path = None;
+    bytes
+        .chunks_exact(SEPTUPLE)
+        .map(|chunk| {
+            let floats: Vec<f32> = chunk
+                .chunks_exact(4)
+                .map(|float| f32::from_ne_bytes(float.try_into().unwrap()))
+                .collect();
+            if !floats.iter().all(|x| x.is_finite()) {
+                return None;
+            }
+            // Numbered from 0 up: each curve is in the path before's or the next one.
+            let path = floats[6];
+            let in_order = match last_path {
+                None => path == 0.,
+                Some(last) => path == last as f32 || path == last as f32 + 1.,
+            };
+            if !in_order {
+                return None;
+            }
+            let path = path as usize;
+            if path >= MAX_GLASS_PATHS {
+                return None;
+            }
+            last_path = Some(path);
+            Some(GlassCurve {
+                points: [
+                    [floats[0], floats[1]],
+                    [floats[2], floats[3]],
+                    [floats[4], floats[5]],
+                ],
+                path,
+            })
+        })
+        .collect()
+}
+
+/// A surface's current glass shapes and paths.
+pub fn glass_shapes(surface: &WlSurface) -> (Vec<GlassShape>, Vec<GlassCurve>) {
     with_states(surface, |states| {
-        states
-            .cached_state
-            .get::<GlassCachedState>()
-            .current()
-            .shapes
-            .clone()
+        let mut cached = states.cached_state.get::<GlassCachedState>();
+        let current = cached.current();
+        (current.shapes.clone(), current.paths.clone())
     })
 }
 
@@ -289,5 +361,49 @@ mod tests {
         assert_eq!(parse_shapes(&bytes(&[0, 0, 1, 4, -2])), None);
         assert_eq!(parse_shapes(&bytes(&[0, 0, 1, 1, 0].repeat(9))), None);
         assert_eq!(parse_shapes(&[]), Some(Vec::new()));
+    }
+
+    fn float_bytes(floats: &[f32]) -> Vec<u8> {
+        floats.iter().flat_map(|f| f.to_ne_bytes()).collect()
+    }
+
+    #[test]
+    fn paths_are_read_as_septuples() {
+        let curves = parse_paths(&float_bytes(&[
+            0., 0., 5., 0., 10., 0., 0., //
+            10., 0., 5., 5., 0., 0., 0., //
+            20., 0., 25., 0., 30., 10., 1., //
+        ]))
+        .unwrap();
+        assert_eq!(curves.len(), 3);
+        assert_eq!(curves[1].points, [[10., 0.], [5., 5.], [0., 0.]]);
+        assert_eq!(curves.iter().map(|c| c.path).collect::<Vec<_>>(), [0, 0, 1]);
+    }
+
+    #[test]
+    fn broken_paths_are_refused() {
+        let curve = |path: f32| [0., 0., 1., 1., 2., 0., path];
+        // Not whole septuples.
+        assert_eq!(parse_paths(&float_bytes(&[0.; 6])), None);
+        // Not finite.
+        assert_eq!(
+            parse_paths(&float_bytes(&[0., f32::NAN, 0., 0., 0., 0., 0.])),
+            None
+        );
+        // Not from 0, skipping a number, or going back.
+        assert_eq!(parse_paths(&float_bytes(&curve(1.))), None);
+        assert_eq!(
+            parse_paths(&float_bytes(&[curve(0.), curve(2.)].concat())),
+            None
+        );
+        assert_eq!(
+            parse_paths(&float_bytes(&[curve(0.), curve(1.), curve(0.)].concat())),
+            None
+        );
+        // Too many paths or curves.
+        let nine: Vec<f32> = (0..9).flat_map(|i| curve(i as f32)).collect();
+        assert_eq!(parse_paths(&float_bytes(&nine)), None);
+        assert_eq!(parse_paths(&float_bytes(&curve(0.).repeat(65))), None);
+        assert_eq!(parse_paths(&[]), Some(Vec::new()));
     }
 }
