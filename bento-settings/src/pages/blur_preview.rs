@@ -3,7 +3,8 @@
 //! It draws with bento's own shaders: the background is blurred by the same passes with the same
 //! offset, and the pane is drawn by the glass or plain shader with the uniforms bento gives it.
 //! The pane can be dragged around, to watch the glass bend what's behind it, and on glass a handle
-//! beside it for each light that's on moves that light.
+//! beside it for each light that's on moves that light. The pointer carries its light over the
+//! preview, as it would over the screen.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
@@ -15,7 +16,7 @@ use adw::prelude::*;
 use glow::HasContext;
 use gtk::gdk_pixbuf::Pixbuf;
 use gtk::{gdk, gio, glib};
-use niri_config::{Blur, CornerRadius, Glass, Material, MAX_GLASS_LIGHTS};
+use niri_config::{Blur, CornerRadius, Glass, GlassPattern, Material, MAX_GLASS_LIGHTS};
 
 use super::blur_live::{Live, Unsaved};
 use super::layout::every_window;
@@ -141,6 +142,7 @@ pub fn build(
         store: ctx.store.clone(),
         gl: RefCell::new(None),
         center: Cell::new((0.5, 0.5)),
+        pointer: Cell::new(None),
         picture: RefCell::new(None),
         wanted: RefCell::new(None),
         live: live.clone(),
@@ -199,6 +201,7 @@ pub fn build(
     }
     drag(&preview);
     drag_light(&preview, ctx, light_angles);
+    follow_pointer(&preview);
 
     let redraw = Rc::downgrade(&preview);
     ctx.store.subscribe(move || {
@@ -269,6 +272,26 @@ fn drag(preview: &Rc<Preview>) {
         }
     });
     area.add_controller(motion);
+}
+
+/// The pointer's light follows it over the preview, light handles and all, and goes with it.
+fn follow_pointer(preview: &Rc<Preview>) {
+    let motion = gtk::EventControllerMotion::new();
+    let moved = Rc::downgrade(preview);
+    motion.connect_motion(move |_, x, y| {
+        if let Some(preview) = moved.upgrade() {
+            preview.pointer.set(Some((x, y)));
+            preview.area.queue_render();
+        }
+    });
+    let left = Rc::downgrade(preview);
+    motion.connect_leave(move |_| {
+        if let Some(preview) = left.upgrade() {
+            preview.pointer.set(None);
+            preview.area.queue_render();
+        }
+    });
+    preview.overlay.add_controller(motion);
 }
 
 /// Dragging a light's handle points that light from the pane's middle towards the pointer.
@@ -351,6 +374,8 @@ struct Preview {
     gl: RefCell<Option<Gl>>,
     /// The pane's middle, as a fraction of the preview's size.
     center: Cell<(f64, f64)>,
+    /// Where the pointer is over the preview, in logical pixels.
+    pointer: Cell<Option<(f64, f64)>>,
     /// The wallpaper, or `None` for the built-in picture.
     picture: RefCell<Option<Rc<Picture>>>,
     /// The wallpaper being shown or loaded.
@@ -602,7 +627,8 @@ impl Preview {
             gl.gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA);
         }
         let pane = self.pane();
-        let (program, uniforms) = pane_uniforms(gl, &look, pane, (lw, lh), scale);
+        let (program, uniforms) =
+            pane_uniforms(gl, &look, pane, self.pointer.get(), (lw, lh), scale);
         gl.draw(program, Some(behind), -1., &uniforms);
         unsafe { gl.gl.disable(glow::BLEND) };
         Ok(())
@@ -614,6 +640,7 @@ fn pane_uniforms(
     gl: &Gl,
     look: &Look,
     (px, py, pw, ph): (f64, f64, f64, f64),
+    pointer: Option<(f64, f64)>,
     (lw, lh): (i32, i32),
     scale: i32,
 ) -> (glow::Program, Vec<(&'static str, Uniform)>) {
@@ -646,6 +673,16 @@ fn pane_uniforms(
 
     let glass = look.blur.glass;
     let (lights, sizes) = light_uniforms(&glass);
+    // Over the pane's own pixels, like the shapes.
+    let pointer = pointer.map_or([0.; 3], |(x, y)| {
+        [(x - px) as f32, (y - py) as f32, glass.pointer_light as f32]
+    });
+    let pattern = match glass.pattern {
+        GlassPattern::Smooth => 0.,
+        GlassPattern::Reeded => 1.,
+        GlassPattern::Hammered => 2.,
+        GlassPattern::Frosted => 3.,
+    };
     uniforms.extend([
         ("geo_to_input", Uniform::Mat3(geo_to_input)),
         ("shape_count", Uniform::Float(1.)),
@@ -662,6 +699,13 @@ fn pane_uniforms(
         ("sheen", Uniform::Float(glass.sheen as f32)),
         ("light_count", Uniform::Float(lights.len() as f32)),
         ("light_sizes", Uniform::Vec4(sizes)),
+        (
+            "absorbance",
+            Uniform::Vec3(glass.absorbance().map(|x| x as f32)),
+        ),
+        ("pattern", Uniform::Float(pattern)),
+        ("pattern_depth", Uniform::Float(glass.pattern_depth as f32)),
+        ("pointer", Uniform::Vec3(pointer)),
     ]);
     for (i, name) in ["light0", "light1", "light2", "light3"]
         .into_iter()
@@ -772,6 +816,7 @@ fn decode(path: &Path, screen: (i32, i32), region: (i32, i32)) -> Option<Picture
 enum Uniform {
     Float(f32),
     Vec2([f32; 2]),
+    Vec3([f32; 3]),
     Vec4([f32; 4]),
     Mat3([f32; 9]),
 }
@@ -1035,6 +1080,7 @@ impl Gl {
                 match *value {
                     Uniform::Float(x) => gl.uniform_1_f32(location, x),
                     Uniform::Vec2([x, y]) => gl.uniform_2_f32(location, x, y),
+                    Uniform::Vec3([x, y, z]) => gl.uniform_3_f32(location, x, y, z),
                     Uniform::Vec4([x, y, z, w]) => gl.uniform_4_f32(location, x, y, z, w),
                     Uniform::Mat3(m) => gl.uniform_matrix_3_f32_slice(location, false, &m),
                 }

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::LazyLock;
 
 use adw::prelude::*;
-use niri_config::{Blur, Config, Glass, GlassLight, Material, MAX_GLASS_LIGHTS};
+use niri_config::{Blur, Config, Glass, GlassLight, GlassPattern, Material, MAX_GLASS_LIGHTS};
 
 use super::blur_live::{Live, Unsaved};
 use crate::kdl::{Document, Value};
@@ -93,6 +93,62 @@ static SATURATION: LazyLock<Setting> = LazyLock::new(|| {
         .format(|x| format!("{:.0} %", x * 100.))
         .keywords(&["vibrancy", "color"])
 });
+
+static PATTERN: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::choice("Pattern", "blur.glass.pattern", |c| {
+        Some(pattern_name(c.blur.glass.pattern))
+    })
+    .option(Some("smooth"), "Smooth")
+    .option(Some("reeded"), "Reeded")
+    .option(Some("hammered"), "Hammered")
+    .option(Some("frosted"), "Frosted")
+    .keywords(&["texture", "surface", "fluted", "ribbed", "dimpled"])
+});
+
+static COLOR: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::color("Color", "blur.glass.color", |c| c.blur.glass.color)
+        .keywords(&["tint", "hue", "stained", "absorption"])
+});
+
+static PATTERN_DEPTH: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Pattern Depth", "blur.glass.pattern-depth", |c| {
+        c.blur.glass.pattern_depth
+    })
+    .range(0., 1., 0.01)
+    .digits(2)
+    .slider()
+    .format(percent)
+    .keywords(&["texture", "relief"])
+});
+
+static POINTER_LIGHT: LazyLock<Setting> = LazyLock::new(|| {
+    Setting::number("Pointer Light", "blur.glass.pointer-light", |c| {
+        c.blur.glass.pointer_light
+    })
+    .range(0., 2., 0.01)
+    .digits(2)
+    .slider()
+    .format(percent)
+    .keywords(&["cursor", "mouse", "glint", "hover"])
+});
+
+fn pattern_name(pattern: GlassPattern) -> &'static str {
+    match pattern {
+        GlassPattern::Smooth => "smooth",
+        GlassPattern::Reeded => "reeded",
+        GlassPattern::Hammered => "hammered",
+        GlassPattern::Frosted => "frosted",
+    }
+}
+
+fn pattern_named(name: &str) -> GlassPattern {
+    match name {
+        "reeded" => GlassPattern::Reeded,
+        "hammered" => GlassPattern::Hammered,
+        "frosted" => GlassPattern::Frosted,
+        _ => GlassPattern::Smooth,
+    }
+}
 
 /// Glass's own settings, which neither Roughness nor Preset sets.
 static GLASS: LazyLock<Vec<Setting>> = LazyLock::new(|| {
@@ -477,6 +533,24 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     }
     ctx.anchor(PRESET_KEY, &preset_row);
     list.append(&preset_row);
+    let pattern = {
+        let live = live.clone();
+        setting_row_watched(&PATTERN, ctx, move |input| {
+            if let Input::Choice(Some(name)) = input {
+                live.show(Unsaved::Pattern(pattern_named(name)));
+            }
+        })
+    };
+    list.append(&pattern);
+    let color = {
+        let live = live.clone();
+        setting_row_watched(&COLOR, ctx, move |input| {
+            if let Input::Color(color) = input {
+                live.show(Unsaved::Color(*color));
+            }
+        })
+    };
+    list.append(&color);
 
     let advanced = adw::ExpanderRow::builder().title("Advanced").build();
     // Roughness holds the settings it sets, so expanding it shows them under it.
@@ -504,12 +578,31 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     };
     advanced.add_row(&row(&SATURATION));
     advanced.add_row(&row(&NOISE));
-    let mut glass_rows: Vec<gtk::Widget> = vec![preset_row.clone().upcast(), sheen.upcast()];
+    let mut glass_rows: Vec<gtk::Widget> = vec![
+        preset_row.clone().upcast(),
+        pattern,
+        color,
+        sheen.upcast(),
+    ];
     for setting in GLASS.iter() {
         let row = row(setting);
         advanced.add_row(&row);
         glass_rows.push(row.upcast());
     }
+    // Only a pattern has a depth.
+    let pattern_depth = row(&PATTERN_DEPTH);
+    advanced.add_row(&pattern_depth);
+    glass_rows.push(pattern_depth.clone().upcast());
+    let follow_pattern = {
+        let pattern_depth = pattern_depth.downgrade();
+        move |live: &Live, _: Option<&str>| {
+            if let Some(pattern_depth) = pattern_depth.upgrade() {
+                pattern_depth.set_sensitive(live.blur().glass.pattern != GlassPattern::Smooth);
+            }
+        }
+    };
+    follow_pattern(&live, None);
+    live.connect(follow_pattern);
     let reset = adw::ButtonRow::builder().title("Reset to Defaults").build();
     advanced.add_row(&reset);
     list.append(&advanced);
@@ -695,6 +788,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
 fn lights_group(ctx: &PageContext, live: &Live) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder().title("Lights").build();
     ctx.anchor(LIGHTS_KEY, &group);
+    group.add(&number_row(&POINTER_LIGHT, ctx, live));
     let none = adw::ActionRow::builder()
         .title("No Lights")
         .css_classes(["dim-label"])

@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use niri_config::{Blur, GlassLight, Material, MAX_GLASS_LIGHTS};
+use niri_config::{Blur, Color, GlassLight, GlassPattern, Material, MAX_GLASS_LIGHTS};
 
 use crate::store::Store;
 
@@ -15,6 +15,8 @@ pub enum Unsaved {
     /// `blur.glass.light.1.angle`, with `off` 1 for off.
     Setting(&'static str, f64),
     Material(Material),
+    Color(Color),
+    Pattern(GlassPattern),
     /// Glass's lights, after adding or removing one.
     Lights([Option<GlassLight>; MAX_GLASS_LIGHTS]),
 }
@@ -25,6 +27,8 @@ impl Unsaved {
         match self {
             Self::Setting(path, _) => path,
             Self::Material(_) => "blur.material",
+            Self::Color(_) => "blur.glass.color",
+            Self::Pattern(_) => "blur.glass.pattern",
             Self::Lights(_) => "blur.glass.lights",
         }
     }
@@ -33,6 +37,8 @@ impl Unsaved {
         let glass = &mut blur.glass;
         match *self {
             Self::Material(material) => blur.material = material,
+            Self::Color(color) => glass.color = color,
+            Self::Pattern(pattern) => glass.pattern = pattern,
             Self::Lights(lights) => glass.lights = lights,
             Self::Setting(path, x) => match path {
                 "blur" => blur.off = x == 0.,
@@ -46,6 +52,8 @@ impl Unsaved {
                 "blur.glass.dispersion" => glass.dispersion = x,
                 "blur.glass.reflection" => glass.reflection = x,
                 "blur.glass.sheen" => glass.sheen = x,
+                "blur.glass.pattern-depth" => glass.pattern_depth = x,
+                "blur.glass.pointer-light" => glass.pointer_light = x,
                 _ => {
                     let Some((i, field)) = light_field(path) else {
                         return;
@@ -82,6 +90,8 @@ pub fn value(blur: &Blur, path: &str) -> Option<f64> {
         "blur.glass.dispersion" => glass.dispersion,
         "blur.glass.reflection" => glass.reflection,
         "blur.glass.sheen" => glass.sheen,
+        "blur.glass.pattern-depth" => glass.pattern_depth,
+        "blur.glass.pointer-light" => glass.pointer_light,
         _ => {
             let (i, field) = light_field(path)?;
             let light = glass.lights.get(i)?.as_ref()?;

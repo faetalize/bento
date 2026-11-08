@@ -91,6 +91,26 @@ pub fn category() -> Category {
                     &["fresnel", "rim", "edge", "glow"],
                 )
                 .search_item(
+                    "blur.glass.pattern",
+                    "Glass Pattern",
+                    &["texture", "surface", "reeded", "fluted", "hammered", "frosted"],
+                )
+                .search_item(
+                    "blur.glass.pattern-depth",
+                    "Glass Pattern Depth",
+                    &["texture", "relief"],
+                )
+                .search_item(
+                    "blur.glass.color",
+                    "Glass Color",
+                    &["tint", "hue", "stained", "absorption"],
+                )
+                .search_item(
+                    "blur.glass.pointer-light",
+                    "Glass Pointer Light",
+                    &["cursor", "mouse", "glint", "hover"],
+                )
+                .search_item(
                     "blur.glass.lights",
                     "Glass Lights",
                     &[

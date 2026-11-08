@@ -73,10 +73,32 @@ uniform vec4 light2;
 uniform vec4 light3;
 uniform vec4 light_sizes;
 
+// How much of each colour glass as thick as it is takes out of the light coming through: minus
+// the log of the colour it takes on, so 0 is clear.
+uniform vec3 absorbance;
+// The pattern pressed into the surface: 0 for smooth, 1 reeded, 2 hammered, 3 frosted, and how
+// deep, from 0 for flat to 1.
+uniform float pattern;
+uniform float pattern_depth;
+// The pointer, in the element's logical pixels, with the intensity of the light it carries in z,
+// 0 for none.
+uniform vec3 pointer;
+
 // Shapes closer than this melt into one piece.
 const float MELT = 20.0;
 // How much a light of intensity 1 darkens the bezel away from it and brightens it towards it.
 const float SHADING = 0.6;
+// The steepest a pattern pressed in all the way slopes.
+const float PATTERN_SLOPE = 0.6;
+// How wide a reeded rib is, how far apart hammered dimples are, and how fine frost's grain is,
+// in logical pixels.
+const float REED = 14.0;
+const float DIMPLE = 28.0;
+const float GRAIN = 3.0;
+// How high over the screen the pointer's light is, in logical pixels, which is also about how far
+// from it it fades to half, and how big it looks.
+const float POINTER_HEIGHT = 80.0;
+const float POINTER_SIZE = 0.15;
 
 // The radius of the corner of a box nearest `q`, from the box's middle, fit to the box.
 float corner_radius(vec2 q, vec2 half_size, vec4 radii) {
@@ -211,6 +233,67 @@ float hash12(vec2 p) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
+vec2 hash22(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+// Smooth noise from 0 to 1, varying over about one unit.
+float value_noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float bottom = mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x);
+    float top = mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x);
+    return mix(bottom, top, u.y);
+}
+
+// The slope of the pattern's surface at `p`, uphill, at its steepest about 1.
+vec2 pattern_gradient(vec2 p) {
+    if (pattern < 0.5) {
+        return vec2(0.0);
+    }
+    if (pattern < 1.5) {
+        // Each rib is a rounded ridge, rising from a crease to its top and falling to the next.
+        float across = fract(p.x / REED) * 2.0 - 1.0;
+        return vec2(-across, 0.0);
+    }
+    if (pattern < 2.5) {
+        // Each dimple is a shallow bowl around the nearest of points scattered one to a cell,
+        // rising away from its middle to the creases where dimples meet.
+        vec2 cell = floor(p / DIMPLE);
+        vec2 nearest = vec2(0.0);
+        float best = 1e9;
+        for (int j = -1; j <= 1; j++) {
+            for (int i = -1; i <= 1; i++) {
+                vec2 c = cell + vec2(float(i), float(j));
+                vec2 away = p - (c + 0.15 + 0.7 * hash22(c)) * DIMPLE;
+                float d = dot(away, away);
+                if (d < best) {
+                    best = d;
+                    nearest = away;
+                }
+            }
+        }
+        return nearest / (0.6 * DIMPLE);
+    }
+    // Frost's grain: smooth noise, at two sizes so it doesn't look like a grid.
+    vec2 q = p / GRAIN;
+    vec2 dx = vec2(0.5, 0.0);
+    vec2 dy = vec2(0.0, 0.5);
+    vec2 fine = vec2(
+        value_noise(q + dx) - value_noise(q - dx),
+        value_noise(q + dy) - value_noise(q - dy)
+    );
+    q = q * 0.37 + 17.0;
+    vec2 coarse = vec2(
+        value_noise(q + dx) - value_noise(q - dx),
+        value_noise(q + dy) - value_noise(q - dy)
+    );
+    return fine + 0.6 * coarse;
+}
+
 void main() {
     vec2 p = (input_to_geo * vec3(v_coords, 1.0)).xy * geo_size;
     float d = glass(p);
@@ -256,18 +339,24 @@ void main() {
     float rise4 = max(1.0 - rim * rim * rim * rim, 0.0);
     float height = thickness * pow(rise4, 0.25);
     float slope = thickness / width * rim * rim * rim / max(pow(rise4, 0.75), 1e-4);
+    // Which way and how steeply the surface leans out: the bezel's fall, and the pattern pressed
+    // into the top, which the bezel's curve takes over towards the edge.
+    vec2 lean = normal * slope
+        - pattern_gradient(p) * pattern_depth * PATTERN_SLOPE * (1.0 - rim);
+    float steepness = length(lean);
+    vec2 facing = steepness > 1e-6 ? lean / steepness : vec2(0.0);
     // The surface's normal, up out of the screen.
-    vec3 surface = normalize(vec3(normal * slope, 1.0));
+    vec3 surface = normalize(vec3(lean, 1.0));
 
     // Looking straight down, the ray meets the surface tilted by `tilt` and bends towards its
     // normal, so it lands on what's behind further in: the bezel magnifies.
-    float tilt = atan(slope);
+    float tilt = atan(steepness);
     float bent = asin(sin(tilt) / max(refractive_index, 1.0));
     // Never past the middle, where it would show the far side's background.
     float bend = min(height * tan(tilt - bent), max(inradius + depth, 0.0));
 
     // What's behind, seen through the bezel, red bent more than blue.
-    vec2 shift = (geo_to_input * vec3(-normal * bend / geo_size, 0.0)).xy;
+    vec2 shift = (geo_to_input * vec3(-facing * bend / geo_size, 0.0)).xy;
     vec4 red = texture2D(tex, v_coords + shift * (1.0 + dispersion));
     vec4 green = texture2D(tex, v_coords + shift);
     vec4 blue = texture2D(tex, v_coords + shift * (1.0 - dispersion));
@@ -277,6 +366,12 @@ void main() {
     const vec3 luma = vec3(0.2126, 0.7152, 0.0722);
     behind.rgb = mix(vec3(dot(behind.rgb, luma)), behind.rgb, saturation);
     behind.rgb += (hash12(gl_FragCoord.xy) - 0.5) * noise * behind.a;
+
+    // Light takes on the glass's colour the further it comes through it: down through it, along
+    // the bent ray, and, the more the surface faces sideways, along inside the bezel from the
+    // edge, so the colour deepens towards the edge.
+    float through = height / max(cos(tilt - bent), 0.2) + 2.0 * thickness * (1.0 - surface.z);
+    behind.rgb *= exp(-absorbance * through / max(thickness, 1.0));
 
     // Each light lights the bezel's side facing it, and shades the far side, against how it
     // lights the flat middle.
@@ -291,6 +386,14 @@ void main() {
         shine += light.w * specular(surface, light.xyz, size);
     }
     behind.rgb *= max(1.0 + SHADING * shade, 0.0);
+
+    // The pointer's light, over it: it glints on the parts of the surface facing it, fading as
+    // they get further from it.
+    if (pointer.z > 0.0) {
+        vec3 to_pointer = vec3(pointer.xy - p, POINTER_HEIGHT);
+        float falloff = POINTER_HEIGHT * POINTER_HEIGHT / dot(to_pointer, to_pointer);
+        shine += pointer.z * falloff * specular(surface, normalize(to_pointer), POINTER_SIZE);
+    }
 
     // Seen edge on, glass reflects more and lets less through (Schlick's Fresnel).
     float f0 = (refractive_index - 1.0) / (refractive_index + 1.0);

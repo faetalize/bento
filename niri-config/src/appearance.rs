@@ -893,6 +893,18 @@ pub struct Glass {
     /// broad dim glow, to 1 for polished, which keeps it a tight bright spot: the reflection's
     /// side of the roughness that blurs what's behind.
     pub sheen: f64,
+    /// The colour of the glass itself: the colour light takes on through as much glass as it's
+    /// thick, deeper where it comes through more, as along inside the bezel. Its alpha is how
+    /// strong the colour is, from 0 for clear.
+    pub color: Color,
+    /// The pattern pressed into the glass's surface, which bends what's behind and catches the
+    /// light like its edge does.
+    pub pattern: GlassPattern,
+    /// How deep the pattern is pressed, from 0 for flat to 1.
+    pub pattern_depth: f64,
+    /// How bright the light the pointer carries is, from 0 for none: it glints on the glass near
+    /// the pointer.
+    pub pointer_light: f64,
     /// The lights glass catches, in order.
     pub lights: [Option<GlassLight>; MAX_GLASS_LIGHTS],
 }
@@ -906,9 +918,38 @@ impl Default for Glass {
             dispersion: 0.14,
             reflection: 0.5,
             sheen: 0.6,
+            // Soda-lime glass, like a window's: faintly green, most where light comes along
+            // inside it.
+            color: Color::from_rgba8_unpremul(0xf0, 0xf7, 0xf4, 0xff),
+            pattern: GlassPattern::Smooth,
+            pattern_depth: 0.5,
+            pointer_light: 0.5,
             lights: [Some(GlassLight::default()), None, None, None],
         }
     }
+}
+
+impl Glass {
+    /// How much of each of red, green and blue glass as thick as it is takes out of the light
+    /// coming through: minus the log of its colour, made as clear as its alpha says.
+    pub fn absorbance(&self) -> [f64; 3] {
+        let [r, g, b, a] = self.color.to_array_unpremul().map(f64::from);
+        // Glass that lets nothing of a colour through would make what's behind black.
+        [r, g, b].map(|x| -(1. - a * (1. - x)).max(1. / 255.).ln())
+    }
+}
+
+/// A pattern pressed into glass's surface.
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum GlassPattern {
+    #[default]
+    Smooth,
+    /// Ribs running down the glass, each a rounded ridge.
+    Reeded,
+    /// Shallow dimples, like hammered metal.
+    Hammered,
+    /// A fine, uneven grain that glitters.
+    Frosted,
 }
 
 /// A light glass catches: far away, so it lights every window from the same direction.
@@ -951,6 +992,14 @@ pub struct GlassPart {
     pub reflection: Option<FloatOrInt<0, 1>>,
     #[knuffel(child, unwrap(argument))]
     pub sheen: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub color: Option<Color>,
+    #[knuffel(child, unwrap(argument))]
+    pub pattern: Option<GlassPattern>,
+    #[knuffel(child, unwrap(argument))]
+    pub pattern_depth: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub pointer_light: Option<FloatOrInt<0, 10>>,
     /// The lights, replacing the default one when there are any.
     #[knuffel(children(name = "light"))]
     pub lights: Vec<GlassLightPart>,
@@ -979,8 +1028,11 @@ impl MergeWith<GlassPart> for Glass {
             refractive_index,
             dispersion,
             reflection,
-            sheen
+            sheen,
+            pattern_depth,
+            pointer_light
         );
+        merge_clone!((self, part), color, pattern);
         // A later `glass` with lights replaces the lights; parsing refuses more than fit.
         if !part.lights.is_empty() {
             self.lights = [None; MAX_GLASS_LIGHTS];

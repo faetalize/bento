@@ -2229,6 +2229,15 @@ mod tests {
                     dispersion: 0.14,
                     reflection: 0.5,
                     sheen: 0.6,
+                    color: Color {
+                        r: 0.9411765,
+                        g: 0.96862745,
+                        b: 0.95686275,
+                        a: 1.0,
+                    },
+                    pattern: Smooth,
+                    pattern_depth: 0.5,
+                    pointer_light: 0.5,
                     lights: [
                         Some(
                             GlassLight {
