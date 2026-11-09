@@ -1,12 +1,17 @@
 // bento's own shell: three islands of glass along the top of each output. The clock opens into
-// the calendar.
+// the calendar. While a window is fullscreen on their output the islands leave the screen, and
+// the pointer at the top edge brings them back.
 
 import {
   box, text, image, input, root, outputs, every, on, morph, style, reserve, keyboard, action,
-  apps, launch, focus, focusedOutput, grow, shrink,
+  apps, launch, focus, focusedOutput, grow, shrink, after, cancel,
 } from "bento:ui";
 
 const HEIGHT = 36;
+// How near the top edge the pointer brings the islands back over a fullscreen window, and how
+// long after it leaves them they go again, in milliseconds.
+const EDGE = 2;
+const LINGER = 400;
 // bento's gaps: the islands sit that far from the screen's edges, and windows that far below.
 let gaps = style().gaps ?? 8;
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -42,6 +47,29 @@ function island(props, children) {
 
 const shells = new Map();
 let workspaces = {};
+// Which outputs show a fullscreen window.
+let fullscreen = {};
+
+// Sends an output's islands off the top of the screen while a window is fullscreen there, unless
+// the pointer is at them or the calendar is open, and brings them back otherwise. Gone, they're
+// left out, so nothing is drawn over the window.
+function placeIslands(output) {
+  const shell = shells.get(output);
+  if (!shell) return;
+  const away = Boolean(fullscreen[output]) && !shell.near && !shell.open;
+  if (away === shell.away) return;
+  shell.away = away;
+  // The pointer brings them back at the screen's edge, and keeps them while it's on them.
+  shell.zone.set({ height: away ? EDGE : gaps + HEIGHT + gaps });
+  if (away) {
+    shell.bar.set({
+      top: -(HEIGHT + gaps),
+      onSettle: () => shell.away && shell.bar.set({ hidden: true }),
+    });
+  } else {
+    shell.bar.set({ hidden: false, top: gaps });
+  }
+}
 
 function workspaceButtons(output) {
   return (workspaces[output] ?? []).map((ws) => {
@@ -111,6 +139,7 @@ function build(output) {
     if (open) swap([time, shortDate], [bigTime, longDate]);
     else swap([bigTime, longDate], [time, shortDate]);
     updateKeyboard();
+    placeIslands(output);
   };
   const middle = island({ gap: 10, onClick: () => shell.setOpen(!shell.open) }, [
     shortDate,
@@ -131,19 +160,46 @@ function build(output) {
     [side("start", left), middle, side("end", right)],
   );
   top.add(bar);
+  // Where the pointer keeps the islands on screen over a fullscreen window: they go a moment
+  // after it leaves, so that brushing past the edge doesn't send them back and forth.
+  const zone = box({
+    position: "absolute", top: 0, left: 0, right: 0, height: gaps + HEIGHT + gaps, animate: false,
+    onNear: ({ inside }) => {
+      if (shell.leaving !== undefined) cancel(shell.leaving);
+      shell.leaving = undefined;
+      if (inside) {
+        shell.near = true;
+        placeIslands(output);
+      } else {
+        shell.leaving = after(LINGER, () => {
+          shell.near = false;
+          placeIslands(output);
+        });
+      }
+    },
+  });
+  top.add(zone);
   reserve(output, { top: gaps + HEIGHT });
   Object.assign(shell, {
-    bar, left, buttons, time, shortDate, bigTime, longDate, network, volume, battery, charge,
+    bar, zone, left, buttons, time, shortDate, bigTime, longDate, network, volume, battery,
+    charge, away: false, near: false,
   });
   shells.set(output, shell);
+  placeIslands(output);
 }
 
 on("style", (event) => {
   gaps = event.style.gaps ?? gaps;
   for (const [output, shell] of shells) {
-    shell.bar.set({ top: gaps, left: gaps, right: gaps });
+    shell.bar.set({ top: shell.away ? -(HEIGHT + gaps) : gaps, left: gaps, right: gaps });
+    shell.zone.set({ height: shell.away ? EDGE : gaps + HEIGHT + gaps });
     reserve(output, { top: gaps + HEIGHT });
   }
+});
+
+on("fullscreen", (event) => {
+  fullscreen = event.outputs;
+  for (const output of shells.keys()) placeIslands(output);
 });
 
 for (const output of outputs()) build(output);
@@ -193,8 +249,8 @@ function updateKeyboard() {
   keyboard(launcher !== null || [...shells.values()].some((s) => s.open));
 }
 
-// The launcher: a glass search bar in the middle of the focused output, above everything,
-// that finds apps as you type, its results opening below it. It grows out of a point, and
+// The launcher: a glass search bar in the middle of the focused output, above the windows, that
+// finds apps as you type, its results opening below it. It grows out of a point, and
 // shrinks back into one.
 const RESULTS = 8;
 // How tall the launcher is with all its results.
@@ -222,7 +278,7 @@ function launcherFrame(output) {
     // search, stays where it is as the results come and go.
     const frame = box({
       position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
-      layer: "overlay", direction: "column", align: "center", justify: "center",
+      direction: "column", align: "center", justify: "center",
     });
     frame.room = box({ height: LAUNCHER_HEIGHT, direction: "column", align: "center" });
     frame.add(frame.room);
@@ -238,6 +294,8 @@ const launchers = new Map();
 
 function openLauncher(output) {
   if (!output || !root(output)) return;
+  // One thing open at a time: the shell is one layer, and the launcher is its own thing.
+  shells.forEach((shell) => shell.setOpen(false));
   const kept = launchers.get(output);
   if (kept) {
     launcher = { ...kept, rows: kept.rows, matches: [], selected: 0, all: apps() };

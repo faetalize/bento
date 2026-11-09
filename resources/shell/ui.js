@@ -2,8 +2,11 @@
 //
 // A node takes props: layout (direction, gap, padding, width, height, grow, align, justify,
 // position, top/left/right/bottom, display), look (fill, material, tint, radius, border,
-// opacity, scale, blur, clip, color, cursor, layer, hidden), text (text, size, weight, family,
+// opacity, scale, blur, clip, color, cursor, hidden), text (text, size, weight, family,
 // textAlign, tabular) and motion.
+//
+// The shell is one layer, drawn in the order its nodes are added: above the windows, fullscreen
+// ones too, and under other programs' overlay surfaces.
 //
 // bento moves a node to where its layout and look say with critically damped springs, which
 // keep their speed when sent somewhere else on the way. What a script moves besides the layout:
@@ -26,15 +29,18 @@
 // - onHover: the pointer came onto it or left it, with `inside`.
 // - onScroll: scrolled over it, by `dx` and `dy`.
 // - onSettle: its motion settled.
+// - onNear: the pointer came into its place or left it, with `inside`, whatever else is there,
+//   in the shell or under it. It takes nothing from the pointer: a zone to know it's near.
 //
-// Shapes and what has handlers take the pointer from what's below them; the rest lets it
-// through. `cursor` is how the pointer looks over a node: "default", "pointer", "text" or
+// Shapes and what has a click, press, hover or scroll handler take the pointer from what's below
+// them; the rest lets it through. `cursor` is how the pointer looks over a node: "default", "pointer", "text" or
 // "grab".
 
 const native = globalThis.__bento;
 
 const HANDLERS = [
   "onClick", "onMiddleClick", "onRightClick", "onPress", "onHover", "onScroll", "onSettle",
+  "onNear",
 ];
 const CLICKS = { 1: "onClick", 2: "onMiddleClick", 3: "onRightClick" };
 
@@ -78,6 +84,7 @@ export class Node {
         has(["onHover"]) && "hover",
         has(["onSettle"]) && "settle",
         has(["onScroll"]) && "scroll",
+        has(["onNear"]) && "near",
       ].filter(Boolean);
     }
     native.set(this.id, JSON.stringify(rest));
@@ -381,9 +388,10 @@ export function cancel(id) {
   timers.delete(id);
 }
 
-// Listens to bento's events: "outputs", "workspaces", "style", "key" while the shell has the
-// keyboard, "outside", a press anywhere off the shell, to close what's open, and "launcher",
-// the launcher's shortcut. The data program's come as events too: "audio" `{ available, volume,
+// Listens to bento's events: "outputs", "workspaces", "style", "fullscreen" `{ outputs: { name:
+// whether it shows a fullscreen window } }`, "key" while the shell has the keyboard, "outside",
+// a press on the desktop off the shell, to close what's open, and "launcher", the launcher's
+// shortcut. The data program's come as events too: "audio" `{ available, volume,
 // muted }`, "network" `{ connected, name, wifiStrength, icon }`, "battery" `{ present,
 // percentage, charging, icon }`, "tray" `{ items: [{ id, title, icon, menu, attention }] }` and
 // "notification" `{ event: "shown" | "replaced" | "closed", id, app, appIcon, summary, body,
@@ -418,6 +426,9 @@ export function __dispatch(json) {
       return;
     case "settled":
       handlers.get(event.id)?.onSettle?.(event);
+      return;
+    case "near":
+      handlers.get(event.id)?.onNear?.(event);
       return;
     case "scroll":
       handlers.get(event.id)?.onScroll?.(event);

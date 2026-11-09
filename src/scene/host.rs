@@ -71,18 +71,23 @@ pub struct SceneHost {
     loaded_mtimes: Option<Vec<Option<SystemTime>>>,
     renderer: Option<Renderer>,
     renderer_failed: bool,
-    /// Each output's scene with the top layer, and above overlay surfaces.
-    outputs: HashMap<(String, bool), OutputScene>,
+    /// Each output's scene.
+    outputs: HashMap<String, OutputScene>,
     last_advance: Option<Instant>,
     /// Goes up whenever the scene changed or moved.
     generation: u64,
     moving: bool,
     sent_workspaces: Option<serde_json::Value>,
+    sent_fullscreen: Option<serde_json::Value>,
     known_outputs: Vec<String>,
     /// Where the pointer is over the shell: the output and the point on it.
     pointer: Option<(String, [f32; 2])>,
     /// The node the pointer is over that hears it come and go.
     hovered: Option<NodeId>,
+    /// Where the pointer is on its output, whatever is under it, unless that's above the shell.
+    pointer_at: Option<(String, [f32; 2])>,
+    /// The nodes the pointer is in the place of that hear it near.
+    near: Vec<NodeId>,
     /// The data program, `bento-shell --data`, while it runs, and its stdin.
     data: Option<(std::process::Child, std::process::ChildStdin)>,
     /// When to start the data program again after it went.
@@ -130,6 +135,7 @@ impl SceneHost {
                     self.shell = Some(shell);
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
                     self.sent_workspaces = None;
+                    self.sent_fullscreen = None;
                     self.generation += 1;
                 }
                 Err(err) => warn!("error loading the shell: {err:?}"),
@@ -154,8 +160,7 @@ impl SceneHost {
             .collect();
         for name in &gone {
             scene.remove_output(name);
-            self.outputs.remove(&(name.clone(), false));
-            self.outputs.remove(&(name.clone(), true));
+            self.outputs.remove(name);
         }
         let added: Vec<String> = outputs
             .iter()
@@ -275,6 +280,37 @@ impl SceneHost {
         cursor
     }
 
+    /// The pointer is at `at`, the output and the point on it, whatever is under it there, or
+    /// with `None` nowhere on the desktop: over something above the shell, or gone. Tells the
+    /// nodes that hear it near which of them it came to and left, and says whether any did.
+    pub fn pointer_at(&mut self, at: Option<(&str, [f32; 2])>) -> bool {
+        self.pointer_at = at.map(|(name, point)| (String::from(name), point));
+        self.update_near()
+    }
+
+    /// Tells the nodes that hear the pointer near which of them it's now in the place of, as it
+    /// moves and as they do, and says whether that changed.
+    fn update_near(&mut self) -> bool {
+        let Some(shell) = &self.shell else {
+            return false;
+        };
+        let near = match &self.pointer_at {
+            Some((name, point)) => shell.scene.borrow().near(name, *point),
+            None => Vec::new(),
+        };
+        if near == self.near {
+            return false;
+        }
+        let before = std::mem::replace(&mut self.near, near.clone());
+        for id in before.iter().filter(|id| !near.contains(id)) {
+            shell.send(&serde_json::json!({ "type": "near", "id": id, "inside": false }));
+        }
+        for id in near.iter().filter(|id| !before.contains(id)) {
+            shell.send(&serde_json::json!({ "type": "near", "id": id, "inside": true }));
+        }
+        true
+    }
+
     /// A press by `button`, 1, 2 or 3 for left, middle and right, or a touch or a tool's tip as
     /// the left one, keyed by `key` until it ends, at `at` on the shell, or elsewhere with
     /// `None`. A press elsewhere tells the shell, so it can close what's open. Says whether the
@@ -380,6 +416,17 @@ impl SceneHost {
         self.sent_workspaces = Some(outputs);
     }
 
+    /// Tells the shell which outputs show a fullscreen window, by name, when that changes.
+    pub fn set_fullscreen(&mut self, outputs: serde_json::Value) {
+        if self.sent_fullscreen.as_ref() == Some(&outputs) {
+            return;
+        }
+        if let Some(shell) = &self.shell {
+            shell.send(&serde_json::json!({ "type": "fullscreen", "outputs": outputs }));
+        }
+        self.sent_fullscreen = Some(outputs);
+    }
+
     /// When the shell next needs to run, for its timers.
     pub fn next_timer(&self) -> Option<Instant> {
         self.shell.as_ref()?.next_timer()
@@ -419,14 +466,16 @@ impl SceneHost {
         for id in settled {
             shell.send(&serde_json::json!({ "type": "settled", "id": id }));
         }
-        moving
+        // What hears the pointer near may have moved under it, and what it does then is drawn.
+        let heard = self.update_near();
+        moving || heard
     }
 
     /// Whether the shell covers `point` on output `output`, so it takes the pointer there.
-    pub fn covers(&self, output: &str, point: [f32; 2], overlay: bool) -> bool {
+    pub fn covers(&self, output: &str, point: [f32; 2]) -> bool {
         self.shell
             .as_ref()
-            .is_some_and(|shell| shell.scene.borrow().covers(output, point, overlay))
+            .is_some_and(|shell| shell.scene.borrow().covers(output, point))
     }
 
     /// Draws output `output`'s scene, `size` physical pixels at `scale`, if it changed.
@@ -454,11 +503,11 @@ impl SceneHost {
         vk.set_icon_theme(icon_theme);
 
         let scene = shell.scene.borrow();
-        for overlay in [false, true] {
-            let items = scene.draw_layer(output, overlay);
+        {
+            let items = scene.draw(output);
             let state = self
                 .outputs
-                .entry((String::from(output), overlay))
+                .entry(String::from(output))
                 .or_insert_with(|| OutputScene {
                     targets: Vec::new(),
                     next: 0,
@@ -468,7 +517,7 @@ impl SceneHost {
                     drawn: None,
                 });
             if state.drawn == Some((self.generation, scale)) {
-                continue;
+                return;
             }
             state.drawn = Some((self.generation, scale));
             state.glass = items
@@ -484,13 +533,13 @@ impl SceneHost {
                     _ => None,
                 })
                 .collect();
-            // Nothing in a layer, like the overlay most of the time, takes no images.
+            // Showing nothing, it takes no images, and nothing is drawn over what's below.
             if items.is_empty() {
                 state.shown = None;
                 for (target, _) in state.targets.drain(..) {
                     vk.destroy_target(target);
                 }
-                continue;
+                return;
             }
             if state.targets.first().is_some_and(|(t, _)| t.size != size) {
                 for (target, _) in state.targets.drain(..) {
@@ -517,7 +566,7 @@ impl SceneHost {
                     }
                 }
                 if state.targets.is_empty() {
-                    continue;
+                    return;
                 }
                 state.next = 0;
             }
@@ -525,7 +574,7 @@ impl SceneHost {
             let (target, texture) = &state.targets[state.next];
             if let Err(err) = vk.render(target, &items, scale as f32) {
                 warn!("error drawing the scene: {err:?}");
-                continue;
+                return;
             }
             state.shown = Some(TextureBuffer::from_texture(
                 renderer,
@@ -538,16 +587,13 @@ impl SceneHost {
         }
     }
 
-    /// Pushes what output `output`'s scene shows with the top layer, or above overlay surfaces
-    /// with `overlay`, over its glass.
+    /// Pushes what output `output`'s scene shows, over its glass.
     pub fn render_content(
         &self,
         output: &str,
-        overlay: bool,
         push: &mut dyn FnMut(PrimaryGpuTextureRenderElement),
     ) {
-        let key = (String::from(output), overlay);
-        let Some(buffer) = self.outputs.get(&key).and_then(|s| s.shown.as_ref()) else {
+        let Some(buffer) = self.outputs.get(output).and_then(|s| s.shown.as_ref()) else {
             return;
         };
         push(PrimaryGpuTextureRenderElement(
@@ -562,18 +608,16 @@ impl SceneHost {
         ));
     }
 
-    /// Pushes the glass under output `output`'s scene with the top layer, or above overlay
-    /// surfaces with `overlay`.
+    /// Pushes the glass under output `output`'s scene.
     pub fn render_glass(
         &self,
         output: &str,
-        overlay: bool,
         scale: f64,
         blur: niri_config::Blur,
         frame: GlassFrame,
         push: &mut dyn FnMut(BackgroundEffectElement),
     ) {
-        let Some(state) = self.outputs.get(&(String::from(output), overlay)) else {
+        let Some(state) = self.outputs.get(output) else {
             return;
         };
         if !state.glass.is_empty() {
@@ -615,14 +659,20 @@ mod tests {
         host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
+        // How much the launcher draws on an output: what's below the islands.
         let overlay = |host: &SceneHost, output: &str| {
             host.shell
                 .as_ref()
                 .unwrap()
                 .scene
                 .borrow()
-                .draw_layer(output, true)
-                .len()
+                .draw(output)
+                .into_iter()
+                .filter(|item| match item {
+                    Item::Shape { rect, .. } | Item::Image { rect, .. } => rect[1] > 100.,
+                    Item::Text { origin, .. } => origin[1] > 100.,
+                })
+                .count()
         };
 
         host.toggle_launcher(Some(String::from("DP-2")));
@@ -630,23 +680,7 @@ mod tests {
         assert!(overlay(&host, "DP-2") > 0, "it opens on the focused output");
         // In the middle of the output at its tallest, 544 high, and only the search bar until
         // something's typed.
-        let panel = host
-            .shell
-            .as_ref()
-            .unwrap()
-            .scene
-            .borrow()
-            .draw_layer("DP-2", true)
-            .into_iter()
-            .find_map(|item| match item {
-                Item::Shape {
-                    rect,
-                    material: Material::Glass,
-                    ..
-                } => Some(rect),
-                _ => None,
-            })
-            .unwrap();
+        let panel = glass_below_islands(&host, "DP-2").pop().unwrap();
         assert!((panel[1] - (1440. - 544.) / 2.).abs() < 1., "{panel:?}");
         assert!(panel[3] < 100., "only the bar: {panel:?}");
         assert_eq!(overlay(&host, "DP-1"), 0);
@@ -665,7 +699,10 @@ mod tests {
             host.key(&key(&c.to_string(), &c.to_string()));
         }
         settle(&mut host, &mut now);
-        assert!(overlay(&host, "DP-2") > 0 && overlay(&host, "DP-2") <= before, "only the bar");
+        assert!(
+            overlay(&host, "DP-2") > 0 && overlay(&host, "DP-2") <= before,
+            "only the bar"
+        );
 
         host.key(&key("Escape", ""));
         settle(&mut host, &mut now);
@@ -680,43 +717,32 @@ mod tests {
         host.toggle_launcher(Some(String::from("DP-2")));
         now += std::time::Duration::from_millis(30);
         host.advance(now, Some(1.));
-        let glass = host
-            .shell
+        assert_eq!(glass_below_islands(&host, "DP-2").len(), 1, "one launcher");
+    }
+
+    /// The glass drawn on `output` below its islands, which is the launcher's.
+    fn glass_below_islands(host: &SceneHost, output: &str) -> Vec<[f32; 4]> {
+        host.shell
             .as_ref()
             .unwrap()
             .scene
             .borrow()
-            .draw_layer("DP-2", true)
+            .draw(output)
             .into_iter()
-            .filter(|item| {
-                matches!(
-                    item,
-                    Item::Shape {
-                        material: Material::Glass,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(glass, 1, "one launcher");
-    }
-
-    /// The launcher's glass on DP-1, if it shows.
-    fn launcher_glass(host: &SceneHost) -> Option<[f32; 4]> {
-        host.shell
-            .as_ref()?
-            .scene
-            .borrow()
-            .draw_layer("DP-1", true)
-            .into_iter()
-            .find_map(|item| match item {
+            .filter_map(|item| match item {
                 Item::Shape {
                     rect,
                     material: Material::Glass,
                     ..
-                } => Some(rect),
+                } if rect[1] > 100. => Some(rect),
                 _ => None,
             })
+            .collect()
+    }
+
+    /// The launcher's glass on DP-1, if it shows.
+    fn launcher_glass(host: &SceneHost) -> Option<[f32; 4]> {
+        glass_below_islands(host, "DP-1").pop()
     }
 
     #[test]
@@ -781,6 +807,72 @@ mod tests {
     }
 
     #[test]
+    fn the_islands_leave_for_a_fullscreen_window_and_the_pointer_at_the_top_brings_them_back() {
+        let mut host = SceneHost::default();
+        let outputs = [
+            (String::from("DP-1"), (1920., 1080.)),
+            (String::from("DP-2"), (2560., 1440.)),
+        ];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        let drawn = |host: &SceneHost, output: &str| {
+            host.shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .draw(output)
+                .len()
+        };
+        assert!(drawn(&host, "DP-1") > 0);
+
+        host.set_fullscreen(serde_json::json!({ "DP-1": true, "DP-2": false }));
+        settle(&mut host, &mut now);
+        // Nothing is drawn, so nothing is over the window, and it has the pointer everywhere.
+        assert_eq!(drawn(&host, "DP-1"), 0, "they're gone");
+        assert!(!host.covers("DP-1", [960., 26.]));
+        assert!(!host.covers("DP-1", [960., 0.]));
+        assert!(drawn(&host, "DP-2") > 0, "only where the window is");
+
+        // The pointer at the top edge brings them back, and on them it keeps them.
+        host.pointer_at(Some(("DP-1", [960., 0.])));
+        settle(&mut host, &mut now);
+        assert!(drawn(&host, "DP-1") > 0, "they're back");
+        assert!(host.covers("DP-1", [960., 26.]));
+        host.pointer_at(Some(("DP-1", [960., 30.])));
+        settle(&mut host, &mut now);
+        assert!(drawn(&host, "DP-1") > 0, "they stay under the pointer");
+
+        // A moment after it leaves them, they go again.
+        host.pointer_at(Some(("DP-1", [960., 400.])));
+        settle(&mut host, &mut now);
+        assert_eq!(drawn(&host, "DP-1"), 0, "they're gone again");
+
+        // The calendar, opened, keeps them, and they're back for good without the window.
+        host.pointer_at(Some(("DP-1", [960., 0.])));
+        settle(&mut host, &mut now);
+        host.press(1, 1, Some(("DP-1", [960., 26.])));
+        host.release(1, 1, Some(("DP-1", [960., 26.])));
+        host.pointer_at(Some(("DP-1", [960., 900.])));
+        settle(&mut host, &mut now);
+        assert!(drawn(&host, "DP-1") > 0, "the calendar keeps them");
+        host.key(&EngineKey {
+            name: String::from("Escape"),
+            text: String::new(),
+            modifiers: [false; 4],
+            pressed: true,
+            repeat: false,
+        });
+        settle(&mut host, &mut now);
+        assert_eq!(drawn(&host, "DP-1"), 0, "closed, they go");
+        host.set_fullscreen(serde_json::json!({ "DP-1": false, "DP-2": false }));
+        settle(&mut host, &mut now);
+        assert!(drawn(&host, "DP-1") > 0);
+        assert!(host.covers("DP-1", [960., 26.]));
+    }
+
+    #[test]
     fn with_animations_off_the_launcher_is_there_at_once() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
@@ -821,7 +913,7 @@ mod tests {
                 .unwrap()
                 .scene
                 .borrow()
-                .draw_layer("DP-1", true)
+                .draw("DP-1")
                 .into_iter()
                 .find_map(|item| match item {
                     Item::Shape { rect, .. } if rect[2] < 3. => Some(rect[0]),
@@ -902,7 +994,7 @@ mod tests {
         settle(&mut host, &mut now);
 
         // The clock's island is a pill: its rounded corner isn't the shell's.
-        assert!(host.covers("DP-1", [960., 26.], false));
+        assert!(host.covers("DP-1", [960., 26.]));
         let island = host
             .shell
             .as_ref()
@@ -921,7 +1013,7 @@ mod tests {
             })
             .nth(1)
             .unwrap();
-        assert!(!host.covers("DP-1", [island[0] + 1., island[1] + 1.], false));
+        assert!(!host.covers("DP-1", [island[0] + 1., island[1] + 1.]));
 
         let click = |host: &mut SceneHost| {
             let at = Some(("DP-1", [960., 26.]));

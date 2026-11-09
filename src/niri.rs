@@ -393,6 +393,9 @@ pub struct Niri {
     /// it knows them by.
     pub engine_timers: HashMap<(u64, u64), RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
+    /// Whether the keyboard focus is on something above bento's own shell, which then gets the
+    /// keys even if the shell wants them.
+    pub focus_above_shell: bool,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
     pub is_fdo_idle_inhibited: Arc<AtomicBool>,
@@ -642,6 +645,9 @@ pub struct PointContents {
     pub node: Option<NodeHit>,
     // If the point is over bento's own shell, the output's name and the point on it.
     pub shell: Option<(String, [f32; 2])>,
+    // Point is over something above bento's own shell: an overlay surface, or one of bento's own
+    // screens. A press there isn't one on the desktop around what the shell shows.
+    pub above_shell: bool,
 }
 
 /// A press on a node that the tiling layout draws, by a mouse button, a touch or a tablet tool's
@@ -1290,7 +1296,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, false);
-        self.niri.update_shell_hover(&under);
+        self.niri.update_shell_hover(&under, location);
 
         pointer.motion(
             self,
@@ -1462,6 +1468,8 @@ impl State {
             KeyboardFocus::LockScreen { .. } => KeyboardOwner::LockScreen,
             _ => KeyboardOwner::Other,
         });
+        // What's above bento's own shell takes the keyboard from it.
+        self.niri.focus_above_shell = self.niri.is_above_shell(&focus);
         // While it holds the keyboard, or bento's own shell does, the apps have no focus.
         let withheld = self.niri.keyboard_held();
 
@@ -3040,6 +3048,7 @@ impl Niri {
 
             seat,
             keyboard_focus: KeyboardFocus::Layout { surface: None },
+            focus_above_shell: false,
             layer_shell_on_demand_focus: None,
             idle_inhibiting_surfaces: HashSet::new(),
             is_fdo_idle_inhibited: Arc::new(AtomicBool::new(false)),
@@ -3792,8 +3801,10 @@ impl Niri {
         // consistent with the visuals.
 
         if self.exit_confirm_dialog.is_open() {
+            rv.above_shell = true;
             return rv;
         } else if self.is_locked() {
+            rv.above_shell = true;
             let Some(state) = self.output_state.get(output) else {
                 return rv;
             };
@@ -3819,6 +3830,7 @@ impl Niri {
         }
 
         if self.screenshot_ui.is_open() || self.window_mru_ui.is_open() {
+            rv.above_shell = true;
             return rv;
         }
 
@@ -3904,40 +3916,35 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
-        // bento's own shell: what's drawn with the top layer, over it, and what's drawn above
-        // overlay surfaces, over everything.
-        let shell_under = |overlay: bool| {
+        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
+        let shell_under = || {
             let name = output.name();
             let point = [pos_within_output.x as f32, pos_within_output.y as f32];
             self.scene
                 .as_ref()
-                .filter(|scene| scene.covers(&name, point, overlay))
+                .filter(|scene| scene.covers(&name, point))
                 .map(|_| (name, point))
         };
-        if let Some(hit) = shell_under(true) {
-            rv.shell = Some(hit);
-            return rv;
-        }
 
         let mut under =
             layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
+        rv.above_shell = under.is_some();
 
         let is_overview_open = self.layout.is_overview_open();
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
-            under = under
-                .or_else(interactive_moved_window_under)
-                .or_else(node_under)
-                .or_else(window_under);
             if under.is_none() {
-                if let Some(hit) = shell_under(false) {
+                if let Some(hit) = shell_under() {
                     rv.shell = Some(hit);
                     return rv;
                 }
             }
             under = under
+                .or_else(interactive_moved_window_under)
+                .or_else(node_under)
+                .or_else(window_under)
                 .or_else(|| layer_popup_under(Layer::Top))
                 .or_else(|| layer_toplevel_under(Layer::Top))
                 .or_else(|| layer_popup_under(Layer::Bottom))
@@ -3952,7 +3959,7 @@ impl Niri {
             }
 
             if under.is_none() {
-                if let Some(hit) = shell_under(false) {
+                if let Some(hit) = shell_under() {
                     rv.shell = Some(hit);
                     return rv;
                 }
@@ -4008,7 +4015,17 @@ impl Niri {
     /// entered, and with `moved`, the one it's on.
     /// Tells bento's own shell where the pointer is over it, if it is, and shows the pointer as it
     /// says there.
-    pub fn update_shell_hover(&mut self, under: &PointContents) {
+    pub fn update_shell_hover(&mut self, under: &PointContents, pos: Point<f64, Logical>) {
+        // Where the pointer is on its output, for what in the shell hears it near, whatever is
+        // under it there, unless that's above the shell.
+        let at = (under.output.is_some() && !under.above_shell)
+            .then(|| self.output_under(pos))
+            .flatten()
+            .map(|(output, point)| (output.name(), [point.x as f32, point.y as f32]));
+        let Some(scene) = &mut self.scene else { return };
+        if scene.pointer_at(at.as_ref().map(|(name, point)| (name.as_str(), *point))) {
+            self.queue_redraw_all();
+        }
         let Some(scene) = &mut self.scene else { return };
         let was_over = scene.pointer_over();
         let at = under
@@ -4034,9 +4051,29 @@ impl Niri {
         }
     }
 
-    /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps.
+    /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps. It holds
+    /// it from what's below it: the windows and the layers under the overlay one.
     pub fn shell_holds_keyboard(&self) -> bool {
-        !self.is_locked() && self.scene.as_ref().is_some_and(|s| s.wants_keyboard())
+        !self.is_locked()
+            && !self.focus_above_shell
+            && self.scene.as_ref().is_some_and(|s| s.wants_keyboard())
+    }
+
+    /// Whether `focus` is on something drawn above bento's own shell: an overlay surface, or one
+    /// of bento's own screens.
+    fn is_above_shell(&self, focus: &KeyboardFocus) -> bool {
+        match focus {
+            KeyboardFocus::Layout { .. } | KeyboardFocus::Overview => false,
+            KeyboardFocus::LayerShell { surface } => self.global_space.outputs().any(|output| {
+                layer_map_for_output(output)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .is_some_and(|layer| layer.layer() == Layer::Overlay)
+            }),
+            KeyboardFocus::LockScreen { .. }
+            | KeyboardFocus::ScreenshotUi
+            | KeyboardFocus::ExitConfirmDialog
+            | KeyboardFocus::Mru => true,
+        }
     }
 
     /// Whether the keyboard is held from the apps, by the shell or the layout engine.
@@ -5035,9 +5072,18 @@ impl Niri {
             })
             .collect();
         let mut workspaces = serde_json::Map::new();
+        // Which outputs show a fullscreen window. The overview shows the desktop around it.
+        let mut fullscreen = serde_json::Map::new();
+        let overview = self.layout.is_overview_open();
         let focused_output = self.layout.active_output().map(|o| o.name());
         for (mon, index, ws) in self.layout.workspaces() {
             let Some(mon) = mon else { continue };
+            if mon.active_workspace_idx() == index {
+                fullscreen.insert(
+                    mon.output_name().clone(),
+                    serde_json::Value::Bool(!overview && ws.shows_fullscreen()),
+                );
+            }
             let list = workspaces
                 .entry(mon.output_name().clone())
                 .or_insert_with(|| serde_json::Value::Array(Vec::new()));
@@ -5087,6 +5133,7 @@ impl Niri {
         let scene = self.scene.get_or_insert_with(Default::default);
         scene.ensure_loaded(&outputs, dir.as_deref(), style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
+        scene.set_fullscreen(serde_json::Value::Object(fullscreen));
         let moving = scene.advance_with(Instant::now(), slowdown, response);
         scene.send_commands();
         if scene.wants_data_program(Instant::now()) {
@@ -5312,32 +5359,25 @@ impl Niri {
             }};
         }
 
-        // bento's own shell: what's above overlay surfaces here, and what's with the top layer
-        // there.
-        macro_rules! push_scene {
-            ($overlay:expr) => {{
-                if let Some(scene) = &self.scene {
-                    let blur = self.config.borrow().blur;
-                    let name = output.name();
-                    scene.render_content(&name, $overlay, &mut |elem| {
-                        push(OutputRenderElements::Texture(elem))
-                    });
-                    scene.render_glass(
-                        &name,
-                        $overlay,
-                        output_scale.x,
-                        blur,
-                        self.glass_frame(output),
-                        &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
-                    );
-                }
-            }};
-        }
-        push_scene!(true);
-
         // The overlay layer elements go next.
         push_popups_from_layer!(Layer::Overlay);
         push_normal_from_layer!(Layer::Overlay);
+
+        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
+        // Showing nothing, it pushes nothing, so a fullscreen window can still go straight to the
+        // display.
+        if let Some(scene) = &self.scene {
+            let blur = self.config.borrow().blur;
+            let name = output.name();
+            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Texture(elem)));
+            scene.render_glass(
+                &name,
+                output_scale.x,
+                blur,
+                self.glass_frame(output),
+                &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
+            );
+        }
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
@@ -5347,7 +5387,6 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
-            push_scene!(false);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
 
@@ -5367,7 +5406,6 @@ impl Niri {
                 }
             }
         } else {
-            push_scene!(false);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
 

@@ -1282,6 +1282,11 @@ impl<W: LayoutElement> TilingSpace<W> {
             return None;
         }
 
+        self.active_fullscreen_window()
+    }
+
+    /// The active window if it's fullscreen, whether or not the view has come to rest on it.
+    pub fn active_fullscreen_window(&self) -> Option<&W> {
         self.active_window()
             .filter(|win| win.sizing_mode().is_fullscreen())
     }

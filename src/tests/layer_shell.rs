@@ -256,3 +256,50 @@ fn multiple_commits_before_mapping() {
     // Configure with new size.
     assert_snapshot!(layer.format_recent_configures(), @"size: 1920 × 50");
 }
+
+/// An overlay surface that asks for the keyboard, like a screenshot tool's, is above bento's own
+/// shell, so it gets the keys even while the shell's launcher is open.
+#[test]
+fn an_overlay_surface_takes_the_keyboard_from_bentos_shell() {
+    let mut config = niri_config::Config::default();
+    config.debug.scene_shell = true;
+    let mut f = Fixture::with_config(config);
+    f.add_output(1, (1920, 1080));
+
+    // bento's own shell with its launcher open, which takes the keyboard.
+    let name = f.niri_output(1).name();
+    let mut scene = crate::scene::host::SceneHost::default();
+    let outputs = [(name.clone(), (1920., 1080.))];
+    scene.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+    scene.toggle_launcher(Some(name));
+    f.niri().scene = Some(scene);
+    f.dispatch();
+    assert!(f.niri().shell_holds_keyboard());
+
+    let id = f.add_client();
+    let layer = f.client(id).create_layer(None, Layer::Overlay, "");
+    let surface = layer.surface.clone();
+    layer.set_configure_props(LayerConfigureProps {
+        anchor: Some(Anchor::Left | Anchor::Right | Anchor::Top | Anchor::Bottom),
+        kb_interactivity: Some(KeyboardInteractivity::Exclusive),
+        ..Default::default()
+    });
+    layer.commit();
+    f.roundtrip(id);
+
+    let layer = f.client(id).layer(&surface);
+    layer.attach_new_buffer();
+    layer.set_size(100, 100);
+    layer.ack_last_and_commit();
+    f.double_roundtrip(id);
+
+    assert!(matches!(
+        f.niri().keyboard_focus,
+        crate::niri::KeyboardFocus::LayerShell { .. }
+    ));
+    assert!(
+        !f.niri().shell_holds_keyboard(),
+        "what's above the shell gets the keys"
+    );
+    assert!(!f.niri().keyboard_held());
+}

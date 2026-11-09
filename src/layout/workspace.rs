@@ -1273,6 +1273,11 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.fullscreen_window_above_top_layer()
     }
 
+    /// Whether the window it shows is fullscreen, from when the view heads for it.
+    pub fn shows_fullscreen(&self) -> bool {
+        self.scrolling.active_fullscreen_window().is_some()
+    }
+
     pub fn is_floating_visible(&self) -> bool {
         // If the focus is on a fullscreen scrolling window, hide the floating windows.
         matches!(

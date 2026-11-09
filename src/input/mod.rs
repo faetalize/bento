@@ -2280,7 +2280,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, true);
-        self.niri.update_shell_hover(&under);
+        self.niri.update_shell_hover(&under, new_pos);
 
         pointer.motion(
             self,
@@ -2383,7 +2383,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, true);
-        self.niri.update_shell_hover(&under);
+        self.niri.update_shell_hover(&under, pos);
 
         pointer.motion(
             self,
@@ -2548,12 +2548,16 @@ impl State {
         // what's open. A grab, like an app's menu or a drag, keeps its buttons.
         if !pointer.is_grabbed() && self.niri.scene.is_some() {
             let location = pointer.current_location();
-            let at = self.niri.contents_under(location).shell;
-            let at_ref = at.as_ref().map(|(name, point)| (name.as_str(), *point));
+            let under = self.niri.contents_under(location);
+            let at_ref = under
+                .shell
+                .as_ref()
+                .map(|(name, point)| (name.as_str(), *point));
             let number = node_button(button).unwrap_or(0);
             let scene = self.niri.scene.as_mut().unwrap();
             let taken = if ButtonState::Pressed == button_state {
-                scene.press(button_code, number, at_ref)
+                // A press on what's above the shell isn't one elsewhere on the desktop.
+                !under.above_shell && scene.press(button_code, number, at_ref)
             } else {
                 scene.release(button_code, number, at_ref)
             };
@@ -3319,7 +3323,7 @@ impl State {
 
         let under = self.niri.contents_under(pos);
         self.niri.update_node_hover(&under, true);
-        self.niri.update_shell_hover(&under);
+        self.niri.update_shell_hover(&under, pos);
 
         let tablet_seat = self.niri.seat.tablet_seat();
         let tool = tablet_seat.get_tool(&event.tool());
@@ -4069,7 +4073,7 @@ impl State {
         let under = self.niri.contents_under(pos);
 
         // bento's own shell takes touches on it, and hears of touches elsewhere.
-        if !handle.is_grabbed() && !self.niri.screenshot_ui.is_open() {
+        if !handle.is_grabbed() && !under.above_shell {
             if let Some(scene) = &mut self.niri.scene {
                 let at = under
                     .shell
@@ -5352,7 +5356,12 @@ mod tests {
         assert!(holds_binds(true, false, Modifiers::SHIFT, mod_key));
         assert!(holds_binds(true, false, Modifiers::CTRL, mod_key));
         // Mod+Shift+S over the shell: a bind, like a screenshot.
-        assert!(!holds_binds(true, false, Modifiers::SUPER | Modifiers::SHIFT, mod_key));
+        assert!(!holds_binds(
+            true,
+            false,
+            Modifiers::SUPER | Modifiers::SHIFT,
+            mod_key
+        ));
         // The layout engine keeps them all.
         assert!(holds_binds(false, true, Modifiers::SUPER, mod_key));
         assert!(!holds_binds(false, false, Modifiers::empty(), mod_key));

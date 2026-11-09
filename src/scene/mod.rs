@@ -192,6 +192,8 @@ pub const HOVER: u32 = 2;
 pub const SCROLL: u32 = 4;
 /// Its motion settling.
 pub const SETTLE: u32 = 8;
+/// The pointer coming into its place and leaving it, whatever else is there.
+pub const NEAR: u32 = 16;
 
 // A node's springs: its place on its output, as the layout has it, opacity, corners, scale,
 // blur, an offset from its place, and the size it's drawn at.
@@ -233,9 +235,6 @@ pub struct Node {
     placed: bool,
     /// The size it's drawn at, around the middle of its place, or `None` for its place's size.
     draw_size: Option<[f32; 2]>,
-    /// Whether it's drawn above overlay surfaces, like a launcher, rather than with the top
-    /// layer, like a panel. Only an output's top nodes say.
-    overlay: bool,
     animate: bool,
     /// Whether it's left out: neither drawn nor hit.
     hidden: bool,
@@ -437,7 +436,6 @@ impl Scene {
             placed: false,
             responses: [None; SPRINGS],
             draw_size: None,
-            overlay: false,
             animate: true,
             hidden: false,
             placed_size: false,
@@ -880,34 +878,20 @@ impl Scene {
         [cx - w / 2., cy - h / 2., w, h]
     }
 
-    /// What to draw for output `name`, back to front: with the top layer, or with `overlay`,
-    /// above overlay surfaces.
-    pub fn draw_layer(&self, output: &str, overlay: bool) -> Vec<Item> {
+    /// What to draw for output `name`, back to front.
+    pub fn draw(&self, output: &str) -> Vec<Item> {
         let mut items = Vec::new();
-        for child in self.top_nodes(output, overlay) {
+        for child in self.top_nodes(output) {
             self.draw_node(child, 1., None, Scaling::NONE, 0., &mut items);
         }
         items
     }
 
-    /// Everything to draw for output `name`, the top layer's and then the overlay's.
-    pub fn draw(&self, output: &str) -> Vec<Item> {
-        let mut items = self.draw_layer(output, false);
-        items.extend(self.draw_layer(output, true));
-        items
-    }
-
-    /// Output `name`'s top nodes with the top layer, or above overlay surfaces with `overlay`.
-    fn top_nodes(&self, output: &str, overlay: bool) -> Vec<NodeId> {
+    /// Output `name`'s top nodes, from the bottom up.
+    fn top_nodes(&self, output: &str) -> Vec<NodeId> {
         self.root(output)
             .and_then(|root| self.node(root))
-            .map(|root| {
-                root.children
-                    .iter()
-                    .copied()
-                    .filter(|id| self.node(*id).is_some_and(|n| n.overlay == overlay))
-                    .collect()
-            })
+            .map(|root| root.children.clone())
             .unwrap_or_default()
     }
 
@@ -1007,10 +991,8 @@ impl Scene {
     /// leaving.
     fn pick(&self, output: &str, point: [f32; 2]) -> Vec<NodeId> {
         let mut found = Vec::new();
-        for overlay in [false, true] {
-            for child in self.top_nodes(output, overlay) {
-                self.pick_node(child, point, Scaling::NONE, None, &mut found);
-            }
+        for child in self.top_nodes(output) {
+            self.pick_node(child, point, Scaling::NONE, None, &mut found);
         }
         found
     }
@@ -1053,6 +1035,14 @@ impl Scene {
         }
     }
 
+    /// The nodes at `point` on output `output` that hear the pointer near: all of them, whatever
+    /// is over or under them, since they take nothing from it.
+    pub fn near(&self, output: &str, point: [f32; 2]) -> Vec<NodeId> {
+        let mut found = self.pick(output, point);
+        found.retain(|id| self.node(*id).is_some_and(|n| n.events & NEAR != 0));
+        found
+    }
+
     /// The topmost node at `point` on output `output` that takes any of `events`.
     pub fn hit(&self, output: &str, point: [f32; 2], events: u32) -> Option<NodeId> {
         self.pick(output, point)
@@ -1062,16 +1052,11 @@ impl Scene {
     }
 
     /// Whether the shell is at `point` on output `output`, so it takes the pointer there from
-    /// what's below: a shape or something that takes events is. With `overlay`, only what's
-    /// above overlay surfaces counts, and without, only what's with the top layer.
-    pub fn covers(&self, output: &str, point: [f32; 2], overlay: bool) -> bool {
-        let mut found = Vec::new();
-        for child in self.top_nodes(output, overlay) {
-            self.pick_node(child, point, Scaling::NONE, None, &mut found);
-        }
-        found.into_iter().any(|id| {
+    /// what's below: a shape or something that takes the pointer's events is.
+    pub fn covers(&self, output: &str, point: [f32; 2]) -> bool {
+        self.pick(output, point).into_iter().any(|id| {
             self.node(id).is_some_and(|n| {
-                n.events != 0
+                n.events & (CLICK | HOVER | SCROLL) != 0
                     || n.look.material != Material::None
                     || n.look.fill.is_some()
                     || n.look.border.is_some()
@@ -1379,7 +1364,6 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                 }
             }
         }
-        "layer" => node.overlay = value.as_str() == Some("overlay"),
         "cursor" => look.cursor = value.as_str().map(String::from),
         "animate" => node.animate = value.as_bool().unwrap_or(true),
         "events" => {
@@ -1391,6 +1375,7 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                             Some("hover") => HOVER,
                             Some("scroll") => SCROLL,
                             Some("settle") => SETTLE,
+                            Some("near") => NEAR,
                             _ => 0,
                         }
                 })
@@ -1583,10 +1568,10 @@ mod tests {
         let mut scene = Scene::new();
         let node = panel(&mut scene, serde_json::json!({}));
         settle(&mut scene);
-        assert!(scene.covers("DP-1", [960., 260.], false));
+        assert!(scene.covers("DP-1", [960., 260.]));
         scene.set(node, &serde_json::json!({ "hidden": true }));
         assert!(scene.draw("DP-1").is_empty());
-        assert!(!scene.covers("DP-1", [960., 260.], false));
+        assert!(!scene.covers("DP-1", [960., 260.]));
     }
 
     #[test]
@@ -1612,21 +1597,34 @@ mod tests {
     }
 
     #[test]
-    fn what_says_overlay_is_drawn_and_hit_above_overlay_surfaces() {
+    fn what_hears_the_pointer_near_takes_nothing_from_it() {
         let mut scene = Scene::new();
         let root = scene.set_output("DP-1", (1920., 1080.));
-        let props = serde_json::json!({
-            "layer": "overlay", "material": "glass", "position": "absolute",
-            "top": 100, "left": 100, "width": 200, "height": 50,
-        });
-        let launcher = scene.create("box", &props);
-        scene.append(root, launcher, None);
+        let zone = scene.create(
+            "box",
+            &serde_json::json!({
+                "position": "absolute", "top": 0, "left": 0, "right": 0, "height": 2,
+                "events": ["near", "settle"],
+            }),
+        );
+        scene.append(root, zone, None);
+        // Something of the shell's over it doesn't keep the pointer from it.
+        let island = scene.create(
+            "box",
+            &serde_json::json!({
+                "position": "absolute", "top": 0, "left": 0, "width": 100, "height": 36,
+                "material": "glass",
+            }),
+        );
+        scene.append(root, island, None);
         scene.lay_out();
         scene.advance(1., Some(1.));
-        assert_eq!(scene.draw_layer("DP-1", true).len(), 1);
-        assert!(scene.draw_layer("DP-1", false).is_empty());
-        assert!(scene.covers("DP-1", [200., 125.], true));
-        assert!(!scene.covers("DP-1", [200., 125.], false));
+        assert_eq!(scene.near("DP-1", [500., 1.]), vec![zone]);
+        assert_eq!(scene.near("DP-1", [50., 1.]), vec![zone]);
+        assert!(scene.near("DP-1", [500., 5.]).is_empty());
+        // What's under it keeps the pointer.
+        assert!(!scene.covers("DP-1", [500., 1.]));
+        assert!(scene.covers("DP-1", [50., 1.]));
     }
 
     #[test]
