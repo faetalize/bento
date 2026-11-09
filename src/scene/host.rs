@@ -71,7 +71,8 @@ pub struct SceneHost {
     loaded_mtimes: Option<Vec<Option<SystemTime>>>,
     renderer: Option<Renderer>,
     renderer_failed: bool,
-    outputs: HashMap<String, OutputScene>,
+    /// Each output's scene with the top layer, and above overlay surfaces.
+    outputs: HashMap<(String, bool), OutputScene>,
     last_advance: Option<Instant>,
     /// Goes up whenever the scene changed or moved.
     generation: u64,
@@ -135,7 +136,8 @@ impl SceneHost {
             .collect();
         for name in &gone {
             scene.remove_output(name);
-            self.outputs.remove(name);
+            self.outputs.remove(&(name.clone(), false));
+            self.outputs.remove(&(name.clone(), true));
         }
         let added: Vec<String> = outputs
             .iter()
@@ -333,10 +335,10 @@ impl SceneHost {
     }
 
     /// Whether the shell covers `point` on output `output`, so it takes the pointer there.
-    pub fn covers(&self, output: &str, point: [f32; 2]) -> bool {
+    pub fn covers(&self, output: &str, point: [f32; 2], overlay: bool) -> bool {
         self.shell
             .as_ref()
-            .is_some_and(|shell| shell.scene.borrow().covers(output, point))
+            .is_some_and(|shell| shell.scene.borrow().covers(output, point, overlay))
     }
 
     /// Draws output `output`'s scene, `size` physical pixels at `scale`, if it changed.
@@ -361,85 +363,101 @@ impl SceneHost {
         }
         let Some(vk) = &mut self.renderer else { return };
 
-        let state = self
-            .outputs
-            .entry(String::from(output))
-            .or_insert_with(|| OutputScene {
-                targets: Vec::new(),
-                next: 0,
-                shown: None,
-                glass: Vec::new(),
-                effect: FramebufferEffect::new(),
-                drawn: None,
-            });
-        if state.drawn == Some((self.generation, scale)) {
-            return;
-        }
-        if state.targets.first().is_some_and(|(t, _)| t.size != size) {
-            for (target, _) in state.targets.drain(..) {
-                vk.destroy_target(target);
+        let scene = shell.scene.borrow();
+        for overlay in [false, true] {
+            let items = scene.draw_layer(output, overlay);
+            let state = self
+                .outputs
+                .entry((String::from(output), overlay))
+                .or_insert_with(|| OutputScene {
+                    targets: Vec::new(),
+                    next: 0,
+                    shown: None,
+                    glass: Vec::new(),
+                    effect: FramebufferEffect::new(),
+                    drawn: None,
+                });
+            if state.drawn == Some((self.generation, scale)) {
+                continue;
             }
-            state.shown = None;
-        }
-        if state.targets.is_empty() {
-            for _ in 0..TARGETS {
-                let target = match vk.create_target(size) {
-                    Ok(target) => target,
-                    Err(err) => {
-                        warn!("error making the scene's image: {err:?}");
-                        return;
-                    }
-                };
-                let texture = match renderer.import_dmabuf(&target.dmabuf, None) {
-                    Ok(texture) => texture,
-                    Err(err) => {
-                        warn!("error showing the scene's image: {err:?}");
-                        vk.destroy_target(target);
-                        return;
-                    }
-                };
-                state.targets.push((target, texture));
+            state.drawn = Some((self.generation, scale));
+            state.glass = items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Shape {
+                        rect,
+                        radii,
+                        material: Material::Glass | Material::Acrylic | Material::Mica,
+                        opacity,
+                        ..
+                    } if *opacity > 0.01 => Some((*rect, *radii)),
+                    _ => None,
+                })
+                .collect();
+            // Nothing in a layer, like the overlay most of the time, takes no images.
+            if items.is_empty() {
+                state.shown = None;
+                for (target, _) in state.targets.drain(..) {
+                    vk.destroy_target(target);
+                }
+                continue;
             }
-        }
+            if state.targets.first().is_some_and(|(t, _)| t.size != size) {
+                for (target, _) in state.targets.drain(..) {
+                    vk.destroy_target(target);
+                }
+                state.shown = None;
+            }
+            if state.targets.is_empty() {
+                for _ in 0..TARGETS {
+                    let target = match vk.create_target(size) {
+                        Ok(target) => target,
+                        Err(err) => {
+                            warn!("error making the scene's image: {err:?}");
+                            break;
+                        }
+                    };
+                    match renderer.import_dmabuf(&target.dmabuf, None) {
+                        Ok(texture) => state.targets.push((target, texture)),
+                        Err(err) => {
+                            warn!("error showing the scene's image: {err:?}");
+                            vk.destroy_target(target);
+                            break;
+                        }
+                    }
+                }
+                if state.targets.is_empty() {
+                    continue;
+                }
+                state.next = 0;
+            }
 
-        let items = shell.scene.borrow().draw(output);
-        state.glass = items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Shape {
-                    rect,
-                    radii,
-                    material: Material::Glass | Material::Acrylic | Material::Mica,
-                    opacity,
-                    ..
-                } if *opacity > 0.01 => Some((*rect, *radii)),
-                _ => None,
-            })
-            .collect();
-
-        let (target, texture) = &state.targets[state.next];
-        if let Err(err) = vk.render(target, &items, scale as f32) {
-            warn!("error drawing the scene: {err:?}");
-            return;
+            let (target, texture) = &state.targets[state.next];
+            if let Err(err) = vk.render(target, &items, scale as f32) {
+                warn!("error drawing the scene: {err:?}");
+                continue;
+            }
+            state.shown = Some(TextureBuffer::from_texture(
+                renderer,
+                texture.clone(),
+                scale,
+                Transform::Normal,
+                Vec::new(),
+            ));
+            state.next = (state.next + 1) % state.targets.len();
         }
-        state.shown = Some(TextureBuffer::from_texture(
-            renderer,
-            texture.clone(),
-            scale,
-            Transform::Normal,
-            Vec::new(),
-        ));
-        state.next = (state.next + 1) % state.targets.len();
-        state.drawn = Some((self.generation, scale));
     }
 
-    /// Pushes what output `output`'s scene shows, over its glass.
+    /// Pushes what output `output`'s scene shows with the top layer, or above overlay surfaces
+    /// with `overlay`, over its glass.
     pub fn render_content(
         &self,
         output: &str,
+        overlay: bool,
         push: &mut dyn FnMut(PrimaryGpuTextureRenderElement),
     ) {
-        let Some(buffer) = self.outputs.get(output).and_then(|s| s.shown.as_ref()) else {
+        let key = (String::from(output), overlay);
+        let Some(buffer) = self.outputs.get(&key).and_then(|s| s.shown.as_ref()) else {
             return;
         };
         push(PrimaryGpuTextureRenderElement(
@@ -454,16 +472,18 @@ impl SceneHost {
         ));
     }
 
-    /// Pushes the glass under output `output`'s scene.
+    /// Pushes the glass under output `output`'s scene with the top layer, or above overlay
+    /// surfaces with `overlay`.
     pub fn render_glass(
         &self,
         output: &str,
+        overlay: bool,
         scale: f64,
         blur: niri_config::Blur,
         frame: GlassFrame,
         push: &mut dyn FnMut(BackgroundEffectElement),
     ) {
-        let Some(state) = self.outputs.get(output) else {
+        let Some(state) = self.outputs.get(&(String::from(output), overlay)) else {
             return;
         };
         if !state.glass.is_empty() {
@@ -504,7 +524,7 @@ mod tests {
         settle(&mut host, &mut now);
 
         // The clock's island is a pill: its rounded corner isn't the shell's.
-        assert!(host.covers("DP-1", [960., 26.]));
+        assert!(host.covers("DP-1", [960., 26.], false));
         let island = host
             .shell
             .as_ref()
@@ -523,7 +543,7 @@ mod tests {
             })
             .nth(1)
             .unwrap();
-        assert!(!host.covers("DP-1", [island[0] + 1., island[1] + 1.]));
+        assert!(!host.covers("DP-1", [island[0] + 1., island[1] + 1.], false));
 
         let click = |host: &mut SceneHost| {
             let at = Some(("DP-1", [960., 26.]));

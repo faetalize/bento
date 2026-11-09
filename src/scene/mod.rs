@@ -205,6 +205,9 @@ pub struct Node {
     placed: bool,
     /// Where it heads instead of its place, while it travels into a node it was matched with.
     travel: Option<[f32; 4]>,
+    /// Whether it's drawn above overlay surfaces, like a launcher, rather than with the top
+    /// layer, like a panel. Only an output's top nodes say.
+    overlay: bool,
     animate: bool,
     enter: Enter,
     /// Its size when it started growing out of a point or shrinking into one.
@@ -386,6 +389,7 @@ impl Scene {
             springs,
             placed: false,
             travel: None,
+            overlay: false,
             animate: true,
             enter: Enter::Appear,
             whole: None,
@@ -781,13 +785,35 @@ impl Scene {
         (rect, grown)
     }
 
-    /// What to draw for output `name`, back to front.
-    pub fn draw(&self, output: &str) -> Vec<Item> {
+    /// What to draw for output `name`, back to front: with the top layer, or with `overlay`,
+    /// above overlay surfaces.
+    pub fn draw_layer(&self, output: &str, overlay: bool) -> Vec<Item> {
         let mut items = Vec::new();
-        if let Some(root) = self.root(output) {
-            self.draw_node(root, 1., None, Scaling::NONE, 0., &mut items);
+        for child in self.top_nodes(output, overlay) {
+            self.draw_node(child, 1., None, Scaling::NONE, 0., &mut items);
         }
         items
+    }
+
+    /// Everything to draw for output `name`, the top layer's and then the overlay's.
+    pub fn draw(&self, output: &str) -> Vec<Item> {
+        let mut items = self.draw_layer(output, false);
+        items.extend(self.draw_layer(output, true));
+        items
+    }
+
+    /// Output `name`'s top nodes with the top layer, or above overlay surfaces with `overlay`.
+    fn top_nodes(&self, output: &str, overlay: bool) -> Vec<NodeId> {
+        self.root(output)
+            .and_then(|root| self.node(root))
+            .map(|root| {
+                root.children
+                    .iter()
+                    .copied()
+                    .filter(|id| self.node(*id).is_some_and(|n| n.overlay == overlay))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn draw_node(
@@ -889,8 +915,10 @@ impl Scene {
     /// leaving.
     fn pick(&self, output: &str, point: [f32; 2]) -> Vec<NodeId> {
         let mut found = Vec::new();
-        if let Some(root) = self.root(output) {
-            self.pick_node(root, point, Scaling::NONE, None, &mut found);
+        for overlay in [false, true] {
+            for child in self.top_nodes(output, overlay) {
+                self.pick_node(child, point, Scaling::NONE, None, &mut found);
+            }
         }
         found
     }
@@ -942,9 +970,14 @@ impl Scene {
     }
 
     /// Whether the shell is at `point` on output `output`, so it takes the pointer there from
-    /// what's below: a shape or something that takes events is.
-    pub fn covers(&self, output: &str, point: [f32; 2]) -> bool {
-        self.pick(output, point).into_iter().any(|id| {
+    /// what's below: a shape or something that takes events is. With `overlay`, only what's
+    /// above overlay surfaces counts, and without, only what's with the top layer.
+    pub fn covers(&self, output: &str, point: [f32; 2], overlay: bool) -> bool {
+        let mut found = Vec::new();
+        for child in self.top_nodes(output, overlay) {
+            self.pick_node(child, point, Scaling::NONE, None, &mut found);
+        }
+        found.into_iter().any(|id| {
             self.node(id).is_some_and(|n| {
                 n.events != 0
                     || n.look.material != Material::None
@@ -1218,6 +1251,7 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
         "scale" => look.scale = value.as_f64().unwrap_or(1.).max(0.) as f32,
         "blur" => look.blur = value.as_f64().unwrap_or(0.).max(0.) as f32,
         "clip" => look.clip = value.as_bool().unwrap_or(false),
+        "layer" => node.overlay = value.as_str() == Some("overlay"),
         "cursor" => look.cursor = value.as_str().map(String::from),
         "animate" => node.animate = value.as_bool().unwrap_or(true),
         "enter" => {
@@ -1296,6 +1330,24 @@ mod tests {
         let open = shapes(&scene)[1];
         assert_eq!([open[2], open[3]], [320., 104.]);
         assert!((open[0] + open[2] / 2. - 960.).abs() < 1., "{open:?}");
+    }
+
+    #[test]
+    fn what_says_overlay_is_drawn_and_hit_above_overlay_surfaces() {
+        let mut scene = Scene::new();
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let props = serde_json::json!({
+            "layer": "overlay", "material": "glass", "position": "absolute",
+            "top": 100, "left": 100, "width": 200, "height": 50,
+        });
+        let launcher = scene.create("box", &props);
+        scene.append(root, launcher, None);
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        assert_eq!(scene.draw_layer("DP-1", true).len(), 1);
+        assert!(scene.draw_layer("DP-1", false).is_empty());
+        assert!(scene.covers("DP-1", [200., 125.], true));
+        assert!(!scene.covers("DP-1", [200., 125.], false));
     }
 
     #[test]

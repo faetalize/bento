@@ -3904,15 +3904,20 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
-        // bento's own shell, which is drawn with the top layer, over it.
-        let shell_under = || {
+        // bento's own shell: what's drawn with the top layer, over it, and what's drawn above
+        // overlay surfaces, over everything.
+        let shell_under = |overlay: bool| {
             let name = output.name();
             let point = [pos_within_output.x as f32, pos_within_output.y as f32];
             self.scene
                 .as_ref()
-                .filter(|scene| scene.covers(&name, point))
+                .filter(|scene| scene.covers(&name, point, overlay))
                 .map(|_| (name, point))
         };
+        if let Some(hit) = shell_under(true) {
+            rv.shell = Some(hit);
+            return rv;
+        }
 
         let mut under =
             layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
@@ -3927,7 +3932,7 @@ impl Niri {
                 .or_else(node_under)
                 .or_else(window_under);
             if under.is_none() {
-                if let Some(hit) = shell_under() {
+                if let Some(hit) = shell_under(false) {
                     rv.shell = Some(hit);
                     return rv;
                 }
@@ -3947,7 +3952,7 @@ impl Niri {
             }
 
             if under.is_none() {
-                if let Some(hit) = shell_under() {
+                if let Some(hit) = shell_under(false) {
                     rv.shell = Some(hit);
                     return rv;
                 }
@@ -5208,21 +5213,19 @@ impl Niri {
             }};
         }
 
-        // The overlay layer elements go next.
-        push_popups_from_layer!(Layer::Overlay);
-        push_normal_from_layer!(Layer::Overlay);
-
-        // bento's own shell, with the top layer.
+        // bento's own shell: what's above overlay surfaces here, and what's with the top layer
+        // there.
         macro_rules! push_scene {
-            () => {{
+            ($overlay:expr) => {{
                 if let Some(scene) = &self.scene {
                     let blur = self.config.borrow().blur;
                     let name = output.name();
-                    scene.render_content(&name, &mut |elem| {
+                    scene.render_content(&name, $overlay, &mut |elem| {
                         push(OutputRenderElements::Texture(elem))
                     });
                     scene.render_glass(
                         &name,
+                        $overlay,
                         output_scale.x,
                         blur,
                         self.glass_frame(output),
@@ -5231,6 +5234,11 @@ impl Niri {
                 }
             }};
         }
+        push_scene!(true);
+
+        // The overlay layer elements go next.
+        push_popups_from_layer!(Layer::Overlay);
+        push_normal_from_layer!(Layer::Overlay);
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
@@ -5240,7 +5248,7 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
-            push_scene!();
+            push_scene!(false);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
 
@@ -5260,7 +5268,7 @@ impl Niri {
                 }
             }
         } else {
-            push_scene!();
+            push_scene!(false);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
 
