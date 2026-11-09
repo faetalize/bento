@@ -19,6 +19,8 @@ libloading = "0.8.9"
 miette = { version = "5.10.0", features = ["fancy-no-backtrace"] }
 niri-config = { version = "26.4.0", path = "../niri-config" }
 niri-ipc = { version = "26.4.0", path = "../niri-ipc" }
+serde_json.workspace = true
+soup3 = "0.8"
 
 [build-dependencies]
 glib-build-tools = "0.21"

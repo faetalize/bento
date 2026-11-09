@@ -523,6 +523,8 @@ dependencies = [
  "miette",
  "niri-config",
  "niri-ipc",
+ "serde_json",
+ "soup3",
 ]
 
 [[package]]

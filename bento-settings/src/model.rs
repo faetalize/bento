@@ -140,6 +140,8 @@ impl Category {
 
 pub struct Group {
     pub title: Option<&'static str>,
+    /// A line under the title, saying what the group's settings are for.
+    pub description: Option<&'static str>,
     pub settings: Vec<Setting>,
     /// Builds the group's widgets itself, for things rows can't show, like a preview.
     pub build: Option<fn(&crate::page::PageContext) -> gtk::Widget>,
@@ -158,10 +160,16 @@ impl Group {
     pub fn untitled() -> Self {
         Self {
             title: None,
+            description: None,
             settings: Vec::new(),
             build: None,
             search: Vec::new(),
         }
+    }
+
+    pub fn description(mut self, description: &'static str) -> Self {
+        self.description = Some(description);
+        self
     }
 
     pub fn custom(build: fn(&crate::page::PageContext) -> gtk::Widget) -> Self {

@@ -81,6 +81,9 @@ pub fn settings_page(groups: &'static [Group], ctx: &PageContext) -> gtk::Widget
         if let Some(title) = group.title {
             widget.set_title(title);
         }
+        if let Some(description) = group.description {
+            widget.set_description(Some(description));
+        }
         for setting in &group.settings {
             widget.add(&setting_row(setting, ctx));
         }
