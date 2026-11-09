@@ -27,6 +27,14 @@ pub fn parse(
     mut request: ActionRequest,
     engine_args: impl Fn(&str) -> Option<Vec<Arg>>,
 ) -> Result<Action, String> {
+    // A workspace given by id is the one to focus: a bind can only name one by its index or
+    // name, which an id can't be written as.
+    if request.name == "focus-workspace" && request.args.is_empty() {
+        if let Some(id) = request.workspace {
+            return Ok(Action::FocusWorkspace(WorkspaceReference::Id(id)));
+        }
+    }
+
     // `layout-action` is how the command line spells an engine's action: by its name, in the
     // first argument.
     if request.name == "layout-action" {
@@ -422,6 +430,16 @@ mod tests {
                 ],
                 Some(7)
             )
+        );
+    }
+
+    #[test]
+    fn focusing_a_workspace_given_by_id_needs_no_argument() {
+        let mut request = request("focus-workspace", json!([]));
+        request.workspace = Some(4);
+        assert_eq!(
+            parse(request, engine).unwrap(),
+            Action::FocusWorkspace(WorkspaceReference::Id(4))
         );
     }
 
