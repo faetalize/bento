@@ -39,6 +39,15 @@ impl Spring {
         }
     }
 
+    /// Moves `dt` seconds on as [`Spring::advance`] does, but settling in `response` seconds
+    /// rather than the usual.
+    pub fn advance_with(&mut self, dt: f64, slowdown: Option<f64>, response: f64) {
+        match slowdown.filter(|s| *s > 0.) {
+            Some(slowdown) => self.step(dt, response * slowdown),
+            None => self.jump(self.target),
+        }
+    }
+
     /// Moves `dt` seconds on. A critically damped spring has an exact solution, so a long frame
     /// can't make it overshoot or blow up.
     pub fn step(&mut self, dt: f64, response: f64) {

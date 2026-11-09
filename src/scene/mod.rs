@@ -212,6 +212,8 @@ const OPACITY: usize = 4;
 const RADII: usize = 5;
 const SCALE: usize = 9;
 const BLUR: usize = 10;
+/// How far it has grown out of a point, from 0 to 1, for what comes and goes that way.
+const GROW: usize = 11;
 
 #[derive(Debug)]
 pub struct Node {
@@ -220,7 +222,9 @@ pub struct Node {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
     look: Look,
-    springs: [Spring; 11],
+    springs: [Spring; 12],
+    /// How long its frame's springs take to settle, in seconds, when it isn't bento's usual.
+    response: Option<f64>,
     placed: bool,
     /// Where it heads instead of its place, while it travels into a node it was matched with.
     travel: Option<[f32; 4]>,
@@ -229,8 +233,6 @@ pub struct Node {
     overlay: bool,
     animate: bool,
     enter: Enter,
-    /// Its size as it grows out of a point or shrinks into one.
-    whole: Option<[f32; 2]>,
     leaving: bool,
     /// Whether it's hidden: shrunk into a point, or faded out, to come back from wherever it is.
     hidden: bool,
@@ -409,9 +411,10 @@ impl Scene {
             .tree
             .new_leaf_with_context(Style::default(), id)
             .expect("taffy never fails to add a leaf");
-        let mut springs = [Spring::new(0.); 11];
+        let mut springs = [Spring::new(0.); 12];
         springs[OPACITY] = Spring::new(1.);
         springs[SCALE] = Spring::new(1.);
+        springs[GROW] = Spring::new(1.);
         self.nodes[id as usize] = Some(Node {
             kind,
             taffy,
@@ -420,11 +423,11 @@ impl Scene {
             look: Look::default(),
             springs,
             placed: false,
+            response: None,
             travel: None,
             overlay: false,
             animate: true,
             enter: Enter::Appear,
-            whole: None,
             leaving: false,
             hidden: false,
             events: 0,
@@ -521,12 +524,9 @@ impl Scene {
             let node = self.nodes[id as usize].as_mut().unwrap();
             if node.hidden == shown {
                 node.hidden = !shown;
-                if node.enter == Enter::Point && node.placed {
-                    // Growing or shrinking from where it is: drawn as a drop on the way.
-                    node.whole = Some([
-                        node.springs[W].target.max(1.) as f32,
-                        node.springs[H].target.max(1.) as f32,
-                    ]);
+                if node.enter == Enter::Point {
+                    // It grows or shrinks from wherever it is.
+                    node.springs[GROW].target = if shown { 1. } else { 0. };
                 }
                 self.layout_dirty = true;
             }
@@ -619,17 +619,7 @@ impl Scene {
         }
         node.leaving = true;
         match node.enter {
-            Enter::Point => {
-                node.whole = Some([node.springs[W].value as f32, node.springs[H].value as f32]);
-                let (cx, cy) = (
-                    node.springs[X].value + node.springs[W].value / 2.,
-                    node.springs[Y].value + node.springs[H].value / 2.,
-                );
-                node.springs[X].target = cx;
-                node.springs[Y].target = cy;
-                node.springs[W].target = 0.;
-                node.springs[H].target = 0.;
-            }
+            Enter::Point => node.springs[GROW].target = 0.,
             _ => node.springs[OPACITY].target = 0.,
         }
     }
@@ -742,50 +732,27 @@ impl Scene {
         let own = target;
         let target = node.travel.unwrap_or(target);
         if !node.leaving {
-            let point = [
-                target[0] + target[2] / 2.,
-                target[1] + target[3] / 2.,
-                0.,
-                0.,
-            ];
             if !node.placed {
                 node.placed = true;
-                let start = match node.enter {
-                    Enter::Point if node.hidden => point,
-                    Enter::Point => {
-                        node.whole = Some([target[2], target[3]]);
-                        [
-                            target[0] + target[2] / 2.,
-                            target[1] + target[3] / 2.,
-                            0.,
-                            0.,
-                        ]
-                    }
-                    _ => target,
-                };
                 for i in 0..4 {
-                    node.springs[i].jump(f64::from(start[i]));
+                    node.springs[i].jump(f64::from(target[i]));
                 }
-                if node.enter == Enter::Fade {
-                    node.springs[OPACITY].jump(0.);
+                match node.enter {
+                    // It grows out of a point in the middle of its place, unless it's hidden.
+                    Enter::Point => {
+                        node.springs[GROW].jump(0.);
+                        node.springs[GROW].target = if node.hidden { 0. } else { 1. };
+                    }
+                    Enter::Fade => node.springs[OPACITY].jump(0.),
+                    Enter::Appear => (),
                 }
             } else if !node.animate {
                 for i in 0..4 {
                     node.springs[i].jump(f64::from(target[i]));
                 }
             }
-            // What grows out of a point grows into where it is now, and what's hidden shrinks
-            // into a point in the middle of it.
-            if node.enter == Enter::Point && (node.whole.is_some() || node.hidden) {
-                node.whole = Some([target[2], target[3]]);
-            }
-            let to = if node.hidden && node.enter == Enter::Point {
-                point
-            } else {
-                target
-            };
             for i in 0..4 {
-                node.springs[i].target = f64::from(to[i]);
+                node.springs[i].target = f64::from(target[i]);
             }
         }
         for child in children {
@@ -801,15 +768,17 @@ impl Scene {
         for (id, node) in self.nodes.iter_mut().enumerate() {
             let Some(node) = node else { continue };
             let mut settled = true;
-            for spring in &mut node.springs {
-                spring.advance(dt, slowdown);
-                settled &= spring.settle(0.01);
+            for (i, spring) in node.springs.iter_mut().enumerate() {
+                match node.response.filter(|_| i < OPACITY) {
+                    Some(response) => spring.advance_with(dt, slowdown, response),
+                    None => spring.advance(dt, slowdown),
+                }
+                // Growth is a fraction, settled to a finer step.
+                settled &= spring.settle(if i == GROW { 0.001 } else { 0.01 });
             }
             if settled {
                 if node.leaving {
                     gone.push(id as NodeId);
-                } else if !node.hidden {
-                    node.whole = None;
                 }
             } else {
                 moving = true;
@@ -920,34 +889,35 @@ impl Scene {
         }
     }
 
-    /// Where a node is drawn on its output, with its size; and the fraction of its whole size it
-    /// has grown to, while it grows out of a point or shrinks into one.
+    /// Where a node is drawn on its output, with its size; and how far it has grown out of a
+    /// point, from 0 to 1. Growing, it's a circle in the middle of its place until it's as wide
+    /// as its narrower side, then stretches to it; its place and size can change on the way, and
+    /// the circle follows them.
     fn drawn(node: &Node) -> ([f32; 4], f32) {
         let s = &node.springs;
-        let mut rect = [
+        let rect = [
             s[X].value as f32,
             s[Y].value as f32,
             s[W].value.max(0.) as f32,
             s[H].value.max(0.) as f32,
         ];
-        let mut grown = 1.;
-        if let (Enter::Point, Some([ww, wh])) = (node.enter, node.whole) {
-            if ww > 0. && wh > 0. {
-                let g = (rect[2] / ww).max(rect[3] / wh).clamp(0., 1.);
-                grown = g;
-                let narrow = ww.min(wh);
-                let (w, h) = if g < 0.5 {
-                    let d = narrow * g / 0.5;
-                    (d, d)
-                } else {
-                    let t = (g - 0.5) / 0.5;
-                    (narrow + (ww - narrow) * t, narrow + (wh - narrow) * t)
-                };
-                let (cx, cy) = (rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.);
-                rect = [cx - w / 2., cy - h / 2., w, h];
-            }
+        if node.enter != Enter::Point {
+            return (rect, 1.);
         }
-        (rect, grown)
+        let g = s[GROW].value.clamp(0., 1.) as f32;
+        let narrow = rect[2].min(rect[3]);
+        let (w, h) = if g < 0.5 {
+            let d = narrow * g / 0.5;
+            (d, d)
+        } else {
+            let t = (g - 0.5) / 0.5;
+            (
+                narrow + (rect[2] - narrow) * t,
+                narrow + (rect[3] - narrow) * t,
+            )
+        };
+        let (cx, cy) = (rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.);
+        ([cx - w / 2., cy - h / 2., w, h], g)
     }
 
     /// What to draw for output `name`, back to front: with the top layer, or with `overlay`,
@@ -1004,11 +974,7 @@ impl Scene {
         let radii: [f32; 4] = std::array::from_fn(|i| {
             let r = node.springs[RADII + i].value as f32;
             // Growing out of a point, it's round until it stretches.
-            let r = if node.whole.is_some() && grown < 0.5 {
-                half
-            } else {
-                r
-            };
+            let r = if grown < 0.5 { half } else { r };
             r.clamp(0., half)
         });
         // Scaled around its middle, inside whatever its parents are scaled by.
@@ -1071,7 +1037,7 @@ impl Scene {
         }
 
         // What's in something growing out of a point fades in late and out early.
-        let content = if node.whole.is_some() {
+        let content = if grown < 1. {
             if node.leaving || node.hidden {
                 1. - smoothstep(0., 0.35, 1. - grown)
             } else {
@@ -1446,6 +1412,7 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
         "scale" => look.scale = value.as_f64().unwrap_or(1.).max(0.) as f32,
         "blur" => look.blur = value.as_f64().unwrap_or(0.).max(0.) as f32,
         "clip" => look.clip = value.as_bool().unwrap_or(false),
+        "response" => node.response = value.as_f64().filter(|r| *r > 0.),
         "layer" => node.overlay = value.as_str() == Some("overlay"),
         "cursor" => look.cursor = value.as_str().map(String::from),
         "animate" => node.animate = value.as_bool().unwrap_or(true),
@@ -1599,6 +1566,36 @@ mod tests {
             Scene::drawn(scene.node(panel).unwrap()).0,
             [680., 200., 560., 80.]
         );
+    }
+
+    #[test]
+    fn what_grows_out_of_a_point_never_jumps_when_its_size_changes_on_the_way() {
+        let mut scene = Scene::new();
+        let panel = growing_panel(&mut scene, 480.);
+        let mut last = Scene::drawn(scene.node(panel).unwrap()).0;
+        let mut speed = [0f32; 4];
+        for frame in 0..120 {
+            // Like typing into the launcher as it opens: its results come and go.
+            if frame == 3 || frame == 6 {
+                let height = if frame == 3 { 80 } else { 300 };
+                scene.set(panel, &serde_json::json!({ "height": height }));
+                scene.lay_out();
+            }
+            scene.advance(1. / 60., Some(1.));
+            let drawn = Scene::drawn(scene.node(panel).unwrap()).0;
+            // A jump is a sudden change of speed: growing smoothly, its speed changes a little
+            // each frame, however its size changes.
+            for i in 0..4 {
+                let now = drawn[i] - last[i];
+                assert!(
+                    (now - speed[i]).abs() < 60.,
+                    "it jumped on frame {frame}: {last:?} to {drawn:?}"
+                );
+                speed[i] = now;
+            }
+            last = drawn;
+        }
+        assert_eq!(last, [680., 200., 560., 300.]);
     }
 
     #[test]

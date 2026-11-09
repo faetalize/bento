@@ -3,7 +3,8 @@
 // A node takes props: layout (direction, gap, padding, width, height, grow, align, justify,
 // position, top/left/right/bottom, display), look (fill, material, tint, radius, border,
 // opacity, scale, blur, clip, color, cursor), text (text, size, weight, family, textAlign,
-// tabular) and motion (animate, enter). Changing them later moves the node there with springs;
+// tabular) and motion (animate, enter, shown, response: how long its moves take, in seconds).
+// Changing them later moves the node there with springs;
 // `jump` gives where the look starts from first, like `{ blur: 6 }`. `shown: false` hides a node
 // the way it comes, into a point for `enter: "point"`, and `shown: true` brings it back from
 // wherever it is, so it's one thing coming and going.
@@ -113,15 +114,21 @@ export function input({
 
   let blink = null;
   let current = value;
+  let lastTyped = 0;
   const show = (json) => {
     if (!json) return;
     const state = JSON.parse(json);
     const [x, y, , h] = state.caretRect;
-    // Typing, the caret keeps up with every letter; moved, it glides there.
+    // Moved, the caret glides there at bento's pace; typing, it glides as fast as the typing
+    // goes, so it keeps up with every letter.
     const typed = state.text !== current;
-    caret.set({
-      left: x, top: y, height: h, opacity: widget.focused ? 1 : 0, animate: !typed,
-    });
+    let response = null;
+    if (typed) {
+      const now = Date.now();
+      response = Math.min(Math.max((now - lastTyped) / 2000, 0.04), 0.42);
+      lastTyped = now;
+    }
+    caret.set({ left: x, top: y, height: h, opacity: widget.focused ? 1 : 0, response });
     hint.set({ opacity: state.text ? 0 : 1 });
     marks.splice(0).forEach((mark) => mark.remove());
     for (const [sx, sy, sw, sh] of state.selection) {

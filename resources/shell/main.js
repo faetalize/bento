@@ -196,6 +196,8 @@ function updateKeyboard() {
 // The launcher: a glass palette in the middle of the focused output, above everything, that
 // finds apps as you type. It grows out of a point, and shrinks back into one.
 const RESULTS = 8;
+// How tall the launcher is with all its results.
+const LAUNCHER_HEIGHT = 474;
 let launcher = null;
 // Each output's frame for the launcher, which keeps it in the middle.
 const launcherFrames = new Map();
@@ -214,13 +216,14 @@ function score(app, query) {
 
 function launcherFrame(output) {
   if (!launcherFrames.has(output)) {
-    const frame = box(
-      {
-        position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
-        layer: "overlay", direction: "column", align: "center",
-      },
-      [box({ height: "22%" })],
-    );
+    // In the middle of the output at its tallest, with all its results, so its top, with the
+    // search, stays where it is as the results come and go.
+    const frame = box({
+      position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+      layer: "overlay", direction: "column", align: "center", justify: "center",
+    });
+    frame.room = box({ height: LAUNCHER_HEIGHT, direction: "column", align: "center" });
+    frame.add(frame.room);
     root(output)?.add(frame);
     launcherFrames.set(output, frame);
   }
@@ -257,7 +260,7 @@ function openLauncher(output) {
     },
     [box({ padding: [6, 10] }, [field]), list],
   );
-  launcherFrame(output).add(panel);
+  launcherFrame(output).room.add(panel);
   launcher = { output, panel, field, list, rows: [], matches: [], selected: 0, all: apps() };
   launchers.set(output, launcher);
   focus(field);

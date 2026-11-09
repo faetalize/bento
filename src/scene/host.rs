@@ -614,6 +614,25 @@ mod tests {
         host.toggle_launcher(Some(String::from("DP-2")));
         settle(&mut host, &mut now);
         assert!(overlay(&host, "DP-2") > 0, "it opens on the focused output");
+        // In the middle of the output at its tallest, 474 high.
+        let panel = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .draw_layer("DP-2", true)
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Shape {
+                    rect,
+                    material: Material::Glass,
+                    ..
+                } => Some(rect),
+                _ => None,
+            })
+            .unwrap();
+        assert!((panel[1] - (1440. - 474.) / 2.).abs() < 1., "{panel:?}");
         assert_eq!(overlay(&host, "DP-1"), 0);
         assert!(host.wants_keyboard());
 
@@ -713,13 +732,27 @@ mod tests {
             press(&mut host, "w", "w");
         }
         let typed = caret(&host).unwrap();
-        // Where it rests, with the springs settled and the caret still lit.
+        // A tenth of a second after the last letter, with the caret still lit.
+        for _ in 0..6 {
+            host.shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow_mut()
+                .advance(1. / 60., Some(1.));
+        }
+        let caught_up = caret(&host).unwrap();
         settle_springs(&host);
         let settled = caret(&host).unwrap();
         assert!(settled > start + 20.);
+        // Even with a letter every frame, it's less than a letter behind, and catches up.
         assert!(
-            (typed - settled).abs() < 0.5,
+            (typed - settled).abs() < 8.,
             "left behind at {typed}, not {settled}"
+        );
+        assert!(
+            (caught_up - settled).abs() < 0.5,
+            "still behind at {caught_up}"
         );
     }
 
