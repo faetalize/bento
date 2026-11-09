@@ -628,7 +628,8 @@ mod tests {
         host.toggle_launcher(Some(String::from("DP-2")));
         settle(&mut host, &mut now);
         assert!(overlay(&host, "DP-2") > 0, "it opens on the focused output");
-        // In the middle of the output at its tallest, 474 high.
+        // In the middle of the output at its tallest, 544 high, and only the search bar until
+        // something's typed.
         let panel = host
             .shell
             .as_ref()
@@ -646,7 +647,8 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert!((panel[1] - (1440. - 474.) / 2.).abs() < 1., "{panel:?}");
+        assert!((panel[1] - (1440. - 544.) / 2.).abs() < 1., "{panel:?}");
+        assert!(panel[3] < 100., "only the bar: {panel:?}");
         assert_eq!(overlay(&host, "DP-1"), 0);
         assert!(host.wants_keyboard());
 
@@ -657,13 +659,13 @@ mod tests {
             pressed: true,
             repeat: false,
         };
-        // Something no app is called: no results, so less to draw.
+        // Something no app is called: still only the bar, with what's typed in it.
         let before = overlay(&host, "DP-2");
         for c in "zqxj".chars() {
             host.key(&key(&c.to_string(), &c.to_string()));
         }
         settle(&mut host, &mut now);
-        assert!(overlay(&host, "DP-2") < before, "typing filters the apps");
+        assert!(overlay(&host, "DP-2") > 0 && overlay(&host, "DP-2") <= before, "only the bar");
 
         host.key(&key("Escape", ""));
         settle(&mut host, &mut now);
@@ -788,7 +790,7 @@ mod tests {
         host.advance(Instant::now(), None);
         let glass = launcher_glass(&host).unwrap();
         assert_eq!(
-            glass[2], 560.,
+            glass[2], 720.,
             "stretched to its full width, not a circle: {glass:?}"
         );
     }

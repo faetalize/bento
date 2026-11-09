@@ -193,11 +193,12 @@ function updateKeyboard() {
   keyboard(launcher !== null || [...shells.values()].some((s) => s.open));
 }
 
-// The launcher: a glass palette in the middle of the focused output, above everything, that
-// finds apps as you type. It grows out of a point, and shrinks back into one.
+// The launcher: a glass search bar in the middle of the focused output, above everything,
+// that finds apps as you type, its results opening below it. It grows out of a point, and
+// shrinks back into one.
 const RESULTS = 8;
 // How tall the launcher is with all its results.
-const LAUNCHER_HEIGHT = 474;
+const LAUNCHER_HEIGHT = 544;
 const LAUNCHER_RADIUS = 26;
 let launcher = null;
 // Each output's frame for the launcher, which keeps it in the middle.
@@ -249,17 +250,17 @@ function openLauncher(output) {
   }
   const field = input({
     placeholder: "Search apps",
-    size: 17,
+    size: 22,
     onChange: (query) => fillLauncher(query),
     onSubmit: () => launchSelected(),
   });
   const list = box({ direction: "column", gap: 2 });
-  const search = box({ padding: [6, 10] }, [field]);
+  const search = box({ padding: [10, 14] }, [field]);
   // One body, so that it grows around the panel's middle as one.
-  const body = box({ direction: "column", gap: 8 }, [search, list]);
+  const body = box({ direction: "column" }, [search, list]);
   const panel = box(
     {
-      material: "glass", radius: LAUNCHER_RADIUS, width: 560, padding: 12, direction: "column",
+      material: "glass", radius: LAUNCHER_RADIUS, width: 720, padding: 12, direction: "column",
       clip: true,
     },
     [body],
@@ -267,7 +268,7 @@ function openLauncher(output) {
   launcherFrame(output).room.add(panel);
   const content = [body];
   launcher = {
-    output, panel, field, list, content, rows: [], matches: [], selected: 0, all: apps(),
+    output, panel, body, field, list, content, rows: [], matches: [], selected: 0, all: apps(),
   };
   launchers.set(output, launcher);
   focus(field);
@@ -288,7 +289,8 @@ function closeLauncher() {
 function fillLauncher(query) {
   if (!launcher) return;
   const q = query.trim().toLowerCase();
-  launcher.matches = launcher.all
+  // Only the bar, until there's something to find.
+  launcher.matches = !q ? [] : launcher.all
     .map((app) => [score(app, q), app])
     .filter(([s]) => s !== null)
     .sort((a, b) => a[0] - b[0])
@@ -299,20 +301,21 @@ function fillLauncher(query) {
   launcher.rows = launcher.matches.map((app, i) =>
     box(
       {
-        align: "center", gap: 12, padding: [6, 10], radius: 14,
+        align: "center", gap: 14, padding: [8, 12], radius: 16,
         onClick: () => launchApp(app),
         onHover: ({ inside }) => inside && selectRow(i),
       },
       [
-        image(app.icon ?? "application-x-executable", { size: 32 }),
+        image(app.icon ?? "application-x-executable", { size: 40 }),
         box({ direction: "column", shrink: 1 }, [
-          text(app.name, { weight: 600 }),
-          app.comment && text(app.comment, { size: 12, color: "fg/0.6" }),
+          text(app.name, { size: 16, weight: 600 }),
+          app.comment && text(app.comment, { size: 13, color: "fg/0.6" }),
         ]),
       ],
     ),
   );
   launcher.rows.forEach((row) => launcher.list.add(row));
+  launcher.body.set({ gap: launcher.rows.length ? 8 : 0 });
   selectRow(0);
 }
 
