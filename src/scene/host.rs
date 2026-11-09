@@ -636,6 +636,91 @@ mod tests {
         settle(&mut host, &mut now);
         assert_eq!(overlay(&host, "DP-2"), 0, "Escape closes it");
         assert!(!host.wants_keyboard());
+
+        // Opened again while it shrinks away, it's the same launcher turning around.
+        host.toggle_launcher(Some(String::from("DP-2")));
+        now += std::time::Duration::from_millis(30);
+        host.advance(now, Some(1.));
+        host.toggle_launcher(Some(String::from("DP-2")));
+        host.toggle_launcher(Some(String::from("DP-2")));
+        now += std::time::Duration::from_millis(30);
+        host.advance(now, Some(1.));
+        let glass = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .draw_layer("DP-2", true)
+            .into_iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    Item::Shape {
+                        material: Material::Glass,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(glass, 1, "one launcher");
+    }
+
+    #[test]
+    fn the_caret_keeps_up_with_typing() {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        // The script's timers, like the caret's blink, run on real time, so this one stays close
+        // to it and settles the springs without them.
+        let mut now = Instant::now();
+        host.toggle_launcher(Some(String::from("DP-1")));
+        host.advance(now, Some(1.));
+        let settle_springs = |host: &SceneHost| {
+            let shell = host.shell.as_ref().unwrap();
+            for _ in 0..300 {
+                shell.scene.borrow_mut().advance(1. / 60., Some(1.));
+            }
+        };
+        settle_springs(&host);
+        let caret = |host: &SceneHost| {
+            host.shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .draw_layer("DP-1", true)
+                .into_iter()
+                .find_map(|item| match item {
+                    Item::Shape { rect, .. } if rect[2] < 3. => Some(rect[0]),
+                    _ => None,
+                })
+        };
+        let mut press = |host: &mut SceneHost, name: &str, text: &str| {
+            host.key(&EngineKey {
+                name: name.to_string(),
+                text: text.to_string(),
+                modifiers: [false; 4],
+                pressed: true,
+                repeat: false,
+            });
+            now += std::time::Duration::from_millis(16);
+            host.advance(now, Some(1.));
+        };
+        press(&mut host, "w", "w");
+        let start = caret(&host).expect("a caret, lit while typing");
+        for _ in 0..4 {
+            press(&mut host, "w", "w");
+        }
+        let typed = caret(&host).unwrap();
+        // Where it rests, with the springs settled and the caret still lit.
+        settle_springs(&host);
+        let settled = caret(&host).unwrap();
+        assert!(settled > start + 20.);
+        assert!(
+            (typed - settled).abs() < 0.5,
+            "left behind at {typed}, not {settled}"
+        );
     }
 
     #[test]

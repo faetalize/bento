@@ -229,9 +229,11 @@ pub struct Node {
     overlay: bool,
     animate: bool,
     enter: Enter,
-    /// Its size when it started growing out of a point or shrinking into one.
+    /// Its size as it grows out of a point or shrinks into one.
     whole: Option<[f32; 2]>,
     leaving: bool,
+    /// Whether it's hidden: shrunk into a point, or faded out, to come back from wherever it is.
+    hidden: bool,
     pub events: u32,
 }
 
@@ -424,6 +426,7 @@ impl Scene {
             enter: Enter::Appear,
             whole: None,
             leaving: false,
+            hidden: false,
             events: 0,
         });
         self.set(id, props);
@@ -513,9 +516,29 @@ impl Scene {
             let _ = self.tree.set_style(node.taffy, style);
             self.layout_dirty = true;
         }
+        // Shown or hidden, it moves on its next layout.
+        if let Some(shown) = props.get("shown").and_then(Value::as_bool) {
+            let node = self.nodes[id as usize].as_mut().unwrap();
+            if node.hidden == shown {
+                node.hidden = !shown;
+                if node.enter == Enter::Point && node.placed {
+                    // Growing or shrinking from where it is: drawn as a drop on the way.
+                    node.whole = Some([
+                        node.springs[W].target.max(1.) as f32,
+                        node.springs[H].target.max(1.) as f32,
+                    ]);
+                }
+                self.layout_dirty = true;
+            }
+        }
         // The look's targets.
         let node = self.nodes[id as usize].as_mut().unwrap();
-        node.springs[OPACITY].target = f64::from(node.look.opacity);
+        let faded = node.hidden && node.enter != Enter::Point;
+        node.springs[OPACITY].target = if faded {
+            0.
+        } else {
+            f64::from(node.look.opacity)
+        };
         // Shown again, a node that travelled into another goes back to its own place and size.
         if node.travel.is_some() && node.look.opacity > 0. {
             node.travel = None;
@@ -719,9 +742,16 @@ impl Scene {
         let own = target;
         let target = node.travel.unwrap_or(target);
         if !node.leaving {
+            let point = [
+                target[0] + target[2] / 2.,
+                target[1] + target[3] / 2.,
+                0.,
+                0.,
+            ];
             if !node.placed {
                 node.placed = true;
                 let start = match node.enter {
+                    Enter::Point if node.hidden => point,
                     Enter::Point => {
                         node.whole = Some([target[2], target[3]]);
                         [
@@ -744,8 +774,18 @@ impl Scene {
                     node.springs[i].jump(f64::from(target[i]));
                 }
             }
+            // What grows out of a point grows into where it is now, and what's hidden shrinks
+            // into a point in the middle of it.
+            if node.enter == Enter::Point && (node.whole.is_some() || node.hidden) {
+                node.whole = Some([target[2], target[3]]);
+            }
+            let to = if node.hidden && node.enter == Enter::Point {
+                point
+            } else {
+                target
+            };
             for i in 0..4 {
-                node.springs[i].target = f64::from(target[i]);
+                node.springs[i].target = f64::from(to[i]);
             }
         }
         for child in children {
@@ -768,7 +808,7 @@ impl Scene {
             if settled {
                 if node.leaving {
                     gone.push(id as NodeId);
-                } else {
+                } else if !node.hidden {
                     node.whole = None;
                 }
             } else {
@@ -956,6 +996,10 @@ impl Scene {
         if opacity <= 0.003 {
             return;
         }
+        // Gone into a point, nothing of it shows.
+        if (node.hidden || node.leaving) && (rect[2] < 0.5 || rect[3] < 0.5) {
+            return;
+        }
         let half = rect[2].min(rect[3]) / 2.;
         let radii: [f32; 4] = std::array::from_fn(|i| {
             let r = node.springs[RADII + i].value as f32;
@@ -1028,7 +1072,7 @@ impl Scene {
 
         // What's in something growing out of a point fades in late and out early.
         let content = if node.whole.is_some() {
-            if node.leaving {
+            if node.leaving || node.hidden {
                 1. - smoothstep(0., 0.35, 1. - grown)
             } else {
                 smoothstep(0.35, 0.85, grown)
@@ -1068,7 +1112,7 @@ impl Scene {
         found: &mut Vec<NodeId>,
     ) {
         let Some(node) = self.node(id) else { return };
-        if node.leaving || node.springs[OPACITY].target <= 0. {
+        if node.leaving || node.hidden || node.springs[OPACITY].target <= 0. {
             return;
         }
         let (rect, _) = Self::drawn(node);
@@ -1521,6 +1565,84 @@ mod tests {
             scene.edit(root, &key("x", "x", false)).is_none(),
             "only inputs are typed into"
         );
+    }
+
+    /// A panel 560 wide at the top of the screen, growing out of a point.
+    fn growing_panel(scene: &mut Scene, height: f32) -> NodeId {
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let props = serde_json::json!({
+            "enter": "point", "material": "glass", "position": "absolute",
+            "top": 200, "left": 680, "width": 560, "height": height,
+        });
+        let panel = scene.create("box", &props);
+        scene.append(root, panel, None);
+        scene.lay_out();
+        panel
+    }
+
+    #[test]
+    fn what_grows_out_of_a_point_stays_in_place_when_it_gets_smaller_on_the_way() {
+        let mut scene = Scene::new();
+        let panel = growing_panel(&mut scene, 480.);
+        for _ in 0..6 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        // Like the launcher's results going while it still grows.
+        scene.set(panel, &serde_json::json!({ "height": 80 }));
+        scene.lay_out();
+        for _ in 0..240 {
+            scene.advance(1. / 60., Some(1.));
+            let drawn = Scene::drawn(scene.node(panel).unwrap()).0;
+            assert!(drawn[1] >= 199.5, "its top went above its place: {drawn:?}");
+        }
+        assert_eq!(
+            Scene::drawn(scene.node(panel).unwrap()).0,
+            [680., 200., 560., 80.]
+        );
+    }
+
+    #[test]
+    fn hidden_it_shrinks_into_a_point_and_shown_mid_way_it_turns_back_from_there() {
+        let mut scene = Scene::new();
+        let panel = growing_panel(&mut scene, 120.);
+        for _ in 0..240 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        let full = Scene::drawn(scene.node(panel).unwrap()).0;
+        assert_eq!(full, [680., 200., 560., 120.]);
+
+        scene.set(panel, &serde_json::json!({ "shown": false }));
+        scene.lay_out();
+        for _ in 0..8 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        let shrinking = Scene::drawn(scene.node(panel).unwrap()).0;
+        assert!(shrinking[2] < 560. && shrinking[2] > 0., "{shrinking:?}");
+        assert!(
+            !scene.covers("DP-1", [960., 260.], false),
+            "hidden, it isn't hit"
+        );
+
+        scene.set(panel, &serde_json::json!({ "shown": true }));
+        scene.lay_out();
+        scene.advance(1. / 60., Some(1.));
+        let turning = Scene::drawn(scene.node(panel).unwrap()).0;
+        assert!(
+            (turning[2] - shrinking[2]).abs() < 60.,
+            "it goes on from where it was: {shrinking:?} then {turning:?}"
+        );
+        for _ in 0..240 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        assert_eq!(Scene::drawn(scene.node(panel).unwrap()).0, full);
+
+        scene.set(panel, &serde_json::json!({ "shown": false }));
+        scene.lay_out();
+        for _ in 0..240 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        assert!(scene.node(panel).is_some(), "hidden, it's still there");
+        assert!(scene.draw("DP-1").is_empty());
     }
 
     #[test]

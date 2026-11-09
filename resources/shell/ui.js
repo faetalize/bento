@@ -4,7 +4,9 @@
 // position, top/left/right/bottom, display), look (fill, material, tint, radius, border,
 // opacity, scale, blur, clip, color, cursor), text (text, size, weight, family, textAlign,
 // tabular) and motion (animate, enter). Changing them later moves the node there with springs;
-// `jump` gives where the look starts from first, like `{ blur: 6 }`.
+// `jump` gives where the look starts from first, like `{ blur: 6 }`. `shown: false` hides a node
+// the way it comes, into a point for `enter: "point"`, and `shown: true` brings it back from
+// wherever it is, so it's one thing coming and going.
 //
 // Handlers, each with its event:
 // - onClick, onMiddleClick, onRightClick: pressed and let go on it, with that button, or a touch
@@ -115,7 +117,11 @@ export function input({
     if (!json) return;
     const state = JSON.parse(json);
     const [x, y, , h] = state.caretRect;
-    caret.set({ left: x, top: y, height: h, opacity: widget.focused ? 1 : 0 });
+    // Typing, the caret keeps up with every letter; moved, it glides there.
+    const typed = state.text !== current;
+    caret.set({
+      left: x, top: y, height: h, opacity: widget.focused ? 1 : 0, animate: !typed,
+    });
     hint.set({ opacity: state.text ? 0 : 1 });
     marks.splice(0).forEach((mark) => mark.remove());
     for (const [sx, sy, sw, sh] of state.selection) {

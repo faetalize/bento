@@ -227,8 +227,22 @@ function launcherFrame(output) {
   return launcherFrames.get(output);
 }
 
+// Each output's launcher, kept while hidden, so that opening it again while it shrinks away
+// turns it around from where it is.
+const launchers = new Map();
+
 function openLauncher(output) {
   if (!output || !root(output)) return;
+  const kept = launchers.get(output);
+  if (kept) {
+    kept.panel.set({ shown: true });
+    launcher = { ...kept, rows: kept.rows, matches: [], selected: 0, all: apps() };
+    kept.field.setText("");
+    focus(kept.field);
+    updateKeyboard();
+    fillLauncher("");
+    return;
+  }
   const field = input({
     placeholder: "Search apps",
     size: 17,
@@ -244,7 +258,8 @@ function openLauncher(output) {
     [box({ padding: [6, 10] }, [field]), list],
   );
   launcherFrame(output).add(panel);
-  launcher = { panel, field, list, rows: [], matches: [], selected: 0, all: apps() };
+  launcher = { output, panel, field, list, rows: [], matches: [], selected: 0, all: apps() };
+  launchers.set(output, launcher);
   focus(field);
   updateKeyboard();
   fillLauncher("");
@@ -252,7 +267,8 @@ function openLauncher(output) {
 
 function closeLauncher() {
   if (!launcher) return;
-  launcher.panel.remove();
+  launcher.panel.set({ shown: false });
+  launchers.set(launcher.output, launcher);
   launcher = null;
   focus(null);
   updateKeyboard();
