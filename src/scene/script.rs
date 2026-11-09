@@ -33,6 +33,8 @@ pub struct Shell {
     pub scene: Rc<RefCell<Scene>>,
     /// bento actions the shell asked to run, as `{ name, args, properties, window, workspace }`.
     actions: Rc<RefCell<Vec<serde_json::Value>>>,
+    /// Commands for the data program, like `{ "cmd": "volume", "value": 0.5 }`.
+    commands: Rc<RefCell<Vec<serde_json::Value>>>,
     timers: Rc<RefCell<Vec<(Instant, u32)>>>,
     deadline: Rc<Cell<Option<Instant>>>,
     dispatch: Persistent<Function<'static>>,
@@ -117,6 +119,7 @@ impl Shell {
         let context = Context::full(&runtime).context("error creating the JS context")?;
         let timers: Rc<RefCell<Vec<(Instant, u32)>>> = Rc::default();
         let actions: Rc<RefCell<Vec<serde_json::Value>>> = Rc::default();
+        let commands: Rc<RefCell<Vec<serde_json::Value>>> = Rc::default();
         let apps: Rc<RefCell<super::apps::Apps>> = Rc::default();
         let next_timer = Rc::new(Cell::new(0u32));
 
@@ -184,6 +187,16 @@ impl Shell {
                     s.borrow()
                         .frame(id)
                         .map(|f| serde_json::json!(f).to_string())
+                })
+                .map_err(js)?,
+            )?;
+            let c = commands.clone();
+            native.set(
+                "data",
+                Function::new(ctx.clone(), move |command: String| {
+                    if let Ok(command) = serde_json::from_str(&command) {
+                        c.borrow_mut().push(command);
+                    }
                 })
                 .map_err(js)?,
             )?;
@@ -306,6 +319,7 @@ impl Shell {
         Ok(Self {
             scene,
             actions,
+            commands,
             timers,
             deadline,
             dispatch: dispatch?,
@@ -336,6 +350,11 @@ impl Shell {
     /// The bento actions the shell asked to run since this was last asked.
     pub fn take_actions(&self) -> Vec<serde_json::Value> {
         std::mem::take(&mut self.actions.borrow_mut())
+    }
+
+    /// The commands for the data program since this was last asked.
+    pub fn take_commands(&self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.commands.borrow_mut())
     }
 
     /// When the next timer is due.

@@ -1,5 +1,6 @@
 //! bento's shell: the islands, the launcher and notifications around the workspaces.
 
+mod data;
 mod islands;
 mod launcher;
 mod osd;
@@ -279,6 +280,11 @@ impl Shell {
 }
 
 fn main() -> glib::ExitCode {
+    // Just the shell's data, for bento's own shell.
+    if std::env::args().any(|arg| arg == "--data") {
+        return data::run();
+    }
+
     let app = adw::Application::builder().application_id(APP_ID).build();
 
     let shell: Rc<RefCell<Option<Rc<Shell>>>> = Rc::default();

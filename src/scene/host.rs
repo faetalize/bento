@@ -83,9 +83,24 @@ pub struct SceneHost {
     pointer: Option<(String, [f32; 2])>,
     /// The node the pointer is over that hears it come and go.
     hovered: Option<NodeId>,
+    /// The data program, `bento-shell --data`, while it runs, and its stdin.
+    data: Option<(std::process::Child, std::process::ChildStdin)>,
+    /// When to start the data program again after it went.
+    data_retry: Option<Instant>,
+    /// The last of each kind of data, but notifications, to tell a shell loaded again.
+    data_state: HashMap<String, serde_json::Value>,
     /// Presses that haven't ended: by the button, touch or tool, what they pressed, if anything,
     /// and where.
     presses: HashMap<u32, (Option<NodeId>, String, [f32; 2])>,
+}
+
+impl Drop for SceneHost {
+    fn drop(&mut self) {
+        if let Some((mut child, _)) = self.data.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 impl std::fmt::Debug for SceneHost {
@@ -109,6 +124,9 @@ impl SceneHost {
             self.loaded_mtimes = Some(mtimes);
             match Shell::load(outputs, dir, style.clone()) {
                 Ok(shell) => {
+                    for data in self.data_state.values() {
+                        shell.send(data);
+                    }
                     self.shell = Some(shell);
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
                     self.sent_workspaces = None;
@@ -148,6 +166,57 @@ impl SceneHost {
         if !added.is_empty() || !gone.is_empty() {
             self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
             shell.send(&serde_json::json!({ "type": "outputs", "outputs": added }));
+        }
+    }
+
+    /// Whether the data program should be started now.
+    pub fn wants_data_program(&self, now: Instant) -> bool {
+        self.shell.is_some()
+            && self.data.is_none()
+            && self.data_retry.is_none_or(|retry| now >= retry)
+    }
+
+    /// The data program started.
+    pub fn data_started(&mut self, child: std::process::Child, stdin: std::process::ChildStdin) {
+        self.data = Some((child, stdin));
+        self.data_retry = None;
+    }
+
+    /// The data program went: it's started again in a few seconds.
+    pub fn data_ended(&mut self, now: Instant) {
+        if let Some((mut child, _)) = self.data.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.data_retry = Some(now + std::time::Duration::from_secs(5));
+    }
+
+    /// A line the data program said: hands it to the shell.
+    pub fn data_line(&mut self, line: &str) {
+        let Ok(data) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+        let kind = data["type"].as_str().unwrap_or_default();
+        if kind != "notification" {
+            self.data_state.insert(String::from(kind), data.clone());
+        }
+        if let Some(shell) = &self.shell {
+            shell.send(&data);
+        }
+    }
+
+    /// Hands the data program the shell's commands.
+    pub fn send_commands(&mut self) {
+        let Some(shell) = &self.shell else { return };
+        let commands = shell.take_commands();
+        let Some((_, stdin)) = &mut self.data else {
+            return;
+        };
+        for command in commands {
+            use std::io::Write as _;
+            if writeln!(stdin, "{command}").is_err() {
+                break;
+            }
         }
     }
 
@@ -519,6 +588,30 @@ mod tests {
             *now += Duration::from_millis(100);
             host.advance(*now, Some(1.));
         }
+    }
+
+    #[test]
+    fn what_the_data_program_says_reaches_the_shell_and_a_reloaded_one() {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.data_line(r#"{"type":"network","connected":true,"icon":"network-wired-symbolic"}"#);
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        let shows_wired =
+            |host: &SceneHost| {
+                host.shell.as_ref().unwrap().scene.borrow().draw("DP-1").iter().any(|item| {
+                matches!(item, Item::Image { source: super::super::ImageSource::Icon(name), .. }
+                    if name == "network-wired-symbolic")
+            })
+            };
+        assert!(shows_wired(&host));
+
+        // Loaded again, the shell hears the last of it straight away.
+        host.loaded_mtimes = None;
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        assert!(shows_wired(&host));
     }
 
     #[test]

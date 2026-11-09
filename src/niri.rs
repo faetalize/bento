@@ -4950,6 +4950,79 @@ impl Niri {
     }
 
     /// What glass on `output` takes from it: the pointer while it shows, which carries a light.
+    /// Starts the shell's data program, `bento-shell --data`, and hands what it says to the shell.
+    fn start_scene_data(&mut self) {
+        use std::io::Read as _;
+        use std::process::{Command, Stdio};
+
+        let Some(scene) = &mut self.scene else { return };
+        let spawned = Command::new("bento-shell")
+            .arg("--data")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(err) => {
+                warn!("error starting the shell's data program: {err:?}");
+                scene.data_ended(Instant::now());
+                return;
+            }
+        };
+        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+            return;
+        };
+        // A file reads from a shared reference, which the event loop gives.
+        let stdout = std::fs::File::from(std::os::fd::OwnedFd::from(stdout));
+        let _ = smithay::reexports::rustix::fs::fcntl_setfl(
+            &stdout,
+            smithay::reexports::rustix::fs::OFlags::NONBLOCK,
+        );
+        scene.data_started(child, stdin);
+
+        let mut pending: Vec<u8> = Vec::new();
+        let source = Generic::new(stdout, Interest::READ, Mode::Level);
+        let res = self
+            .event_loop
+            .insert_source(source, move |_, stdout, state| {
+                let mut chunk = [0; 16384];
+                let mut ended = false;
+                loop {
+                    match (&**stdout).read(&mut chunk) {
+                        Ok(0) => {
+                            ended = true;
+                            break;
+                        }
+                        Ok(n) => pending.extend_from_slice(&chunk[..n]),
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            ended = true;
+                            break;
+                        }
+                    }
+                }
+                let Some(scene) = &mut state.niri.scene else {
+                    return Ok(PostAction::Remove);
+                };
+                while let Some(end) = pending.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=end).collect();
+                    scene.data_line(&String::from_utf8_lossy(&line));
+                }
+                if ended {
+                    scene.data_ended(Instant::now());
+                }
+                state.niri.queue_redraw_all();
+                Ok(if ended {
+                    PostAction::Remove
+                } else {
+                    PostAction::Continue
+                })
+            });
+        if let Err(err) = res {
+            warn!("error reading the shell's data program: {err:?}");
+        }
+    }
+
     /// Moves bento's own shell on and draws `output`'s part of it, and says whether it's still
     /// moving.
     fn update_scene(&mut self, backend: &mut Backend, output: &Output) -> bool {
@@ -4997,6 +5070,11 @@ impl Niri {
         scene.ensure_loaded(&outputs, dir.as_deref(), style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         let moving = scene.advance(Instant::now(), slowdown);
+        scene.send_commands();
+        if scene.wants_data_program(Instant::now()) {
+            self.start_scene_data();
+        }
+        let scene = self.scene.as_mut().unwrap();
 
         // Windows stay out of what the shell keeps along the outputs' edges.
         let reserved: Vec<(Output, [f64; 4])> = self

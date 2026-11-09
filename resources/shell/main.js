@@ -1,7 +1,9 @@
 // bento's own shell: three islands of glass along the top of each output. The clock opens into
 // the calendar.
 
-import { box, text, root, outputs, every, on, morph, style, reserve, keyboard } from "bento:ui";
+import {
+  box, text, image, root, outputs, every, on, morph, style, reserve, keyboard, action,
+} from "bento:ui";
 
 const HEIGHT = 36;
 // bento's gaps: the islands sit that far from the screen's edges, and windows that far below.
@@ -50,6 +52,7 @@ function workspaceButtons(output) {
         align: "center",
         justify: "center",
         fill: ws.active ? "accent" : undefined,
+        onClick: () => action("focus-workspace", [], { workspace: ws.id }),
         onHover: ws.active ? undefined : ({ inside }) => hovered.set({ fill: inside ? "fg/0.12" : null }),
       },
       [text(ws.name ?? ws.index + 1, { weight: 700, tabular: true, color: ws.active ? "#ffffff" : "fg" })],
@@ -111,7 +114,12 @@ function build(output) {
     calendar,
   ]);
 
-  const right = island({}, [text("Status", { weight: 600 })]);
+  // The status: network, sound and the battery, as the data program tells them.
+  const network = image("network-offline-symbolic", { color: "fg" });
+  const volume = image("audio-volume-muted-symbolic", { color: "fg" });
+  const battery = image("battery-missing-symbolic", { color: "fg", display: "none" });
+  const charge = text("", { weight: 600, tabular: true, display: "none" });
+  const right = island({ gap: 8 }, [network, volume, battery, charge]);
 
   const side = (justify, child) => box({ grow: 1, width: 0, justify }, [child]);
   const bar = box(
@@ -120,7 +128,9 @@ function build(output) {
   );
   top.add(bar);
   reserve(output, { top: gaps + HEIGHT });
-  Object.assign(shell, { bar, left, buttons, time, shortDate, bigTime, longDate });
+  Object.assign(shell, {
+    bar, left, buttons, time, shortDate, bigTime, longDate, network, volume, battery, charge,
+  });
   shells.set(output, shell);
 }
 
@@ -153,3 +163,23 @@ every(1000, () => {
     shell.longDate.set({ text: longDateLabel(now) });
   }
 });
+
+const volumeIcon = ({ volume, muted }) =>
+  muted || volume <= 0 ? "audio-volume-muted-symbolic"
+  : volume < 0.34 ? "audio-volume-low-symbolic"
+  : volume < 0.67 ? "audio-volume-medium-symbolic"
+  : "audio-volume-high-symbolic";
+
+on("network", (event) => shells.forEach((s) => s.network.set({ icon: event.icon })));
+on("audio", (event) =>
+  shells.forEach((s) =>
+    s.volume.set({ icon: volumeIcon(event), display: event.available ? "flex" : "none" }),
+  ),
+);
+on("battery", (event) =>
+  shells.forEach((s) => {
+    const shown = event.present ? "flex" : "none";
+    s.battery.set({ icon: event.icon || "battery-missing-symbolic", display: shown });
+    s.charge.set({ text: `${Math.round(event.percentage)}%`, display: shown });
+  }),
+);

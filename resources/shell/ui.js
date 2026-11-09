@@ -221,6 +221,13 @@ export function launch(id) {
   return native.launch(id);
 }
 
+// Tells the shell's data program to do something: `data("volume", { value: 0.5 })`, "mute"
+// `{ value }`, "dismiss", "expire" and "invoke" a notification `{ id, key }`, "activate",
+// "secondary" and "context" a tray item `{ id }`, "suspend", "reboot" and "power-off".
+export function data(cmd, fields = {}) {
+  native.data(JSON.stringify({ cmd, ...fields }));
+}
+
 // Takes the keyboard from the apps, or gives it back. While the shell has it, every key that no
 // shortcut takes comes as a "key" event: `{ key, text, pressed, repeat, shift, ctrl, alt, super }`,
 // where `key` is its name, like "a", "Return" or "Escape", and `text` what it types.
@@ -279,7 +286,11 @@ export function cancel(id) {
 
 // Listens to bento's events: "outputs", "workspaces", "style", "key" while the shell has the
 // keyboard, "outside", a press anywhere off the shell, to close what's open, and "launcher",
-// the launcher's shortcut.
+// the launcher's shortcut. The data program's come as events too: "audio" `{ available, volume,
+// muted }`, "network" `{ connected, name, wifiStrength, icon }`, "battery" `{ present,
+// percentage, charging, icon }`, "tray" `{ items: [{ id, title, icon, menu, attention }] }` and
+// "notification" `{ event: "shown" | "replaced" | "closed", id, app, appIcon, summary, body,
+// actions, urgency, timeout, image }`.
 export function on(type, fn) {
   if (!listeners.has(type)) listeners.set(type, []);
   listeners.get(type).push(fn);
