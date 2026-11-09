@@ -32,6 +32,9 @@ pub struct Debug {
     pub glass_shader: Option<PathBuf>,
     /// Draws bento's own shell, the scene, until it can stand in for the shell program.
     pub scene_shell: bool,
+    /// A folder to read bento's own shell and widgets from, `main.js` and `ui.js`, instead of
+    /// the ones built in, loaded again whenever they change.
+    pub shell_scripts: Option<PathBuf>,
 }
 
 #[derive(knuffel::Decode, Debug, Default, PartialEq)]
@@ -86,6 +89,8 @@ pub struct DebugPart {
     pub glass_shader: Option<PathBuf>,
     #[knuffel(child)]
     pub scene_shell: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub shell_scripts: Option<PathBuf>,
 }
 
 impl MergeWith<DebugPart> for Debug {
@@ -119,7 +124,8 @@ impl MergeWith<DebugPart> for Debug {
             (self, part),
             preview_render,
             render_drm_device,
-            glass_shader
+            glass_shader,
+            shell_scripts
         );
 
         self.ignored_drm_devices

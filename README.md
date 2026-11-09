@@ -247,6 +247,14 @@ debug {
 }
 ```
 
+To work on bento's own shell and its widgets, point bento at their folder; it reads `main.js` and `ui.js` from there instead of the copies built in, and loads them again whenever they change:
+
+```kdl
+debug {
+    shell-scripts "~/Source/bento/resources/shell"
+}
+```
+
 A rule can pick the other material for some windows or surfaces:
 
 ```kdl

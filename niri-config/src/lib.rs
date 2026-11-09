@@ -2930,6 +2930,7 @@ mod tests {
                 nested_show_host_cursor: false,
                 glass_shader: None,
                 scene_shell: false,
+                shell_scripts: None,
             },
             workspaces: [
                 Workspace {

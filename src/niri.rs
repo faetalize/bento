@@ -4873,8 +4873,15 @@ impl Niri {
             (!config.animations.off).then_some(config.animations.slowdown)
         };
 
+        let dir = self.config.borrow().debug.shell_scripts.clone();
+        let dir = dir.map(|dir| {
+            crate::utils::expand_home(&dir)
+                .ok()
+                .flatten()
+                .unwrap_or(dir)
+        });
         let scene = self.scene.get_or_insert_with(Default::default);
-        scene.ensure_loaded(&outputs);
+        scene.ensure_loaded(&outputs, dir.as_deref());
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         let moving = scene.advance(Instant::now(), slowdown);
 

@@ -1,14 +1,15 @@
 //! The shell's scripts: JavaScript that builds and changes the scene, and reacts to its events.
 //!
 //! The shell is `~/.config/bento/shell/main.js` if it's there, or bento's own otherwise. Both
-//! import bento's widgets from `bento:ui`. A changed file is loaded again; a shell that fails to
+//! import bento's widgets from `bento:ui`. bento's own shell and widgets are built in, or read from
+//! a folder that `debug { shell-scripts }` names, to work on them. A changed file is loaded again; a shell that fails to
 //! load or throws leaves the last working one on screen, and the error is logged.
 //!
 //! Scripts never run per frame: only when something happens, like a click, a timer or bento's
 //! state changing. A call that runs too long is stopped.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -51,19 +52,39 @@ pub fn user_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// When the user's shell last changed, to load it again.
-pub fn user_mtime() -> Option<SystemTime> {
-    user_path()?.metadata().ok()?.modified().ok()
+/// When the shell's files last changed, with bento's own read from `dir`, to load them again.
+pub fn mtimes(dir: Option<&Path>) -> Vec<Option<SystemTime>> {
+    let mtime = |path: PathBuf| path.metadata().ok()?.modified().ok();
+    let mut files: Vec<PathBuf> = user_path().into_iter().collect();
+    if let Some(dir) = dir {
+        files.push(dir.join("main.js"));
+        files.push(dir.join("ui.js"));
+    }
+    files.into_iter().map(mtime).collect()
+}
+
+/// The shell's source and the widgets', with bento's own read from `dir` if it's given.
+fn sources(dir: Option<&Path>) -> anyhow::Result<(String, String)> {
+    let read = |path: &Path| {
+        std::fs::read_to_string(path).with_context(|| format!("error reading {}", path.display()))
+    };
+    let main = match (user_path(), dir) {
+        (Some(path), _) => read(&path)?,
+        (None, Some(dir)) => read(&dir.join("main.js"))?,
+        (None, None) => String::from(MAIN),
+    };
+    let ui = match dir {
+        Some(dir) => read(&dir.join("ui.js"))?,
+        None => String::from(UI),
+    };
+    Ok((main, ui))
 }
 
 impl Shell {
-    /// Loads the user's shell, or bento's own, onto `outputs`, each its logical size.
-    pub fn load(outputs: &[(String, (f32, f32))]) -> anyhow::Result<Self> {
-        let source = match user_path() {
-            Some(path) => std::fs::read_to_string(&path)
-                .with_context(|| format!("error reading {}", path.display()))?,
-            None => String::from(MAIN),
-        };
+    /// Loads the user's shell, or bento's own, onto `outputs`, each its logical size, with
+    /// bento's own shell and widgets read from `dir` if it's given.
+    pub fn load(outputs: &[(String, (f32, f32))], dir: Option<&Path>) -> anyhow::Result<Self> {
+        let (source, ui) = sources(dir)?;
 
         let mut scene = Scene::new();
         for (name, size) in outputs {
@@ -77,7 +98,7 @@ impl Shell {
         let mut resolver = BuiltinResolver::default();
         let mut loader = BuiltinLoader::default();
         resolver.add_module("bento:ui");
-        loader.add_module("bento:ui", UI);
+        loader.add_module("bento:ui", ui);
         runtime.set_loader(resolver, loader);
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));

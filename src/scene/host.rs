@@ -2,6 +2,7 @@
 //! with the Vulkan renderer, and hands the result and its glass to bento's compositing.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Instant, SystemTime};
 
 use smithay::backend::allocator::Format as DrmFormat;
@@ -40,8 +41,8 @@ struct OutputScene {
 #[derive(Default)]
 pub struct SceneHost {
     shell: Option<Shell>,
-    /// When the user's shell file was last loaded, or failed to.
-    loaded_mtime: Option<Option<SystemTime>>,
+    /// When the shell's files had last changed when they were loaded, or failed to.
+    loaded_mtimes: Option<Vec<Option<SystemTime>>>,
     renderer: Option<Renderer>,
     renderer_failed: bool,
     outputs: HashMap<String, OutputScene>,
@@ -60,13 +61,14 @@ impl std::fmt::Debug for SceneHost {
 }
 
 impl SceneHost {
-    /// Loads the shell, again when its file changed, onto `outputs`, each with its logical size.
-    /// A shell that fails to load leaves the last one.
-    pub fn ensure_loaded(&mut self, outputs: &[(String, (f32, f32))]) {
-        let mtime = script::user_mtime();
-        if self.loaded_mtime != Some(mtime) {
-            self.loaded_mtime = Some(mtime);
-            match Shell::load(outputs) {
+    /// Loads the shell, again when its files changed, onto `outputs`, each with its logical size,
+    /// with bento's own shell and widgets read from `dir` if it's given. A shell that fails to
+    /// load leaves the last one.
+    pub fn ensure_loaded(&mut self, outputs: &[(String, (f32, f32))], dir: Option<&Path>) {
+        let mtimes = script::mtimes(dir);
+        if self.loaded_mtimes.as_ref() != Some(&mtimes) {
+            self.loaded_mtimes = Some(mtimes);
+            match Shell::load(outputs, dir) {
                 Ok(shell) => {
                     self.shell = Some(shell);
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();

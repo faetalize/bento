@@ -1022,7 +1022,7 @@ mod tests {
 
     #[test]
     fn bentos_own_shell_lays_out_islands_and_the_clock_opens() {
-        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))]).unwrap();
+        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None).unwrap();
         let mut scene = shell.scene.borrow_mut();
         scene.lay_out();
         scene.advance(1., Some(1.));
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn opening_the_clock_leaves_the_other_islands_where_they_are() {
-        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))]).unwrap();
+        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None).unwrap();
         let glass = |scene: &Scene| -> Vec<[f32; 4]> {
             scene
                 .draw("DP-1")

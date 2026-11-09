@@ -1095,7 +1095,8 @@ mod tests {
     #[ignore]
     fn it_draws_the_shell() {
         let shell =
-            super::super::script::Shell::load(&[(String::from("DP-1"), (1920., 1080.))]).unwrap();
+            super::super::script::Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None)
+                .unwrap();
         let items = {
             let mut scene = shell.scene.borrow_mut();
             scene.lay_out();
