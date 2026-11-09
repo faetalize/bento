@@ -71,9 +71,12 @@ Each shape has a material, as on Windows:
 
 ## Islands float along the top
 
-Along the top of each output, always on screen, float three islands of glass instead of one bar.
-They're inset from the screen's edges by bento's gaps and rounded like the windows, and the
-wallpaper shows between them.
+Along the top of each output float three islands of glass instead of one bar. They're inset from
+the screen's edges by bento's gaps and rounded like the windows, and the wallpaper shows between
+them.
+
+They're above the windows, fullscreen ones too. While a window is fullscreen on their output, the
+shell sends them up off the screen, and the pointer coming near the top edge brings them back.
 
 - The left island shows the output's workspaces, as their numbers, or names when they have
   one, with the current one highlighted, and the minimap: a track of the active workspace with
