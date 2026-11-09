@@ -5035,6 +5035,7 @@ impl Niri {
             })
             .collect();
         let mut workspaces = serde_json::Map::new();
+        let focused_output = self.layout.active_output().map(|o| o.name());
         for (mon, index, ws) in self.layout.workspaces() {
             let Some(mon) = mon else { continue };
             let list = workspaces
@@ -5045,6 +5046,8 @@ impl Niri {
                     "index": index,
                     "name": ws.name(),
                     "active": mon.active_workspace_idx() == index,
+                    "focused": mon.active_workspace_idx() == index
+                        && Some(mon.output_name()) == focused_output.as_ref(),
                     "id": ws.id().get(),
                 }));
             }

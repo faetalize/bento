@@ -1689,7 +1689,8 @@ impl State {
             }
             Action::ToggleLauncher => match &self.niri.scene {
                 Some(scene) => {
-                    scene.toggle_launcher();
+                    let output = self.niri.layout.active_output().map(|o| o.name());
+                    scene.toggle_launcher(output);
                     self.niri.queue_redraw_all();
                 }
                 None => self.niri.bento_shell_state.toggle_launcher(),

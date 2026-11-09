@@ -2,7 +2,8 @@
 // the calendar.
 
 import {
-  box, text, image, root, outputs, every, on, morph, style, reserve, keyboard, action,
+  box, text, image, input, root, outputs, every, on, morph, style, reserve, keyboard, action,
+  apps, launch, focus, focusedOutput,
 } from "bento:ui";
 
 const HEIGHT = 36;
@@ -62,7 +63,10 @@ function workspaceButtons(output) {
 }
 
 // Open panels close on Escape, and on a press anywhere off the shell.
-const closeAll = () => shells.forEach((shell) => shell.setOpen(false));
+const closeAll = () => {
+  shells.forEach((shell) => shell.setOpen(false));
+  closeLauncher();
+};
 on("outside", closeAll);
 on("key", (event) => {
   if (event.pressed && event.key === "Escape") closeAll();
@@ -106,7 +110,7 @@ function build(output) {
     );
     if (open) swap([time, shortDate], [bigTime, longDate]);
     else swap([bigTime, longDate], [time, shortDate]);
-    keyboard([...shells.values()].some((s) => s.open));
+    updateKeyboard();
   };
   const middle = island({ gap: 10, onClick: () => shell.setOpen(!shell.open) }, [
     shortDate,
@@ -183,3 +187,136 @@ on("battery", (event) =>
     s.charge.set({ text: `${Math.round(event.percentage)}%`, display: shown });
   }),
 );
+
+// The shell has the keyboard while anything that takes keys is open.
+function updateKeyboard() {
+  keyboard(launcher !== null || [...shells.values()].some((s) => s.open));
+}
+
+// The launcher: a glass palette in the middle of the focused output, above everything, that
+// finds apps as you type. It grows out of a point, and shrinks back into one.
+const RESULTS = 8;
+let launcher = null;
+// Each output's frame for the launcher, which keeps it in the middle.
+const launcherFrames = new Map();
+
+// How well an app matches a query, lower is better, or null if it doesn't.
+function score(app, query) {
+  if (!query) return 0;
+  const name = app.name.toLowerCase();
+  if (name.startsWith(query)) return 0;
+  if (name.split(/\s+/).some((word) => word.startsWith(query))) return 1;
+  if (name.includes(query)) return 2;
+  const extra = [app.generic, app.comment, ...app.keywords].filter(Boolean);
+  if (extra.some((word) => word.toLowerCase().includes(query))) return 3;
+  return null;
+}
+
+function launcherFrame(output) {
+  if (!launcherFrames.has(output)) {
+    const frame = box(
+      {
+        position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+        layer: "overlay", direction: "column", align: "center",
+      },
+      [box({ height: "22%" })],
+    );
+    root(output)?.add(frame);
+    launcherFrames.set(output, frame);
+  }
+  return launcherFrames.get(output);
+}
+
+function openLauncher(output) {
+  if (!output || !root(output)) return;
+  const field = input({
+    placeholder: "Search apps",
+    size: 17,
+    onChange: (query) => fillLauncher(query),
+    onSubmit: () => launchSelected(),
+  });
+  const list = box({ direction: "column", gap: 2 });
+  const panel = box(
+    {
+      material: "glass", radius: 26, width: 560, padding: 12, direction: "column", gap: 8,
+      clip: true, enter: "point",
+    },
+    [box({ padding: [6, 10] }, [field]), list],
+  );
+  launcherFrame(output).add(panel);
+  launcher = { panel, field, list, rows: [], matches: [], selected: 0, all: apps() };
+  focus(field);
+  updateKeyboard();
+  fillLauncher("");
+}
+
+function closeLauncher() {
+  if (!launcher) return;
+  launcher.panel.remove();
+  launcher = null;
+  focus(null);
+  updateKeyboard();
+}
+
+function fillLauncher(query) {
+  if (!launcher) return;
+  const q = query.trim().toLowerCase();
+  launcher.matches = launcher.all
+    .map((app) => [score(app, q), app])
+    .filter(([s]) => s !== null)
+    .sort((a, b) => a[0] - b[0])
+    .slice(0, RESULTS)
+    .map(([, app]) => app);
+  launcher.selected = 0;
+  launcher.rows.forEach((row) => row.remove());
+  launcher.rows = launcher.matches.map((app, i) =>
+    box(
+      {
+        align: "center", gap: 12, padding: [6, 10], radius: 14,
+        onClick: () => launchApp(app),
+        onHover: ({ inside }) => inside && selectRow(i),
+      },
+      [
+        image(app.icon ?? "application-x-executable", { size: 32 }),
+        box({ direction: "column", shrink: 1 }, [
+          text(app.name, { weight: 600 }),
+          app.comment && text(app.comment, { size: 12, color: "fg/0.6" }),
+        ]),
+      ],
+    ),
+  );
+  launcher.rows.forEach((row) => launcher.list.add(row));
+  selectRow(0);
+}
+
+function selectRow(index) {
+  if (!launcher || launcher.rows.length === 0) return;
+  launcher.selected = (index + launcher.rows.length) % launcher.rows.length;
+  launcher.rows.forEach((row, i) =>
+    row.set({ fill: i === launcher.selected ? "fg/0.1" : null }),
+  );
+}
+
+function launchApp(app) {
+  launch(app.id);
+  closeLauncher();
+}
+
+function launchSelected() {
+  const app = launcher?.matches[launcher.selected];
+  if (app) launchApp(app);
+}
+
+on("launcher", (event) => {
+  if (launcher) closeLauncher();
+  else openLauncher(event.output ?? focusedOutput() ?? outputs()[0]);
+});
+
+on("key", (event) => {
+  if (!launcher || !event.pressed) return;
+  if (event.key === "Down" || (event.key === "Tab" && !event.shift)) {
+    selectRow(launcher.selected + 1);
+  } else if (event.key === "Up" || event.key === "ISO_Left_Tab") {
+    selectRow(launcher.selected - 1);
+  }
+});

@@ -228,10 +228,11 @@ impl SceneHost {
             .unwrap_or_default()
     }
 
-    /// Tells the shell that its launcher's shortcut was pressed.
-    pub fn toggle_launcher(&self) {
+    /// Tells the shell that its launcher's shortcut was pressed, with the output that has the
+    /// focus.
+    pub fn toggle_launcher(&self, output: Option<String>) {
         if let Some(shell) = &self.shell {
-            shell.send(&serde_json::json!({ "type": "launcher" }));
+            shell.send(&serde_json::json!({ "type": "launcher", "output": output }));
         }
     }
 
@@ -588,6 +589,53 @@ mod tests {
             *now += Duration::from_millis(100);
             host.advance(*now, Some(1.));
         }
+    }
+
+    #[test]
+    fn the_launcher_opens_where_the_focus_is_takes_typing_and_closes_on_escape() {
+        let mut host = SceneHost::default();
+        let outputs = [
+            (String::from("DP-1"), (1920., 1080.)),
+            (String::from("DP-2"), (2560., 1440.)),
+        ];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        let overlay = |host: &SceneHost, output: &str| {
+            host.shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .draw_layer(output, true)
+                .len()
+        };
+
+        host.toggle_launcher(Some(String::from("DP-2")));
+        settle(&mut host, &mut now);
+        assert!(overlay(&host, "DP-2") > 0, "it opens on the focused output");
+        assert_eq!(overlay(&host, "DP-1"), 0);
+        assert!(host.wants_keyboard());
+
+        let key = |name: &str, text: &str| EngineKey {
+            name: String::from(name),
+            text: String::from(text),
+            modifiers: [false; 4],
+            pressed: true,
+            repeat: false,
+        };
+        // Something no app is called: no results, so less to draw.
+        let before = overlay(&host, "DP-2");
+        for c in "zqxj".chars() {
+            host.key(&key(&c.to_string(), &c.to_string()));
+        }
+        settle(&mut host, &mut now);
+        assert!(overlay(&host, "DP-2") < before, "typing filters the apps");
+
+        host.key(&key("Escape", ""));
+        settle(&mut host, &mut now);
+        assert_eq!(overlay(&host, "DP-2"), 0, "Escape closes it");
+        assert!(!host.wants_keyboard());
     }
 
     #[test]

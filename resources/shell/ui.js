@@ -252,6 +252,13 @@ export function reserve(name, { top = 0, right = 0, bottom = 0, left = 0 } = {})
   native.reserve(name, top, right, bottom, left);
 }
 
+// The output that has the focus, as the last workspaces said: the one with the focused workspace.
+let focusedName = null;
+
+export function focusedOutput() {
+  return focusedName;
+}
+
 // The outputs, by name.
 export function outputs() {
   return JSON.parse(native.outputs());
@@ -321,6 +328,12 @@ export function __dispatch(json) {
       return;
     case "scroll":
       handlers.get(event.id)?.onScroll?.(event);
+      return;
+    case "workspaces":
+      for (const [output, list] of Object.entries(event.outputs ?? {})) {
+        if (list.some((ws) => ws.focused)) focusedName = output;
+      }
+      for (const fn of listeners.get(event.type) ?? []) fn(event);
       return;
     case "key":
       // The focused text field takes what it can use; the rest goes to the listeners.
