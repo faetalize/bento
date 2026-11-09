@@ -412,7 +412,9 @@ impl Renderer {
                     .array_layers(1)
                     .samples(vk::SampleCountFlags::TYPE_1)
                     .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-                    .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+                    .usage(
+                        vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
+                    )
                     .push_next(&mut list)
                     .push_next(&mut external),
                 None,
@@ -812,6 +814,66 @@ impl Renderer {
     }
 }
 
+#[cfg(test)]
+impl Renderer {
+    /// What `target` holds, as rows of BGRA pixels.
+    fn read_back(&self, target: &Target) -> anyhow::Result<Vec<u8>> {
+        let (w, h) = target.size;
+        let size = u64::from(w * h * 4);
+        let device = &self.device;
+        unsafe {
+            let buffer = create_buffer(
+                device,
+                &self.memory_types,
+                size,
+                vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?;
+            let cmd = self.commands;
+            device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())?;
+            device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
+            barrier(
+                device,
+                cmd,
+                target.image,
+                vk::ImageLayout::GENERAL,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                Some((vk::QUEUE_FAMILY_FOREIGN_EXT, self.queue_family)),
+            );
+            device.cmd_copy_image_to_buffer(
+                cmd,
+                target.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer.buffer,
+                &[vk::BufferImageCopy::default()
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1),
+                    )
+                    .image_extent(vk::Extent3D {
+                        width: w,
+                        height: h,
+                        depth: 1,
+                    })],
+            );
+            device.end_command_buffer(cmd)?;
+            let buffers = [cmd];
+            device.queue_submit(
+                self.queue,
+                &[vk::SubmitInfo::default().command_buffers(&buffers)],
+                self.fence,
+            )?;
+            device.wait_for_fences(&[self.fence], true, u64::MAX)?;
+            device.reset_fences(&[self.fence])?;
+            let pixels = std::slice::from_raw_parts(buffer.mapped, size as usize).to_vec();
+            device.destroy_buffer(buffer.buffer, None);
+            device.free_memory(buffer.memory, None);
+            Ok(pixels)
+        }
+    }
+}
+
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {
@@ -996,6 +1058,36 @@ mod tests {
     fn the_shader_compiles() {
         spirv(naga::ShaderStage::Vertex, "vs").unwrap();
         spirv(naga::ShaderStage::Fragment, "fs").unwrap();
+    }
+
+    /// Draws a bar along the top offscreen, on the machine's GPU, and reads it back: it has to
+    /// be along the top. It needs a GPU, so it's run by hand.
+    #[test]
+    #[ignore]
+    fn the_top_is_at_the_top() {
+        let formats = [DrmFormat {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }];
+        let mut renderer = Renderer::new(None, &formats).unwrap();
+        let target = renderer.create_target((64, 64)).unwrap();
+        let bar = Item::Shape {
+            rect: [0., 0., 64., 16.],
+            radii: [0.; 4],
+            material: super::super::Material::None,
+            fill: [1., 0., 0., 1.],
+            border: (0., [0.; 4]),
+            opacity: 1.,
+            clip: None,
+        };
+        renderer.render(&target, &[bar], 1.).unwrap();
+
+        let pixels = renderer.read_back(&target).unwrap();
+        // BGRA: alpha is the fourth byte.
+        let alpha = |row: usize| pixels[(row * 64 + 32) * 4 + 3];
+        let alpha = (alpha(4), alpha(60));
+        assert_eq!(alpha, (255, 0), "(top, bottom)");
+        renderer.destroy_target(target);
     }
 
     /// Draws bento's own shell offscreen on the machine's GPU. It needs one, so it's run by hand.

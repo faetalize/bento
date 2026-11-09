@@ -52,7 +52,9 @@ fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u32) -
     let c = corners[vertex];
     let p = item.rect.xy - vec2<f32>(grow) + c * (item.rect.zw + vec2<f32>(2.0 * grow));
     var out: Out;
-    out.position = vec4<f32>(p / frame.size * 2.0 - 1.0, 0.0, 1.0);
+    // WGSL's clip space has y up, the scene's y goes down.
+    let clip = p / frame.size * 2.0 - 1.0;
+    out.position = vec4<f32>(clip.x, -clip.y, 0.0, 1.0);
     out.p = p;
     out.index = index;
     return out;
