@@ -5068,6 +5068,8 @@ impl Niri {
         let style = serde_json::json!({
             "gaps": style.gaps,
             "cornerRadius": style.corner_radius,
+            "animations": style.animations,
+            "slowdown": style.slowdown,
         });
         let scene = self.scene.get_or_insert_with(Default::default);
         scene.ensure_loaded(&outputs, dir.as_deref(), style);

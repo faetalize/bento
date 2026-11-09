@@ -289,8 +289,16 @@ export function layout(node) {
   return JSON.parse(native.layout(node.id) ?? "null");
 }
 
-// How long growing out of a point stays a circle before it stretches, in milliseconds.
+// How long growing out of a point stays a circle before it stretches, in milliseconds, at
+// normal speed.
 const CIRCLE = 150;
+
+// How long `ms` of motion takes with bento's animation settings: slower with a slowdown, and
+// none with animations off.
+export function paced(ms) {
+  const { animations = true, slowdown = 1 } = style();
+  return animations ? ms * slowdown : 0;
+}
 
 // Grows `node` out of a point in the middle of its place: a circle until it's as wide as its
 // place's narrower side, then stretching to its place, with corners of `radius`. Grown again
@@ -307,7 +315,7 @@ export function grow(node, { radius = 0, content = [] } = {}) {
   for (const child of content) {
     child.set({ opacity: 0, blur: 4, ...(from.drawSize ? { jump: { opacity: 0, blur: 4 } } : {}) });
   }
-  node.phase = after(CIRCLE, () => {
+  node.phase = after(paced(CIRCLE), () => {
     node.set({ drawSize: null, radius });
     for (const child of content) child.set({ opacity: 1, blur: 0 });
   });
@@ -322,7 +330,7 @@ export function shrink(node, { content = [], done } = {}) {
   const round = Math.min(place[2], place[3]);
   for (const child of content) child.set({ opacity: 0, blur: 4 });
   node.set({ drawSize: [round, round], radius: round / 2 });
-  node.phase = after(CIRCLE, () => {
+  node.phase = after(paced(CIRCLE), () => {
     node.set({
       drawSize: [0, 0],
       onSettle: () => {
@@ -343,7 +351,7 @@ function clearTimeout(node) {
   if (node.gone === "going") node.gone = false;
 }
 
-// bento's style, to line up with: `{ gaps, cornerRadius }`. It's sent again as a "style" event
+// bento's style, to line up with: `{ gaps, cornerRadius, animations, slowdown }`. It's sent again as a "style" event
 // whenever it changes.
 export function style() {
   return JSON.parse(native.style()) ?? {};

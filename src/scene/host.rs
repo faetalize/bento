@@ -770,6 +770,21 @@ mod tests {
     }
 
     #[test]
+    fn with_animations_off_the_launcher_is_there_at_once() {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let style = serde_json::json!({ "gaps": 8, "animations": false, "slowdown": 1 });
+        host.ensure_loaded(&outputs, None, style);
+        host.toggle_launcher(Some(String::from("DP-1")));
+        host.advance(Instant::now(), None);
+        let glass = launcher_glass(&host).unwrap();
+        assert_eq!(
+            glass[2], 560.,
+            "stretched to its full width, not a circle: {glass:?}"
+        );
+    }
+
+    #[test]
     fn the_caret_keeps_up_with_typing() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
