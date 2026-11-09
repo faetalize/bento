@@ -1008,7 +1008,7 @@ impl Renderer {
 #[cfg(test)]
 impl Renderer {
     /// What `target` holds, as rows of BGRA pixels.
-    fn read_back(&self, target: &Target) -> anyhow::Result<Vec<u8>> {
+    pub(super) fn read_back(&self, target: &Target) -> anyhow::Result<Vec<u8>> {
         let (w, h) = target.size;
         let size = u64::from(w * h * 4);
         let device = &self.device;

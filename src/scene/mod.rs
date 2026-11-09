@@ -907,7 +907,7 @@ impl Scene {
         items: &mut Vec<Item>,
     ) {
         let Some(node) = self.node(id) else { return };
-        if node.hidden {
+        if node.hidden || !self.displayed(node) {
             return;
         }
         let rect = Self::drawn(node);
@@ -1008,7 +1008,7 @@ impl Scene {
         found: &mut Vec<NodeId>,
     ) {
         let Some(node) = self.node(id) else { return };
-        if node.hidden || node.springs[OPACITY].target <= 0. {
+        if node.hidden || node.springs[OPACITY].target <= 0. || !self.displayed(node) {
             return;
         }
         let rect = Self::drawn(node);
@@ -1043,6 +1043,44 @@ impl Scene {
         let mut found = self.pick(output, point);
         found.retain(|id| self.node(*id).is_some_and(|n| n.events & NEAR != 0));
         found
+    }
+
+    /// Where the texts that say `wanted`, and the icons called it, show on output `output`: each
+    /// one's frame, for tests to find what to press.
+    #[cfg(test)]
+    pub fn find(&self, output: &str, wanted: &str) -> Vec<[f32; 4]> {
+        fn walk(scene: &Scene, id: NodeId, wanted: &str, found: &mut Vec<[f32; 4]>) {
+            let Some(node) = scene.node(id) else { return };
+            if node.hidden || node.springs[OPACITY].target <= 0. || !scene.displayed(node) {
+                return;
+            }
+            let is_it = match &node.kind {
+                Kind::Text { text, .. } => text == wanted,
+                Kind::Image(Some(ImageSource::Icon(name))) => name == wanted,
+                _ => false,
+            };
+            if let (true, Some(frame)) = (is_it, scene.frame(id)) {
+                if frame[2] > 0. && frame[3] > 0. {
+                    found.push(frame);
+                }
+            }
+            for child in &node.children {
+                walk(scene, *child, wanted, found);
+            }
+        }
+        let mut found = Vec::new();
+        if let Some(root) = self.root(output) {
+            walk(self, root, wanted, &mut found);
+        }
+        found
+    }
+
+    /// Whether `node` has a place in the layout: with `display: "none"` it has none, and
+    /// neither it nor what it holds is drawn or hit.
+    fn displayed(&self, node: &Node) -> bool {
+        self.tree
+            .style(node.taffy)
+            .is_ok_and(|style| style.display != Display::None)
     }
 
     /// Whether node `id` takes any of `events`.
@@ -1603,6 +1641,33 @@ mod tests {
         );
         settle(&mut scene);
         assert!(scene.take_settled().is_empty(), "once");
+    }
+
+    #[test]
+    fn what_isnt_displayed_is_neither_drawn_nor_hit_with_what_it_holds() {
+        let mut scene = Scene::new();
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let holder = scene.create("box", &serde_json::json!({ "display": "none" }));
+        let held = scene.create(
+            "box",
+            &serde_json::json!({
+                "position": "absolute", "top": 0, "left": 0, "width": 40, "height": 40,
+                "material": "glass", "events": ["click"],
+            }),
+        );
+        scene.append(root, holder, None);
+        scene.append(holder, held, None);
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        assert!(scene.draw("DP-1").is_empty(), "{:?}", scene.draw("DP-1"));
+        assert!(!scene.covers("DP-1", [0., 0.]));
+
+        // Displayed again, it's there.
+        scene.set(holder, &serde_json::json!({ "display": "flex" }));
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        assert_eq!(scene.draw("DP-1").len(), 1);
+        assert!(scene.covers("DP-1", [20., 20.]));
     }
 
     #[test]

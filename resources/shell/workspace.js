@@ -24,7 +24,7 @@ const SCROLL_STEP = 15;
 export function minimap(output) {
   const view = box({
     position: "absolute", top: 0, left: 0, width: 0, height: MAP_HEIGHT, radius: 4,
-    fill: "fg/0.14",
+    fill: "fg/0.16",
   });
   let scrolled = 0;
   const track = box(
@@ -69,12 +69,14 @@ export function minimap(output) {
         tiles.set(tile.id, node);
       }
       const top = Math.min(Math.max(tile.y * tall, 0), MAP_HEIGHT - 2);
+      // What's off the view is fainter than what's on it.
+      const inView = tile.x + tile.w > 0 && tile.x < viewWidth;
       node.set({
         left: (tile.x - start) * wide + 1,
         top: top + 1,
         width: Math.max(tile.w * wide - 2, 2),
         height: Math.max(Math.min(tile.h * tall, MAP_HEIGHT - top) - 2, 2),
-        fill: tile.active ? "accent" : "fg/0.5",
+        fill: tile.active ? "accent" : inView ? "fg/0.55" : "fg/0.25",
       });
     }
     for (const [id, node] of tiles) {

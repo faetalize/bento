@@ -106,14 +106,16 @@ export function calendar(onToggle) {
   const title = text("", { size: 15, weight: 700 });
   const days = Array.from({ length: 42 }, () => {
     const label = text("", { tabular: true });
-    return { label, cell: box({ width: CELL, height: 32, radius: 16, align: "center", justify: "center" }, [label]) };
+    // A circle in the middle of its column, which today's fills.
+    const circle = box({ width: 32, height: 32, radius: 16, align: "center", justify: "center" }, [label]);
+    return { label, circle, cell: box({ width: CELL, justify: "center" }, [circle]) };
   });
   const showMonth = () => {
     title.set({ text: `${LONG_MONTHS[shown.getMonth()]} ${shown.getFullYear()}` });
     weeks(shown).forEach((date, i) => {
       const today = sameDay(date, now);
       const inMonth = date.getMonth() === shown.getMonth();
-      days[i].cell.set({ fill: today ? "accent" : null });
+      days[i].circle.set({ fill: today ? "accent" : null });
       days[i].label.set({
         text: String(date.getDate()),
         weight: today ? 700 : 400,

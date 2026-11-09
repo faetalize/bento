@@ -918,6 +918,583 @@ mod tests {
         assert!(host.covers("DP-1", [960., 26.]));
     }
 
+    /// The middle of the first text saying `wanted`, or icon called it, that shows on `output`.
+    fn middle_of(host: &SceneHost, output: &str, wanted: &str) -> [f32; 2] {
+        let found = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find(output, wanted);
+        let frame = found
+            .first()
+            .unwrap_or_else(|| panic!("{wanted:?} doesn't show on {output}"));
+        [frame[0] + frame[2] / 2., frame[1] + frame[3] / 2.]
+    }
+
+    fn shows(host: &SceneHost, output: &str, wanted: &str) -> bool {
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        !scene.find(output, wanted).is_empty()
+    }
+
+    fn click(host: &mut SceneHost, output: &str, point: [f32; 2]) {
+        assert!(host.covers(output, point), "nothing to click at {point:?}");
+        host.press(1, 1, Some((output, point)));
+        host.release(1, 1, Some((output, point)));
+    }
+
+    /// What the shell told the data program to do since this was last asked.
+    fn commands(host: &SceneHost) -> Vec<serde_json::Value> {
+        host.shell.as_ref().unwrap().take_commands()
+    }
+
+    fn type_keys(host: &mut SceneHost, keys: &[&str]) {
+        for key in keys {
+            let text = if key.chars().count() == 1 { key } else { "" };
+            host.key(&EngineKey {
+                name: String::from(*key),
+                text: String::from(text),
+                modifiers: [false; 4],
+                pressed: true,
+                repeat: false,
+            });
+        }
+    }
+
+    fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, style);
+        host.set_workspaces(serde_json::json!({
+            "DP-1": [
+                { "index": 0, "name": null, "active": true, "focused": true, "id": 7 },
+                { "index": 1, "name": "web", "active": false, "focused": false, "id": 8 },
+            ],
+        }));
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        (host, now)
+    }
+
+    #[test]
+    fn the_minimap_shows_the_tiles_and_takes_scrolls_and_clicks() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let shapes = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let drawn = scene.draw("DP-1");
+            // The minimap's pieces: small shapes in the left island.
+            drawn
+                .into_iter()
+                .filter_map(|item| match item {
+                    Item::Shape { rect, .. } if rect[3] <= 14. && rect[0] < 600. => Some(rect),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            shapes(&host).is_empty(),
+            "without tiles there's no minimap: {:?}",
+            shapes(&host)
+        );
+
+        let tile = |id: u64, x: f64, active: bool| {
+            serde_json::json!({
+                "id": id, "x": x, "y": 0, "w": 960, "h": 1080, "active": active,
+                "floating": false,
+            })
+        };
+        host.set_minimap(serde_json::json!({
+            "DP-1": {
+                "view": [1920, 1080],
+                "tiles": [tile(1, 0., true), tile(2, 960., false), tile(3, 1920., false)],
+            },
+        }));
+        settle(&mut host, &mut now);
+        // The track isn't drawn itself: the view and the three tiles are.
+        let pieces = shapes(&host);
+        assert_eq!(pieces.len(), 4, "{pieces:?}");
+        // The view shows two of the three tiles' width.
+        let view = pieces[0];
+        let last = pieces[3];
+        assert!(
+            (view[2] / (last[0] + last[2] - view[0]) - 2. / 3.).abs() < 0.05,
+            "{pieces:?}"
+        );
+
+        // Scrolling over it moves the focus along, and a click on a tile focuses its window.
+        let over = [last[0] + last[2] / 2., last[1] + last[3] / 2.];
+        host.pointer_moved(Some(("DP-1", over)));
+        host.scroll([0., 15.]);
+        let actions = host.take_actions();
+        assert_eq!(actions[0]["name"], "focus-column-right");
+        click(&mut host, "DP-1", over);
+        let actions = host.take_actions();
+        assert_eq!(actions[0]["name"], "focus-window");
+        assert_eq!(actions[0]["window"], 3);
+    }
+
+    #[test]
+    fn the_workspace_editor_renames_as_its_typed_and_takes_the_name_away() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.event("edit-workspace", Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        assert!(host.wants_keyboard());
+        assert!(shows(&host, "DP-1", "Workspace 1"));
+
+        type_keys(&mut host, &["d", "e", "v"]);
+        let actions = host.take_actions();
+        let last = actions.last().unwrap();
+        assert_eq!(actions.len(), 3, "renamed with each letter");
+        assert_eq!(last["name"], "set-workspace-name");
+        assert_eq!(last["args"], serde_json::json!(["dev"]));
+        assert_eq!(last["workspace"], 7);
+
+        // Another workspace's name isn't taken from it, and the editor says so.
+        type_keys(&mut host, &["BackSpace", "BackSpace", "BackSpace"]);
+        assert_eq!(
+            host.take_actions().last().unwrap()["name"],
+            "unset-workspace-name"
+        );
+        type_keys(&mut host, &["W", "e", "b"]);
+        let actions = host.take_actions();
+        assert_eq!(actions.last().unwrap()["args"], serde_json::json!(["We"]));
+        settle(&mut host, &mut now);
+        assert!(shows(
+            &host,
+            "DP-1",
+            "\"web\" is another workspace already."
+        ));
+
+        // Undo puts back the name it had, which was none, and Enter closes it.
+        settle(&mut host, &mut now);
+        let undo = middle_of(&host, "DP-1", "Undo");
+        click(&mut host, "DP-1", undo);
+        assert_eq!(
+            host.take_actions().last().unwrap()["name"],
+            "unset-workspace-name"
+        );
+        type_keys(&mut host, &["Return"]);
+        settle(&mut host, &mut now);
+        assert!(!host.wants_keyboard());
+        assert!(!shows(&host, "DP-1", "Workspace 1"));
+    }
+
+    #[test]
+    fn the_workspace_editor_keeps_a_name_until_its_changed_and_undoes_taking_it_away() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.set_workspaces(serde_json::json!({
+            "DP-1": [{ "index": 0, "name": "mail", "active": true, "focused": true, "id": 9 }],
+        }));
+        host.event("edit-workspace", Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        // Opening it changes nothing.
+        assert!(host.take_actions().is_empty());
+
+        let remove = middle_of(&host, "DP-1", "Remove Name");
+        click(&mut host, "DP-1", remove);
+        let actions = host.take_actions();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0]["name"], "unset-workspace-name");
+        assert_eq!(actions[0]["workspace"], 9);
+
+        settle(&mut host, &mut now);
+        let undo = middle_of(&host, "DP-1", "Undo");
+        click(&mut host, "DP-1", undo);
+        let actions = host.take_actions();
+        assert_eq!(actions[0]["name"], "set-workspace-name");
+        assert_eq!(actions[0]["args"], serde_json::json!(["mail"]));
+
+        // The shortcut again closes it.
+        host.event("edit-workspace", Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        assert!(!host.wants_keyboard());
+    }
+
+    const DEVICES: &str = r#"{"type":"audio-devices","outputs":[
+        {"name":"a","label":"Speakers","icon":"audio-speakers-symbolic","active":true,"volume":0.4,"muted":false},
+        {"name":"b","label":"Headphones","icon":"audio-headphones-symbolic","active":false,"volume":0.8,"muted":false}],
+        "inputs":[{"name":"m","label":"Microphone","icon":"audio-input-microphone-symbolic","active":true,"volume":1.0,"muted":false}]}"#;
+
+    /// Opens the control center by a click on the right island's status.
+    fn open_control_center(host: &mut SceneHost, now: &mut Instant) {
+        let status = middle_of(host, "DP-1", "network-offline-symbolic");
+        click(host, "DP-1", status);
+        settle(host, now);
+        assert!(host.wants_keyboard(), "the control center is open");
+    }
+
+    #[test]
+    fn the_control_center_sets_the_sound_the_brightness_and_the_style() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        host.data_line(
+            r#"{"type":"brightness","displays":[{"id":"DP-1","label":"Monitor","value":0.3}]}"#,
+        );
+        host.data_line(r#"{"type":"theme","dark":true}"#);
+        commands(&host);
+        open_control_center(&mut host, &mut now);
+        // Opening it reads the brightness again, since a monitor's buttons change it too.
+        assert!(commands(&host)
+            .iter()
+            .any(|c| c["cmd"] == "brightness-refresh"));
+
+        // A click on a device makes it the default one.
+        let headphones = middle_of(&host, "DP-1", "Headphones");
+        click(&mut host, "DP-1", headphones);
+        let sent = commands(&host);
+        assert_eq!(
+            sent[0],
+            serde_json::json!({ "cmd": "device", "kind": "output", "name": "b" })
+        );
+
+        // A press halfway along the brightness slider sets it to a half.
+        let sun = middle_of(&host, "DP-1", "display-brightness-symbolic");
+        let halfway = [sun[0] - 14. + 170., sun[1]];
+        host.press(1, 1, Some(("DP-1", halfway)));
+        // Dragged, it follows the pointer.
+        host.pointer_at(Some(("DP-1", [halfway[0] + 85., halfway[1]])));
+        host.release(1, 1, Some(("DP-1", halfway)));
+        let sent = commands(&host);
+        assert_eq!(sent[0]["cmd"], "brightness");
+        assert_eq!(sent[0]["id"], "DP-1");
+        assert!(
+            (sent[0]["value"].as_f64().unwrap() - 0.5).abs() < 0.01,
+            "{sent:?}"
+        );
+        assert!(
+            (sent[1]["value"].as_f64().unwrap() - 0.75).abs() < 0.01,
+            "{sent:?}"
+        );
+
+        // The style's button turns the dark style off while it's on.
+        let dark = middle_of(&host, "DP-1", "Dark");
+        click(&mut host, "DP-1", dark);
+        assert_eq!(
+            commands(&host)[0],
+            serde_json::json!({ "cmd": "theme", "dark": false })
+        );
+
+        // Escape closes it.
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        assert!(!host.wants_keyboard());
+    }
+
+    #[test]
+    fn pinned_outputs_get_a_switcher_that_goes_around_them() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        settle(&mut host, &mut now);
+        // Without pinned outputs there's no switcher, and its shortcut says what to do.
+        assert!(!shows(&host, "DP-1", "audio-speakers-symbolic"));
+        commands(&host);
+        host.event("switch-audio-output", None);
+        let sent = commands(&host);
+        assert_eq!(sent[0]["cmd"], "notify");
+        assert!(sent[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("No outputs are pinned"));
+
+        // Both outputs pinned, in the control center.
+        open_control_center(&mut host, &mut now);
+        for row in 0..2 {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let pin = scene.find("DP-1", "view-pin-symbolic")[row];
+            drop(scene);
+            let at = [pin[0] + pin[2] / 2., pin[1] + pin[3] / 2.];
+            click(&mut host, "DP-1", at);
+            settle(&mut host, &mut now);
+        }
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        commands(&host);
+
+        // The switcher shows in the island, as the output that plays, and a click on it makes
+        // the next pinned output the default one and says so.
+        let switcher = middle_of(&host, "DP-1", "audio-speakers-symbolic");
+        click(&mut host, "DP-1", switcher);
+        let sent = commands(&host);
+        assert_eq!(
+            sent[0],
+            serde_json::json!({ "cmd": "device", "kind": "output", "name": "b" })
+        );
+        assert_eq!(sent[1]["cmd"], "notify");
+        assert_eq!(sent[1]["summary"], "Sound Output Switched");
+        assert_eq!(sent[1]["body"], "Headphones");
+
+        // From the last one it goes around to the first, by its shortcut too.
+        host.data_line(
+            &DEVICES
+                .replace('\n', " ")
+                .replace(
+                    r#""active":true,"volume":0.4"#,
+                    r#""active":false,"volume":0.4"#,
+                )
+                .replace(
+                    r#""active":false,"volume":0.8"#,
+                    r#""active":true,"volume":0.8"#,
+                ),
+        );
+        host.event("switch-audio-output", None);
+        assert_eq!(commands(&host)[0]["name"], "a");
+    }
+
+    #[test]
+    fn the_screenshot_button_runs_its_command_and_shows_its_notification_after() {
+        let style = serde_json::json!({
+            "gaps": 8,
+            "config": {
+                "screenshot": { "command": "grim", "notification": "Shot", "body": "Saved." },
+            },
+        });
+        let (mut host, mut now) = loaded(style);
+        open_control_center(&mut host, &mut now);
+        commands(&host);
+        let button = middle_of(&host, "DP-1", "Screenshot");
+        click(&mut host, "DP-1", button);
+        // The control center closes first, to stay out of the picture.
+        assert!(!host.wants_keyboard());
+        settle(&mut host, &mut now);
+        let sent = commands(&host);
+        assert_eq!(sent[0]["cmd"], "run");
+        assert_eq!(sent[0]["command"], "grim");
+        assert!(host.take_actions().is_empty(), "not bento's own screenshot");
+
+        // Its notification shows once the command is done, and not if it failed.
+        let id = sent[0]["id"].clone();
+        host.data_line(&serde_json::json!({ "type": "ran", "id": id, "code": 0 }).to_string());
+        let sent = commands(&host);
+        assert_eq!(sent[0]["cmd"], "notify");
+        assert_eq!(sent[0]["summary"], "Shot");
+        assert_eq!(sent[0]["body"], "Saved.");
+
+        // The record button, with no command set, opens the settings to set one.
+        open_control_center(&mut host, &mut now);
+        let record = middle_of(&host, "DP-1", "Record");
+        click(&mut host, "DP-1", record);
+        let actions = host.take_actions();
+        assert_eq!(actions[0]["name"], "spawn");
+        assert_eq!(
+            actions[0]["args"],
+            serde_json::json!(["bento-settings", "control-center"])
+        );
+    }
+
+    #[test]
+    fn without_a_command_the_screenshot_button_takes_bentos_own() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        open_control_center(&mut host, &mut now);
+        let button = middle_of(&host, "DP-1", "Screenshot");
+        click(&mut host, "DP-1", button);
+        settle(&mut host, &mut now);
+        assert_eq!(host.take_actions()[0]["name"], "screenshot");
+        assert!(commands(&host).iter().all(|c| c["cmd"] != "run"));
+    }
+
+    #[test]
+    fn the_calendar_shows_the_weather_or_where_to_set_the_place() {
+        // Without a place, it asks for none and links to the settings.
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let sent = commands(&host);
+        assert!(
+            sent.contains(&serde_json::json!({ "cmd": "weather" })),
+            "{sent:?}"
+        );
+        click(&mut host, "DP-1", [960., 26.]);
+        settle(&mut host, &mut now);
+        let link = middle_of(&host, "DP-1", "Set Location");
+        click(&mut host, "DP-1", link);
+        let actions = host.take_actions();
+        assert_eq!(
+            actions[0]["args"],
+            serde_json::json!(["bento-settings", "location"])
+        );
+
+        // With one, the data program is asked for the weather there, and the calendar shows it.
+        let place =
+            serde_json::json!({ "name": "Reykjavik", "latitude": 64.15, "longitude": -21.94 });
+        let style = serde_json::json!({ "gaps": 8, "config": { "location": place } });
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, style);
+        let asked = commands(&host)
+            .into_iter()
+            .find(|c| c["cmd"] == "weather")
+            .expect("it asks for the weather");
+        assert_eq!(asked["latitude"], 64.15);
+        assert_eq!(asked["fahrenheit"], false);
+        host.data_line(
+            r#"{"type":"weather","ok":true,"temperature":4,"feels":0,"humidity":66,"wind":12,
+            "windUnit":"km/h","unit":"°C","label":"Mostly clear","icon":"weather-clear-night-symbolic",
+            "days":[{"date":"2026-11-09","label":"Overcast","icon":"weather-overcast-symbolic","min":-1,"max":4}]}"#
+                .replace('\n', " ")
+                .as_str(),
+        );
+        click(&mut host, "DP-1", [960., 26.]);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "4°C"));
+        assert!(shows(&host, "DP-1", "Mostly clear"));
+        assert!(shows(&host, "DP-1", "Reykjavik"));
+        assert!(shows(&host, "DP-1", "4° -1°"));
+        // The month is this one, with today in it.
+        assert!(shows(&host, "DP-1", "Mo"));
+    }
+
+    #[test]
+    fn a_notification_shows_as_a_toast_until_its_closed_or_its_time_is_up() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let toast = r#"{"type":"notification","event":"shown","id":5,"app":"Mail",
+            "summary":"New <b>message</b>","body":"Hello &amp; welcome","actions":[],
+            "urgency":1,"timeout":60000,"image":null,"appIcon":null}"#
+            .replace('\n', " ");
+        host.data_line(&toast);
+        settle(&mut host, &mut now);
+        // Its markup is read, not shown.
+        assert!(shows(&host, "DP-1", "New message"));
+        assert!(shows(&host, "DP-1", "Hello & welcome"));
+
+        // A click does what it's for and sends it away, and so does its time running out.
+        let at = middle_of(&host, "DP-1", "New message");
+        commands(&host);
+        click(&mut host, "DP-1", at);
+        let sent = commands(&host);
+        assert_eq!(sent[0]["cmd"], "invoke");
+        assert_eq!(sent[1], serde_json::json!({ "cmd": "dismiss", "id": 5 }));
+        host.data_line(r#"{"type":"notification","event":"closed","id":5}"#);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "New message"));
+
+        // One that says how long it stays is told to go once that's up.
+        host.data_line(&toast.replace("60000", "1000").replace(":5,", ":6,"));
+        assert!(commands(&host).is_empty());
+        settle(&mut host, &mut now);
+        assert!(commands(&host).contains(&serde_json::json!({ "cmd": "expire", "id": 6 })));
+    }
+
+    /// Draws the shell's panels on the machine's GPU into PNG files in the folder
+    /// `BENTO_SHELL_SHOTS` names, to look at: the glass, which bento's compositing draws, is
+    /// stood in for by a plain tint. It needs a GPU, so it's run by hand.
+    #[test]
+    #[ignore]
+    fn it_draws_the_panels_to_look_at() {
+        use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+
+        let Some(dir) = std::env::var_os("BENTO_SHELL_SHOTS").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let place = serde_json::json!({ "name": "Reykjavik, Iceland", "latitude": 64.15, "longitude": -21.94 });
+        let style = serde_json::json!({ "gaps": 8, "config": { "location": place } });
+        let (mut host, mut now) = loaded(style);
+        host.set_minimap(serde_json::json!({
+            "DP-1": { "view": [1920, 1080], "tiles": [
+                { "id": 1, "x": -960, "y": 0, "w": 960, "h": 1080, "active": false, "floating": false },
+                { "id": 2, "x": 0, "y": 0, "w": 960, "h": 1080, "active": true, "floating": false },
+                { "id": 3, "x": 960, "y": 0, "w": 960, "h": 540, "active": false, "floating": false },
+                { "id": 4, "x": 960, "y": 540, "w": 960, "h": 540, "active": false, "floating": false },
+            ] },
+        }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        host.data_line(
+            r#"{"type":"brightness","displays":[{"id":"DP-1","label":"Monitor One","value":0.35},{"id":"DP-2","label":"Monitor Two","value":0.8}]}"#,
+        );
+        host.data_line(r#"{"type":"theme","dark":false}"#);
+        host.data_line(
+            r#"{"type":"weather","ok":true,"temperature":4,"feels":0,"humidity":66,"wind":12,"windUnit":"km/h","unit":"°C","label":"Mostly clear","icon":"weather-clear-night-symbolic","days":[{"date":"2026-11-09","label":"Overcast","icon":"weather-overcast-symbolic","min":-1,"max":4},{"date":"2026-11-10","label":"Snow","icon":"weather-snow-symbolic","min":-3,"max":1},{"date":"2026-11-11","label":"Clear","icon":"weather-clear-symbolic","min":-5,"max":2},{"date":"2026-11-12","label":"Rain","icon":"weather-showers-symbolic","min":0,"max":6},{"date":"2026-11-13","label":"Fog","icon":"weather-fog-symbolic","min":1,"max":5}]}"#,
+        );
+        settle(&mut host, &mut now);
+
+        let formats = [DrmFormat {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }];
+        let mut renderer = super::super::vk::Renderer::new(None, &formats).unwrap();
+        renderer.set_icon_theme("Adwaita");
+        let target = renderer.create_target((1920, 1080)).unwrap();
+        let mut shot = |host: &SceneHost, name: &str, [x0, y0, w, h]: [u32; 4]| {
+            let items = host.shell.as_ref().unwrap().scene.borrow().draw("DP-1");
+            renderer.render(&target, &items, 1.).unwrap();
+            let pixels = renderer.read_back(&target).unwrap();
+            let glass: Vec<([f32; 4], [f32; 4])> = items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Shape {
+                        rect,
+                        radii,
+                        material: Material::Glass,
+                        ..
+                    } => Some((*rect, *radii)),
+                    _ => None,
+                })
+                .collect();
+            let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+            for y in y0..y0 + h {
+                for x in x0..x0 + w {
+                    // A wallpaper's worth of colour, then the glass as a light tint, then what
+                    // the scene drew, whose pixels are BGRA with the alpha multiplied in.
+                    let mut under = [70. + x as f32 / 20., 90., 120. + y as f32 / 10.];
+                    let point = [x as f32 + 0.5, y as f32 + 0.5];
+                    if glass
+                        .iter()
+                        .any(|(rect, radii)| super::super::inside_rounded(point, *rect, *radii))
+                    {
+                        under = under.map(|c| c * 0.2 + 244. * 0.8);
+                    }
+                    let px = &pixels[((y * 1920 + x) * 4) as usize..][..4];
+                    let alpha = f32::from(px[3]) / 255.;
+                    for c in [2, 1, 0] {
+                        let value = f32::from(px[c]) + under[2 - c] * (1. - alpha);
+                        rgb.push(value.clamp(0., 255.) as u8);
+                    }
+                }
+            }
+            let file = std::fs::File::create(dir.join(format!("{name}.png"))).unwrap();
+            let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&rgb)
+                .unwrap();
+        };
+
+        shot(&host, "bar-left", [0, 0, 640, 60]);
+        shot(&host, "bar-right", [1280, 0, 640, 60]);
+
+        click(&mut host, "DP-1", [960., 26.]);
+        settle(&mut host, &mut now);
+        shot(&host, "calendar", [740, 0, 440, 520]);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+
+        open_control_center(&mut host, &mut now);
+        shot(&host, "control-center", [1500, 0, 420, 560]);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+
+        host.event("edit-workspace", Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        type_keys(&mut host, &["d", "e", "v"]);
+        settle(&mut host, &mut now);
+        shot(&host, "workspace-editor", [700, 420, 520, 240]);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+
+        host.data_line(
+            r#"{"type":"notification","event":"shown","id":1,"app":"Mail","summary":"Screenshot taken","body":"It's in your Pictures folder, and on the clipboard.","actions":[],"urgency":1,"timeout":60000,"image":null,"appIcon":null}"#,
+        );
+        settle(&mut host, &mut now);
+        shot(&host, "toast", [1500, 0, 420, 160]);
+
+        host.toggle_launcher(Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        type_keys(&mut host, &["f", "i"]);
+        settle(&mut host, &mut now);
+        shot(&host, "launcher", [560, 240, 800, 420]);
+        renderer.destroy_target(target);
+    }
+
     #[test]
     fn with_animations_off_the_launcher_is_there_at_once() {
         let mut host = SceneHost::default();

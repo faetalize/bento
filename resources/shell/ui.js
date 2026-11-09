@@ -182,9 +182,6 @@ export function input({
 
   const widget = Object.assign(wrap, {
     focused: false,
-    get text() {
-      return current;
-    },
     setText(value) {
       field.set({ text: value });
       show(native.edit(field.id, "{}"));
@@ -208,6 +205,8 @@ export function input({
       caret.set({ opacity: 0 });
     },
   });
+  // What it says now.
+  Object.defineProperty(widget, "text", { get: () => current });
   show(native.edit(field.id, "{}"));
   return widget;
 }
@@ -412,18 +411,16 @@ export function button({ icon, label, onClick, active = false, size = 16, ...pro
     },
     [glyph, words],
   );
-  return Object.assign(pill, {
-    get active() {
-      return lit;
-    },
-    // Shows it lit or not, and with another icon or label if they're given.
-    show({ active, icon, label } = {}) {
-      if (active !== undefined) lit = active;
-      pill.set({ fill: idle() });
-      glyph?.set({ color: ink(), ...(icon ? { icon } : {}) });
-      words?.set({ color: ink(), ...(label !== undefined ? { text: String(label) } : {}) });
-    },
-  });
+  // Whether it's lit.
+  Object.defineProperty(pill, "active", { get: () => lit });
+  // Shows it lit or not, and with another icon or label if they're given.
+  pill.show = ({ active, icon, label } = {}) => {
+    if (active !== undefined) lit = active;
+    pill.set({ fill: idle() });
+    glyph?.set({ color: ink(), ...(icon ? { icon } : {}) });
+    words?.set({ color: ink(), ...(label !== undefined ? { text: String(label) } : {}) });
+  };
+  return pill;
 }
 
 // A slider: a track `width` wide that fills up to its value, from 0 to 1, with an icon at its
@@ -466,16 +463,14 @@ export function slider({ value = 0, width = 240, icon, onChange, onIcon } = {}) 
     },
     [fill, glyph],
   );
-  return Object.assign(track, {
-    get value() {
-      return current;
-    },
-    // Shows `value`, and another icon if it's given, without telling `onChange`.
-    show(value, icon) {
-      if (value !== undefined) put(value, false);
-      if (icon) glyph?.set({ icon });
-    },
-  });
+  // Where it is.
+  Object.defineProperty(track, "value", { get: () => current });
+  // Shows `value`, and another icon if it's given, without telling `onChange`.
+  track.show = (value, icon) => {
+    if (value !== undefined) put(value, false);
+    if (icon) glyph?.set({ icon });
+  };
+  return track;
 }
 
 // Takes the keyboard from the apps, or gives it back. While the shell has it, every key that no
