@@ -239,6 +239,14 @@ debug {
 }
 ```
 
+bento draws its own shell too, while it's being built: islands of glass along the top of each output, scripted in JavaScript. `~/.config/bento/shell/main.js`, if it's there, replaces bento's own (`resources/shell/main.js`), and bento loads it again whenever it changes. It's off unless turned on:
+
+```kdl
+debug {
+    scene-shell
+}
+```
+
 A rule can pick the other material for some windows or surfaces:
 
 ```kdl

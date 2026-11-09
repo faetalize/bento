@@ -2530,6 +2530,27 @@ impl State {
             return;
         }
 
+        // bento's own shell takes clicks on what it shows.
+        if ButtonState::Pressed == button_state && button == Some(MouseButton::Left) {
+            let location = pointer.current_location();
+            let hit = self
+                .niri
+                .output_under(location)
+                .map(|(output, pos)| (output.name(), [pos.x as f32, pos.y as f32]));
+            if let Some((name, pos)) = hit {
+                if self
+                    .niri
+                    .scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.click(&name, pos))
+                {
+                    self.niri.suppressed_buttons.insert(button_code);
+                    self.niri.queue_redraw_all();
+                    return;
+                }
+            }
+        }
+
         if ButtonState::Pressed == button_state {
             self.niri.cancel_interrupted_release_binds();
             self.niri

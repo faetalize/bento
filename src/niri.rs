@@ -232,6 +232,10 @@ pub struct Niri {
     pub config_file_watcher: Option<Watcher>,
 
     pub event_loop: LoopHandle<'static, State>,
+    /// bento's own shell, while the config turns it on.
+    pub scene: Option<crate::scene::host::SceneHost>,
+    /// The timer that wakes bento for the shell's next timer, and when.
+    scene_timer: Option<(Instant, RegistrationToken)>,
     pub scheduler: Scheduler<()>,
     pub stop_signal: LoopSignal,
     pub display_handle: DisplayHandle,
@@ -2914,6 +2918,8 @@ impl Niri {
             config_file_watcher: None,
 
             event_loop,
+            scene: None,
+            scene_timer: None,
             scheduler,
             stop_signal,
             socket_name,
@@ -4837,6 +4843,69 @@ impl Niri {
     }
 
     /// What glass on `output` takes from it: the pointer while it shows, which carries a light.
+    /// Moves bento's own shell on and draws `output`'s part of it, and says whether it's still
+    /// moving.
+    fn update_scene(&mut self, backend: &mut Backend, output: &Output) -> bool {
+        let outputs: Vec<(String, (f32, f32))> = self
+            .global_space
+            .outputs()
+            .map(|o| {
+                let size = output_size(o);
+                (o.name(), (size.w as f32, size.h as f32))
+            })
+            .collect();
+        let mut workspaces = serde_json::Map::new();
+        for (mon, index, ws) in self.layout.workspaces() {
+            let Some(mon) = mon else { continue };
+            let list = workspaces
+                .entry(mon.output_name().clone())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            if let serde_json::Value::Array(list) = list {
+                list.push(serde_json::json!({
+                    "index": index,
+                    "name": ws.name(),
+                    "active": mon.active_workspace_idx() == index,
+                }));
+            }
+        }
+        let slowdown = {
+            let config = self.config.borrow();
+            (!config.animations.off).then_some(config.animations.slowdown)
+        };
+
+        let scene = self.scene.get_or_insert_with(Default::default);
+        scene.ensure_loaded(&outputs);
+        scene.set_workspaces(serde_json::Value::Object(workspaces));
+        let moving = scene.advance(Instant::now(), slowdown);
+
+        let scale = output.current_scale().fractional_scale();
+        let size: Size<i32, Physical> = output_size(output).to_physical_precise_round(scale);
+        let size = (size.w.max(1) as u32, size.h.max(1) as u32);
+        let node = backend.primary_render_node();
+        let name = output.name();
+        backend.with_primary_renderer(|renderer| scene.prepare(renderer, node, &name, size, scale));
+
+        // Wakes up for the shell's next timer.
+        let next = scene.next_timer();
+        if next != self.scene_timer.as_ref().map(|(at, _)| *at) {
+            if let Some((_, token)) = self.scene_timer.take() {
+                self.event_loop.remove(token);
+            }
+            if let Some(at) = next {
+                let token = self
+                    .event_loop
+                    .insert_source(Timer::from_deadline(at), |_, _, state| {
+                        state.niri.scene_timer = None;
+                        state.niri.queue_redraw_all();
+                        TimeoutAction::Drop
+                    })
+                    .unwrap();
+                self.scene_timer = Some((at, token));
+            }
+        }
+        moving
+    }
+
     fn glass_frame(&self, output: &Output) -> GlassFrame {
         let pointer = self
             .pointer_visibility
@@ -4943,6 +5012,20 @@ impl Niri {
         // Then, the Alt-Tab switcher.
         self.window_mru_ui
             .render_output(self, output, ctx.r(), &mut |elem| push(elem.into()));
+
+        // Then bento's own shell, over the layer surfaces.
+        if let Some(scene) = &self.scene {
+            let blur = self.config.borrow().blur;
+            let name = output.name();
+            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Texture(elem)));
+            scene.render_glass(
+                &name,
+                output_scale.x,
+                blur,
+                self.glass_frame(output),
+                &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
+            );
+        }
 
         // Don't draw the focus ring on the workspaces while interactively moving above those
         // workspaces, since the interactively-moved window already has a focus ring.
@@ -5276,6 +5359,16 @@ impl Niri {
             state.unfinished_animations_remain |= self
                 .cursor_manager
                 .is_current_cursor_animated(output.current_scale().integer_scale());
+
+            // Also bento's own shell.
+            if self.config.borrow().debug.scene_shell {
+                let moving = self.update_scene(backend, output);
+                let state = self.output_state.get_mut(output).unwrap();
+                state.unfinished_animations_remain |= moving;
+            } else {
+                self.scene = None;
+            }
+            let state = self.output_state.get_mut(output).unwrap();
 
             // Also check layer surfaces.
             if !state.unfinished_animations_remain {

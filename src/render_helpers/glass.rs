@@ -569,6 +569,80 @@ pub fn render(
     });
 }
 
+/// The desktop's style, as bento's own shell takes it: whether it's dark, and its accent.
+pub fn style() -> (bool, Option<[f32; 4]>) {
+    (
+        DARK.load(Ordering::Relaxed),
+        accent().map(|c| c.to_array_unpremul()),
+    )
+}
+
+/// Renders glass for bento's own shell: rounded rectangles, each its rectangle and its corners'
+/// radii, in an output's logical coordinates, melting together where they come `melt` close.
+#[allow(clippy::too_many_arguments)]
+pub fn render_rects(
+    effect: &FramebufferEffect,
+    ns: Option<usize>,
+    rects: &[([f32; 4], [f32; 4])],
+    melt: f32,
+    scale: f64,
+    blur: niri_config::Blur,
+    frame: GlassFrame,
+    push: &mut dyn FnMut(BackgroundEffectElement),
+) {
+    let rects = &rects[..rects.len().min(MAX_GLASS_SHAPES)];
+    let shapes: Vec<GlassShape> = rects
+        .iter()
+        .map(|(rect, radii)| GlassShape {
+            rect: *rect,
+            radius: radii[0],
+            melt,
+        })
+        .filter(|shape| !shape.is_empty())
+        .collect();
+    let Some(bounds) = bounds(&shapes, &[]) else {
+        return;
+    };
+    let bounds = in_steps(bounds);
+    let geometry = Rectangle::new(bounds.loc.to_f64(), bounds.size.to_f64())
+        .to_physical_precise_round(scale)
+        .to_logical(scale);
+
+    let mut uniforms = GlassShapes {
+        count: rects.len(),
+        glass: blur.glass,
+        accent: accent(),
+        ..GlassShapes::default()
+    };
+    let origin = [bounds.loc.x as f32, bounds.loc.y as f32];
+    for (i, (rect, radii)) in rects.iter().enumerate() {
+        let [x, y, w, h] = *rect;
+        uniforms.rects[i] = [x - origin[0], y - origin[1], w, h];
+        uniforms.radii[i] = *radii;
+        uniforms.melts[i] = melt;
+    }
+    let uniforms = uniforms.lit(frame, geometry.loc, 1.);
+    let params = RenderParams {
+        geometry,
+        subregion: None,
+        clip: None,
+        scale,
+    };
+    let elem = effect.render_glass(
+        ns,
+        params,
+        BlurOptions::reaching(blur),
+        blur.noise as f32,
+        blur.saturation as f32,
+        if blur.off { [0.; 4] } else { shade(&blur) },
+        uniforms,
+    );
+    if let Some(look) = elem.look() {
+        push(look.into());
+    }
+    push(elem.into());
+}
+
 /// `bounds` grown out to whole steps of [`AREA_STEP`].
 fn in_steps(bounds: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
     let down = |x: i32| x.div_euclid(AREA_STEP) * AREA_STEP;

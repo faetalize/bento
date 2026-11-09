@@ -2929,6 +2929,7 @@ mod tests {
                 disable_10bit_output: false,
                 nested_show_host_cursor: false,
                 glass_shader: None,
+                scene_shell: false,
             },
             workspaces: [
                 Workspace {

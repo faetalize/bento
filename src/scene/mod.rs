@@ -9,6 +9,7 @@
 //! island moves and grows. A node that grows out of a point grows as a circle until it's as wide
 //! as its narrower side, then stretches to its proportions, and shrinks back the same way.
 
+pub mod host;
 pub mod script;
 mod spring;
 pub mod text;
@@ -243,6 +244,8 @@ pub struct Scene {
     roots: Vec<Root>,
     fonts: Fonts,
     layout_dirty: bool,
+    /// Whether anything changed since it was last drawn.
+    changed: bool,
     pub theme: Theme,
 }
 
@@ -269,6 +272,7 @@ impl Scene {
             roots: Vec::new(),
             fonts: Fonts::default(),
             layout_dirty: true,
+            changed: true,
             theme: Theme::new(true, None),
         }
     }
@@ -367,6 +371,7 @@ impl Scene {
         let Some(props) = props.as_object() else {
             return;
         };
+        self.changed = true;
         let Some(node) = self.nodes.get_mut(id as usize).and_then(Option::as_mut) else {
             return;
         };
@@ -447,6 +452,7 @@ impl Scene {
             .insert_child_at_index(parent_taffy, index, child_taffy);
         self.node_mut(child).unwrap().parent = Some(parent);
         self.layout_dirty = true;
+        self.changed = true;
     }
 
     fn detach(&mut self, child: NodeId) {
@@ -491,6 +497,7 @@ impl Scene {
 
     fn destroy(&mut self, id: NodeId) {
         self.detach(id);
+        self.changed = true;
         let Some(node) = self.nodes.get_mut(id as usize).and_then(Option::take) else {
             return;
         };
@@ -613,6 +620,18 @@ impl Scene {
     /// Whether anything needs laying out.
     pub fn is_dirty(&self) -> bool {
         self.layout_dirty
+    }
+
+    /// Whether anything changed since this was last asked, so it needs drawing again.
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+
+    pub fn set_theme(&mut self, theme: Theme) {
+        if self.theme != theme {
+            self.theme = theme;
+            self.changed = true;
+        }
     }
 
     /// Where a node is drawn, relative to its parent's drawn top left, with its size; and the
