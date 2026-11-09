@@ -5,28 +5,64 @@ what engines draw with them, is bento's and the engines', see `engine-design.md`
 
 ## The shell is a full desktop shell
 
-The shell provides the whole desktop around the workspaces: the panel, the launcher,
+The shell is the whole desktop around the workspaces: the panel, the launcher,
 notifications, on-screen indicators like volume, quick settings, the shortcut cheatsheet and
 the lock screen. It replaces other shells like Noctalia entirely, rather than living next to
 them.
 
-## The shell is its own program
+## bento draws the shell
 
-The shell runs as a program of its own next to bento, not inside bento's process. A crash or
-freeze in the shell leaves the windows and the session alive, and bento stays a compositor. The
-shell talks to bento over Wayland protocols and bento's socket.
+The shell is drawn by bento, in the same frame as the windows, as part of one scene: the islands,
+their glass, text and icons, and their motion. There's one clock, so a morph, its glass and its
+content never get out of step, and nothing the shell does between frames can make it skip one.
+bento runs the shell's animations itself; the shell says where things go, bento moves them there.
 
-## The shell is built with GTK4 and libadwaita
+The shell's data, sound, network, battery, notifications and the tray, comes from a program of its
+own next to bento, which hands it to bento. A stuck call there never freezes the compositor.
 
-The shell is a GTK4 and libadwaita program, like bento's settings, with gtk4-layer-shell for its
-panels and overlays. Each part of the shell is a surface of its own, not one transparent surface
-over the whole screen. GTK draws any shape, clips, masks, gradients, blur and shadows of the
-shell's own content, and animates them, springs and morphing included. A part that needs a
-shader of its own draws it in a GtkGLArea.
+Apps, bento's settings among them, stay GTK and libadwaita, as windows.
 
-Effects that use what's behind the shell, like blur, frosted or liquid glass and refraction, are
-bento's: no program can see what's under its own surfaces. The shell asks bento for them on its
-surfaces, in the shapes it gives, the way windows ask for background blur.
+## bento is a Vulkan scene
+
+bento renders with Vulkan, as one 3D scene: everything in it, windows and the shell, has a
+position in depth and a 3D transform from the start. While anything moves, bento draws the whole
+scene each frame, like a game; when nothing changes, it draws nothing. Fullscreen games go straight
+to the display.
+
+## Widgets are scripts
+
+bento gives the shell primitives, in Rust:
+
+- shapes, with any radius on each corner, continuous corners, borders, and a material;
+- lines and paths, filled or stroked;
+- text, icons and images;
+- masks: clipping to a shape, gradient fades, and masking by another node's shape or text;
+- shadows, opacity, blend modes and 3D transforms;
+- layout boxes, input events, text editing, and springs.
+
+They're drawn from distance fields where they can be, so they stay sharp at any size and every
+number in them can be animated.
+
+Widgets, bento's own and the user's, are JavaScript built from those primitives, and so is the
+whole shell. They live in `~/.config/bento/shell/`, next to the widgets bento ships, and bento
+reloads them when they change, without building anything or logging out. Scripts react to events
+and say where things go; they never run in the per-frame loop. A script that fails leaves the last
+working shell on screen and reports the error.
+
+Styles are style objects in the scripts, with libadwaita's colours: the window colours, the accent,
+light and dark.
+
+Only a new kind of primitive needs bento built again. Shaders for materials of one's own are
+files bento loads, like the glass shader.
+
+## Materials
+
+Each shape has a material, as on Windows:
+
+- solid;
+- mica: the wallpaper alone, blurred and tinted, never the windows behind, so it's nearly free;
+- acrylic: what's behind, blurred and tinted;
+- glass: what's behind, blurred and refracted through a bezel.
 
 ## Islands float along the top
 
@@ -41,17 +77,17 @@ wallpaper shows between them.
 - The right island shows the status icons (network, sound, battery and the like) and the tray
   of apps' status icons.
 
-They don't show the focused window or a taskbar. The islands are one surface, so where one grows
-near another they melt together, as one piece of glass.
+They don't show the focused window or a taskbar. Where one grows near another they melt together, as one piece
+of glass.
 
 ## The shell is made of glass
 
-The shell's surfaces, the bar, its popovers, the launcher and notifications, are glass: bento
-blurs and refracts what's behind them, and they have a light edge highlight.
+The shell, the islands, their panels, the launcher and notifications, is glass: it blurs and
+refracts what's behind it, and has a light edge highlight.
 
 The glass is bento's material, the same behind the shell as behind apps, and bento's settings set
 it. bento shades it towards libadwaita's window colour, light or dark with the system style, so
-text and icons read on any wallpaper or window; the shell draws no tint of its own. The shell's
+text and icons read on any wallpaper or window; the shell adds no tint of its own. The shell's
 highlights use libadwaita's accent colour, so the shell matches the settings app and GTK apps.
 
 ## Islands morph into their panels
@@ -79,18 +115,18 @@ The launcher is a glass search field with its results, in the middle of the scre
 the islands. It grows out of nothing and shrinks back into nothing, like the on-screen
 indicators. It's keyboard first: typing finds apps.
 
-## bento starts the shell the config names
+## bento starts the shell's data program
 
-The config names the shell's command, and bento starts it. bento hands that process a private
-connection, and only it gets the shell's commands and events, like being told to show the
-shortcut cheatsheet. Any shell can be the one, bento's own, Noctalia or another, by being the one
-the config names. Other programs keep bento's public socket, without the shell's commands.
+bento starts the shell's data program, and hands it a private connection: only it feeds the
+shell, and gets the shell's commands and events. bento's own shell can be turned off in the
+config for another one, Noctalia or any other, which bento starts the same way, as the program
+with that private connection. Other programs keep bento's public socket.
 
 ## The shortcut cheatsheet
 
 Holding Mod alone for a moment shows a cheatsheet of pinned shortcuts. bento notices the
-gesture, since only it sees the keys, and tells the shell to show the cheatsheet, then to hide
-it when Mod is let go or another key is pressed. The shell draws it.
+gesture, since only it sees the keys, and shows the cheatsheet, then hides it when Mod is let
+go or another key is pressed.
 
 Which shortcuts are pinned is bento's, in its config, next to the shortcuts themselves, and
 bento's settings pin and unpin them. The shell gets the pinned shortcuts with their keys and
