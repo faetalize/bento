@@ -12,6 +12,7 @@
 pub mod script;
 mod spring;
 pub mod text;
+pub mod vk;
 
 use std::rc::Rc;
 

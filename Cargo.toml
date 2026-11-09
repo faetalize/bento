@@ -117,7 +117,7 @@ zbus = { version = "5", optional = true }
 rquickjs = { version = "0.14", features = ["loader"] }
 ash = "0.38"
 taffy = "0.15.1"
-naga = { version = "29", features = ["glsl-in", "spv-out"] }
+naga = { version = "29", features = ["wgsl-in", "spv-out"] }
 parley = "0.7.0"
 swash = "0.2.10"
 
@@ -130,6 +130,7 @@ features = [
     "backend_libinput",
     "backend_session_libseat",
     "backend_udev",
+    "backend_vulkan",
     "backend_winit",
     "desktop",
     "renderer_gl",
