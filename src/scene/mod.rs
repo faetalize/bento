@@ -267,6 +267,8 @@ pub enum Item {
         /// The colour a symbolic icon is drawn in.
         color: [f32; 4],
         opacity: f32,
+        /// How big it's drawn, as a fraction of its size.
+        scale: f32,
         blur: f32,
         clip: Option<Clip>,
     },
@@ -969,6 +971,7 @@ impl Scene {
                     source: source.clone(),
                     color: node.look.color.resolve(&self.theme),
                     opacity,
+                    scale: scaling.by,
                     blur,
                     clip,
                 });

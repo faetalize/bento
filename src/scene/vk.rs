@@ -692,11 +692,15 @@ impl Renderer {
                     source,
                     color,
                     opacity,
+                    scale: by,
                     blur,
                     clip,
                 } => {
                     let (clip_rect, clip_radii) = clip.map_or(no_clip, |c| (c.rect, c.radii));
-                    let size = (rect[2].max(rect[3]) * scale).round().max(1.) as u32;
+                    // Drawn once at its own size and scaled with what it's in, not drawn again
+                    // at every size it passes through.
+                    let by = by.max(1e-3);
+                    let size = (rect[2].max(rect[3]) / by * scale).round().max(1.) as u32;
                     let key = ImageKey {
                         source: source.clone(),
                         size,
@@ -705,8 +709,8 @@ impl Renderer {
                         continue;
                     };
                     // Fitted in the middle of its node, with its room around it.
-                    let (w, h) = (w as f32 / scale, h as f32 / scale);
-                    let pad = IMAGE_PAD as f32 / scale;
+                    let (w, h) = (w as f32 * by / scale, h as f32 * by / scale);
+                    let pad = IMAGE_PAD as f32 * by / scale;
                     let x = rect[0] + (rect[2] - w) / 2. - pad;
                     let y = rect[1] + (rect[3] - h) / 2. - pad;
                     let atlas = ATLAS_SIZE as f32;
@@ -1430,6 +1434,7 @@ mod tests {
             source: ImageSource::Icon(String::from("folder-symbolic")),
             color: [1., 0., 0., 1.],
             opacity: 1.,
+            scale: 1.,
             blur: 0.,
             clip: None,
         };
@@ -1441,6 +1446,35 @@ mod tests {
             .filter(|px| px[2] > 200 && px[3] > 200 && px[1] < 40)
             .count();
         assert!(red > 50, "{red} red pixels");
+        renderer.destroy_target(target);
+    }
+
+    /// An icon growing or shrinking with what it's in is drawn once, at its own size, and
+    /// scaled: drawing it again at every size on the way costs a frame each time.
+    #[test]
+    #[ignore]
+    fn a_scaled_icon_is_drawn_once_at_its_own_size() {
+        let formats = [DrmFormat {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }];
+        let mut renderer = Renderer::new(None, &formats).unwrap();
+        renderer.set_icon_theme("Adwaita");
+        let target = renderer.create_target((64, 64)).unwrap();
+        for step in 1..=20 {
+            let by = step as f32 / 20.;
+            let icon = Item::Image {
+                rect: [32. - 16. * by, 32. - 16. * by, 32. * by, 32. * by],
+                source: ImageSource::Icon(String::from("folder-symbolic")),
+                color: [1., 0., 0., 1.],
+                opacity: 1.,
+                scale: by,
+                blur: 0.,
+                clip: None,
+            };
+            renderer.render(&target, &[icon], 1.).unwrap();
+        }
+        assert_eq!(renderer.images.placed.len(), 1);
         renderer.destroy_target(target);
     }
 
