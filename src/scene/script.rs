@@ -428,6 +428,10 @@ impl Shell {
         });
         self.deadline.set(None);
         if let Err(err) = res {
+            // A script that throws is a bug in bento's own shell, which tests catch.
+            if cfg!(test) {
+                panic!("the shell failed handling {event}: {err:?}");
+            }
             warn!("the shell failed handling {event}: {err:?}");
         }
     }

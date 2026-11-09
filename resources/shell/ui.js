@@ -31,6 +31,7 @@
 // - onSettle: its motion settled.
 // - onNear: the pointer came into its place or left it, with `inside`, whatever else is there,
 //   in the shell or under it. It takes nothing from the pointer: a zone to know it's near.
+// - onDrag: the pointer moved while a press on it is held, to `x` and `y` on the output.
 //
 // Shapes and what has a click, press, hover or scroll handler take the pointer from what's below
 // them; the rest lets it through. `cursor` is how the pointer looks over a node: "default", "pointer", "text" or
@@ -40,7 +41,7 @@ const native = globalThis.__bento;
 
 const HANDLERS = [
   "onClick", "onMiddleClick", "onRightClick", "onPress", "onHover", "onScroll", "onSettle",
-  "onNear",
+  "onNear", "onDrag",
 ];
 const CLICKS = { 1: "onClick", 2: "onMiddleClick", 3: "onRightClick" };
 
@@ -85,6 +86,7 @@ export class Node {
         has(["onSettle"]) && "settle",
         has(["onScroll"]) && "scroll",
         has(["onNear"]) && "near",
+        has(["onDrag"]) && "drag",
       ].filter(Boolean);
     }
     native.set(this.id, JSON.stringify(rest));
@@ -257,9 +259,223 @@ export function launch(id) {
 
 // Tells the shell's data program to do something: `data("volume", { value: 0.5 })`, "mute"
 // `{ value }`, "dismiss", "expire" and "invoke" a notification `{ id, key }`, "activate",
-// "secondary" and "context" a tray item `{ id }`, "suspend", "reboot" and "power-off".
+// "secondary" and "context" a tray item `{ id }`, "suspend", "reboot" and "power-off". For
+// sound devices, with `kind` "output" or "input" and the device's `name`: "device" makes it the
+// default, "device-volume" `{ value }` and "device-mute" `{ value }` set it. "brightness" `{ id,
+// value }` sets a display's, and "brightness-refresh" reads them again. "theme" `{ dark }` sets
+// the light or dark style. "weather" `{ latitude, longitude, fahrenheit }` fetches the weather
+// there from now on, and without coordinates stops.
 export function data(cmd, fields = {}) {
   native.data(JSON.stringify({ cmd, ...fields }));
+}
+
+// Runs `command` with `sh -c`, and calls `done` with its exit code once it's over.
+const running = new Map();
+let nextRun = 0;
+export function run(command, done) {
+  const id = nextRun++;
+  if (done) running.set(id, done);
+  data("run", { id, command });
+}
+
+// Shows a notification, with an icon by its name or path.
+export function notify(summary, body = "", icon = "") {
+  data("notify", { summary, body, icon });
+}
+
+// The last event of a kind that came, like `last("audio-devices")`, for what's built after it.
+const latest = new Map();
+export function last(type) {
+  return latest.get(type);
+}
+
+// What the config sets for the shell: `{ location: { name, latitude, longitude } or null,
+// fahrenheit, screenshot and screenRecord: { command, notification, body } or null }`. A
+// "config" event tells when it changes.
+export function config() {
+  return style().config ?? {};
+}
+let lastConfig = JSON.stringify(config());
+
+// What scripts keep between runs, by key: `stored("pinned", [])` reads, with what to give when
+// there's nothing, and `store("pinned", names)` writes.
+export function stored(key, fallback = null) {
+  return JSON.parse(native.stored())[key] ?? fallback;
+}
+
+export function store(key, value) {
+  native.store(JSON.stringify({ ...JSON.parse(native.stored()), [key]: value }));
+}
+
+// What's open over the desktop, a panel or the launcher: one at a time, with the keyboard while
+// it is, closed by Escape or a press elsewhere. Each is `{ close() }`: `opened(it)` when it
+// opens closes the others, and `closed(it)` when it closes gives the keyboard back.
+const open = new Set();
+
+export function opened(panel) {
+  for (const other of [...open]) {
+    if (other !== panel) other.close();
+  }
+  open.add(panel);
+  native.keyboard(true);
+}
+
+export function closed(panel) {
+  open.delete(panel);
+  if (open.size === 0) {
+    focus(null);
+    native.keyboard(false);
+  }
+}
+
+export function closeAll() {
+  for (const panel of [...open]) panel.close();
+}
+
+// How tall an island is, closed.
+export const ISLAND = 36;
+
+// An island: a pill of glass that holds a row of things, and can open into a panel. What it
+// holds is `island.row`'s.
+export function island(props = {}, children = []) {
+  const { gap = 6, padding = [0, 14], ...rest } = props;
+  const row = box({ height: ISLAND, align: "center", gap }, children);
+  const pill = box(
+    {
+      material: "glass", radius: ISLAND / 2, height: ISLAND, padding, align: "start",
+      clip: true, ...rest,
+    },
+    [row],
+  );
+  pill.row = row;
+  return pill;
+}
+
+// Opens an island into a panel. `content` is laid over the island, out of its flow, and shows
+// as the island grows to its size with `pad` around it; closed, the island is as tall as an
+// island again and as wide as what it holds. `onToggle(open)` hears it open and close. Gives
+// `{ open, setOpen(open), toggle(), close(), fit() }`: `fit()` sizes an open island again after
+// its content changed.
+export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) {
+  // Presses on the panel that nothing in it takes stay in it.
+  content.set({ position: "absolute", top: pad, left: pad, opacity: 0, onClick: () => {} });
+  pill.add(content);
+  const panel = {
+    open: false,
+    close: () => panel.setOpen(false),
+    toggle: () => panel.setOpen(!panel.open),
+    fit() {
+      if (!panel.open) return;
+      const size = layout(content);
+      if (size) pill.set({ width: size[2] + 2 * pad, height: size[3] + 2 * pad, radius });
+    },
+    setOpen(open) {
+      if (panel.open === open) return;
+      panel.open = open;
+      if (open) {
+        opened(panel);
+        panel.fit();
+        content.set({ opacity: 1, blur: 0, jump: { blur: 4 } });
+      } else {
+        pill.set({ width: "auto", height: ISLAND, radius: ISLAND / 2 });
+        content.set({ opacity: 0, blur: 4 });
+        closed(panel);
+      }
+      onToggle?.(open);
+    },
+  };
+  return panel;
+}
+
+// Replaces what `node` holds with `children`.
+export function refill(node, children) {
+  for (const child of node.held ?? []) child.remove();
+  node.held = children.filter(Boolean);
+  for (const child of node.held) node.add(child);
+}
+
+// A button: an icon, a label, or both, in a pill that lights up under the pointer. `active`
+// fills it with the accent colour. Its other props are its box's.
+export function button({ icon, label, onClick, active = false, size = 16, ...props } = {}) {
+  let lit = active;
+  const idle = () => (lit ? "accent" : props.fill ?? null);
+  const ink = () => (lit ? "#ffffff" : "fg");
+  const glyph = icon ? image(icon, { size, color: ink() }) : null;
+  const words = label !== undefined ? text(label, { weight: 600, color: ink() }) : null;
+  const pill = box(
+    {
+      align: "center", justify: "center", gap: 8, radius: 14, height: 28,
+      padding: [0, words ? 12 : 6], cursor: "pointer", ...props,
+      fill: idle(),
+      onClick: (event) => onClick?.(event),
+      onHover: ({ inside }) => pill.set({ fill: inside && !lit ? "fg/0.12" : idle() }),
+    },
+    [glyph, words],
+  );
+  return Object.assign(pill, {
+    get active() {
+      return lit;
+    },
+    // Shows it lit or not, and with another icon or label if they're given.
+    show({ active, icon, label } = {}) {
+      if (active !== undefined) lit = active;
+      pill.set({ fill: idle() });
+      glyph?.set({ color: ink(), ...(icon ? { icon } : {}) });
+      words?.set({ color: ink(), ...(label !== undefined ? { text: String(label) } : {}) });
+    },
+  });
+}
+
+// A slider: a track `width` wide that fills up to its value, from 0 to 1, with an icon at its
+// start. Pressing, dragging and scrolling set it, and `onChange(value)` hears each change;
+// `onIcon` hears a click on the icon. `set(value)` shows a value from elsewhere.
+export function slider({ value = 0, width = 240, icon, onChange, onIcon } = {}) {
+  const HEIGHT = 28;
+  let current = value;
+  const filled = (v) => Math.max(HEIGHT, v * width);
+  const fill = box({
+    position: "absolute", top: 0, left: 0, height: HEIGHT, width: filled(value),
+    radius: HEIGHT / 2, fill: "accent", response: 0.08,
+  });
+  const glyph = icon
+    ? image(icon, { size: 16, color: "#ffffff", position: "absolute", top: 6, left: 6 })
+    : null;
+  const put = (v, tell) => {
+    const next = Math.min(Math.max(v, 0), 1);
+    if (next === current) return;
+    current = next;
+    fill.set({ width: filled(next) });
+    if (tell) onChange?.(next);
+  };
+  // Where a press or a drag at `x` on the output puts it.
+  const at = ({ x }) => {
+    const place = frame(track);
+    if (place && place[2] > 0) put((x - place[0]) / place[2], true);
+  };
+  const track = box(
+    {
+      width, height: HEIGHT, radius: HEIGHT / 2, fill: "fg/0.12", clip: true, cursor: "pointer",
+      onPress: (event) => {
+        // The icon is its own button, where it has one.
+        const place = frame(track);
+        if (onIcon && place && event.x - place[0] < HEIGHT) onIcon();
+        else at(event);
+      },
+      onDrag: at,
+      onScroll: ({ dx, dy }) => put(current - Math.sign(dy || dx) * 0.05, true),
+    },
+    [fill, glyph],
+  );
+  return Object.assign(track, {
+    get value() {
+      return current;
+    },
+    // Shows `value`, and another icon if it's given, without telling `onChange`.
+    show(value, icon) {
+      if (value !== undefined) put(value, false);
+      if (icon) glyph?.set({ icon });
+    },
+  });
 }
 
 // Takes the keyboard from the apps, or gives it back. While the shell has it, every key that no
@@ -408,6 +624,7 @@ export function log(...parts) {
 // Called by bento with each event, as JSON.
 export function __dispatch(json) {
   const event = JSON.parse(json);
+  latest.set(event.type, event);
   switch (event.type) {
     case "timer": {
       const fn = timers.get(event.id);
@@ -430,6 +647,25 @@ export function __dispatch(json) {
     case "near":
       handlers.get(event.id)?.onNear?.(event);
       return;
+    case "drag":
+      handlers.get(event.id)?.onDrag?.(event);
+      return;
+    case "ran": {
+      const done = running.get(event.id);
+      running.delete(event.id);
+      done?.(event.code);
+      return;
+    }
+    case "style": {
+      // What the config sets for the shell rides along with the style.
+      const settings = JSON.stringify(event.style?.config ?? {});
+      for (const fn of listeners.get("style") ?? []) fn(event);
+      if (settings !== lastConfig) {
+        lastConfig = settings;
+        for (const fn of listeners.get("config") ?? []) fn({ type: "config", config: config() });
+      }
+      return;
+    }
     case "scroll":
       handlers.get(event.id)?.onScroll?.(event);
       return;
@@ -440,8 +676,14 @@ export function __dispatch(json) {
       for (const fn of listeners.get(event.type) ?? []) fn(event);
       return;
     case "key":
-      // The focused text field takes what it can use; the rest goes to the listeners.
+      // The focused text field takes what it can use; the rest goes to the listeners, and
+      // Escape closes what's open.
       if (focused?.key(event)) return;
+      for (const fn of listeners.get(event.type) ?? []) fn(event);
+      if (event.pressed && event.key === "Escape") closeAll();
+      return;
+    case "outside":
+      closeAll();
       for (const fn of listeners.get(event.type) ?? []) fn(event);
       return;
     default:

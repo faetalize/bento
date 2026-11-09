@@ -1438,12 +1438,13 @@ mod tests {
         scene.lay_out();
         scene.advance(1. / 60., Some(1.));
         let opening = shapes(&scene)[1];
-        assert!(opening[3] > 36. && opening[3] < 104., "{opening:?}");
+        assert!(opening[3] > 36. && opening[3] < 478., "{opening:?}");
         for _ in 0..120 {
             scene.advance(1. / 60., Some(1.));
         }
         let open = shapes(&scene)[1];
-        assert_eq!([open[2], open[3]], [320., 104.]);
+        // As big as the calendar in it, with its room around.
+        assert_eq!([open[2], open[3]], [340., 478.]);
         assert!((open[0] + open[2] / 2. - 960.).abs() < 1., "{open:?}");
     }
 

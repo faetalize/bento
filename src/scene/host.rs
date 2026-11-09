@@ -187,6 +187,10 @@ impl SceneHost {
     pub fn data_started(&mut self, child: std::process::Child, stdin: std::process::ChildStdin) {
         self.data = Some((child, stdin));
         self.data_retry = None;
+        // What the shell asked of the last one, like the weather for a place, it asks again.
+        if let Some(shell) = &self.shell {
+            shell.send(&serde_json::json!({ "type": "data-ready" }));
+        }
     }
 
     /// The data program went: it's started again in a few seconds.
@@ -958,7 +962,8 @@ mod tests {
                 .draw("DP-1")
                 .into_iter()
                 .find_map(|item| match item {
-                    Item::Shape { rect, .. } if rect[2] < 3. => Some(rect[0]),
+                    // Below the islands, where the launcher is.
+                    Item::Shape { rect, .. } if rect[2] < 3. && rect[1] > 100. => Some(rect[0]),
                     _ => None,
                 })
         };
