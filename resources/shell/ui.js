@@ -289,66 +289,43 @@ export function layout(node) {
   return JSON.parse(native.layout(node.id) ?? "null");
 }
 
-// How long growing out of a point stays a circle before it stretches, in milliseconds, at
-// normal speed.
-const CIRCLE = 150;
-
-// How long `ms` of motion takes with bento's animation settings: slower with a slowdown, and
-// none with animations off.
-export function paced(ms) {
-  const { animations = true, slowdown = 1 } = style();
-  return animations ? ms * slowdown : 0;
-}
-
-// Grows `node` out of a point in the middle of its place: a circle until it's as wide as its
-// place's narrower side, then stretching to its place, with corners of `radius`. Grown again
-// while it shrinks, it turns around from wherever it is. `content`, nodes in it, sharpens in as
-// it stretches.
+// Grows `node` out of a point in the middle of its place to its place, in one motion, its
+// corners easing from round to `radius`. Grown again while it shrinks, it turns around from
+// wherever it is. `content`, nodes in it, sharpens in as it grows.
 export function grow(node, { radius = 0, content = [] } = {}) {
-  clearTimeout(node);
   const place = layout(node);
   if (!place) return;
-  const round = Math.min(place[2], place[3]);
-  const from = node.gone !== false ? { drawSize: [0, 0], radius: round / 2 } : {};
+  const fresh = node.gone !== false && node.gone !== "going";
   node.gone = false;
-  node.set({ hidden: false, drawSize: [round, round], radius: round / 2, jump: from });
-  for (const child of content) {
-    child.set({ opacity: 0, blur: 4, ...(from.drawSize ? { jump: { opacity: 0, blur: 4 } } : {}) });
-  }
-  node.phase = after(paced(CIRCLE), () => {
-    node.set({ drawSize: null, radius });
-    for (const child of content) child.set({ opacity: 1, blur: 0 });
+  node.set({
+    hidden: false,
+    drawSize: null,
+    radius,
+    ...(fresh ? { jump: { drawSize: [0, 0], radius: Math.min(place[2], place[3]) / 2 } } : {}),
   });
+  for (const child of content) {
+    child.set({ opacity: 1, blur: 0, ...(fresh ? { jump: { opacity: 0, blur: 4 } } : {}) });
+  }
 }
 
 // Shrinks `node` back into a point the way it grew, and leaves it out once it's gone, then
 // calls `done`. Shrunk again while it grows, it turns around from wherever it is.
 export function shrink(node, { content = [], done } = {}) {
-  clearTimeout(node);
   const place = layout(node);
   if (!place || node.gone) return;
-  const round = Math.min(place[2], place[3]);
+  node.gone = "going";
   for (const child of content) child.set({ opacity: 0, blur: 4 });
-  node.set({ drawSize: [round, round], radius: round / 2 });
-  node.phase = after(paced(CIRCLE), () => {
-    node.set({
-      drawSize: [0, 0],
-      onSettle: () => {
-        if (node.gone === "going") {
-          node.gone = true;
-          node.set({ hidden: true });
-          done?.();
-        }
-      },
-    });
-    node.gone = "going";
+  node.set({
+    drawSize: [0, 0],
+    radius: Math.min(place[2], place[3]) / 2,
+    onSettle: () => {
+      if (node.gone === "going") {
+        node.gone = true;
+        node.set({ hidden: true });
+        done?.();
+      }
+    },
   });
-}
-
-function clearTimeout(node) {
-  if (node.phase !== undefined) cancel(node.phase);
-  node.phase = undefined;
-  if (node.gone === "going") node.gone = false;
 }
 
 // bento's style, to line up with: `{ gaps, cornerRadius, animations, slowdown, response }`,
