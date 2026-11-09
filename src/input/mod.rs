@@ -496,6 +496,10 @@ impl State {
                 .set_keyboard_owner(KeyboardOwner::LockScreen);
         }
         let engine_grabbed = self.niri.keyboard_held();
+        let (shell_holds, engine_holds) = (
+            self.niri.shell_holds_keyboard(),
+            self.niri.layout.keyboard_grabbed(),
+        );
         let mut engine_key = None;
         let mut search_key = None;
 
@@ -729,7 +733,8 @@ impl State {
                         pressed,
                         modifiers,
                         this.niri.config.borrow().input.disable_power_key_handling,
-                        is_inhibiting_shortcuts || engine_grabbed,
+                        is_inhibiting_shortcuts
+                            || holds_binds(shell_holds, engine_holds, modifiers, mod_key),
                         is_locked,
                         is_in_screenshot,
                     )
@@ -4445,6 +4450,13 @@ fn should_intercept_key<'a>(
     bind_intercept_result(run_press_action.then_some(bind), forward)
 }
 
+/// Whether what holds the keyboard keeps binds from running, as an app inhibiting shortcuts
+/// does. The layout engine keeps them all. bento's own shell keeps only those without the mod
+/// key: it takes typing and editing keys, and Mod binds, like a screenshot, run over it.
+fn holds_binds(shell_holds: bool, engine_holds: bool, mods: Modifiers, mod_key: ModKey) -> bool {
+    engine_holds || (shell_holds && !mods.contains(mod_key.to_modifiers()))
+}
+
 fn find_bind<'a, I: Iterator<Item = &'a Bind> + Clone>(
     bindings: I,
     mod_key: ModKey,
@@ -5330,6 +5342,29 @@ mod tests {
             allow_inhibiting: true,
             hotkey_overlay_title: None,
         }
+    }
+
+    #[test]
+    fn mod_binds_run_over_the_shell_but_not_over_the_layout_engine() {
+        let mod_key = ModKey::Super;
+        // Typing into the shell: its keys, not binds.
+        assert!(holds_binds(true, false, Modifiers::empty(), mod_key));
+        assert!(holds_binds(true, false, Modifiers::SHIFT, mod_key));
+        assert!(holds_binds(true, false, Modifiers::CTRL, mod_key));
+        // Mod+Shift+S over the shell: a bind, like a screenshot.
+        assert!(!holds_binds(true, false, Modifiers::SUPER | Modifiers::SHIFT, mod_key));
+        // The layout engine keeps them all.
+        assert!(holds_binds(false, true, Modifiers::SUPER, mod_key));
+        assert!(!holds_binds(false, false, Modifiers::empty(), mod_key));
+
+        // Mod+Q runs while the shell holds the keyboard.
+        let bindings = Binds(vec![close_bind(BoundAction::Press(Action::CloseWindow))]);
+        let mut state = create_test_state();
+        state.is_inhibiting = holds_binds(true, false, Modifiers::SUPER, mod_key);
+        assert!(matches!(
+            process_close_key(&mut state, &bindings, Modifiers::SUPER, KeyState::Pressed),
+            ShouldInterceptResult::InterceptAndHandle(_)
+        ));
     }
 
     /// Returns a `Mod+Q` bind with the given action and default flags.
