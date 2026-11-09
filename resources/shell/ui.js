@@ -2,8 +2,8 @@
 //
 // A node takes props: layout (direction, gap, padding, width, height, grow, align, justify,
 // position, top/left/right/bottom, display), look (fill, material, tint, radius, border, opacity,
-// clip, color), text (text, size, weight, family, textAlign, tabular) and motion (animate, enter,
-// anchor). Changing them later moves the node there with springs. Handlers: onClick, onHover,
+// clip, color), text (text, size, weight, family, textAlign, tabular) and motion (animate,
+// enter). Changing them later moves the node there with springs. Handlers: onClick, onHover,
 // onScroll.
 
 const native = globalThis.__bento;

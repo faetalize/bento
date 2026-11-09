@@ -5,8 +5,8 @@
 //! corners and opacity with springs towards where the layout puts them, and draws it in the same
 //! frame as everything else, so the shell's motion never waits on anything.
 //!
-//! A node's frame is relative to its parent's, so what's inside an island rides along as the
-//! island moves and grows. A node that grows out of a point grows as a circle until it's as wide
+//! A node's frame is where it is on its output, so a node moves only when its own place does,
+//! and what's in an island moves with it as their places move together. A node that grows out of a point grows as a circle until it's as wide
 //! as its narrower side, then stretches to its proportions, and shrinks back the same way.
 
 pub mod host;
@@ -196,9 +196,6 @@ pub struct Node {
     /// Its size when it started growing out of a point or shrinking into one.
     whole: Option<[f32; 2]>,
     leaving: bool,
-    /// Where it sits in its parent while the parent isn't its size yet: 0 at the left or top, 1
-    /// at the right or bottom.
-    anchor: [f32; 2],
     pub events: u32,
 }
 
@@ -358,7 +355,6 @@ impl Scene {
             enter: Enter::Appear,
             whole: None,
             leaving: false,
-            anchor: [0., 0.],
             events: 0,
         });
         self.set(id, props);
@@ -536,19 +532,21 @@ impl Scene {
                 tree.compute_layout_with_measure(taffy, Size::MAX_CONTENT, |input, _, id, _| {
                     measure(nodes, fonts, input, id.copied())
                 });
-            self.place(node);
+            self.place(node, [0., 0.]);
         }
     }
 
-    /// Sets the targets of `id` and what's in it from the layout.
-    fn place(&mut self, id: NodeId) {
+    /// Sets the targets of `id` and what's in it from the layout, with its parent's top left at
+    /// `origin`. Frames are absolute, so a node whose place on the output doesn't change doesn't
+    /// move, whatever its parent does.
+    fn place(&mut self, id: NodeId, origin: [f32; 2]) {
         let Some(node) = self.node(id) else { return };
         let Ok(layout) = self.tree.layout(node.taffy) else {
             return;
         };
         let target = [
-            layout.location.x,
-            layout.location.y,
+            origin[0] + layout.location.x,
+            origin[1] + layout.location.y,
             layout.size.width,
             layout.size.height,
         ];
@@ -585,7 +583,7 @@ impl Scene {
             }
         }
         for child in children {
-            self.place(child);
+            self.place(child, [target[0], target[1]]);
         }
     }
 
@@ -634,10 +632,9 @@ impl Scene {
         }
     }
 
-    /// Where a node is drawn, relative to its parent's drawn top left, with its size; and the
-    /// fraction of its whole size it has grown to, while it grows out of a point or shrinks into
-    /// one.
-    fn drawn(node: &Node, parent_size: Option<([f32; 2], [f32; 2])>) -> ([f32; 4], f32) {
+    /// Where a node is drawn on its output, with its size; and the fraction of its whole size it
+    /// has grown to, while it grows out of a point or shrinks into one.
+    fn drawn(node: &Node) -> ([f32; 4], f32) {
         let s = &node.springs;
         let mut rect = [
             s[X].value as f32,
@@ -645,11 +642,6 @@ impl Scene {
             s[W].value.max(0.) as f32,
             s[H].value.max(0.) as f32,
         ];
-        // Children sit by the parent's anchor while it isn't its size yet.
-        if let Some((drawn, target)) = parent_size {
-            rect[0] += (drawn[0] - target[0]) * node.anchor[0];
-            rect[1] += (drawn[1] - target[1]) * node.anchor[1];
-        }
         let mut grown = 1.;
         if let (Enter::Point, Some([ww, wh])) = (node.enter, node.whole) {
             if ww > 0. && wh > 0. {
@@ -674,23 +666,14 @@ impl Scene {
     pub fn draw(&self, output: &str) -> Vec<Item> {
         let mut items = Vec::new();
         if let Some(root) = self.root(output) {
-            self.draw_node(root, [0., 0.], None, 1., None, &mut items);
+            self.draw_node(root, 1., None, &mut items);
         }
         items
     }
 
-    fn draw_node(
-        &self,
-        id: NodeId,
-        origin: [f32; 2],
-        parent_size: Option<([f32; 2], [f32; 2])>,
-        opacity: f32,
-        clip: Option<Clip>,
-        items: &mut Vec<Item>,
-    ) {
+    fn draw_node(&self, id: NodeId, opacity: f32, clip: Option<Clip>, items: &mut Vec<Item>) {
         let Some(node) = self.node(id) else { return };
-        let (rect, grown) = Self::drawn(node, parent_size);
-        let rect = [rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]];
+        let (rect, grown) = Self::drawn(node);
         let opacity = opacity * node.springs[OPACITY].value.clamp(0., 1.) as f32;
         if opacity <= 0.003 {
             return;
@@ -756,17 +739,8 @@ impl Scene {
         } else {
             clip
         };
-        let target = [node.springs[W].target as f32, node.springs[H].target as f32];
-        let whole = node.whole.unwrap_or(target);
         for child in &node.children {
-            self.draw_node(
-                *child,
-                [rect[0], rect[1]],
-                Some(([rect[2], rect[3]], whole)),
-                opacity * content,
-                clip,
-                items,
-            );
+            self.draw_node(*child, opacity * content, clip, items);
         }
     }
 
@@ -774,25 +748,16 @@ impl Scene {
     pub fn hit(&self, output: &str, point: [f32; 2], events: u32) -> Option<NodeId> {
         let root = self.root(output)?;
         let mut found = None;
-        self.hit_node(root, [0., 0.], None, point, events, &mut found);
+        self.hit_node(root, point, events, &mut found);
         found
     }
 
-    fn hit_node(
-        &self,
-        id: NodeId,
-        origin: [f32; 2],
-        parent_size: Option<([f32; 2], [f32; 2])>,
-        point: [f32; 2],
-        events: u32,
-        found: &mut Option<NodeId>,
-    ) {
+    fn hit_node(&self, id: NodeId, point: [f32; 2], events: u32, found: &mut Option<NodeId>) {
         let Some(node) = self.node(id) else { return };
         if node.leaving || node.springs[OPACITY].target <= 0. {
             return;
         }
-        let (rect, _) = Self::drawn(node, parent_size);
-        let rect = [rect[0] + origin[0], rect[1] + origin[1], rect[2], rect[3]];
+        let (rect, _) = Self::drawn(node);
         let inside = point[0] >= rect[0]
             && point[1] >= rect[1]
             && point[0] < rect[0] + rect[2]
@@ -803,17 +768,8 @@ impl Scene {
         if node.look.clip && !inside {
             return;
         }
-        let target = [node.springs[W].target as f32, node.springs[H].target as f32];
-        let whole = node.whole.unwrap_or(target);
         for child in &node.children {
-            self.hit_node(
-                *child,
-                [rect[0], rect[1]],
-                Some(([rect[2], rect[3]], whole)),
-                point,
-                events,
-                found,
-            );
+            self.hit_node(*child, point, events, found);
         }
     }
 
@@ -1042,14 +998,6 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                 _ => Enter::Appear,
             }
         }
-        "anchor" => {
-            if let Some([x, y, ..]) = value.as_array().map(Vec::as_slice) {
-                node.anchor = [
-                    x.as_f64().unwrap_or(0.) as f32,
-                    y.as_f64().unwrap_or(0.) as f32,
-                ];
-            }
-        }
         "events" => {
             node.events = value.as_array().map_or(0, |list| {
                 list.iter().fold(0, |events, e| {
@@ -1114,5 +1062,41 @@ mod tests {
         let open = shapes(&scene)[1];
         assert_eq!([open[2], open[3]], [320., 110.]);
         assert!((open[0] + open[2] / 2. - 960.).abs() < 1., "{open:?}");
+    }
+
+    #[test]
+    fn opening_the_clock_leaves_the_other_islands_where_they_are() {
+        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))]).unwrap();
+        let glass = |scene: &Scene| -> Vec<[f32; 4]> {
+            scene
+                .draw("DP-1")
+                .into_iter()
+                .filter_map(|item| match item {
+                    Item::Shape {
+                        rect,
+                        material: Material::Glass,
+                        ..
+                    } => Some(rect),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut scene = shell.scene.borrow_mut();
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        let before = glass(&scene);
+        let clock = scene.hit("DP-1", [960., 20.], CLICK).unwrap();
+        drop(scene);
+        shell.send(&serde_json::json!({ "type": "click", "id": clock }));
+
+        let mut scene = shell.scene.borrow_mut();
+        scene.lay_out();
+        for _ in 0..90 {
+            scene.advance(1. / 60., Some(1.));
+            let now = glass(&scene);
+            for i in [0, 2] {
+                assert_eq!(now[i], before[i], "island {i} moved");
+            }
+        }
     }
 }

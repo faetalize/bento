@@ -63,7 +63,7 @@ function build(output) {
   const left = island({ padding: [0, 5], gap: 2 }, buttons);
 
   const now = new Date();
-  const clock = text(clockLabel(now), { weight: 600, tabular: true, anchor: [0.5, 0] });
+  const clock = text(clockLabel(now), { weight: 600, tabular: true });
   const day = text(LONG_DAYS[now.getDay()], { size: 22, weight: 700 });
   const date = text(`${now.getDate()} ${LONG_MONTHS[now.getMonth()]} ${now.getFullYear()}`, {
     color: "fg/0.6",
@@ -75,7 +75,6 @@ function build(output) {
   let open = false;
   const middle = island(
     {
-      anchor: [0.5, 0],
       onClick: () => {
         open = !open;
         middle.set(
@@ -90,7 +89,7 @@ function build(output) {
     [clock, calendar],
   );
 
-  const right = island({ anchor: [1, 0] }, [text("Status", { weight: 600 })]);
+  const right = island({}, [text("Status", { weight: 600 })]);
 
   const side = (justify, child) => box({ grow: 1, width: 0, justify }, [child]);
   const bar = box(
