@@ -495,7 +495,7 @@ impl State {
                 .layout
                 .set_keyboard_owner(KeyboardOwner::LockScreen);
         }
-        let engine_grabbed = self.niri.layout.keyboard_grabbed();
+        let engine_grabbed = self.niri.keyboard_held();
         let mut engine_key = None;
         let mut search_key = None;
 
@@ -2268,6 +2268,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, true);
+        self.niri.update_shell_hover(&under);
 
         pointer.motion(
             self,
@@ -2370,6 +2371,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, true);
+        self.niri.update_shell_hover(&under);
 
         pointer.motion(
             self,
@@ -2530,35 +2532,22 @@ impl State {
             return;
         }
 
-        // bento's own shell takes clicks on what it shows.
-        if ButtonState::Pressed == button_state && button == Some(MouseButton::Left) {
+        // bento's own shell takes the buttons over it, and hears of presses elsewhere, to close
+        // what's open. A grab, like an app's menu or a drag, keeps its buttons.
+        if !pointer.is_grabbed() && self.niri.scene.is_some() {
             let location = pointer.current_location();
-            // It's at the top layer: under overlay surfaces, and under a fullscreen window.
-            let hit = self
-                .niri
-                .output_under(location)
-                .filter(|(output, pos)| {
-                    smithay::desktop::layer_map_for_output(output)
-                        .layer_under(smithay::wayland::shell::wlr_layer::Layer::Overlay, *pos)
-                        .is_none()
-                        && !self
-                            .niri
-                            .layout
-                            .monitor_for_output(output)
-                            .is_some_and(|mon| mon.render_above_top_layer())
-                })
-                .map(|(output, pos)| (output.name(), [pos.x as f32, pos.y as f32]));
-            if let Some((name, pos)) = hit {
-                if self
-                    .niri
-                    .scene
-                    .as_ref()
-                    .is_some_and(|scene| scene.click(&name, pos))
-                {
-                    self.niri.suppressed_buttons.insert(button_code);
-                    self.niri.queue_redraw_all();
-                    return;
-                }
+            let at = self.niri.contents_under(location).shell;
+            let at_ref = at.as_ref().map(|(name, point)| (name.as_str(), *point));
+            let number = node_button(button).unwrap_or(0);
+            let scene = self.niri.scene.as_mut().unwrap();
+            let taken = if ButtonState::Pressed == button_state {
+                scene.press(button_code, number, at_ref)
+            } else {
+                scene.release(button_code, number, at_ref)
+            };
+            if taken {
+                self.niri.queue_redraw_all();
+                return;
             }
         }
 
@@ -3200,6 +3189,15 @@ impl State {
 
         self.update_pointer_contents();
 
+        // bento's own shell gets the scrolling over it.
+        if self.niri.pointer_contents.shell.is_some() {
+            if let Some(scene) = &mut self.niri.scene {
+                scene.scroll([horizontal_amount, vertical_amount]);
+            }
+            self.niri.queue_redraw_all();
+            return;
+        }
+
         // Nodes that the tiling layout draws are on top of windows, so they get the scrolling.
         if self
             .niri
@@ -3309,6 +3307,7 @@ impl State {
 
         let under = self.niri.contents_under(pos);
         self.niri.update_node_hover(&under, true);
+        self.niri.update_shell_hover(&under);
 
         let tablet_seat = self.niri.seat.tablet_seat();
         let tool = tablet_seat.get_tool(&event.tool());
@@ -3454,6 +3453,12 @@ impl State {
                                 window,
                             );
                             tool.set_grab(self, grab, time, serial, Focus::Clear);
+                        } else if let Some((name, point)) = &under.shell {
+                            // bento's own shell is on top of windows, like nodes.
+                            if let Some(scene) = &mut self.niri.scene {
+                                scene.press(TABLET_KEY, 1, Some((name.as_str(), *point)));
+                            }
+                            self.niri.queue_redraw_all();
                         } else if let Some(hit) = &under.node {
                             // Nodes that the tiling layout draws are on top of windows, so a
                             // press on one is theirs and doesn't focus or move the windows below.
@@ -3502,6 +3507,17 @@ impl State {
                     if capture {
                         self.confirm_screenshot(true);
                     } else {
+                        self.niri.queue_redraw_all();
+                    }
+                }
+
+                let pos = self
+                    .compute_tablet_position(&event)
+                    .or(self.niri.tablet_cursor_location);
+                let at = pos.and_then(|pos| self.niri.contents_under(pos).shell);
+                if let Some(scene) = &mut self.niri.scene {
+                    let at = at.as_ref().map(|(name, point)| (name.as_str(), *point));
+                    if scene.release(TABLET_KEY, 1, at) {
                         self.niri.queue_redraw_all();
                     }
                 }
@@ -4040,6 +4056,20 @@ impl State {
 
         let under = self.niri.contents_under(pos);
 
+        // bento's own shell takes touches on it, and hears of touches elsewhere.
+        if !handle.is_grabbed() && !self.niri.screenshot_ui.is_open() {
+            if let Some(scene) = &mut self.niri.scene {
+                let at = under
+                    .shell
+                    .as_ref()
+                    .map(|(name, point)| (name.as_str(), *point));
+                if scene.press(touch_key(slot), 1, at) {
+                    self.niri.queue_redraw_all();
+                    return;
+                }
+            }
+        }
+
         let mod_key = self.backend.mod_key(&self.niri.config.borrow());
         let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
         let mods = modifiers_from_state(mods);
@@ -4164,6 +4194,13 @@ impl State {
             return;
         };
         let slot = evt.slot();
+
+        if let Some(scene) = &mut self.niri.scene {
+            if scene.release_where_pressed(touch_key(slot), 1) {
+                self.niri.queue_redraw_all();
+                return;
+            }
+        }
 
         if let Some(capture) = self.niri.screenshot_ui.pointer_up(Some(slot)) {
             if capture {
@@ -4585,6 +4622,14 @@ fn find_configured_switch_action(
 
 /// The number that the nodes of the tiling layout know a mouse button by: 1 for the left button, 2
 /// for the middle one and 3 for the right one. They don't get the other buttons.
+/// The tablet tool's press on bento's own shell, apart from buttons and touches.
+const TABLET_KEY: u32 = 1 << 31;
+
+/// A touch's press on bento's own shell, apart from buttons and the tablet tool.
+fn touch_key(slot: smithay::backend::input::TouchSlot) -> u32 {
+    (1 << 30) | (i32::from(slot) as u32 & 0xffff)
+}
+
 fn node_button(button: Option<MouseButton>) -> Option<u8> {
     match button? {
         MouseButton::Left => Some(1),

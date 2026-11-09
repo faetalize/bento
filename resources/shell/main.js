@@ -1,7 +1,7 @@
 // bento's own shell: three islands of glass along the top of each output. The clock opens into
 // the calendar.
 
-import { box, text, root, outputs, every, on, morph, style, reserve } from "bento:ui";
+import { box, text, root, outputs, every, on, morph, style, reserve, keyboard } from "bento:ui";
 
 const HEIGHT = 36;
 // bento's gaps: the islands sit that far from the screen's edges, and windows that far below.
@@ -41,8 +41,8 @@ const shells = new Map();
 let workspaces = {};
 
 function workspaceButtons(output) {
-  return (workspaces[output] ?? []).map((ws) =>
-    box(
+  return (workspaces[output] ?? []).map((ws) => {
+    const hovered = box(
       {
         width: 26,
         height: 26,
@@ -50,11 +50,20 @@ function workspaceButtons(output) {
         align: "center",
         justify: "center",
         fill: ws.active ? "accent" : undefined,
+        onHover: ws.active ? undefined : ({ inside }) => hovered.set({ fill: inside ? "fg/0.12" : null }),
       },
       [text(ws.name ?? ws.index + 1, { weight: 700, tabular: true, color: ws.active ? "#ffffff" : "fg" })],
-    ),
-  );
+    );
+    return hovered;
+  });
 }
+
+// Open panels close on Escape, and on a press anywhere off the shell.
+const closeAll = () => shells.forEach((shell) => shell.setOpen(false));
+on("outside", closeAll);
+on("key", (event) => {
+  if (event.pressed && event.key === "Escape") closeAll();
+});
 
 function build(output) {
   const top = root(output);
@@ -76,28 +85,31 @@ function build(output) {
   );
   for (const node of [bigTime, longDate]) node.set({ opacity: 0 });
 
-  let open = false;
   const swap = (from, to) => {
     from.forEach((node, i) => morph(node, to[i]));
     for (const node of from) node.set({ opacity: 0, blur: 4 });
     for (const node of to) node.set({ opacity: 1, blur: 0, jump: { blur: 4 } });
   };
-  const middle = island(
-    {
-      gap: 10,
-      onClick: () => {
-        open = !open;
-        middle.set(
-          open
-            ? { width: 320, height: 104, radius: 24 }
-            : { width: "auto", height: HEIGHT, radius: HEIGHT / 2 },
-        );
-        if (open) swap([time, shortDate], [bigTime, longDate]);
-        else swap([bigTime, longDate], [time, shortDate]);
-      },
-    },
-    [shortDate, time, calendar],
-  );
+  const shell = { open: false };
+  // Opens the clock into the calendar, or closes it. While it's open, the shell has the keyboard,
+  // for Escape.
+  shell.setOpen = (open) => {
+    if (shell.open === open) return;
+    shell.open = open;
+    middle.set(
+      open
+        ? { width: 320, height: 104, radius: 24 }
+        : { width: "auto", height: HEIGHT, radius: HEIGHT / 2 },
+    );
+    if (open) swap([time, shortDate], [bigTime, longDate]);
+    else swap([bigTime, longDate], [time, shortDate]);
+    keyboard([...shells.values()].some((s) => s.open));
+  };
+  const middle = island({ gap: 10, onClick: () => shell.setOpen(!shell.open) }, [
+    shortDate,
+    time,
+    calendar,
+  ]);
 
   const right = island({}, [text("Status", { weight: 600 })]);
 
@@ -108,7 +120,8 @@ function build(output) {
   );
   top.add(bar);
   reserve(output, { top: gaps + HEIGHT });
-  shells.set(output, { bar, left, buttons, time, shortDate, bigTime, longDate });
+  Object.assign(shell, { bar, left, buttons, time, shortDate, bigTime, longDate });
+  shells.set(output, shell);
 }
 
 on("style", (event) => {

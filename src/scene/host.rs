@@ -15,7 +15,7 @@ use smithay::utils::Transform;
 
 use super::script::{self, Shell};
 use super::vk::{Renderer, Target};
-use super::{Item, Material, Theme, CLICK};
+use super::{Item, Material, NodeId, Theme, CLICK, HOVER, SCROLL};
 use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::framebuffer_effect::FramebufferEffect;
 use crate::render_helpers::glass::{self, GlassFrame};
@@ -78,6 +78,13 @@ pub struct SceneHost {
     moving: bool,
     sent_workspaces: Option<serde_json::Value>,
     known_outputs: Vec<String>,
+    /// Where the pointer is over the shell: the output and the point on it.
+    pointer: Option<(String, [f32; 2])>,
+    /// The node the pointer is over that hears it come and go.
+    hovered: Option<NodeId>,
+    /// Presses that haven't ended: by the button, touch or tool, what they pressed, if anything,
+    /// and where.
+    presses: HashMap<u32, (Option<NodeId>, String, [f32; 2])>,
 }
 
 impl std::fmt::Debug for SceneHost {
@@ -142,6 +149,128 @@ impl SceneHost {
         }
     }
 
+    /// Whether the pointer is over the shell.
+    pub fn pointer_over(&self) -> bool {
+        self.pointer.is_some()
+    }
+
+    /// The pointer moved to `at`, the output and the point on it, if it's over the shell, or off
+    /// it. Tells nodes it comes to or leaves that hear it, and says how the pointer looks there,
+    /// if it's over the shell.
+    pub fn pointer_moved(&mut self, at: Option<(&str, [f32; 2])>) -> Option<String> {
+        let Some(shell) = &self.shell else {
+            return None;
+        };
+        self.pointer = at.map(|(name, point)| (String::from(name), point));
+        let (hovered, cursor) = match at {
+            Some((name, point)) => {
+                let scene = shell.scene.borrow();
+                (
+                    scene.hit(name, point, HOVER),
+                    Some(
+                        scene
+                            .cursor(name, point)
+                            .unwrap_or_else(|| String::from("default")),
+                    ),
+                )
+            }
+            None => (None, None),
+        };
+        if hovered != self.hovered {
+            if let Some(id) = self.hovered {
+                shell.send(&serde_json::json!({ "type": "hover", "id": id, "inside": false }));
+            }
+            if let Some(id) = hovered {
+                shell.send(&serde_json::json!({ "type": "hover", "id": id, "inside": true }));
+            }
+            self.hovered = hovered;
+        }
+        cursor
+    }
+
+    /// A press by `button`, 1, 2 or 3 for left, middle and right, or a touch or a tool's tip as
+    /// the left one, keyed by `key` until it ends, at `at` on the shell, or elsewhere with
+    /// `None`. A press elsewhere tells the shell, so it can close what's open. Says whether the
+    /// shell took it.
+    pub fn press(&mut self, key: u32, button: u8, at: Option<(&str, [f32; 2])>) -> bool {
+        let Some(shell) = &self.shell else {
+            return false;
+        };
+        let Some((name, point)) = at else {
+            shell.send(&serde_json::json!({ "type": "outside", "button": button }));
+            return false;
+        };
+        let hit = shell.scene.borrow().hit(name, point, CLICK);
+        if let Some(id) = hit {
+            shell.send(&serde_json::json!({ "type": "press", "id": id, "button": button }));
+        }
+        self.presses.insert(key, (hit, String::from(name), point));
+        true
+    }
+
+    /// The press keyed by `key` ended where it was pressed, as a touch does: a click on what it
+    /// pressed. Says whether the press was the shell's.
+    pub fn release_where_pressed(&mut self, key: u32, button: u8) -> bool {
+        let Some((_, name, point)) = self.presses.get(&key).cloned() else {
+            return false;
+        };
+        self.release(key, button, Some((&name, point)))
+    }
+
+    /// The press keyed by `key` ended, with what it pressed under `at`, the output and the point,
+    /// or not over the shell: a click on what it pressed if it's still there. Says whether the
+    /// press was the shell's.
+    pub fn release(&mut self, key: u32, button: u8, at: Option<(&str, [f32; 2])>) -> bool {
+        let Some((pressed, _, _)) = self.presses.remove(&key) else {
+            return false;
+        };
+        let Some(shell) = &self.shell else {
+            return true;
+        };
+        if let (Some(id), Some((name, point))) = (pressed, at) {
+            if shell.scene.borrow().hit(name, point, CLICK) == Some(id) {
+                shell.send(&serde_json::json!({ "type": "click", "id": id, "button": button }));
+            }
+        }
+        true
+    }
+
+    /// Scrolls by `delta` where the pointer is, and says whether the shell took it.
+    pub fn scroll(&mut self, delta: [f64; 2]) -> bool {
+        let (Some(shell), Some((name, point))) = (&self.shell, &self.pointer) else {
+            return false;
+        };
+        let hit = shell.scene.borrow().hit(name, *point, SCROLL);
+        if let Some(id) = hit {
+            shell.send(&serde_json::json!({
+                "type": "scroll", "id": id, "dx": delta[0], "dy": delta[1],
+            }));
+        }
+        true
+    }
+
+    /// Whether the shell wants the keyboard.
+    pub fn wants_keyboard(&self) -> bool {
+        self.shell
+            .as_ref()
+            .is_some_and(|shell| shell.scene.borrow().wants_keyboard)
+    }
+
+    /// Gives the shell a key, while it holds the keyboard.
+    pub fn key(&self, key: &crate::layout::tiling::host::EngineKey) {
+        if let Some(shell) = &self.shell {
+            let [shift, ctrl, alt, logo] = key.modifiers;
+            shell.send(&serde_json::json!({
+                "type": "key",
+                "key": key.name,
+                "text": key.text,
+                "pressed": key.pressed,
+                "repeat": key.repeat,
+                "shift": shift, "ctrl": ctrl, "alt": alt, "super": logo,
+            }));
+        }
+    }
+
     /// What the shell keeps along output `output`'s edges: top, right, bottom and left.
     pub fn reserved(&self, output: &str) -> [f32; 4] {
         self.shell
@@ -186,22 +315,6 @@ impl SceneHost {
         }
         self.moving = moving;
         moving
-    }
-
-    /// Clicks at `point` on output `output`, if the shell takes clicks there, and says whether it
-    /// did.
-    pub fn click(&self, output: &str, point: [f32; 2]) -> bool {
-        let Some(shell) = &self.shell else {
-            return false;
-        };
-        let hit = shell.scene.borrow().hit(output, point, CLICK);
-        match hit {
-            Some(id) => {
-                shell.send(&serde_json::json!({ "type": "click", "id": id }));
-                true
-            }
-            None => false,
-        }
     }
 
     /// Whether the shell covers `point` on output `output`, so it takes the pointer there.
@@ -350,5 +463,81 @@ impl SceneHost {
                 push,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::layout::tiling::host::EngineKey;
+
+    fn settle(host: &mut SceneHost, now: &mut Instant) {
+        for _ in 0..30 {
+            *now += Duration::from_millis(100);
+            host.advance(*now, Some(1.));
+        }
+    }
+
+    #[test]
+    fn a_click_opens_the_calendar_and_escape_or_a_press_elsewhere_closes_it() {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+
+        // The clock's island is a pill: its rounded corner isn't the shell's.
+        assert!(host.covers("DP-1", [960., 26.]));
+        let island = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .draw("DP-1")
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Shape {
+                    rect,
+                    material: Material::Glass,
+                    ..
+                } => Some(rect),
+                _ => None,
+            })
+            .nth(1)
+            .unwrap();
+        assert!(!host.covers("DP-1", [island[0] + 1., island[1] + 1.]));
+
+        let click = |host: &mut SceneHost| {
+            let at = Some(("DP-1", [960., 26.]));
+            assert!(host.press(272, 1, at));
+            assert!(host.release(272, 1, at));
+        };
+        click(&mut host);
+        settle(&mut host, &mut now);
+        assert!(
+            host.wants_keyboard(),
+            "the open calendar takes the keyboard"
+        );
+
+        host.key(&EngineKey {
+            name: String::from("Escape"),
+            text: String::new(),
+            modifiers: [false; 4],
+            pressed: true,
+            repeat: false,
+        });
+        assert!(!host.wants_keyboard(), "Escape closes it");
+
+        click(&mut host);
+        settle(&mut host, &mut now);
+        assert!(host.wants_keyboard());
+        assert!(
+            !host.press(272, 1, None),
+            "a press elsewhere isn't the shell's"
+        );
+        assert!(!host.wants_keyboard(), "and closes it");
     }
 }

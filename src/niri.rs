@@ -640,6 +640,8 @@ pub struct PointContents {
     // If the point is over a node that the tiling layout draws, which takes the pointer from the
     // windows below it, this is that node.
     pub node: Option<NodeHit>,
+    // If the point is over bento's own shell, the output's name and the point on it.
+    pub shell: Option<(String, [f32; 2])>,
 }
 
 /// A press on a node that the tiling layout draws, by a mouse button, a touch or a tablet tool's
@@ -1287,6 +1289,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, false);
+        self.niri.update_shell_hover(&under);
 
         pointer.motion(
             self,
@@ -1458,8 +1461,8 @@ impl State {
             KeyboardFocus::LockScreen { .. } => KeyboardOwner::LockScreen,
             _ => KeyboardOwner::Other,
         });
-        // While it holds the keyboard, the apps have no focus.
-        let withheld = self.niri.layout.keyboard_grabbed();
+        // While it holds the keyboard, or bento's own shell does, the apps have no focus.
+        let withheld = self.niri.keyboard_held();
 
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         if self.niri.keyboard_focus != focus {
@@ -3875,6 +3878,16 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
+        // bento's own shell, which is drawn with the top layer, over it.
+        let shell_under = || {
+            let name = output.name();
+            let point = [pos_within_output.x as f32, pos_within_output.y as f32];
+            self.scene
+                .as_ref()
+                .filter(|scene| scene.covers(&name, point))
+                .map(|_| (name, point))
+        };
+
         let mut under =
             layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
 
@@ -3886,7 +3899,14 @@ impl Niri {
             under = under
                 .or_else(interactive_moved_window_under)
                 .or_else(node_under)
-                .or_else(window_under)
+                .or_else(window_under);
+            if under.is_none() {
+                if let Some(hit) = shell_under() {
+                    rv.shell = Some(hit);
+                    return rv;
+                }
+            }
+            under = under
                 .or_else(|| layer_popup_under(Layer::Top))
                 .or_else(|| layer_toplevel_under(Layer::Top))
                 .or_else(|| layer_popup_under(Layer::Bottom))
@@ -3898,6 +3918,13 @@ impl Niri {
                 rv.overview = is_overview_open;
                 rv.hot_corner = true;
                 return rv;
+            }
+
+            if under.is_none() {
+                if let Some(hit) = shell_under() {
+                    rv.shell = Some(hit);
+                    return rv;
+                }
             }
 
             under = under
@@ -3948,6 +3975,55 @@ impl Niri {
 
     /// Tells the nodes that the tiling layout draws where the pointer is: the ones it left and
     /// entered, and with `moved`, the one it's on.
+    /// Tells bento's own shell where the pointer is over it, if it is, and shows the pointer as it
+    /// says there.
+    pub fn update_shell_hover(&mut self, under: &PointContents) {
+        let Some(scene) = &mut self.scene else { return };
+        let was_over = scene.pointer_over();
+        let at = under
+            .shell
+            .as_ref()
+            .map(|(name, point)| (name.as_str(), *point));
+        let cursor = scene.pointer_moved(at);
+        if let Some(cursor) = cursor {
+            let icon = match cursor.as_str() {
+                "pointer" => CursorIcon::Pointer,
+                "text" => CursorIcon::Text,
+                "grab" => CursorIcon::Grab,
+                _ => CursorIcon::Default,
+            };
+            self.cursor_manager
+                .set_cursor_image(CursorImageStatus::Named(icon));
+            self.queue_redraw_all();
+        } else if was_over {
+            // What's under takes the pointer back, and shows its own when it gets it.
+            self.cursor_manager
+                .set_cursor_image(CursorImageStatus::default_named());
+            self.queue_redraw_all();
+        }
+    }
+
+    /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps.
+    pub fn shell_holds_keyboard(&self) -> bool {
+        !self.is_locked() && self.scene.as_ref().is_some_and(|s| s.wants_keyboard())
+    }
+
+    /// Whether the keyboard is held from the apps, by the shell or the layout engine.
+    pub fn keyboard_held(&self) -> bool {
+        self.shell_holds_keyboard() || self.layout.keyboard_grabbed()
+    }
+
+    /// Gives a key to what holds the keyboard: bento's own shell, or the layout engine.
+    pub fn deliver_held_key(&mut self, key: crate::layout::tiling::host::EngineKey) {
+        if self.shell_holds_keyboard() {
+            if let Some(scene) = &self.scene {
+                scene.key(&key);
+            }
+        } else {
+            self.layout.engine_key(key);
+        }
+    }
+
     pub fn update_node_hover(&mut self, under: &PointContents, moved: bool) {
         let modifiers = self.node_modifiers();
         if moved {

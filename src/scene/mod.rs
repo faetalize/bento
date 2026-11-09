@@ -156,6 +156,8 @@ struct Look {
     blur: f32,
     clip: bool,
     color: Paint,
+    /// How the pointer looks over it, like "pointer".
+    cursor: Option<String>,
 }
 
 impl Default for Look {
@@ -171,6 +173,7 @@ impl Default for Look {
             blur: 0.,
             clip: false,
             color: Paint::Fg(1.),
+            cursor: None,
         }
     }
 }
@@ -263,6 +266,8 @@ pub struct Scene {
     reserved: std::collections::HashMap<String, [f32; 4]>,
     /// bento's style that the shell lines up with: its gaps and corner radius.
     pub style: Value,
+    /// Whether the shell wants the keyboard, which then doesn't go to the apps.
+    pub wants_keyboard: bool,
     /// Whether anything changed since it was last drawn.
     changed: bool,
     pub theme: Theme,
@@ -294,6 +299,7 @@ impl Scene {
             matches: Vec::new(),
             reserved: std::collections::HashMap::new(),
             style: Value::Null,
+            wants_keyboard: false,
             changed: true,
             theme: Theme::new(true, None),
         }
@@ -877,47 +883,99 @@ impl Scene {
         }
     }
 
-    /// The topmost node at `point` on output `output` that takes any of `events`.
-    pub fn hit(&self, output: &str, point: [f32; 2], events: u32) -> Option<NodeId> {
-        let root = self.root(output)?;
-        let mut found = None;
-        self.hit_node(root, point, events, &mut found);
+    /// The nodes at `point` on output `output`, from the bottom up: those whose drawn shape,
+    /// rounded, scaled and cut to what clips it, holds the point, and that aren't hidden or
+    /// leaving.
+    fn pick(&self, output: &str, point: [f32; 2]) -> Vec<NodeId> {
+        let mut found = Vec::new();
+        if let Some(root) = self.root(output) {
+            self.pick_node(root, point, Scaling::NONE, None, &mut found);
+        }
         found
     }
 
-    fn hit_node(&self, id: NodeId, point: [f32; 2], events: u32, found: &mut Option<NodeId>) {
+    fn pick_node(
+        &self,
+        id: NodeId,
+        point: [f32; 2],
+        scaling: Scaling,
+        clip: Option<Clip>,
+        found: &mut Vec<NodeId>,
+    ) {
         let Some(node) = self.node(id) else { return };
         if node.leaving || node.springs[OPACITY].target <= 0. {
             return;
         }
         let (rect, _) = Self::drawn(node);
-        let inside = point[0] >= rect[0]
-            && point[1] >= rect[1]
-            && point[0] < rect[0] + rect[2]
-            && point[1] < rect[1] + rect[3];
-        if inside && node.events & events != 0 {
-            *found = Some(id);
+        let own = node.springs[SCALE].value.max(0.) as f32;
+        let middle = [rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.];
+        let scaling = scaling.then(Scaling {
+            by: own,
+            offset: [middle[0] * (1. - own), middle[1] * (1. - own)],
+        });
+        let rect = scaling.rect(rect);
+        let half = rect[2].min(rect[3]) / 2.;
+        let radii: [f32; 4] = std::array::from_fn(|i| {
+            (node.springs[RADII + i].value as f32 * scaling.by).clamp(0., half)
+        });
+        let in_clip = clip.is_none_or(|c| inside_rounded(point, c.rect, c.radii));
+        if in_clip && inside_rounded(point, rect, radii) {
+            found.push(id);
         }
-        if node.look.clip && !inside {
-            return;
-        }
+        let clip = if node.look.clip {
+            Some(Clip { rect, radii })
+        } else {
+            clip
+        };
         for child in &node.children {
-            self.hit_node(*child, point, events, found);
+            self.pick_node(*child, point, scaling, clip, found);
         }
     }
 
-    /// Whether anything on output `output` is at `point`, to take the pointer there.
+    /// The topmost node at `point` on output `output` that takes any of `events`.
+    pub fn hit(&self, output: &str, point: [f32; 2], events: u32) -> Option<NodeId> {
+        self.pick(output, point)
+            .into_iter()
+            .rev()
+            .find(|id| self.node(*id).is_some_and(|n| n.events & events != 0))
+    }
+
+    /// Whether the shell is at `point` on output `output`, so it takes the pointer there from
+    /// what's below: a shape or something that takes events is.
     pub fn covers(&self, output: &str, point: [f32; 2]) -> bool {
-        self.draw(output).iter().any(|item| match item {
-            Item::Shape { rect, .. } => {
-                point[0] >= rect[0]
-                    && point[1] >= rect[1]
-                    && point[0] < rect[0] + rect[2]
-                    && point[1] < rect[1] + rect[3]
-            }
-            Item::Text { .. } => false,
+        self.pick(output, point).into_iter().any(|id| {
+            self.node(id).is_some_and(|n| {
+                n.events != 0
+                    || n.look.material != Material::None
+                    || n.look.fill.is_some()
+                    || n.look.border.is_some()
+            })
         })
     }
+
+    /// The pointer's look at `point` on output `output`: the topmost node's that says one, like
+    /// "pointer" over a button.
+    pub fn cursor(&self, output: &str, point: [f32; 2]) -> Option<String> {
+        self.pick(output, point)
+            .into_iter()
+            .rev()
+            .find_map(|id| self.node(id).and_then(|n| n.look.cursor.clone()))
+    }
+}
+
+/// Whether `point` is inside the rectangle `rect` with corners `radii`.
+fn inside_rounded(point: [f32; 2], rect: [f32; 4], radii: [f32; 4]) -> bool {
+    let half = [rect[2] / 2., rect[3] / 2.];
+    let p = [point[0] - rect[0] - half[0], point[1] - rect[1] - half[1]];
+    let r = match (p[0] < 0., p[1] < 0.) {
+        (true, true) => radii[0],
+        (false, true) => radii[1],
+        (false, false) => radii[2],
+        (true, false) => radii[3],
+    };
+    let q = [p[0].abs() - half[0] + r, p[1].abs() - half[1] + r];
+    let outside = (q[0].max(0.).powi(2) + q[1].max(0.).powi(2)).sqrt();
+    q[0].max(q[1]).min(0.) + outside - r <= 0.
 }
 
 /// A scaling of what's drawn: a point `p` is drawn at `p * by + offset`.
@@ -1159,6 +1217,7 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
         "scale" => look.scale = value.as_f64().unwrap_or(1.).max(0.) as f32,
         "blur" => look.blur = value.as_f64().unwrap_or(0.).max(0.) as f32,
         "clip" => look.clip = value.as_bool().unwrap_or(false),
+        "cursor" => look.cursor = value.as_str().map(String::from),
         "animate" => node.animate = value.as_bool().unwrap_or(true),
         "enter" => {
             node.enter = match value.as_str() {
@@ -1224,7 +1283,7 @@ mod tests {
             .hit("DP-1", [960., 20.], CLICK)
             .expect("the clock takes clicks");
         drop(scene);
-        shell.send(&serde_json::json!({ "type": "click", "id": clock }));
+        shell.send(&serde_json::json!({ "type": "click", "id": clock, "button": 1 }));
         let mut scene = shell.scene.borrow_mut();
         scene.lay_out();
         scene.advance(1. / 60., Some(1.));
@@ -1277,7 +1336,7 @@ mod tests {
         scene.advance(1., Some(1.));
         let clock = scene.hit("DP-1", [960., 20.], CLICK).unwrap();
         drop(scene);
-        shell.send(&serde_json::json!({ "type": "click", "id": clock }));
+        shell.send(&serde_json::json!({ "type": "click", "id": clock, "button": 1 }));
 
         let mut scene = shell.scene.borrow_mut();
         scene.lay_out();
@@ -1326,7 +1385,7 @@ mod tests {
         let before = glass(&scene);
         let clock = scene.hit("DP-1", [960., 20.], CLICK).unwrap();
         drop(scene);
-        shell.send(&serde_json::json!({ "type": "click", "id": clock }));
+        shell.send(&serde_json::json!({ "type": "click", "id": clock, "button": 1 }));
 
         let mut scene = shell.scene.borrow_mut();
         scene.lay_out();

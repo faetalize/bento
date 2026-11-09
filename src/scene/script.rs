@@ -165,6 +165,14 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
+                "keyboard",
+                Function::new(ctx.clone(), move |wants: bool| {
+                    s.borrow_mut().wants_keyboard = wants;
+                })
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
                 "style",
                 Function::new(ctx.clone(), move || s.borrow().style.to_string()).map_err(js)?,
             )?;
