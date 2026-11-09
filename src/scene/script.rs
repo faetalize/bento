@@ -148,6 +148,14 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
+                "match",
+                Function::new(ctx.clone(), move |from: u32, to: u32| {
+                    s.borrow_mut().r#match(from, to);
+                })
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
                 "remove",
                 Function::new(ctx.clone(), move |id: u32| s.borrow_mut().remove(id)).map_err(js)?,
             )?;

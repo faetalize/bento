@@ -1,10 +1,10 @@
 // bento's widgets: nodes in bento's scene, which bento lays out, animates and draws.
 //
 // A node takes props: layout (direction, gap, padding, width, height, grow, align, justify,
-// position, top/left/right/bottom, display), look (fill, material, tint, radius, border, opacity,
-// clip, color), text (text, size, weight, family, textAlign, tabular) and motion (animate,
-// enter). Changing them later moves the node there with springs. Handlers: onClick, onHover,
-// onScroll.
+// position, top/left/right/bottom, display), look (fill, material, tint, radius, border,
+// opacity, scale, blur, clip, color), text (text, size, weight, family, textAlign, tabular) and
+// motion (animate, enter). Changing them later moves the node there with springs; `jump` gives
+// where the look starts from first, like `{ blur: 6 }`. Handlers: onClick, onHover, onScroll.
 
 const native = globalThis.__bento;
 
@@ -65,6 +65,12 @@ export function box(props = {}, children = []) {
 
 export function text(value, props = {}) {
   return new Node("text", { ...props, text: String(value) });
+}
+
+// Makes `to` grow out of where `from` is, and `from` travel into where `to` goes, so they read
+// as one thing moving to its new place and size. Show one and hide the other as they go.
+export function morph(from, to) {
+  native.match(from.id, to.id);
 }
 
 // The outputs, by name.

@@ -150,6 +150,10 @@ struct Look {
     radii: [f32; 4],
     border: Option<(f32, Paint)>,
     opacity: f32,
+    /// How big it's drawn, around its middle, as a fraction of its size.
+    scale: f32,
+    /// How blurred it's drawn, in logical pixels.
+    blur: f32,
     clip: bool,
     color: Paint,
 }
@@ -163,6 +167,8 @@ impl Default for Look {
             radii: [0.; 4],
             border: None,
             opacity: 1.,
+            scale: 1.,
+            blur: 0.,
             clip: false,
             color: Paint::Fg(1.),
         }
@@ -174,13 +180,15 @@ pub const CLICK: u32 = 1;
 pub const HOVER: u32 = 2;
 pub const SCROLL: u32 = 4;
 
-// A node's springs: its frame relative to its parent's, opacity, and corners.
+// A node's springs: its frame on its output, opacity, corners, scale and blur.
 const X: usize = 0;
 const Y: usize = 1;
 const W: usize = 2;
 const H: usize = 3;
 const OPACITY: usize = 4;
 const RADII: usize = 5;
+const SCALE: usize = 9;
+const BLUR: usize = 10;
 
 #[derive(Debug)]
 pub struct Node {
@@ -189,8 +197,10 @@ pub struct Node {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
     look: Look,
-    springs: [Spring; 9],
+    springs: [Spring; 11],
     placed: bool,
+    /// Where it heads instead of its place, while it travels into a node it was matched with.
+    travel: Option<[f32; 4]>,
     animate: bool,
     enter: Enter,
     /// Its size when it started growing out of a point or shrinking into one.
@@ -210,6 +220,8 @@ pub enum Item {
         fill: [f32; 4],
         border: (f32, [f32; 4]),
         opacity: f32,
+        /// How blurred, in logical pixels.
+        blur: f32,
         clip: Option<Clip>,
     },
     Text {
@@ -217,6 +229,9 @@ pub enum Item {
         laid: Rc<Laid>,
         color: [f32; 4],
         opacity: f32,
+        /// How big it's drawn, as a fraction of its size.
+        scale: f32,
+        blur: f32,
         clip: Option<Clip>,
     },
 }
@@ -241,6 +256,8 @@ pub struct Scene {
     roots: Vec<Root>,
     fonts: Fonts,
     layout_dirty: bool,
+    /// Nodes to match once they're laid out: one grows out of the other.
+    matches: Vec<(NodeId, NodeId)>,
     /// Whether anything changed since it was last drawn.
     changed: bool,
     pub theme: Theme,
@@ -269,6 +286,7 @@ impl Scene {
             roots: Vec::new(),
             fonts: Fonts::default(),
             layout_dirty: true,
+            matches: Vec::new(),
             changed: true,
             theme: Theme::new(true, None),
         }
@@ -341,8 +359,9 @@ impl Scene {
             .tree
             .new_leaf_with_context(Style::default(), id)
             .expect("taffy never fails to add a leaf");
-        let mut springs = [Spring::new(0.); 9];
+        let mut springs = [Spring::new(0.); 11];
         springs[OPACITY] = Spring::new(1.);
+        springs[SCALE] = Spring::new(1.);
         self.nodes[id as usize] = Some(Node {
             kind,
             taffy,
@@ -351,6 +370,7 @@ impl Scene {
             look: Look::default(),
             springs,
             placed: false,
+            travel: None,
             animate: true,
             enter: Enter::Appear,
             whole: None,
@@ -383,7 +403,11 @@ impl Scene {
             } = &mut node.kind
             {
                 let changed = match key.as_str() {
-                    "text" => value.as_str().map(|v| *text = String::from(v)).is_some(),
+                    "text" => value
+                        .as_str()
+                        .filter(|v| *v != text.as_str())
+                        .map(|v| *text = String::from(v))
+                        .is_some(),
                     "size" => value.as_f64().map(|v| text_style.size = v as f32).is_some(),
                     "weight" => value
                         .as_f64()
@@ -420,12 +444,36 @@ impl Scene {
         // The look's targets.
         let node = self.nodes[id as usize].as_mut().unwrap();
         node.springs[OPACITY].target = f64::from(node.look.opacity);
+        // Shown again, a node that travelled into another goes back to its own place and size.
+        if node.travel.is_some() && node.look.opacity > 0. {
+            node.travel = None;
+            self.layout_dirty = true;
+        }
+        if node.travel.is_none() {
+            node.springs[SCALE].target = f64::from(node.look.scale);
+        }
+        node.springs[BLUR].target = f64::from(node.look.blur);
         for i in 0..4 {
             node.springs[RADII + i].target = f64::from(node.look.radii[i]);
         }
         if !node.placed {
             for spring in &mut node.springs[OPACITY..] {
                 spring.jump(spring.target);
+            }
+        }
+        // Where the look starts from, before it springs to its targets.
+        if let Some(from) = props.get("jump").and_then(Value::as_object) {
+            for (key, value) in from {
+                let spring = match key.as_str() {
+                    "opacity" => OPACITY,
+                    "scale" => SCALE,
+                    "blur" => BLUR,
+                    _ => continue,
+                };
+                if let Some(value) = value.as_f64() {
+                    node.springs[spring].value = value;
+                    node.springs[spring].velocity = 0.;
+                }
             }
         }
     }
@@ -534,6 +582,50 @@ impl Scene {
                 });
             self.place(node, [0., 0.]);
         }
+        for (from, to) in std::mem::take(&mut self.matches) {
+            self.resolve_match(from, to);
+        }
+    }
+
+    /// Makes `to` grow out of where `from` is, and `from` travel into where `to` goes, so they
+    /// read as one thing moving to its new place and size.
+    pub fn r#match(&mut self, from: NodeId, to: NodeId) {
+        self.matches.push((from, to));
+        self.layout_dirty = true;
+        self.changed = true;
+    }
+
+    fn resolve_match(&mut self, from: NodeId, to: NodeId) {
+        let (Some(f), Some(t)) = (self.node(from), self.node(to)) else {
+            return;
+        };
+        let (fr, _) = Self::drawn(f);
+        let f_scale = f.springs[SCALE].value as f32;
+        let tt = [X, Y, W, H].map(|i| t.springs[i].target as f32);
+        if fr[3] <= 0. || tt[3] <= 0. {
+            return;
+        }
+        let fc = [fr[0] + fr[2] / 2., fr[1] + fr[3] / 2.];
+        let tc = [tt[0] + tt[2] / 2., tt[1] + tt[3] / 2.];
+
+        let t = self.node_mut(to).unwrap();
+        t.travel = None;
+        t.placed = true;
+        let start = [fc[0] - tt[2] / 2., fc[1] - tt[3] / 2., tt[2], tt[3]];
+        for i in 0..4 {
+            t.springs[i].value = f64::from(start[i]);
+            t.springs[i].velocity = 0.;
+        }
+        t.springs[SCALE].value = f64::from(fr[3] * f_scale / tt[3]);
+        t.springs[SCALE].velocity = 0.;
+
+        let f = self.node_mut(from).unwrap();
+        let travel = [tc[0] - fr[2] / 2., tc[1] - fr[3] / 2., fr[2], fr[3]];
+        f.travel = Some(travel);
+        for i in 0..4 {
+            f.springs[i].target = f64::from(travel[i]);
+        }
+        f.springs[SCALE].target = f64::from(tt[3] / fr[3]);
     }
 
     /// Sets the targets of `id` and what's in it from the layout, with its parent's top left at
@@ -552,6 +644,8 @@ impl Scene {
         ];
         let children = node.children.clone();
         let node = self.node_mut(id).unwrap();
+        let own = target;
+        let target = node.travel.unwrap_or(target);
         if !node.leaving {
             if !node.placed {
                 node.placed = true;
@@ -583,7 +677,7 @@ impl Scene {
             }
         }
         for child in children {
-            self.place(child, [target[0], target[1]]);
+            self.place(child, [own[0], own[1]]);
         }
     }
 
@@ -666,12 +760,20 @@ impl Scene {
     pub fn draw(&self, output: &str) -> Vec<Item> {
         let mut items = Vec::new();
         if let Some(root) = self.root(output) {
-            self.draw_node(root, 1., None, &mut items);
+            self.draw_node(root, 1., None, Scaling::NONE, 0., &mut items);
         }
         items
     }
 
-    fn draw_node(&self, id: NodeId, opacity: f32, clip: Option<Clip>, items: &mut Vec<Item>) {
+    fn draw_node(
+        &self,
+        id: NodeId,
+        opacity: f32,
+        clip: Option<Clip>,
+        scaling: Scaling,
+        blur: f32,
+        items: &mut Vec<Item>,
+    ) {
         let Some(node) = self.node(id) else { return };
         let (rect, grown) = Self::drawn(node);
         let opacity = opacity * node.springs[OPACITY].value.clamp(0., 1.) as f32;
@@ -689,6 +791,16 @@ impl Scene {
             };
             r.clamp(0., half)
         });
+        // Scaled around its middle, inside whatever its parents are scaled by.
+        let own = node.springs[SCALE].value.max(0.) as f32;
+        let middle = [rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.];
+        let scaling = scaling.then(Scaling {
+            by: own,
+            offset: [middle[0] * (1. - own), middle[1] * (1. - own)],
+        });
+        let rect = scaling.rect(rect);
+        let radii = radii.map(|r| r * scaling.by);
+        let blur = blur + node.springs[BLUR].value.max(0.) as f32;
 
         match &node.kind {
             Kind::Box => {
@@ -707,6 +819,7 @@ impl Scene {
                             .border
                             .map_or((0., [0.; 4]), |(w, p)| (w, p.resolve(&self.theme))),
                         opacity,
+                        blur,
                         clip,
                     });
                 }
@@ -718,6 +831,8 @@ impl Scene {
                         laid: laid.clone(),
                         color: node.look.color.resolve(&self.theme),
                         opacity,
+                        scale: scaling.by,
+                        blur,
                         clip,
                     });
                 }
@@ -740,7 +855,7 @@ impl Scene {
             clip
         };
         for child in &node.children {
-            self.draw_node(*child, opacity * content, clip, items);
+            self.draw_node(*child, opacity * content, clip, scaling, blur, items);
         }
     }
 
@@ -784,6 +899,40 @@ impl Scene {
             }
             Item::Text { .. } => false,
         })
+    }
+}
+
+/// A scaling of what's drawn: a point `p` is drawn at `p * by + offset`.
+#[derive(Debug, Clone, Copy)]
+struct Scaling {
+    by: f32,
+    offset: [f32; 2],
+}
+
+impl Scaling {
+    const NONE: Self = Self {
+        by: 1.,
+        offset: [0., 0.],
+    };
+
+    /// This scaling, applied after `inner`.
+    fn then(self, inner: Self) -> Self {
+        Self {
+            by: self.by * inner.by,
+            offset: [
+                self.by * inner.offset[0] + self.offset[0],
+                self.by * inner.offset[1] + self.offset[1],
+            ],
+        }
+    }
+
+    fn rect(self, rect: [f32; 4]) -> [f32; 4] {
+        [
+            rect[0] * self.by + self.offset[0],
+            rect[1] * self.by + self.offset[1],
+            rect[2] * self.by,
+            rect[3] * self.by,
+        ]
     }
 }
 
@@ -989,6 +1138,8 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
             })
         }
         "opacity" => look.opacity = value.as_f64().unwrap_or(1.).clamp(0., 1.) as f32,
+        "scale" => look.scale = value.as_f64().unwrap_or(1.).max(0.) as f32,
+        "blur" => look.blur = value.as_f64().unwrap_or(0.).max(0.) as f32,
         "clip" => look.clip = value.as_bool().unwrap_or(false),
         "animate" => node.animate = value.as_bool().unwrap_or(true),
         "enter" => {
@@ -1055,13 +1206,58 @@ mod tests {
         scene.lay_out();
         scene.advance(1. / 60., Some(1.));
         let opening = shapes(&scene)[1];
-        assert!(opening[3] > 36. && opening[3] < 110., "{opening:?}");
+        assert!(opening[3] > 36. && opening[3] < 104., "{opening:?}");
         for _ in 0..120 {
             scene.advance(1. / 60., Some(1.));
         }
         let open = shapes(&scene)[1];
-        assert_eq!([open[2], open[3]], [320., 110.]);
+        assert_eq!([open[2], open[3]], [320., 104.]);
         assert!((open[0] + open[2] / 2. - 960.).abs() < 1., "{open:?}");
+    }
+
+    #[test]
+    fn the_clocks_time_travels_into_the_calendars() {
+        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None).unwrap();
+        let texts = |scene: &Scene| -> Vec<([f32; 2], f32, f32)> {
+            scene
+                .draw("DP-1")
+                .into_iter()
+                .filter_map(|item| match item {
+                    Item::Text {
+                        origin,
+                        laid,
+                        scale,
+                        opacity,
+                        ..
+                    } => Some(([origin[0], laid.height * scale], scale, opacity)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut scene = shell.scene.borrow_mut();
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        let clock = scene.hit("DP-1", [960., 20.], CLICK).unwrap();
+        drop(scene);
+        shell.send(&serde_json::json!({ "type": "click", "id": clock }));
+
+        let mut scene = shell.scene.borrow_mut();
+        scene.lay_out();
+        for _ in 0..3 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        // The big time starts as tall as the small one, scaled down, and grows.
+        let starting: Vec<_> = texts(&scene)
+            .into_iter()
+            .filter(|(_, s, _)| *s < 0.9)
+            .collect();
+        assert!(!starting.is_empty(), "{:?}", texts(&scene));
+        for _ in 0..120 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        for (_, scale, _) in texts(&scene) {
+            assert!((scale - 1.).abs() < 0.01, "{:?}", texts(&scene));
+        }
     }
 
     #[test]

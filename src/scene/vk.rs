@@ -26,6 +26,9 @@ const ATLAS_SIZE: u32 = 2048;
 const MAX_ITEMS: usize = 16384;
 const ITEM_SIZE: usize = 128;
 const STAGING_SIZE: usize = 4 * 1024 * 1024;
+/// Empty pixels around each glyph in the atlas, so it can be drawn blurred, and scaled with
+/// smoothing, without taking in its neighbours.
+const GLYPH_PAD: u32 = 8;
 
 /// One item as the shader reads it.
 #[repr(C)]
@@ -266,8 +269,8 @@ impl Renderer {
             let pipeline = create_pipeline(&device, layout)?;
             let sampler = device.create_sampler(
                 &vk::SamplerCreateInfo::default()
-                    .mag_filter(vk::Filter::NEAREST)
-                    .min_filter(vk::Filter::NEAREST)
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
                     .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE),
                 None,
@@ -516,17 +519,18 @@ impl Renderer {
                 return None;
             }
             // The next place on the shelf, or a new shelf.
+            let (slot_w, slot_h) = (w + 2 * GLYPH_PAD, h + 2 * GLYPH_PAD);
             let [mut x, mut y, mut shelf_h] = self.shelf;
-            if x + w + 1 > ATLAS_SIZE {
+            if x + slot_w > ATLAS_SIZE {
                 x = 0;
-                y += shelf_h + 1;
+                y += shelf_h;
                 shelf_h = 0;
             }
-            if y + h + 1 > ATLAS_SIZE || self.staged + image.data.len() > STAGING_SIZE {
+            if y + slot_h > ATLAS_SIZE || self.staged + image.data.len() > STAGING_SIZE {
                 // Full: it's drawn again from scratch next time.
                 return None;
             }
-            self.shelf = [x + w + 1, y, shelf_h.max(h)];
+            self.shelf = [x + slot_w, y, shelf_h.max(slot_h)];
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     image.data.as_ptr(),
@@ -534,12 +538,14 @@ impl Renderer {
                     image.data.len(),
                 );
             }
-            self.uploads.push((self.staged, [x, y, w, h]));
+            self.uploads
+                .push((self.staged, [x + GLYPH_PAD, y + GLYPH_PAD, w, h]));
             self.staged += image.data.len();
+            // The glyph with its padding.
             Some(Glyph {
-                at: [x, y, w, h],
-                left: image.placement.left,
-                top: image.placement.top,
+                at: [x, y, slot_w, slot_h],
+                left: image.placement.left - GLYPH_PAD as i32,
+                top: image.placement.top + GLYPH_PAD as i32,
             })
         })();
         self.glyphs.insert(key, glyph);
@@ -551,6 +557,8 @@ impl Renderer {
         if self.glyphs.len() > 8192 || self.shelf[1] + 64 > ATLAS_SIZE {
             self.glyphs.clear();
             self.shelf = [0, 0, 0];
+            // Cleared, so old glyphs don't show in the new ones' padding.
+            self.atlas_ready = false;
         }
 
         let mut gpu: Vec<GpuItem> = Vec::with_capacity(items.len());
@@ -565,6 +573,7 @@ impl Renderer {
                     fill,
                     border,
                     opacity,
+                    blur,
                     clip,
                 } => {
                     // A material's tint is drawn over what bento draws of the material.
@@ -578,7 +587,7 @@ impl Renderer {
                         clip_rect,
                         clip_radii,
                         uv: [0.; 4],
-                        params: [0., border.0, *opacity, 0.],
+                        params: [0., border.0, *opacity, *blur],
                     });
                 }
                 Item::Text {
@@ -586,9 +595,14 @@ impl Renderer {
                     laid,
                     color,
                     opacity,
+                    scale: by,
+                    blur,
                     clip,
                 } => {
                     let (clip_rect, clip_radii) = clip.map_or(no_clip, |c| (c.rect, c.radii));
+                    // Drawn at its own size, the glyphs sit on whole pixels; scaled, they're
+                    // smoothed.
+                    let whole = (by - 1.).abs() < 1e-3;
                     for run in &laid.runs {
                         let coords = {
                             use std::hash::{Hash, Hasher};
@@ -597,8 +611,9 @@ impl Renderer {
                             hasher.finish()
                         };
                         for &(glyph, x, y) in &run.glyphs {
-                            let px = (origin[0] + x) * scale;
-                            let py = ((origin[1] + y) * scale).round();
+                            let px = (origin[0] + x * by) * scale;
+                            let py = (origin[1] + y * by) * scale;
+                            let py = if whole { py.round() } else { py };
                             let subpixel = ((px.fract() * 4.).floor() as u8).min(3);
                             let key = GlyphKey {
                                 font: run.font.data.id(),
@@ -611,15 +626,15 @@ impl Renderer {
                             let Some(g) = self.glyph(key, &run.font, &run.coords) else {
                                 continue;
                             };
-                            let gx = px.floor() + g.left as f32;
-                            let gy = py - g.top as f32;
+                            let gx = if whole { px.floor() } else { px } + g.left as f32 * by;
+                            let gy = py - g.top as f32 * by;
                             let atlas = ATLAS_SIZE as f32;
                             gpu.push(GpuItem {
                                 rect: [
                                     gx / scale,
                                     gy / scale,
-                                    g.at[2] as f32 / scale,
-                                    g.at[3] as f32 / scale,
+                                    g.at[2] as f32 * by / scale,
+                                    g.at[3] as f32 * by / scale,
                                 ],
                                 radii: [0.; 4],
                                 fill: premul(*color),
@@ -632,7 +647,7 @@ impl Renderer {
                                     (g.at[0] + g.at[2]) as f32 / atlas,
                                     (g.at[1] + g.at[3]) as f32 / atlas,
                                 ],
-                                params: [1., 0., *opacity, 0.],
+                                params: [1., 0., *opacity, *blur],
                             });
                         }
                     }
@@ -673,6 +688,23 @@ impl Renderer {
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     None,
                 );
+                if old == vk::ImageLayout::UNDEFINED {
+                    device.cmd_clear_color_image(
+                        cmd,
+                        self.atlas,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        &vk::ClearColorValue { float32: [0.; 4] },
+                        &[color_range()],
+                    );
+                    barrier(
+                        device,
+                        cmd,
+                        self.atlas,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        None,
+                    );
+                }
                 let regions: Vec<_> = self
                     .uploads
                     .iter()
@@ -1078,6 +1110,7 @@ mod tests {
             fill: [1., 0., 0., 1.],
             border: (0., [0.; 4]),
             opacity: 1.,
+            blur: 0.,
             clip: None,
         };
         renderer.render(&target, &[bar], 1.).unwrap();

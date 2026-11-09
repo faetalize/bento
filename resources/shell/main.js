@@ -1,7 +1,7 @@
 // bento's own shell: three islands of glass along the top of each output. The clock opens into
 // the calendar.
 
-import { box, text, root, outputs, every, on } from "bento:ui";
+import { box, text, root, outputs, every, on, morph } from "bento:ui";
 
 const HEIGHT = 36;
 const GAP = 8;
@@ -15,10 +15,10 @@ const LONG_MONTHS = [
 
 const pad = (n) => String(n).padStart(2, "0");
 
-function clockLabel(now) {
-  const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-  return `${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]}   ${time}`;
-}
+const clockTime = (now) => `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+const clockDate = (now) => `${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]}`;
+const longDateLabel = (now) =>
+  `${LONG_DAYS[now.getDay()]}, ${now.getDate()} ${LONG_MONTHS[now.getMonth()]} ${now.getFullYear()}`;
 
 function island(props, children) {
   return box(
@@ -62,31 +62,40 @@ function build(output) {
   const buttons = workspaceButtons(output);
   const left = island({ padding: [0, 5], gap: 2 }, buttons);
 
+  // The clock opens into the calendar: the time and the date travel to their places in it,
+  // blurring out as their larger selves sharpen in.
   const now = new Date();
-  const clock = text(clockLabel(now), { weight: 600, tabular: true });
-  const day = text(LONG_DAYS[now.getDay()], { size: 22, weight: 700 });
-  const date = text(`${now.getDate()} ${LONG_MONTHS[now.getMonth()]} ${now.getFullYear()}`, {
-    color: "fg/0.6",
-  });
+  const time = text(clockTime(now), { weight: 600, tabular: true });
+  const shortDate = text(clockDate(now), { weight: 600 });
+  const bigTime = text(clockTime(now), { size: 40, weight: 700, tabular: true });
+  const longDate = text(longDateLabel(now), { color: "fg/0.6" });
   const calendar = box(
-    { direction: "column", gap: 4, position: "absolute", top: 18, left: 20, opacity: 0 },
-    [day, date],
+    { direction: "column", gap: 2, position: "absolute", top: 18, left: 22 },
+    [bigTime, longDate],
   );
+  for (const node of [bigTime, longDate]) node.set({ opacity: 0 });
+
   let open = false;
+  const swap = (from, to) => {
+    from.forEach((node, i) => morph(node, to[i]));
+    for (const node of from) node.set({ opacity: 0, blur: 4 });
+    for (const node of to) node.set({ opacity: 1, blur: 0, jump: { blur: 4 } });
+  };
   const middle = island(
     {
+      gap: 10,
       onClick: () => {
         open = !open;
         middle.set(
           open
-            ? { width: 320, height: 110, radius: 24, align: "start" }
-            : { width: "auto", height: HEIGHT, radius: HEIGHT / 2, align: "center" },
+            ? { width: 320, height: 104, radius: 24 }
+            : { width: "auto", height: HEIGHT, radius: HEIGHT / 2 },
         );
-        clock.set({ opacity: open ? 0 : 1 });
-        calendar.set({ opacity: open ? 1 : 0 });
+        if (open) swap([time, shortDate], [bigTime, longDate]);
+        else swap([bigTime, longDate], [time, shortDate]);
       },
     },
-    [clock, calendar],
+    [shortDate, time, calendar],
   );
 
   const right = island({}, [text("Status", { weight: 600 })]);
@@ -97,7 +106,7 @@ function build(output) {
     [side("start", left), middle, side("end", right)],
   );
   top.add(bar);
-  shells.set(output, { left, buttons, clock, day, date });
+  shells.set(output, { left, buttons, time, shortDate, bigTime, longDate });
 }
 
 for (const output of outputs()) build(output);
@@ -115,6 +124,9 @@ on("workspaces", (event) => {
 every(1000, () => {
   const now = new Date();
   for (const shell of shells.values()) {
-    shell.clock.set({ text: clockLabel(now) });
+    shell.time.set({ text: clockTime(now) });
+    shell.shortDate.set({ text: clockDate(now) });
+    shell.bigTime.set({ text: clockTime(now) });
+    shell.longDate.set({ text: longDateLabel(now) });
   }
 });

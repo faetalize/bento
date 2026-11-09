@@ -14,7 +14,7 @@ struct Item {
     clip_radii: vec4<f32>,
     // The glyph's place in the atlas, from 0 to 1.
     uv: vec4<f32>,
-    // Kind (0 shape, 1 glyph), border width, opacity.
+    // Kind (0 shape, 1 glyph), border width, opacity, blur in logical pixels.
     params: vec4<f32>,
 }
 
@@ -40,8 +40,9 @@ struct Out {
 @vertex
 fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) index: u32) -> Out {
     let item = items[index];
-    // A pixel past the edge, for its smoothing.
-    var grow = 1.0 / frame.scale;
+    // A pixel past the edge, for its smoothing, and as far as it's blurred. A glyph's quad has
+    // room around it already.
+    var grow = 1.0 / frame.scale + item.params.w;
     if item.params.x > 0.5 {
         grow = 0.0;
     }
@@ -82,16 +83,36 @@ fn distance_to(p: vec2<f32>, rect: vec4<f32>, radii: vec4<f32>) -> f32 {
 fn fs(in: Out) -> @location(0) vec4<f32> {
     let item = items[in.index];
     var color: vec4<f32>;
+    let blur = item.params.w * frame.scale;
     if item.params.x > 0.5 {
         let uv = mix(item.uv.xy, item.uv.zw, (in.p - item.rect.xy) / item.rect.zw);
-        color = item.fill * textureSampleLevel(atlas, atlas_sampler, uv, 0.0).r;
+        var alpha = textureSampleLevel(atlas, atlas_sampler, uv, 0.0).r;
+        if blur > 0.05 {
+            // Taps on a spiral out to the blur's reach, nearer ones counting more.
+            let texel = 1.0 / vec2<f32>(textureDimensions(atlas));
+            let reach = min(blur, 7.0);
+            var sum = alpha;
+            var weight = 1.0;
+            for (var i = 0; i < 16; i++) {
+                let t = (f32(i) + 0.5) / 16.0;
+                let angle = f32(i) * 2.39996;
+                let offset = vec2<f32>(cos(angle), sin(angle)) * sqrt(t) * reach;
+                let w = 1.0 - 0.6 * t;
+                sum += textureSampleLevel(atlas, atlas_sampler, uv + offset * texel, 0.0).r * w;
+                weight += w;
+            }
+            alpha = sum / weight;
+        }
+        color = item.fill * alpha;
     } else {
         let d = distance_to(in.p, item.rect, item.radii);
-        let coverage = clamp(0.5 - d * frame.scale, 0.0, 1.0);
+        // Blurred, the edge spreads over the blur's width.
+        let width = max(1.0, blur * 2.0);
+        let coverage = clamp(0.5 - d * frame.scale / width, 0.0, 1.0);
         let border = item.params.y;
         var inside = coverage;
         if border > 0.0 {
-            inside = clamp(0.5 - (d + border) * frame.scale, 0.0, 1.0);
+            inside = clamp(0.5 - (d + border) * frame.scale / width, 0.0, 1.0);
         }
         color = item.fill * inside + item.border_color * (coverage - inside);
     }
