@@ -2,12 +2,22 @@
 //
 // A node takes props: layout (direction, gap, padding, width, height, grow, align, justify,
 // position, top/left/right/bottom, display), look (fill, material, tint, radius, border,
-// opacity, scale, blur, clip, color, cursor), text (text, size, weight, family, textAlign,
-// tabular) and motion (animate, enter, shown, response: how long its moves take, in seconds).
-// Changing them later moves the node there with springs;
-// `jump` gives where the look starts from first, like `{ blur: 6 }`. `shown: false` hides a node
-// the way it comes, into a point for `enter: "point"`, and `shown: true` brings it back from
-// wherever it is, so it's one thing coming and going.
+// opacity, scale, blur, clip, color, cursor, layer, hidden), text (text, size, weight, family,
+// textAlign, tabular) and motion.
+//
+// bento moves a node to where its layout and look say with critically damped springs, which
+// keep their speed when sent somewhere else on the way. What a script moves besides the layout:
+// - `offset: [dx, dy]` moves it from its place;
+// - `drawSize: [w, h]` draws it at that size around the middle of its place, or at its place's
+//   size with `null`;
+// - `opacity`, `radius`, `scale`, `blur`.
+// `jump: { ... }` puts any of those somewhere first, to move from there. `response` is how long
+// its moves take, in seconds, and `transition: { frame, opacity, radius, scale, blur, offset,
+// size }` each kind's. `animate: false` puts it at its place at once. `hidden: true` leaves it
+// out at once, neither drawn nor hit.
+//
+// How things come, go and turn into each other is built from those here: `grow` and `shrink`,
+// `morph`.
 //
 // Handlers, each with its event:
 // - onClick, onMiddleClick, onRightClick: pressed and let go on it, with that button, or a touch
@@ -15,6 +25,7 @@
 // - onPress: pressed, with `button` 1, 2 or 3 for left, middle and right.
 // - onHover: the pointer came onto it or left it, with `inside`.
 // - onScroll: scrolled over it, by `dx` and `dy`.
+// - onSettle: its motion settled.
 //
 // Shapes and what has handlers take the pointer from what's below them; the rest lets it
 // through. `cursor` is how the pointer looks over a node: "default", "pointer", "text" or
@@ -22,7 +33,9 @@
 
 const native = globalThis.__bento;
 
-const HANDLERS = ["onClick", "onMiddleClick", "onRightClick", "onPress", "onHover", "onScroll"];
+const HANDLERS = [
+  "onClick", "onMiddleClick", "onRightClick", "onPress", "onHover", "onScroll", "onSettle",
+];
 const CLICKS = { 1: "onClick", 2: "onMiddleClick", 3: "onRightClick" };
 
 const handlers = new Map();
@@ -63,6 +76,7 @@ export class Node {
       rest.events = [
         has(["onClick", "onMiddleClick", "onRightClick", "onPress"]) && "click",
         has(["onHover"]) && "hover",
+        has(["onSettle"]) && "settle",
         has(["onScroll"]) && "scroll",
       ].filter(Boolean);
     }
@@ -251,7 +265,82 @@ export function keyboard(take) {
 // Makes `to` grow out of where `from` is, and `from` travel into where `to` goes, so they read
 // as one thing moving to its new place and size. Show one and hide the other as they go.
 export function morph(from, to) {
-  native.match(from.id, to.id);
+  const f = frame(from);
+  const own = layout(from);
+  const t = layout(to);
+  if (!f || !own || !t || f[3] <= 0 || t[3] <= 0) return;
+  const middle = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
+  const [fx, fy] = middle(f);
+  const [ox, oy] = middle(own);
+  const [tx, ty] = middle(t);
+  // `to` starts where `from` is, as tall, and goes to its own place and size.
+  to.set({ offset: [0, 0], scale: 1, jump: { offset: [fx - tx, fy - ty], scale: f[3] / t[3] } });
+  // `from` goes to where `to` goes, as tall as it.
+  from.set({ offset: [tx - ox, ty - oy], scale: t[3] / own[3] });
+}
+
+// Where a node is drawn now, with its own scale: x, y, width and height.
+export function frame(node) {
+  return JSON.parse(native.frame(node.id) ?? "null");
+}
+
+// Where a node's layout puts it.
+export function layout(node) {
+  return JSON.parse(native.layout(node.id) ?? "null");
+}
+
+// How long growing out of a point stays a circle before it stretches, in milliseconds.
+const CIRCLE = 150;
+
+// Grows `node` out of a point in the middle of its place: a circle until it's as wide as its
+// place's narrower side, then stretching to its place, with corners of `radius`. Grown again
+// while it shrinks, it turns around from wherever it is. `content`, nodes in it, sharpens in as
+// it stretches.
+export function grow(node, { radius = 0, content = [] } = {}) {
+  clearTimeout(node);
+  const place = layout(node);
+  if (!place) return;
+  const round = Math.min(place[2], place[3]);
+  const from = node.gone !== false ? { drawSize: [0, 0], radius: round / 2 } : {};
+  node.gone = false;
+  node.set({ hidden: false, drawSize: [round, round], radius: round / 2, jump: from });
+  for (const child of content) {
+    child.set({ opacity: 0, blur: 4, ...(from.drawSize ? { jump: { opacity: 0, blur: 4 } } : {}) });
+  }
+  node.phase = after(CIRCLE, () => {
+    node.set({ drawSize: null, radius });
+    for (const child of content) child.set({ opacity: 1, blur: 0 });
+  });
+}
+
+// Shrinks `node` back into a point the way it grew, and leaves it out once it's gone, then
+// calls `done`. Shrunk again while it grows, it turns around from wherever it is.
+export function shrink(node, { content = [], done } = {}) {
+  clearTimeout(node);
+  const place = layout(node);
+  if (!place || node.gone) return;
+  const round = Math.min(place[2], place[3]);
+  for (const child of content) child.set({ opacity: 0, blur: 4 });
+  node.set({ drawSize: [round, round], radius: round / 2 });
+  node.phase = after(CIRCLE, () => {
+    node.set({
+      drawSize: [0, 0],
+      onSettle: () => {
+        if (node.gone === "going") {
+          node.gone = true;
+          node.set({ hidden: true });
+          done?.();
+        }
+      },
+    });
+    node.gone = "going";
+  });
+}
+
+function clearTimeout(node) {
+  if (node.phase !== undefined) cancel(node.phase);
+  node.phase = undefined;
+  if (node.gone === "going") node.gone = false;
 }
 
 // bento's style, to line up with: `{ gaps, cornerRadius }`. It's sent again as a "style" event
@@ -338,6 +427,9 @@ export function __dispatch(json) {
       return;
     case "hover":
       handlers.get(event.id)?.onHover?.(event);
+      return;
+    case "settled":
+      handlers.get(event.id)?.onSettle?.(event);
       return;
     case "scroll":
       handlers.get(event.id)?.onScroll?.(event);

@@ -239,9 +239,11 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
-                "match",
-                Function::new(ctx.clone(), move |from: u32, to: u32| {
-                    s.borrow_mut().r#match(from, to);
+                "layout",
+                Function::new(ctx.clone(), move |id: u32| {
+                    s.borrow_mut()
+                        .layout(id)
+                        .map(|f| serde_json::json!(f).to_string())
                 })
                 .map_err(js)?,
             )?;

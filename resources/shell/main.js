@@ -3,7 +3,7 @@
 
 import {
   box, text, image, input, root, outputs, every, on, morph, style, reserve, keyboard, action,
-  apps, launch, focus, focusedOutput,
+  apps, launch, focus, focusedOutput, grow, shrink,
 } from "bento:ui";
 
 const HEIGHT = 36;
@@ -198,6 +198,7 @@ function updateKeyboard() {
 const RESULTS = 8;
 // How tall the launcher is with all its results.
 const LAUNCHER_HEIGHT = 474;
+const LAUNCHER_RADIUS = 26;
 let launcher = null;
 // Each output's frame for the launcher, which keeps it in the middle.
 const launcherFrames = new Map();
@@ -238,12 +239,12 @@ function openLauncher(output) {
   if (!output || !root(output)) return;
   const kept = launchers.get(output);
   if (kept) {
-    kept.panel.set({ shown: true });
     launcher = { ...kept, rows: kept.rows, matches: [], selected: 0, all: apps() };
     kept.field.setText("");
     focus(kept.field);
     updateKeyboard();
     fillLauncher("");
+    grow(kept.panel, { radius: LAUNCHER_RADIUS, content: kept.content });
     return;
   }
   const field = input({
@@ -253,24 +254,29 @@ function openLauncher(output) {
     onSubmit: () => launchSelected(),
   });
   const list = box({ direction: "column", gap: 2 });
+  const search = box({ padding: [6, 10] }, [field]);
   const panel = box(
     {
-      material: "glass", radius: 26, width: 560, padding: 12, direction: "column", gap: 8,
-      clip: true, enter: "point",
+      material: "glass", radius: LAUNCHER_RADIUS, width: 560, padding: 12, direction: "column",
+      gap: 8, clip: true,
     },
-    [box({ padding: [6, 10] }, [field]), list],
+    [search, list],
   );
   launcherFrame(output).room.add(panel);
-  launcher = { output, panel, field, list, rows: [], matches: [], selected: 0, all: apps() };
+  const content = [search, list];
+  launcher = {
+    output, panel, field, list, content, rows: [], matches: [], selected: 0, all: apps(),
+  };
   launchers.set(output, launcher);
   focus(field);
   updateKeyboard();
   fillLauncher("");
+  grow(panel, { radius: LAUNCHER_RADIUS, content });
 }
 
 function closeLauncher() {
   if (!launcher) return;
-  launcher.panel.set({ shown: false });
+  shrink(launcher.panel, { content: launcher.content });
   launchers.set(launcher.output, launcher);
   launcher = null;
   focus(null);

@@ -405,6 +405,11 @@ impl SceneHost {
             self.generation += 1;
         }
         self.moving = moving;
+        let settled = scene.take_settled();
+        drop(scene);
+        for id in settled {
+            shell.send(&serde_json::json!({ "type": "settled", "id": id }));
+        }
         moving
     }
 
@@ -685,6 +690,85 @@ mod tests {
         assert_eq!(glass, 1, "one launcher");
     }
 
+    /// The launcher's glass on DP-1, if it shows.
+    fn launcher_glass(host: &SceneHost) -> Option<[f32; 4]> {
+        host.shell
+            .as_ref()?
+            .scene
+            .borrow()
+            .draw_layer("DP-1", true)
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Shape {
+                    rect,
+                    material: Material::Glass,
+                    ..
+                } => Some(rect),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn the_launcher_never_jumps_typing_as_it_opens_and_turns_around_where_it_is() {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        // Close to real time, which the script's timers run on.
+        let mut now = Instant::now();
+        let mut step = |host: &mut SceneHost| {
+            now += std::time::Duration::from_millis(16);
+            host.advance(now, Some(1.));
+        };
+        host.toggle_launcher(Some(String::from("DP-1")));
+        step(&mut host);
+        let mut last = launcher_glass(&host).unwrap();
+        let mut speed = [0f32; 4];
+        for frame in 0..60 {
+            // Typing as it opens: the results come and go.
+            if frame == 4 || frame == 9 {
+                let key = if frame == 4 { "q" } else { "BackSpace" };
+                host.key(&EngineKey {
+                    name: String::from(key),
+                    text: if frame == 4 {
+                        String::from("q")
+                    } else {
+                        String::new()
+                    },
+                    modifiers: [false; 4],
+                    pressed: true,
+                    repeat: false,
+                });
+            }
+            step(&mut host);
+            let drawn = launcher_glass(&host).unwrap();
+            for i in 0..4 {
+                let now = drawn[i] - last[i];
+                assert!(
+                    (now - speed[i]).abs() < 60.,
+                    "it jumped on frame {frame}: {last:?} to {drawn:?}"
+                );
+                speed[i] = now;
+            }
+            last = drawn;
+        }
+
+        // Closed and opened again on the way, it goes on from where it is.
+        host.toggle_launcher(None);
+        for _ in 0..12 {
+            step(&mut host);
+        }
+        let closing = launcher_glass(&host).unwrap();
+        host.toggle_launcher(Some(String::from("DP-1")));
+        step(&mut host);
+        let turning = launcher_glass(&host).unwrap();
+        for i in 0..4 {
+            assert!(
+                (turning[i] - closing[i]).abs() < 60.,
+                "{closing:?} to {turning:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_caret_keeps_up_with_typing() {
         let mut host = SceneHost::default();
@@ -694,6 +778,9 @@ mod tests {
         // to it and settles the springs without them.
         let mut now = Instant::now();
         host.toggle_launcher(Some(String::from("DP-1")));
+        host.advance(now, Some(1.));
+        // Its content shows once it stretches.
+        now += std::time::Duration::from_millis(200);
         host.advance(now, Some(1.));
         let settle_springs = |host: &SceneHost| {
             let shell = host.shell.as_ref().unwrap();

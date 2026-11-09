@@ -52,7 +52,12 @@ working shell on screen and reports the error.
 Styles are style objects in the scripts, with libadwaita's colours: the window colours, the accent,
 light and dark.
 
-Only a new kind of primitive needs bento built again. Shaders for materials of one's own are
+How anything moves is the scripts' too: bento moves what scripts set with springs, at the speeds
+they ask for, and says when a motion settles; how things come and go, grow out of a point, turn
+into each other and fade is built from that in the scripts. bento holds no choreography of its
+own.
+
+Only a new kind of primitive, or a bug in bento itself, needs bento built again. Shaders for materials of one's own are
 files bento loads, like the glass shader.
 
 ## Materials

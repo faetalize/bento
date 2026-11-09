@@ -150,18 +150,6 @@ pub enum Kind {
     },
 }
 
-/// How a node comes and goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Enter {
-    /// It's just there.
-    #[default]
-    Appear,
-    /// It grows out of a point in its middle, and shrinks back into one.
-    Point,
-    /// It fades in and out.
-    Fade,
-}
-
 #[derive(Debug, Clone)]
 struct Look {
     fill: Option<Paint>,
@@ -202,8 +190,11 @@ impl Default for Look {
 pub const CLICK: u32 = 1;
 pub const HOVER: u32 = 2;
 pub const SCROLL: u32 = 4;
+/// Its motion settling.
+pub const SETTLE: u32 = 8;
 
-// A node's springs: its frame on its output, opacity, corners, scale and blur.
+// A node's springs: its place on its output, as the layout has it, opacity, corners, scale,
+// blur, an offset from its place, and the size it's drawn at.
 const X: usize = 0;
 const Y: usize = 1;
 const W: usize = 2;
@@ -212,8 +203,22 @@ const OPACITY: usize = 4;
 const RADII: usize = 5;
 const SCALE: usize = 9;
 const BLUR: usize = 10;
-/// How far it has grown out of a point, from 0 to 1, for what comes and goes that way.
-const GROW: usize = 11;
+const DX: usize = 11;
+const DY: usize = 12;
+const DW: usize = 13;
+const DH: usize = 14;
+const SPRINGS: usize = 15;
+
+/// The props a script sets how fast they move by, and their springs.
+const MOTIONS: [(&str, &[usize]); 7] = [
+    ("frame", &[X, Y, W, H]),
+    ("opacity", &[OPACITY]),
+    ("radius", &[RADII, RADII + 1, RADII + 2, RADII + 3]),
+    ("scale", &[SCALE]),
+    ("blur", &[BLUR]),
+    ("offset", &[DX, DY]),
+    ("size", &[DW, DH]),
+];
 
 #[derive(Debug)]
 pub struct Node {
@@ -222,20 +227,22 @@ pub struct Node {
     parent: Option<NodeId>,
     children: Vec<NodeId>,
     look: Look,
-    springs: [Spring; 12],
-    /// How long its frame's springs take to settle, in seconds, when it isn't bento's usual.
-    response: Option<f64>,
+    springs: [Spring; SPRINGS],
+    /// How long each spring takes to settle, in seconds, where it isn't bento's usual.
+    responses: [Option<f64>; SPRINGS],
     placed: bool,
-    /// Where it heads instead of its place, while it travels into a node it was matched with.
-    travel: Option<[f32; 4]>,
+    /// The size it's drawn at, around the middle of its place, or `None` for its place's size.
+    draw_size: Option<[f32; 2]>,
     /// Whether it's drawn above overlay surfaces, like a launcher, rather than with the top
     /// layer, like a panel. Only an output's top nodes say.
     overlay: bool,
     animate: bool,
-    enter: Enter,
-    leaving: bool,
-    /// Whether it's hidden: shrunk into a point, or faded out, to come back from wherever it is.
+    /// Whether it's left out: neither drawn nor hit.
     hidden: bool,
+    /// Whether its drawn size was given a start before it was first laid out.
+    placed_size: bool,
+    /// Whether it was moving on the last frame, to tell when it settles.
+    moving: bool,
     pub events: u32,
 }
 
@@ -295,8 +302,8 @@ pub struct Scene {
     roots: Vec<Root>,
     fonts: Fonts,
     layout_dirty: bool,
-    /// Nodes to match once they're laid out: one grows out of the other.
-    matches: Vec<(NodeId, NodeId)>,
+    /// Nodes that settled, for their scripts.
+    settled: Vec<NodeId>,
     /// What the shell keeps for itself along each output's edges, that windows stay out of:
     /// top, right, bottom and left.
     reserved: std::collections::HashMap<String, [f32; 4]>,
@@ -332,7 +339,7 @@ impl Scene {
             roots: Vec::new(),
             fonts: Fonts::default(),
             layout_dirty: true,
-            matches: Vec::new(),
+            settled: Vec::new(),
             reserved: std::collections::HashMap::new(),
             style: Value::Null,
             wants_keyboard: false,
@@ -411,10 +418,9 @@ impl Scene {
             .tree
             .new_leaf_with_context(Style::default(), id)
             .expect("taffy never fails to add a leaf");
-        let mut springs = [Spring::new(0.); 12];
+        let mut springs = [Spring::new(0.); SPRINGS];
         springs[OPACITY] = Spring::new(1.);
         springs[SCALE] = Spring::new(1.);
-        springs[GROW] = Spring::new(1.);
         self.nodes[id as usize] = Some(Node {
             kind,
             taffy,
@@ -423,13 +429,13 @@ impl Scene {
             look: Look::default(),
             springs,
             placed: false,
-            response: None,
-            travel: None,
+            responses: [None; SPRINGS],
+            draw_size: None,
             overlay: false,
             animate: true,
-            enter: Enter::Appear,
-            leaving: false,
             hidden: false,
+            placed_size: false,
+            moving: false,
             events: 0,
         });
         self.set(id, props);
@@ -519,37 +525,28 @@ impl Scene {
             let _ = self.tree.set_style(node.taffy, style);
             self.layout_dirty = true;
         }
-        // Shown or hidden, it moves on its next layout.
-        if let Some(shown) = props.get("shown").and_then(Value::as_bool) {
-            let node = self.nodes[id as usize].as_mut().unwrap();
-            if node.hidden == shown {
-                node.hidden = !shown;
-                if node.enter == Enter::Point {
-                    // It grows or shrinks from wherever it is.
-                    node.springs[GROW].target = if shown { 1. } else { 0. };
-                }
-                self.layout_dirty = true;
-            }
-        }
         // The look's targets.
         let node = self.nodes[id as usize].as_mut().unwrap();
-        let faded = node.hidden && node.enter != Enter::Point;
-        node.springs[OPACITY].target = if faded {
-            0.
-        } else {
-            f64::from(node.look.opacity)
-        };
-        // Shown again, a node that travelled into another goes back to its own place and size.
-        if node.travel.is_some() && node.look.opacity > 0. {
-            node.travel = None;
-            self.layout_dirty = true;
-        }
-        if node.travel.is_none() {
-            node.springs[SCALE].target = f64::from(node.look.scale);
-        }
+        node.springs[OPACITY].target = f64::from(node.look.opacity);
+        node.springs[SCALE].target = f64::from(node.look.scale);
         node.springs[BLUR].target = f64::from(node.look.blur);
         for i in 0..4 {
             node.springs[RADII + i].target = f64::from(node.look.radii[i]);
+        }
+        if let Some(offset) = props.get("offset") {
+            let [dx, dy] = pair(offset).unwrap_or([0., 0.]);
+            node.springs[DX].target = f64::from(dx);
+            node.springs[DY].target = f64::from(dy);
+        }
+        if let Some(size) = props.get("drawSize") {
+            node.draw_size = pair(size);
+            if let Some([w, h]) = node.draw_size {
+                node.springs[DW].target = f64::from(w);
+                node.springs[DH].target = f64::from(h);
+            } else {
+                // Its place's size, which the next layout sets.
+                self.layout_dirty = true;
+            }
         }
         if !node.placed {
             for spring in &mut node.springs[OPACITY..] {
@@ -559,18 +556,38 @@ impl Scene {
         // Where the look starts from, before it springs to its targets.
         if let Some(from) = props.get("jump").and_then(Value::as_object) {
             for (key, value) in from {
-                let spring = match key.as_str() {
-                    "opacity" => OPACITY,
-                    "scale" => SCALE,
-                    "blur" => BLUR,
+                let (springs, values): (&[usize], Vec<f32>) = match key.as_str() {
+                    "opacity" => (
+                        &[OPACITY],
+                        value.as_f64().map(|v| v as f32).into_iter().collect(),
+                    ),
+                    "scale" => (
+                        &[SCALE],
+                        value.as_f64().map(|v| v as f32).into_iter().collect(),
+                    ),
+                    "blur" => (
+                        &[BLUR],
+                        value.as_f64().map(|v| v as f32).into_iter().collect(),
+                    ),
+                    "radius" => (
+                        &[RADII, RADII + 1, RADII + 2, RADII + 3],
+                        sides(value).map(Vec::from).unwrap_or_default(),
+                    ),
+                    "offset" => (&[DX, DY], pair(value).map(Vec::from).unwrap_or_default()),
+                    "drawSize" => (&[DW, DH], pair(value).map(Vec::from).unwrap_or_default()),
                     _ => continue,
                 };
-                if let Some(value) = value.as_f64() {
-                    node.springs[spring].value = value;
-                    node.springs[spring].velocity = 0.;
+                for (spring, value) in springs.iter().zip(values) {
+                    node.springs[*spring].value = f64::from(value);
+                    node.springs[*spring].velocity = 0.;
+                }
+                // Jumped before it's laid out, it starts from there.
+                if key == "drawSize" && !node.placed {
+                    node.placed_size = true;
                 }
             }
         }
+        self.changed = true;
     }
 
     /// Puts `child` into `parent`, at `index`, or last.
@@ -608,20 +625,10 @@ impl Scene {
         self.layout_dirty = true;
     }
 
-    /// Takes a node away: at once, or after it went the way it came, as `enter` says.
+    /// Takes a node away, at once: a script that wants it to go some way first takes it away
+    /// once it has.
     pub fn remove(&mut self, id: NodeId) {
-        let Some(node) = self.node_mut(id) else {
-            return;
-        };
-        if node.enter == Enter::Appear || !node.placed {
-            self.destroy(id);
-            return;
-        }
-        node.leaving = true;
-        match node.enter {
-            Enter::Point => node.springs[GROW].target = 0.,
-            _ => node.springs[OPACITY].target = 0.,
-        }
+        self.destroy(id);
     }
 
     fn destroy(&mut self, id: NodeId) {
@@ -667,50 +674,14 @@ impl Scene {
                 });
             self.place(node, [0., 0.]);
         }
-        for (from, to) in std::mem::take(&mut self.matches) {
-            self.resolve_match(from, to);
-        }
     }
 
-    /// Makes `to` grow out of where `from` is, and `from` travel into where `to` goes, so they
-    /// read as one thing moving to its new place and size.
-    pub fn r#match(&mut self, from: NodeId, to: NodeId) {
-        self.matches.push((from, to));
-        self.layout_dirty = true;
-        self.changed = true;
-    }
-
-    fn resolve_match(&mut self, from: NodeId, to: NodeId) {
-        let (Some(f), Some(t)) = (self.node(from), self.node(to)) else {
-            return;
-        };
-        let (fr, _) = Self::drawn(f);
-        let f_scale = f.springs[SCALE].value as f32;
-        let tt = [X, Y, W, H].map(|i| t.springs[i].target as f32);
-        if fr[3] <= 0. || tt[3] <= 0. {
-            return;
-        }
-        let fc = [fr[0] + fr[2] / 2., fr[1] + fr[3] / 2.];
-        let tc = [tt[0] + tt[2] / 2., tt[1] + tt[3] / 2.];
-
-        let t = self.node_mut(to).unwrap();
-        t.travel = None;
-        t.placed = true;
-        let start = [fc[0] - tt[2] / 2., fc[1] - tt[3] / 2., tt[2], tt[3]];
-        for i in 0..4 {
-            t.springs[i].value = f64::from(start[i]);
-            t.springs[i].velocity = 0.;
-        }
-        t.springs[SCALE].value = f64::from(fr[3] * f_scale / tt[3]);
-        t.springs[SCALE].velocity = 0.;
-
-        let f = self.node_mut(from).unwrap();
-        let travel = [tc[0] - fr[2] / 2., tc[1] - fr[3] / 2., fr[2], fr[3]];
-        f.travel = Some(travel);
-        for i in 0..4 {
-            f.springs[i].target = f64::from(travel[i]);
-        }
-        f.springs[SCALE].target = f64::from(tt[3] / fr[3]);
+    /// Where node `id`'s layout puts it on its output, laying the scene out first if it has to:
+    /// x, y, width and height.
+    pub fn layout(&mut self, id: NodeId) -> Option<[f32; 4]> {
+        self.lay_out();
+        let node = self.node(id)?;
+        Some([X, Y, W, H].map(|i| node.springs[i].target as f32))
     }
 
     /// Sets the targets of `id` and what's in it from the layout, with its parent's top left at
@@ -729,65 +700,62 @@ impl Scene {
         ];
         let children = node.children.clone();
         let node = self.node_mut(id).unwrap();
-        let own = target;
-        let target = node.travel.unwrap_or(target);
-        if !node.leaving {
-            if !node.placed {
-                node.placed = true;
-                for i in 0..4 {
-                    node.springs[i].jump(f64::from(target[i]));
-                }
-                match node.enter {
-                    // It grows out of a point in the middle of its place, unless it's hidden.
-                    Enter::Point => {
-                        node.springs[GROW].jump(0.);
-                        node.springs[GROW].target = if node.hidden { 0. } else { 1. };
-                    }
-                    Enter::Fade => node.springs[OPACITY].jump(0.),
-                    Enter::Appear => (),
-                }
-            } else if !node.animate {
-                for i in 0..4 {
-                    node.springs[i].jump(f64::from(target[i]));
-                }
-            }
+        // Drawn at its place's size, unless it says another.
+        let size = node.draw_size.unwrap_or([target[2], target[3]]);
+        if !node.placed {
+            node.placed = true;
             for i in 0..4 {
-                node.springs[i].target = f64::from(target[i]);
+                node.springs[i].jump(f64::from(target[i]));
+            }
+            if !node.placed_size {
+                node.springs[DW].jump(f64::from(size[0]));
+                node.springs[DH].jump(f64::from(size[1]));
+            }
+        } else if !node.animate {
+            for i in 0..4 {
+                node.springs[i].jump(f64::from(target[i]));
+            }
+            if node.draw_size.is_none() {
+                node.springs[DW].jump(f64::from(size[0]));
+                node.springs[DH].jump(f64::from(size[1]));
             }
         }
+        for i in 0..4 {
+            node.springs[i].target = f64::from(target[i]);
+        }
+        node.springs[DW].target = f64::from(size[0]);
+        node.springs[DH].target = f64::from(size[1]);
         for child in children {
-            self.place(child, [own[0], own[1]]);
+            self.place(child, [target[0], target[1]]);
         }
     }
 
-    /// Moves everything `dt` seconds on, and takes away what finished leaving. Says whether
-    /// anything is still moving.
+    /// Moves everything `dt` seconds on, and says whether anything is still moving. Nodes that
+    /// hear of it and settled are kept for [`Scene::take_settled`].
     pub fn advance(&mut self, dt: f64, slowdown: Option<f64>) -> bool {
         let mut moving = false;
-        let mut gone = Vec::new();
         for (id, node) in self.nodes.iter_mut().enumerate() {
             let Some(node) = node else { continue };
             let mut settled = true;
             for (i, spring) in node.springs.iter_mut().enumerate() {
-                match node.response.filter(|_| i < OPACITY) {
+                match node.responses[i] {
                     Some(response) => spring.advance_with(dt, slowdown, response),
                     None => spring.advance(dt, slowdown),
                 }
-                // Growth is a fraction, settled to a finer step.
-                settled &= spring.settle(if i == GROW { 0.001 } else { 0.01 });
+                settled &= spring.settle(0.01);
             }
-            if settled {
-                if node.leaving {
-                    gone.push(id as NodeId);
-                }
-            } else {
-                moving = true;
+            if settled && node.moving && node.events & SETTLE != 0 {
+                self.settled.push(id as NodeId);
             }
-        }
-        for id in gone {
-            self.destroy(id);
+            node.moving = !settled;
+            moving |= !settled;
         }
         moving
+    }
+
+    /// The nodes that hear of their motion settling and settled since this was last asked.
+    pub fn take_settled(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.settled)
     }
 
     /// Keeps `edges` along output `output`, top, right, bottom and left, for the shell.
@@ -807,7 +775,7 @@ impl Scene {
     pub fn edit(&mut self, id: NodeId, key: &Value) -> Option<Value> {
         use crate::layout::search::Edit;
 
-        let frame = self.node(id).map(|n| Self::drawn(n).0)?;
+        let frame = self.node(id).map(Self::drawn)?;
         let Self { nodes, fonts, .. } = self;
         let node = nodes.get_mut(id as usize)?.as_mut()?;
         let Kind::Text {
@@ -867,9 +835,18 @@ impl Scene {
         }))
     }
 
-    /// Where node `id` is drawn on its output: x, y, width and height.
+    /// Where node `id` is drawn on its output, with its own scale: x, y, width and height.
     pub fn frame(&self, id: NodeId) -> Option<[f32; 4]> {
-        self.node(id).map(|n| Self::drawn(n).0)
+        let node = self.node(id)?;
+        let [x, y, w, h] = Self::drawn(node);
+        let scale = node.springs[SCALE].value.max(0.) as f32;
+        let (cx, cy) = (x + w / 2., y + h / 2.);
+        Some([
+            cx - w * scale / 2.,
+            cy - h * scale / 2.,
+            w * scale,
+            h * scale,
+        ])
     }
 
     /// Whether anything needs laying out.
@@ -889,35 +866,14 @@ impl Scene {
         }
     }
 
-    /// Where a node is drawn on its output, with its size; and how far it has grown out of a
-    /// point, from 0 to 1. Growing, it's a circle in the middle of its place until it's as wide
-    /// as its narrower side, then stretches to it; its place and size can change on the way, and
-    /// the circle follows them.
-    fn drawn(node: &Node) -> ([f32; 4], f32) {
-        let s = &node.springs;
-        let rect = [
-            s[X].value as f32,
-            s[Y].value as f32,
-            s[W].value.max(0.) as f32,
-            s[H].value.max(0.) as f32,
-        ];
-        if node.enter != Enter::Point {
-            return (rect, 1.);
-        }
-        let g = s[GROW].value.clamp(0., 1.) as f32;
-        let narrow = rect[2].min(rect[3]);
-        let (w, h) = if g < 0.5 {
-            let d = narrow * g / 0.5;
-            (d, d)
-        } else {
-            let t = (g - 0.5) / 0.5;
-            (
-                narrow + (rect[2] - narrow) * t,
-                narrow + (rect[3] - narrow) * t,
-            )
-        };
-        let (cx, cy) = (rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.);
-        ([cx - w / 2., cy - h / 2., w, h], g)
+    /// Where a node is drawn on its output: at the size it's drawn at, around the middle of its
+    /// place, moved by its offset.
+    fn drawn(node: &Node) -> [f32; 4] {
+        let s = |i: usize| node.springs[i].value as f32;
+        let (w, h) = (s(DW).max(0.), s(DH).max(0.));
+        let cx = s(X) + s(W) / 2. + s(DX);
+        let cy = s(Y) + s(H) / 2. + s(DY);
+        [cx - w / 2., cy - h / 2., w, h]
     }
 
     /// What to draw for output `name`, back to front: with the top layer, or with `overlay`,
@@ -961,22 +917,17 @@ impl Scene {
         items: &mut Vec<Item>,
     ) {
         let Some(node) = self.node(id) else { return };
-        let (rect, grown) = Self::drawn(node);
+        if node.hidden {
+            return;
+        }
+        let rect = Self::drawn(node);
         let opacity = opacity * node.springs[OPACITY].value.clamp(0., 1.) as f32;
         if opacity <= 0.003 {
             return;
         }
-        // Gone into a point, nothing of it shows.
-        if (node.hidden || node.leaving) && (rect[2] < 0.5 || rect[3] < 0.5) {
-            return;
-        }
         let half = rect[2].min(rect[3]) / 2.;
-        let radii: [f32; 4] = std::array::from_fn(|i| {
-            let r = node.springs[RADII + i].value as f32;
-            // Growing out of a point, it's round until it stretches.
-            let r = if grown < 0.5 { half } else { r };
-            r.clamp(0., half)
-        });
+        let radii: [f32; 4] =
+            std::array::from_fn(|i| (node.springs[RADII + i].value as f32).clamp(0., half));
         // Scaled around its middle, inside whatever its parents are scaled by.
         let own = node.springs[SCALE].value.max(0.) as f32;
         let middle = [rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.];
@@ -1036,23 +987,13 @@ impl Scene {
             }
         }
 
-        // What's in something growing out of a point fades in late and out early.
-        let content = if grown < 1. {
-            if node.leaving || node.hidden {
-                1. - smoothstep(0., 0.35, 1. - grown)
-            } else {
-                smoothstep(0.35, 0.85, grown)
-            }
-        } else {
-            1.
-        };
         let clip = if node.look.clip {
             Some(Clip { rect, radii })
         } else {
             clip
         };
         for child in &node.children {
-            self.draw_node(*child, opacity * content, clip, scaling, blur, items);
+            self.draw_node(*child, opacity, clip, scaling, blur, items);
         }
     }
 
@@ -1078,10 +1019,10 @@ impl Scene {
         found: &mut Vec<NodeId>,
     ) {
         let Some(node) = self.node(id) else { return };
-        if node.leaving || node.hidden || node.springs[OPACITY].target <= 0. {
+        if node.hidden || node.springs[OPACITY].target <= 0. {
             return;
         }
-        let (rect, _) = Self::drawn(node);
+        let rect = Self::drawn(node);
         let own = node.springs[SCALE].value.max(0.) as f32;
         let middle = [rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.];
         let scaling = scaling.then(Scaling {
@@ -1192,9 +1133,12 @@ impl Scaling {
     }
 }
 
-fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
-    let t = ((x - from) / (to - from)).clamp(0., 1.);
-    t * t * (3. - 2. * t)
+/// Two numbers, like a size or an offset.
+fn pair(value: &Value) -> Option<[f32; 2]> {
+    match value.as_array()?.as_slice() {
+        [a, b, ..] => Some([a.as_f64()? as f32, b.as_f64()? as f32]),
+        _ => None,
+    }
 }
 
 /// Measures a text node for taffy.
@@ -1412,17 +1356,27 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
         "scale" => look.scale = value.as_f64().unwrap_or(1.).max(0.) as f32,
         "blur" => look.blur = value.as_f64().unwrap_or(0.).max(0.) as f32,
         "clip" => look.clip = value.as_bool().unwrap_or(false),
-        "response" => node.response = value.as_f64().filter(|r| *r > 0.),
+        "hidden" => node.hidden = value.as_bool().unwrap_or(false),
+        // How long its moves take, in seconds: all of them, or with `transition` each kind.
+        "response" => {
+            let response = value.as_f64().filter(|r| *r > 0.);
+            node.responses = [response; SPRINGS];
+        }
+        "transition" => {
+            if let Some(kinds) = value.as_object() {
+                for (kind, springs) in MOTIONS {
+                    if let Some(response) = kinds.get(kind) {
+                        let response = response.as_f64().filter(|r| *r > 0.);
+                        for spring in springs {
+                            node.responses[*spring] = response;
+                        }
+                    }
+                }
+            }
+        }
         "layer" => node.overlay = value.as_str() == Some("overlay"),
         "cursor" => look.cursor = value.as_str().map(String::from),
         "animate" => node.animate = value.as_bool().unwrap_or(true),
-        "enter" => {
-            node.enter = match value.as_str() {
-                Some("point") => Enter::Point,
-                Some("fade") => Enter::Fade,
-                _ => Enter::Appear,
-            }
-        }
         "events" => {
             node.events = value.as_array().map_or(0, |list| {
                 list.iter().fold(0, |events, e| {
@@ -1431,6 +1385,7 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                             Some("click") => CLICK,
                             Some("hover") => HOVER,
                             Some("scroll") => SCROLL,
+                            Some("settle") => SETTLE,
                             _ => 0,
                         }
                 })
@@ -1534,112 +1489,102 @@ mod tests {
         );
     }
 
-    /// A panel 560 wide at the top of the screen, growing out of a point.
-    fn growing_panel(scene: &mut Scene, height: f32) -> NodeId {
+    fn panel(scene: &mut Scene, props: serde_json::Value) -> NodeId {
         let root = scene.set_output("DP-1", (1920., 1080.));
-        let props = serde_json::json!({
-            "enter": "point", "material": "glass", "position": "absolute",
-            "top": 200, "left": 680, "width": 560, "height": height,
+        let mut all = serde_json::json!({
+            "material": "glass", "position": "absolute",
+            "top": 200, "left": 680, "width": 560, "height": 120,
         });
-        let panel = scene.create("box", &props);
+        all.as_object_mut()
+            .unwrap()
+            .extend(props.as_object().unwrap().clone());
+        let panel = scene.create("box", &all);
         scene.append(root, panel, None);
         scene.lay_out();
         panel
     }
 
-    #[test]
-    fn what_grows_out_of_a_point_stays_in_place_when_it_gets_smaller_on_the_way() {
-        let mut scene = Scene::new();
-        let panel = growing_panel(&mut scene, 480.);
-        for _ in 0..6 {
-            scene.advance(1. / 60., Some(1.));
-        }
-        // Like the launcher's results going while it still grows.
-        scene.set(panel, &serde_json::json!({ "height": 80 }));
-        scene.lay_out();
-        for _ in 0..240 {
-            scene.advance(1. / 60., Some(1.));
-            let drawn = Scene::drawn(scene.node(panel).unwrap()).0;
-            assert!(drawn[1] >= 199.5, "its top went above its place: {drawn:?}");
-        }
-        assert_eq!(
-            Scene::drawn(scene.node(panel).unwrap()).0,
-            [680., 200., 560., 80.]
-        );
-    }
-
-    #[test]
-    fn what_grows_out_of_a_point_never_jumps_when_its_size_changes_on_the_way() {
-        let mut scene = Scene::new();
-        let panel = growing_panel(&mut scene, 480.);
-        let mut last = Scene::drawn(scene.node(panel).unwrap()).0;
-        let mut speed = [0f32; 4];
-        for frame in 0..120 {
-            // Like typing into the launcher as it opens: its results come and go.
-            if frame == 3 || frame == 6 {
-                let height = if frame == 3 { 80 } else { 300 };
-                scene.set(panel, &serde_json::json!({ "height": height }));
-                scene.lay_out();
-            }
-            scene.advance(1. / 60., Some(1.));
-            let drawn = Scene::drawn(scene.node(panel).unwrap()).0;
-            // A jump is a sudden change of speed: growing smoothly, its speed changes a little
-            // each frame, however its size changes.
-            for i in 0..4 {
-                let now = drawn[i] - last[i];
-                assert!(
-                    (now - speed[i]).abs() < 60.,
-                    "it jumped on frame {frame}: {last:?} to {drawn:?}"
-                );
-                speed[i] = now;
-            }
-            last = drawn;
-        }
-        assert_eq!(last, [680., 200., 560., 300.]);
-    }
-
-    #[test]
-    fn hidden_it_shrinks_into_a_point_and_shown_mid_way_it_turns_back_from_there() {
-        let mut scene = Scene::new();
-        let panel = growing_panel(&mut scene, 120.);
+    fn settle(scene: &mut Scene) {
         for _ in 0..240 {
             scene.advance(1. / 60., Some(1.));
         }
-        let full = Scene::drawn(scene.node(panel).unwrap()).0;
-        assert_eq!(full, [680., 200., 560., 120.]);
+    }
 
-        scene.set(panel, &serde_json::json!({ "shown": false }));
-        scene.lay_out();
-        for _ in 0..8 {
-            scene.advance(1. / 60., Some(1.));
-        }
-        let shrinking = Scene::drawn(scene.node(panel).unwrap()).0;
-        assert!(shrinking[2] < 560. && shrinking[2] > 0., "{shrinking:?}");
-        assert!(
-            !scene.covers("DP-1", [960., 260.], false),
-            "hidden, it isn't hit"
+    #[test]
+    fn a_drawn_size_and_an_offset_draw_it_around_its_place() {
+        let mut scene = Scene::new();
+        let node = panel(
+            &mut scene,
+            serde_json::json!({ "drawSize": [100, 40], "offset": [10, -5] }),
         );
-
-        scene.set(panel, &serde_json::json!({ "shown": true }));
+        settle(&mut scene);
+        assert_eq!(scene.frame(node).unwrap(), [920., 235., 100., 40.]);
+        // Without one, it's drawn at its place's size, and moves there.
+        scene.set(
+            node,
+            &serde_json::json!({ "drawSize": null, "offset": [0, 0] }),
+        );
         scene.lay_out();
         scene.advance(1. / 60., Some(1.));
-        let turning = Scene::drawn(scene.node(panel).unwrap()).0;
-        assert!(
-            (turning[2] - shrinking[2]).abs() < 60.,
-            "it goes on from where it was: {shrinking:?} then {turning:?}"
-        );
-        for _ in 0..240 {
-            scene.advance(1. / 60., Some(1.));
-        }
-        assert_eq!(Scene::drawn(scene.node(panel).unwrap()).0, full);
+        let moving = scene.frame(node).unwrap();
+        assert!(moving[2] > 100. && moving[2] < 560., "{moving:?}");
+        settle(&mut scene);
+        assert_eq!(scene.frame(node).unwrap(), [680., 200., 560., 120.]);
+    }
 
-        scene.set(panel, &serde_json::json!({ "shown": false }));
+    #[test]
+    fn a_jump_starts_it_somewhere_before_it_moves() {
+        let mut scene = Scene::new();
+        let node = panel(&mut scene, serde_json::json!({}));
+        settle(&mut scene);
+        scene.set(node, &serde_json::json!({ "jump": { "drawSize": [0, 0] } }));
+        assert_eq!(scene.frame(node).unwrap(), [960., 260., 0., 0.]);
+        settle(&mut scene);
+        assert_eq!(scene.frame(node).unwrap(), [680., 200., 560., 120.]);
+        // Before it's first laid out too.
+        let root = scene.root("DP-1").unwrap();
+        let other = scene.create(
+            "box",
+            &serde_json::json!({
+                "material": "glass", "width": 50, "height": 50, "jump": { "drawSize": [0, 0] },
+            }),
+        );
+        scene.append(root, other, None);
         scene.lay_out();
-        for _ in 0..240 {
+        assert_eq!(scene.frame(other).unwrap()[2], 0.);
+    }
+
+    #[test]
+    fn hidden_it_is_neither_drawn_nor_hit_at_once() {
+        let mut scene = Scene::new();
+        let node = panel(&mut scene, serde_json::json!({}));
+        settle(&mut scene);
+        assert!(scene.covers("DP-1", [960., 260.], false));
+        scene.set(node, &serde_json::json!({ "hidden": true }));
+        assert!(scene.draw("DP-1").is_empty());
+        assert!(!scene.covers("DP-1", [960., 260.], false));
+    }
+
+    #[test]
+    fn it_says_when_its_motion_settles_once_and_moves_as_fast_as_it_is_told() {
+        let mut scene = Scene::new();
+        let node = panel(&mut scene, serde_json::json!({ "events": ["settle"] }));
+        settle(&mut scene);
+        scene.take_settled();
+        scene.set(
+            node,
+            &serde_json::json!({ "opacity": 0, "transition": { "opacity": 0.05 } }),
+        );
+        for _ in 0..10 {
             scene.advance(1. / 60., Some(1.));
         }
-        assert!(scene.node(panel).is_some(), "hidden, it's still there");
-        assert!(scene.draw("DP-1").is_empty());
+        assert_eq!(
+            scene.take_settled(),
+            [node],
+            "a fast fade is done in ten frames"
+        );
+        settle(&mut scene);
+        assert!(scene.take_settled().is_empty(), "once");
     }
 
     #[test]
