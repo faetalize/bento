@@ -14,7 +14,8 @@ struct Item {
     clip_radii: vec4<f32>,
     // The glyph's place in the atlas, from 0 to 1.
     uv: vec4<f32>,
-    // Kind (0 shape, 1 glyph), border width, opacity, blur in logical pixels.
+    // Kind (0 shape, 1 glyph, 2 image, 3 symbolic icon in the fill colour), border width,
+    // opacity, blur in logical pixels.
     params: vec4<f32>,
 }
 
@@ -28,6 +29,7 @@ struct Frame {
 @group(0) @binding(0) var<storage, read> items: array<Item>;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
 @group(0) @binding(2) var atlas_sampler: sampler;
+@group(0) @binding(3) var images: texture_2d<f32>;
 
 var<immediate> frame: Frame;
 
@@ -84,7 +86,30 @@ fn fs(in: Out) -> @location(0) vec4<f32> {
     let item = items[in.index];
     var color: vec4<f32>;
     let blur = item.params.w * frame.scale;
-    if item.params.x > 0.5 {
+    if item.params.x > 1.5 {
+        let uv = mix(item.uv.xy, item.uv.zw, (in.p - item.rect.xy) / item.rect.zw);
+        var pixel = textureSampleLevel(images, atlas_sampler, uv, 0.0);
+        if blur > 0.05 {
+            let texel = 1.0 / vec2<f32>(textureDimensions(images));
+            let reach = min(blur, 7.0);
+            var sum = pixel;
+            var weight = 1.0;
+            for (var i = 0; i < 16; i++) {
+                let t = (f32(i) + 0.5) / 16.0;
+                let angle = f32(i) * 2.39996;
+                let offset = vec2<f32>(cos(angle), sin(angle)) * sqrt(t) * reach;
+                let w = 1.0 - 0.6 * t;
+                sum += textureSampleLevel(images, atlas_sampler, uv + offset * texel, 0.0) * w;
+                weight += w;
+            }
+            pixel = sum / weight;
+        }
+        if item.params.x > 2.5 {
+            color = item.fill * pixel.a;
+        } else {
+            color = pixel;
+        }
+    } else if item.params.x > 0.5 {
         let uv = mix(item.uv.xy, item.uv.zw, (in.p - item.rect.xy) / item.rect.zw);
         var alpha = textureSampleLevel(atlas, atlas_sampler, uv, 0.0).r;
         if blur > 0.05 {

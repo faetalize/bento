@@ -82,6 +82,14 @@ export function box(props = {}, children = []) {
   return new Node("box", props, children);
 }
 
+// An icon from the icon theme by name, or an image file by its path, `size` pixels square
+// unless `width` and `height` say. A symbolic icon, whose name ends in "-symbolic", is drawn in
+// the node's `color`.
+export function image(source, props = {}) {
+  const from = String(source).startsWith("/") && !props.icon ? { src: source } : { icon: source };
+  return new Node("image", { size: 16, ...from, ...props });
+}
+
 export function text(value, props = {}) {
   return new Node("text", { ...props, text: String(value) });
 }

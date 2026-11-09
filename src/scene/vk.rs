@@ -18,7 +18,7 @@ use smithay::backend::vulkan::{Instance, PhysicalDevice};
 use swash::scale::{Render, ScaleContext, Source};
 use swash::zeno::{Format, Vector};
 
-use super::Item;
+use super::{ImageSource, Item};
 
 const SHADER: &str = include_str!("scene.wgsl");
 const ATLAS_SIZE: u32 = 2048;
@@ -64,6 +64,57 @@ struct Glyph {
     top: i32,
 }
 
+/// An icon or image at a size, in physical pixels.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ImageKey {
+    source: ImageSource,
+    size: u32,
+}
+
+/// The atlas icons and images are drawn from, in colour.
+struct ImageAtlas {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    ready: bool,
+    /// Where each is, with its room around it: x, y, width, height.
+    placed: HashMap<ImageKey, Option<[u32; 4]>>,
+    shelf: [u32; 3],
+    uploads: Vec<(usize, [u32; 4])>,
+}
+
+/// Empty pixels around each image in the atlas, for blurring and smoothing.
+const IMAGE_PAD: u32 = 8;
+
+/// An icon's or an image's pixels, premultiplied RGBA, fitted into `size` pixels square.
+fn load_image(source: &ImageSource, size: u32, theme: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let path = match source {
+        ImageSource::Icon(name) if name.starts_with('/') => std::path::PathBuf::from(name),
+        ImageSource::Icon(name) => crate::layout::surfaces::icons::find(theme, name, size)?,
+        ImageSource::File(path) => std::path::PathBuf::from(path),
+    };
+    let bytes = std::fs::read(&path).ok()?;
+    if path.extension().is_some_and(|e| e == "svg") {
+        let raster = crate::layout::surfaces::svg::rasterize(&bytes, size, 1024).ok()?;
+        return Some((raster.data, raster.width, raster.height));
+    }
+    let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let fit = size as f32 / image.width().max(image.height()) as f32;
+    let (w, h) = (
+        ((image.width() as f32 * fit).round() as u32).max(1),
+        ((image.height() as f32 * fit).round() as u32).max(1),
+    );
+    let image = image::imageops::resize(&image, w, h, image::imageops::FilterType::Lanczos3);
+    let mut data = image.into_raw();
+    for px in data.chunks_exact_mut(4) {
+        let a = u16::from(px[3]);
+        for c in &mut px[..3] {
+            *c = ((u16::from(*c) * a + 127) / 255) as u8;
+        }
+    }
+    Some((data, w, h))
+}
+
 struct Buffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
@@ -103,6 +154,10 @@ pub struct Renderer {
     atlas_memory: vk::DeviceMemory,
     atlas_view: vk::ImageView,
     atlas_ready: bool,
+    /// Icons and images, in colour, premultiplied.
+    images: ImageAtlas,
+    /// The icon theme icons are looked up in.
+    icon_theme: String,
     glyphs: HashMap<GlyphKey, Option<Glyph>>,
     /// The atlas's shelves: where the next glyph goes, and how tall this shelf is.
     shelf: [u32; 3],
@@ -228,6 +283,11 @@ impl Renderer {
                     .descriptor_type(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1)
                     .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(3)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             ];
             let set_layout = device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -239,7 +299,7 @@ impl Renderer {
                     .descriptor_count(1),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                    .descriptor_count(1),
+                    .descriptor_count(2),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLER)
                     .descriptor_count(1),
@@ -293,45 +353,19 @@ impl Renderer {
                 host,
             )?;
 
-            let atlas = device.create_image(
-                &vk::ImageCreateInfo::default()
-                    .image_type(vk::ImageType::TYPE_2D)
-                    .format(vk::Format::R8_UNORM)
-                    .extent(vk::Extent3D {
-                        width: ATLAS_SIZE,
-                        height: ATLAS_SIZE,
-                        depth: 1,
-                    })
-                    .mip_levels(1)
-                    .array_layers(1)
-                    .samples(vk::SampleCountFlags::TYPE_1)
-                    .tiling(vk::ImageTiling::OPTIMAL)
-                    .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST),
-                None,
-            )?;
-            let req = device.get_image_memory_requirements(atlas);
-            let atlas_memory = device.allocate_memory(
-                &vk::MemoryAllocateInfo::default()
-                    .allocation_size(req.size)
-                    .memory_type_index(
-                        find_memory(
-                            &memory_types,
-                            req.memory_type_bits,
-                            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                        )
-                        .ok_or_else(|| anyhow!("no memory for the atlas"))?,
-                    ),
-                None,
-            )?;
-            device.bind_image_memory(atlas, atlas_memory, 0)?;
-            let atlas_view = device.create_image_view(
-                &vk::ImageViewCreateInfo::default()
-                    .image(atlas)
-                    .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::R8_UNORM)
-                    .subresource_range(color_range()),
-                None,
-            )?;
+            let (atlas, atlas_memory, atlas_view) =
+                create_atlas(&device, &memory_types, vk::Format::R8_UNORM)?;
+            let (image, memory, view) =
+                create_atlas(&device, &memory_types, vk::Format::R8G8B8A8_UNORM)?;
+            let images = ImageAtlas {
+                image,
+                memory,
+                view,
+                ready: false,
+                placed: HashMap::new(),
+                shelf: [0, 0, 0],
+                uploads: Vec::new(),
+            };
 
             let buffer_info = [vk::DescriptorBufferInfo::default()
                 .buffer(items.buffer)
@@ -340,6 +374,9 @@ impl Renderer {
                 .image_view(atlas_view)
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             let sampler_info = [vk::DescriptorImageInfo::default().sampler(sampler)];
+            let images_info = [vk::DescriptorImageInfo::default()
+                .image_view(images.view)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
             device.update_descriptor_sets(
                 &[
                     vk::WriteDescriptorSet::default()
@@ -357,6 +394,11 @@ impl Renderer {
                         .dst_binding(2)
                         .descriptor_type(vk::DescriptorType::SAMPLER)
                         .image_info(&sampler_info),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(set)
+                        .dst_binding(3)
+                        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                        .image_info(&images_info),
                 ],
                 &[],
             );
@@ -384,6 +426,8 @@ impl Renderer {
                 atlas_memory,
                 atlas_view,
                 atlas_ready: false,
+                images,
+                icon_theme: String::from("hicolor"),
                 glyphs: HashMap::new(),
                 shelf: [0, 0, 0],
                 uploads: Vec::new(),
@@ -497,6 +541,54 @@ impl Renderer {
 
     /// Where a glyph is in the atlas, rasterizing it if it isn't yet, or `None` for one with
     /// nothing to draw.
+    /// Sets the icon theme icons are looked up in.
+    pub fn set_icon_theme(&mut self, theme: &str) {
+        if self.icon_theme != theme {
+            self.icon_theme = String::from(theme);
+            self.images.placed.clear();
+            self.images.shelf = [0, 0, 0];
+            self.images.ready = false;
+        }
+    }
+
+    /// Where an icon or image is in its atlas with its room around it, and its own size, loading
+    /// it if it isn't yet, or `None` for one that can't be loaded.
+    fn image(&mut self, key: ImageKey) -> Option<([u32; 4], [u32; 2])> {
+        if let Some(placed) = self.images.placed.get(&key) {
+            return placed.map(|at| (at, [at[2] - 2 * IMAGE_PAD, at[3] - 2 * IMAGE_PAD]));
+        }
+        let placed = (|| {
+            let (data, w, h) = load_image(&key.source, key.size, &self.icon_theme)?;
+            let (slot_w, slot_h) = (w + 2 * IMAGE_PAD, h + 2 * IMAGE_PAD);
+            let [mut x, mut y, mut shelf_h] = self.images.shelf;
+            if x + slot_w > ATLAS_SIZE {
+                x = 0;
+                y += shelf_h;
+                shelf_h = 0;
+            }
+            // Copies of four-byte pixels start on four bytes.
+            let offset = self.staged.next_multiple_of(4);
+            if y + slot_h > ATLAS_SIZE || offset + data.len() > STAGING_SIZE {
+                return None;
+            }
+            self.images.shelf = [x + slot_w, y, shelf_h.max(slot_h)];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    self.staging.mapped.add(offset),
+                    data.len(),
+                );
+            }
+            self.images
+                .uploads
+                .push((offset, [x + IMAGE_PAD, y + IMAGE_PAD, w, h]));
+            self.staged = offset + data.len();
+            Some([x, y, slot_w, slot_h])
+        })();
+        self.images.placed.insert(key, placed);
+        placed.map(|at| (at, [at[2] - 2 * IMAGE_PAD, at[3] - 2 * IMAGE_PAD]))
+    }
+
     fn glyph(&mut self, key: GlyphKey, font: &parley::FontData, coords: &[i16]) -> Option<Glyph> {
         if let Some(glyph) = self.glyphs.get(&key) {
             return *glyph;
@@ -560,6 +652,11 @@ impl Renderer {
             // Cleared, so old glyphs don't show in the new ones' padding.
             self.atlas_ready = false;
         }
+        if self.images.placed.len() > 1024 || self.images.shelf[1] + 256 > ATLAS_SIZE {
+            self.images.placed.clear();
+            self.images.shelf = [0, 0, 0];
+            self.images.ready = false;
+        }
 
         let mut gpu: Vec<GpuItem> = Vec::with_capacity(items.len());
         let no_clip = ([0., 0., -1., -1.], [0.; 4]);
@@ -588,6 +685,50 @@ impl Renderer {
                         clip_radii,
                         uv: [0.; 4],
                         params: [0., border.0, *opacity, *blur],
+                    });
+                }
+                Item::Image {
+                    rect,
+                    source,
+                    color,
+                    opacity,
+                    blur,
+                    clip,
+                } => {
+                    let (clip_rect, clip_radii) = clip.map_or(no_clip, |c| (c.rect, c.radii));
+                    let size = (rect[2].max(rect[3]) * scale).round().max(1.) as u32;
+                    let key = ImageKey {
+                        source: source.clone(),
+                        size,
+                    };
+                    let Some((at, [w, h])) = self.image(key) else {
+                        continue;
+                    };
+                    // Fitted in the middle of its node, with its room around it.
+                    let (w, h) = (w as f32 / scale, h as f32 / scale);
+                    let pad = IMAGE_PAD as f32 / scale;
+                    let x = rect[0] + (rect[2] - w) / 2. - pad;
+                    let y = rect[1] + (rect[3] - h) / 2. - pad;
+                    let atlas = ATLAS_SIZE as f32;
+                    gpu.push(GpuItem {
+                        rect: [x, y, w + 2. * pad, h + 2. * pad],
+                        radii: [0.; 4],
+                        fill: premul(*color),
+                        border_color: [0.; 4],
+                        clip_rect,
+                        clip_radii,
+                        uv: [
+                            at[0] as f32 / atlas,
+                            at[1] as f32 / atlas,
+                            (at[0] + at[2]) as f32 / atlas,
+                            (at[1] + at[3]) as f32 / atlas,
+                        ],
+                        params: [
+                            if source.is_symbolic() { 3. } else { 2. },
+                            0.,
+                            *opacity,
+                            *blur,
+                        ],
                     });
                 }
                 Item::Text {
@@ -748,6 +889,19 @@ impl Renderer {
                 self.atlas_ready = true;
             }
 
+            // New icons and images into theirs.
+            if !self.images.uploads.is_empty() || !self.images.ready {
+                record_uploads(
+                    device,
+                    cmd,
+                    self.images.image,
+                    self.images.ready,
+                    self.staging.buffer,
+                    &self.images.uploads,
+                );
+                self.images.ready = true;
+            }
+
             // Taken from bento's compositing, which may still be reading the last frame.
             barrier(
                 device,
@@ -841,6 +995,7 @@ impl Renderer {
             device.reset_fences(&[self.fence])?;
         }
         self.uploads.clear();
+        self.images.uploads.clear();
         self.staged = 0;
         Ok(())
     }
@@ -919,6 +1074,9 @@ impl Drop for Renderer {
             d.destroy_image_view(self.atlas_view, None);
             d.destroy_image(self.atlas, None);
             d.free_memory(self.atlas_memory, None);
+            d.destroy_image_view(self.images.view, None);
+            d.destroy_image(self.images.image, None);
+            d.free_memory(self.images.memory, None);
             for buffer in [&self.items, &self.staging] {
                 d.destroy_buffer(buffer.buffer, None);
                 d.free_memory(buffer.memory, None);
@@ -927,6 +1085,139 @@ impl Drop for Renderer {
             d.destroy_command_pool(self.pool, None);
             d.destroy_device(None);
         }
+    }
+}
+
+/// Copies `uploads`, each an offset in `staging` and where it goes, into `atlas`, cleared first if
+/// it isn't `ready` yet, and leaves it for the shader to read.
+unsafe fn record_uploads(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    atlas: vk::Image,
+    ready: bool,
+    staging: vk::Buffer,
+    uploads: &[(usize, [u32; 4])],
+) {
+    unsafe {
+        let old = if ready {
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+        } else {
+            vk::ImageLayout::UNDEFINED
+        };
+        barrier(
+            device,
+            cmd,
+            atlas,
+            old,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            None,
+        );
+        if !ready {
+            device.cmd_clear_color_image(
+                cmd,
+                atlas,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &vk::ClearColorValue { float32: [0.; 4] },
+                &[color_range()],
+            );
+            barrier(
+                device,
+                cmd,
+                atlas,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                None,
+            );
+        }
+        let regions: Vec<_> = uploads
+            .iter()
+            .map(|(offset, [x, y, w, h])| {
+                vk::BufferImageCopy::default()
+                    .buffer_offset(*offset as u64)
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .layer_count(1),
+                    )
+                    .image_offset(vk::Offset3D {
+                        x: *x as i32,
+                        y: *y as i32,
+                        z: 0,
+                    })
+                    .image_extent(vk::Extent3D {
+                        width: *w,
+                        height: *h,
+                        depth: 1,
+                    })
+            })
+            .collect();
+        if !regions.is_empty() {
+            device.cmd_copy_buffer_to_image(
+                cmd,
+                staging,
+                atlas,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &regions,
+            );
+        }
+        barrier(
+            device,
+            cmd,
+            atlas,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            None,
+        );
+    }
+}
+
+/// An image for an atlas, `ATLAS_SIZE` square, of `format`.
+unsafe fn create_atlas(
+    device: &ash::Device,
+    memory_types: &vk::PhysicalDeviceMemoryProperties,
+    format: vk::Format,
+) -> anyhow::Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
+    unsafe {
+        let image = device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(format)
+                .extent(vk::Extent3D {
+                    width: ATLAS_SIZE,
+                    height: ATLAS_SIZE,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST),
+            None,
+        )?;
+        let req = device.get_image_memory_requirements(image);
+        let memory = device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(req.size)
+                .memory_type_index(
+                    find_memory(
+                        memory_types,
+                        req.memory_type_bits,
+                        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    )
+                    .ok_or_else(|| anyhow!("no memory for an atlas"))?,
+                ),
+            None,
+        )?;
+        device.bind_image_memory(image, memory, 0)?;
+        let view = device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(format)
+                .subresource_range(color_range()),
+            None,
+        )?;
+        Ok((image, memory, view))
     }
 }
 
@@ -1120,6 +1411,36 @@ mod tests {
         let alpha = |row: usize| pixels[(row * 64 + 32) * 4 + 3];
         let alpha = (alpha(4), alpha(60));
         assert_eq!(alpha, (255, 0), "(top, bottom)");
+        renderer.destroy_target(target);
+    }
+
+    /// Draws a symbolic icon from the icon theme in red, on the machine's GPU, and reads it back.
+    #[test]
+    #[ignore]
+    fn it_draws_a_symbolic_icon_in_its_colour() {
+        let formats = [DrmFormat {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }];
+        let mut renderer = Renderer::new(None, &formats).unwrap();
+        renderer.set_icon_theme("Adwaita");
+        let target = renderer.create_target((64, 64)).unwrap();
+        let icon = Item::Image {
+            rect: [16., 16., 32., 32.],
+            source: ImageSource::Icon(String::from("folder-symbolic")),
+            color: [1., 0., 0., 1.],
+            opacity: 1.,
+            blur: 0.,
+            clip: None,
+        };
+        renderer.render(&target, &[icon], 1.).unwrap();
+        let pixels = renderer.read_back(&target).unwrap();
+        // BGRA: red is the third byte.
+        let red = pixels
+            .chunks_exact(4)
+            .filter(|px| px[2] > 200 && px[3] > 200 && px[1] < 40)
+            .count();
+        assert!(red > 50, "{red} red pixels");
         renderer.destroy_target(target);
     }
 

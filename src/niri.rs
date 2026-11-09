@@ -5017,7 +5017,10 @@ impl Niri {
         let size = (size.w.max(1) as u32, size.h.max(1) as u32);
         let node = backend.primary_render_node();
         let name = output.name();
-        backend.with_primary_renderer(|renderer| scene.prepare(renderer, node, &name, size, scale));
+        let theme = self.icon_theme.name().to_owned();
+        backend.with_primary_renderer(|renderer| {
+            scene.prepare(renderer, node, &name, size, scale, &theme)
+        });
 
         // Wakes up for the shell's next timer.
         let next = scene.next_timer();

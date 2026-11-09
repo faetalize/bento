@@ -349,6 +349,7 @@ impl SceneHost {
         output: &str,
         size: (u32, u32),
         scale: f64,
+        icon_theme: &str,
     ) {
         let Some(shell) = &self.shell else { return };
         if self.renderer.is_none() && !self.renderer_failed {
@@ -362,6 +363,7 @@ impl SceneHost {
             }
         }
         let Some(vk) = &mut self.renderer else { return };
+        vk.set_icon_theme(icon_theme);
 
         let scene = shell.scene.borrow();
         for overlay in [false, true] {

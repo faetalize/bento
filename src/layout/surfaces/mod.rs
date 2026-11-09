@@ -28,11 +28,11 @@ use crate::render_helpers::renderer::NiriRenderer;
 use crate::utils::center_f64;
 
 mod animated;
-mod icons;
+pub(crate) mod icons;
 mod props;
 mod render;
 mod search_field;
-mod svg;
+pub(crate) mod svg;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum NodeKind {

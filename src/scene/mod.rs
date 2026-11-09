@@ -120,9 +120,26 @@ pub enum Material {
     Glass,
 }
 
+/// Where an image comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ImageSource {
+    /// An icon from the icon theme, by name.
+    Icon(String),
+    /// An image file: PNG, JPEG, WebP or SVG.
+    File(String),
+}
+
+impl ImageSource {
+    /// Whether it's a symbolic icon, drawn in the node's colour.
+    pub fn is_symbolic(&self) -> bool {
+        matches!(self, Self::Icon(name) if name.ends_with("-symbolic"))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Kind {
     Box,
+    Image(Option<ImageSource>),
     Text {
         text: String,
         style: TextStyle,
@@ -228,6 +245,15 @@ pub enum Item {
         border: (f32, [f32; 4]),
         opacity: f32,
         /// How blurred, in logical pixels.
+        blur: f32,
+        clip: Option<Clip>,
+    },
+    Image {
+        rect: [f32; 4],
+        source: ImageSource,
+        /// The colour a symbolic icon is drawn in.
+        color: [f32; 4],
+        opacity: f32,
         blur: f32,
         clip: Option<Clip>,
     },
@@ -359,6 +385,7 @@ impl Scene {
     /// Makes a node of `kind`, "box" or "text", with `props`.
     pub fn create(&mut self, kind: &str, props: &Value) -> NodeId {
         let kind = match kind {
+            "image" => Kind::Image(None),
             "text" => Kind::Text {
                 text: String::new(),
                 style: TextStyle::default(),
@@ -415,6 +442,21 @@ impl Scene {
         for (key, value) in props {
             relayout |= apply_layout(&mut style, key, value);
             apply_look(node, key, value);
+            if let Kind::Image(source) = &mut node.kind {
+                match key.as_str() {
+                    "icon" => *source = value.as_str().map(|v| ImageSource::Icon(v.into())),
+                    "src" => *source = value.as_str().map(|v| ImageSource::File(v.into())),
+                    "size" => {
+                        let size = Dimension::length(value.as_f64().unwrap_or(16.) as f32);
+                        style.size = Size {
+                            width: size,
+                            height: size,
+                        };
+                        relayout = true;
+                    }
+                    _ => (),
+                }
+            }
             if let Kind::Text {
                 text,
                 style: text_style,
@@ -875,6 +917,17 @@ impl Scene {
                     });
                 }
             }
+            Kind::Image(Some(source)) => {
+                items.push(Item::Image {
+                    rect,
+                    source: source.clone(),
+                    color: node.look.color.resolve(&self.theme),
+                    opacity,
+                    blur,
+                    clip,
+                });
+            }
+            Kind::Image(None) => (),
             Kind::Text { laid, .. } => {
                 if let Some((_, laid)) = laid {
                     items.push(Item::Text {
