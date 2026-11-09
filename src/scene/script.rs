@@ -20,10 +20,26 @@ use rquickjs::{CatchResultExt as _, Context, Function, Module, Persistent, Runti
 
 use super::Scene;
 
-/// bento's widgets.
-const UI: &str = include_str!("../../resources/shell/ui.js");
 /// bento's own shell.
 const MAIN: &str = include_str!("../../resources/shell/main.js");
+/// Its modules, each imported as `bento:` and its name: the widgets, and the shell's parts.
+const MODULES: &[(&str, &str)] = &[
+    ("ui", include_str!("../../resources/shell/ui.js")),
+    (
+        "calendar",
+        include_str!("../../resources/shell/calendar.js"),
+    ),
+    ("control", include_str!("../../resources/shell/control.js")),
+    (
+        "launcher",
+        include_str!("../../resources/shell/launcher.js"),
+    ),
+    ("toasts", include_str!("../../resources/shell/toasts.js")),
+    (
+        "workspace",
+        include_str!("../../resources/shell/workspace.js"),
+    ),
+];
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const CALL_TIME_LIMIT: Duration = Duration::from_millis(200);
@@ -56,19 +72,31 @@ pub fn user_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The scripts in `dir`, sorted by name.
+fn scripts_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
+        .collect();
+    files.sort();
+    files
+}
+
 /// When the shell's files last changed, with bento's own read from `dir`, to load them again.
 pub fn mtimes(dir: Option<&Path>) -> Vec<Option<SystemTime>> {
     let mtime = |path: PathBuf| path.metadata().ok()?.modified().ok();
     let mut files: Vec<PathBuf> = user_path().into_iter().collect();
     if let Some(dir) = dir {
-        files.push(dir.join("main.js"));
-        files.push(dir.join("ui.js"));
+        files.extend(scripts_in(dir));
     }
     files.into_iter().map(mtime).collect()
 }
 
-/// The shell's source and the widgets', with bento's own read from `dir` if it's given.
-fn sources(dir: Option<&Path>) -> anyhow::Result<(String, String)> {
+/// The shell's source and its modules by name, with bento's own read from `dir` if it's given:
+/// `main.js` there, and every other script as the module of its name.
+fn sources(dir: Option<&Path>) -> anyhow::Result<(String, Vec<(String, String)>)> {
     let read = |path: &Path| {
         std::fs::read_to_string(path).with_context(|| format!("error reading {}", path.display()))
     };
@@ -77,11 +105,34 @@ fn sources(dir: Option<&Path>) -> anyhow::Result<(String, String)> {
         (None, Some(dir)) => read(&dir.join("main.js"))?,
         (None, None) => String::from(MAIN),
     };
-    let ui = match dir {
-        Some(dir) => read(&dir.join("ui.js"))?,
-        None => String::from(UI),
+    let modules = match dir {
+        Some(dir) => scripts_in(dir)
+            .into_iter()
+            .filter(|path| path.file_name().is_some_and(|name| name != "main.js"))
+            .map(|path| {
+                let name = path.file_stem().unwrap_or_default().to_string_lossy();
+                Ok((name.into_owned(), read(&path)?))
+            })
+            .collect::<anyhow::Result<_>>()?,
+        None => MODULES
+            .iter()
+            .map(|(name, source)| (String::from(*name), String::from(*source)))
+            .collect(),
     };
-    Ok((main, ui))
+    Ok((main, modules))
+}
+
+/// Where what scripts keep between runs is written, like which sound outputs are pinned. Tests
+/// keep it in memory alone.
+fn state_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    Some(
+        directories::BaseDirs::new()?
+            .state_dir()?
+            .join("bento/shell.json"),
+    )
 }
 
 impl Shell {
@@ -92,7 +143,7 @@ impl Shell {
         dir: Option<&Path>,
         style: serde_json::Value,
     ) -> anyhow::Result<Self> {
-        let (source, ui) = sources(dir)?;
+        let (source, modules) = sources(dir)?;
 
         let mut scene = Scene::new();
         for (name, size) in outputs {
@@ -106,8 +157,11 @@ impl Shell {
         runtime.set_max_stack_size(1024 * 1024);
         let mut resolver = BuiltinResolver::default();
         let mut loader = BuiltinLoader::default();
-        resolver.add_module("bento:ui");
-        loader.add_module("bento:ui", ui);
+        for (name, module) in modules {
+            let name = format!("bento:{name}");
+            resolver.add_module(&name);
+            loader.add_module(&name, module);
+        }
         runtime.set_loader(resolver, loader);
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
@@ -293,6 +347,35 @@ impl Shell {
                 "log",
                 Function::new(ctx.clone(), |message: String| {
                     info!("shell: {message}");
+                })
+                .map_err(js)?,
+            )?;
+            // What scripts keep between runs, as one JSON object.
+            let state = state_path()
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .filter(|text| serde_json::from_str::<serde_json::Value>(text).is_ok())
+                .unwrap_or_else(|| String::from("{}"));
+            let state = Rc::new(RefCell::new(state));
+            let kept = state.clone();
+            native.set(
+                "stored",
+                Function::new(ctx.clone(), move || kept.borrow().clone()).map_err(js)?,
+            )?;
+            native.set(
+                "store",
+                Function::new(ctx.clone(), move |json: String| {
+                    if serde_json::from_str::<serde_json::Value>(&json).is_err() {
+                        return;
+                    }
+                    if let Some(path) = state_path() {
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if let Err(err) = std::fs::write(&path, &json) {
+                            warn!("error keeping the shell's state: {err:?}");
+                        }
+                    }
+                    *state.borrow_mut() = json;
                 })
                 .map_err(js)?,
             )?;

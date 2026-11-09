@@ -79,6 +79,7 @@ pub struct SceneHost {
     moving: bool,
     sent_workspaces: Option<serde_json::Value>,
     sent_fullscreen: Option<serde_json::Value>,
+    sent_minimap: Option<serde_json::Value>,
     known_outputs: Vec<String>,
     /// Where the pointer is over the shell: the output and the point on it.
     pointer: Option<(String, [f32; 2])>,
@@ -136,6 +137,7 @@ impl SceneHost {
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
                     self.sent_workspaces = None;
                     self.sent_fullscreen = None;
+                    self.sent_minimap = None;
                     self.generation += 1;
                 }
                 Err(err) => warn!("error loading the shell: {err:?}"),
@@ -285,7 +287,27 @@ impl SceneHost {
     /// nodes that hear it near which of them it came to and left, and says whether any did.
     pub fn pointer_at(&mut self, at: Option<(&str, [f32; 2])>) -> bool {
         self.pointer_at = at.map(|(name, point)| (String::from(name), point));
-        self.update_near()
+        let dragged = self.drag();
+        self.update_near() || dragged
+    }
+
+    /// Tells what's pressed and hears drags where the pointer went on its output, and says
+    /// whether anything was told.
+    fn drag(&self) -> bool {
+        let (Some(shell), Some((name, point))) = (&self.shell, &self.pointer_at) else {
+            return false;
+        };
+        let mut dragged = false;
+        for (pressed, output, _) in self.presses.values() {
+            let Some(id) = pressed else { continue };
+            if output == name && shell.scene.borrow().takes(*id, super::DRAG) {
+                shell.send(&serde_json::json!({
+                    "type": "drag", "id": id, "x": point[0], "y": point[1],
+                }));
+                dragged = true;
+            }
+        }
+        dragged
     }
 
     /// Tells the nodes that hear the pointer near which of them it's now in the place of, as it
@@ -425,6 +447,26 @@ impl SceneHost {
             shell.send(&serde_json::json!({ "type": "fullscreen", "outputs": outputs }));
         }
         self.sent_fullscreen = Some(outputs);
+    }
+
+    /// Tells the shell where the tiles of each output's workspace sit around its view, by the
+    /// output's name, when that changes.
+    pub fn set_minimap(&mut self, outputs: serde_json::Value) {
+        if self.sent_minimap.as_ref() == Some(&outputs) {
+            return;
+        }
+        if let Some(shell) = &self.shell {
+            shell.send(&serde_json::json!({ "type": "minimap", "outputs": outputs }));
+        }
+        self.sent_minimap = Some(outputs);
+    }
+
+    /// Tells the shell of something bento was asked for that's the shell's to do, like a
+    /// shortcut for one of its panels, with the output that has the focus.
+    pub fn event(&self, kind: &str, output: Option<String>) {
+        if let Some(shell) = &self.shell {
+            shell.send(&serde_json::json!({ "type": kind, "output": output }));
+        }
     }
 
     /// When the shell next needs to run, for its timers.

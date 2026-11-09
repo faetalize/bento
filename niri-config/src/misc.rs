@@ -15,11 +15,44 @@ pub struct SpawnShAtStartup {
 }
 
 /// The shell: the program bento starts with a private connection of its own, and starts again
-/// when it exits. No arguments means no shell.
-#[derive(knuffel::Decode, Debug, Clone, PartialEq, Eq)]
+/// when it exits, and what bento's own shell is set to. No arguments means no program.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
 pub struct Shell {
     #[knuffel(arguments)]
     pub command: Vec<String>,
+    /// Temperatures in Fahrenheit rather than Celsius.
+    #[knuffel(child)]
+    pub fahrenheit: bool,
+    /// What the control center's screenshot button runs, rather than bento's own screenshot.
+    #[knuffel(child)]
+    pub screenshot: Option<ShellCommand>,
+    /// What the control center's screen record button runs.
+    #[knuffel(child)]
+    pub screen_record: Option<ShellCommand>,
+}
+
+/// A command one of the shell's buttons runs, with `sh -c`, and the notification it shows once
+/// the command is done, if it has a title.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
+pub struct ShellCommand {
+    #[knuffel(child, unwrap(argument))]
+    pub command: Option<String>,
+    #[knuffel(child, unwrap(argument))]
+    pub notification: Option<String>,
+    #[knuffel(child, unwrap(argument))]
+    pub notification_body: Option<String>,
+}
+
+/// Where the user is, for what depends on it, like the weather.
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
+pub struct Location {
+    /// What the place is called, to show.
+    #[knuffel(child, unwrap(argument))]
+    pub name: Option<String>,
+    #[knuffel(child, unwrap(argument))]
+    pub latitude: Option<FloatOrInt<-90, 90>>,
+    #[knuffel(child, unwrap(argument))]
+    pub longitude: Option<FloatOrInt<-180, 180>>,
 }
 
 #[derive(Debug, PartialEq)]

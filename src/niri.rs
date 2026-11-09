@@ -5074,6 +5074,7 @@ impl Niri {
         let mut workspaces = serde_json::Map::new();
         // Which outputs show a fullscreen window. The overview shows the desktop around it.
         let mut fullscreen = serde_json::Map::new();
+        let mut minimap = serde_json::Map::new();
         let overview = self.layout.is_overview_open();
         let focused_output = self.layout.active_output().map(|o| o.name());
         for (mon, index, ws) in self.layout.workspaces() {
@@ -5082,6 +5083,27 @@ impl Niri {
                 fullscreen.insert(
                     mon.output_name().clone(),
                     serde_json::Value::Bool(!overview && ws.shows_fullscreen()),
+                );
+                // Where its tiles sit around the view, for a minimap: where they're headed, so
+                // that a move tells the shell once and the shell moves there itself.
+                let active = ws.active_window().map(|win| win.id().get());
+                let tiles: Vec<serde_json::Value> = ws
+                    .tiles_with_ipc_layouts()
+                    .filter_map(|(tile, layout)| {
+                        let (x, y) = layout.tile_pos_in_workspace_view?;
+                        let (w, h) = layout.tile_size;
+                        let id = tile.window().id().get();
+                        Some(serde_json::json!({
+                            "id": id, "x": x, "y": y, "w": w, "h": h,
+                            "active": Some(id) == active,
+                            "floating": ws.is_floating(&tile.window().window),
+                        }))
+                    })
+                    .collect();
+                let view = ws.view_size();
+                minimap.insert(
+                    mon.output_name().clone(),
+                    serde_json::json!({ "view": [view.w, view.h], "tiles": tiles }),
                 );
             }
             let list = workspaces
@@ -5123,17 +5145,47 @@ impl Niri {
                 .unwrap_or(dir)
         });
         let style = self.shell_style();
+        // What the config sets for the shell rides along with the style, and scripts hear of
+        // either changing.
+        let settings = {
+            let config = self.config.borrow();
+            let shell = config.shell.clone().unwrap_or_default();
+            let command = |c: Option<niri_config::ShellCommand>| {
+                c.filter(|c| c.command.as_deref().is_some_and(|c| !c.trim().is_empty()))
+                    .map(|c| {
+                        serde_json::json!({
+                            "command": c.command,
+                            "notification": c.notification.filter(|t| !t.trim().is_empty()),
+                            "body": c.notification_body,
+                        })
+                    })
+            };
+            let location = &config.location;
+            let place = location.latitude.zip(location.longitude).map(|(lat, lon)| {
+                serde_json::json!({
+                    "name": location.name, "latitude": lat.0, "longitude": lon.0,
+                })
+            });
+            serde_json::json!({
+                "location": place,
+                "fahrenheit": shell.fahrenheit,
+                "screenshot": command(shell.screenshot),
+                "screenRecord": command(shell.screen_record),
+            })
+        };
         let style = serde_json::json!({
             "gaps": style.gaps,
             "cornerRadius": style.corner_radius,
             "animations": style.animations,
             "slowdown": style.slowdown,
             "response": response,
+            "config": settings,
         });
         let scene = self.scene.get_or_insert_with(Default::default);
         scene.ensure_loaded(&outputs, dir.as_deref(), style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));
+        scene.set_minimap(serde_json::Value::Object(minimap));
         let moving = scene.advance_with(Instant::now(), slowdown, response);
         scene.send_commands();
         if scene.wants_data_program(Instant::now()) {

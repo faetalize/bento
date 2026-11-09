@@ -194,6 +194,8 @@ pub const SCROLL: u32 = 4;
 pub const SETTLE: u32 = 8;
 /// The pointer coming into its place and leaving it, whatever else is there.
 pub const NEAR: u32 = 16;
+/// The pointer moving while a press on it is held.
+pub const DRAG: u32 = 32;
 
 // A node's springs: its place on its output, as the layout has it, opacity, corners, scale,
 // blur, an offset from its place, and the size it's drawn at.
@@ -1043,6 +1045,11 @@ impl Scene {
         found
     }
 
+    /// Whether node `id` takes any of `events`.
+    pub fn takes(&self, id: NodeId, events: u32) -> bool {
+        self.node(id).is_some_and(|n| n.events & events != 0)
+    }
+
     /// The topmost node at `point` on output `output` that takes any of `events`.
     pub fn hit(&self, output: &str, point: [f32; 2], events: u32) -> Option<NodeId> {
         self.pick(output, point)
@@ -1376,6 +1383,7 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                             Some("scroll") => SCROLL,
                             Some("settle") => SETTLE,
                             Some("near") => NEAR,
+                            Some("drag") => DRAG,
                             _ => 0,
                         }
                 })

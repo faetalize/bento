@@ -3,12 +3,15 @@
 
 pub mod audio;
 pub mod battery;
+pub mod brightness;
 mod dbus;
+pub mod devices;
 pub mod ipc;
 pub mod network;
 pub mod notifications;
 pub mod power;
 pub mod tray;
+pub mod weather;
 
 pub use audio::{Audio, AudioService};
 pub use battery::{Battery, BatteryService};

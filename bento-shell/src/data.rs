@@ -1,10 +1,11 @@
 //! `bento-shell --data`: the shell's data, for bento's own shell, without a window.
 //!
 //! bento starts it and reads what it says from its stdout, a JSON object per line: the speaker's
-//! volume, the network, the battery, notifications and the tray's items, each as it changes.
-//! Pictures, like a notification's image or a tray icon an app draws itself, are written as PNG
-//! files under `$XDG_RUNTIME_DIR/bento-shell` and named by their path. It takes commands on its
-//! stdin, a JSON object per line, like `{ "cmd": "volume", "value": 0.5 }`.
+//! volume, the sound devices, the displays' brightness, the light or dark style, the weather, the
+//! network, the battery, notifications and the tray's items, each as it changes. Pictures, like a
+//! notification's image or a tray icon an app draws itself, are written as PNG files under
+//! `$XDG_RUNTIME_DIR/bento-shell` and named by their path. It takes commands on its stdin, a JSON
+//! object per line, like `{ "cmd": "volume", "value": 0.5 }`.
 
 use std::cell::RefCell;
 use std::io::{BufRead as _, Write as _};
@@ -15,10 +16,91 @@ use gtk::gdk;
 use gtk::prelude::*;
 use serde_json::{json, Value};
 
+use crate::services::brightness::BrightnessService;
+use crate::services::devices::{Device, DeviceService, Kind};
+use crate::services::weather::{Place, WeatherService};
 use crate::services::{
     power, AudioService, BatteryService, NetworkService, NotificationEvent, Notifications, Tray,
     TrayIcon, TrayItem,
 };
+
+/// GNOME's interface settings, which hold the light or dark style apps follow.
+const INTERFACE: &str = "org.gnome.desktop.interface";
+
+/// The interface settings, if they're there with a style to set.
+fn interface_settings() -> Option<gio::Settings> {
+    let schema = gio::SettingsSchemaSource::default()?.lookup(INTERFACE, true)?;
+    schema
+        .has_key("color-scheme")
+        .then(|| gio::Settings::new(INTERFACE))
+}
+
+fn say_theme(settings: &gio::Settings) {
+    let dark = settings.string("color-scheme") == "prefer-dark";
+    say(&json!({ "type": "theme", "dark": dark }));
+}
+
+fn device(device: &Device) -> Value {
+    json!({
+        "name": device.name,
+        "label": device.label,
+        "icon": device.icon,
+        "active": device.active,
+        "volume": device.volume,
+        "muted": device.muted,
+    })
+}
+
+/// Runs `command` with `sh -c`, apart from this program's own pipes, and says how it ended as
+/// `{ "type": "ran", "id": id, "code": its exit code }`.
+fn run_command(id: Value, command: &str) {
+    let flags = gio::SubprocessFlags::STDOUT_SILENCE | gio::SubprocessFlags::STDERR_SILENCE;
+    let args = ["sh", "-c", command].map(std::ffi::OsStr::new);
+    let process = match gio::Subprocess::newv(&args, flags) {
+        Ok(process) => process,
+        Err(err) => {
+            eprintln!("bento-shell --data: couldn't run {command:?}: {err}");
+            say(&json!({ "type": "ran", "id": id, "code": -1 }));
+            return;
+        }
+    };
+    glib::spawn_future_local(async move {
+        let _ = process.wait_future().await;
+        let code = if process.has_exited() {
+            process.exit_status()
+        } else {
+            -1
+        };
+        say(&json!({ "type": "ran", "id": id, "code": code }));
+    });
+}
+
+/// Shows a notification, through whichever program shows them.
+fn notify(summary: String, body: String, icon: String) {
+    glib::spawn_future_local(async move {
+        let Ok(bus) = gio::bus_get_future(gio::BusType::Session).await else {
+            return;
+        };
+        let actions: Vec<String> = Vec::new();
+        let hints: std::collections::HashMap<String, glib::Variant> = Default::default();
+        let message = ("bento", 0u32, icon, summary, body, actions, hints, -1i32);
+        let reply = bus
+            .call_future(
+                Some("org.freedesktop.Notifications"),
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "Notify",
+                Some(&message.to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                -1,
+            )
+            .await;
+        if let Err(err) = reply {
+            eprintln!("bento-shell --data: couldn't show a notification: {err}");
+        }
+    });
+}
 
 /// Says `value` on stdout, as a line.
 fn say(value: &Value) {
@@ -85,6 +167,30 @@ pub fn run() -> glib::ExitCode {
             "muted": audio.muted,
         }));
     });
+    let devices = DeviceService::start(|devices| {
+        say(&json!({
+            "type": "audio-devices",
+            "outputs": devices.outputs.iter().map(device).collect::<Vec<_>>(),
+            "inputs": devices.inputs.iter().map(device).collect::<Vec<_>>(),
+        }));
+    });
+    let brightness = BrightnessService::start(|displays| {
+        let displays: Vec<Value> = displays
+            .iter()
+            .map(|d| json!({ "id": d.id, "label": d.label, "value": d.value }))
+            .collect();
+        say(&json!({ "type": "brightness", "displays": displays }));
+    });
+    let weather = WeatherService::start(|weather| {
+        let mut weather = weather.clone();
+        weather["type"] = json!("weather");
+        say(&weather);
+    });
+    let theme = interface_settings();
+    if let Some(theme) = &theme {
+        say_theme(theme);
+        theme.connect_changed(Some("color-scheme"), |settings, _| say_theme(settings));
+    }
     let network = NetworkService::start(|network| {
         say(&json!({
             "type": "network",
@@ -160,9 +266,49 @@ pub fn run() -> glib::ExitCode {
             let (audio, notifications, tray) = &*services.borrow();
             let id = || command["id"].as_u64().unwrap_or(0) as u32;
             let item = || command["id"].as_str().unwrap_or_default().to_owned();
+            let text = |key: &str| command[key].as_str().unwrap_or_default().to_owned();
+            let kind = || match command["kind"].as_str() {
+                Some("input") => Kind::Input,
+                _ => Kind::Output,
+            };
             match command["cmd"].as_str().unwrap_or_default() {
                 "volume" => audio.set_volume(command["value"].as_f64().unwrap_or(0.)),
                 "mute" => audio.set_muted(command["value"].as_bool().unwrap_or(true)),
+                "device" => devices.set_default(kind(), &text("name")),
+                "device-volume" => devices.set_volume(
+                    kind(),
+                    &text("name"),
+                    command["value"].as_f64().unwrap_or(0.),
+                ),
+                "device-mute" => devices.set_muted(
+                    kind(),
+                    &text("name"),
+                    command["value"].as_bool().unwrap_or(true),
+                ),
+                "brightness" => {
+                    brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))
+                }
+                "brightness-refresh" => brightness.refresh(),
+                "theme" => {
+                    if let Some(theme) = &theme {
+                        let dark = command["dark"].as_bool().unwrap_or(false);
+                        let style = if dark { "prefer-dark" } else { "default" };
+                        let _ = theme.set_string("color-scheme", style);
+                    }
+                }
+                "weather" => {
+                    let place = command["latitude"]
+                        .as_f64()
+                        .zip(command["longitude"].as_f64())
+                        .map(|(latitude, longitude)| Place {
+                            latitude,
+                            longitude,
+                            fahrenheit: command["fahrenheit"].as_bool().unwrap_or(false),
+                        });
+                    weather.set_place(place);
+                }
+                "run" => run_command(command["id"].clone(), &text("command")),
+                "notify" => notify(text("summary"), text("body"), text("icon")),
                 "dismiss" => notifications.dismiss(id()),
                 "expire" => notifications.expire(id()),
                 "invoke" => {

@@ -23,3 +23,4 @@ serde_json.workspace = true
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
 wayland-scanner = "0.31.11"
+soup3 = "0.8"

@@ -88,6 +88,7 @@ pub struct Config {
     pub spawn_at_startup: Vec<SpawnAtStartup>,
     pub spawn_sh_at_startup: Vec<SpawnShAtStartup>,
     pub shell: Option<Shell>,
+    pub location: Location,
     pub layout: Layout,
     pub tiling: Tiling,
     pub prefer_no_csd: bool,
@@ -305,6 +306,11 @@ where
                 "shell" => {
                     let part = knuffel::Decode::decode_node(node, ctx)?;
                     config.borrow_mut().shell = Some(part);
+                }
+
+                "location" => {
+                    let part = knuffel::Decode::decode_node(node, ctx)?;
+                    config.borrow_mut().location = part;
                 }
 
                 "screenshot-path" => {
@@ -1919,6 +1925,11 @@ mod tests {
                 },
             ],
             shell: None,
+            location: Location {
+                name: None,
+                latitude: None,
+                longitude: None,
+            },
             layout: Layout {
                 focus_ring: FocusRing {
                     off: false,
@@ -3100,6 +3111,50 @@ mod tests {
     }
 
     #[test]
+    fn the_shells_settings_and_where_the_user_is() {
+        let config = do_parse(
+            r#"
+            location {
+                name "Reykjavik, Iceland"
+                latitude 64.15
+                longitude -21.94
+            }
+            shell {
+                fahrenheit
+                screenshot {
+                    command "grim -g \"$(slurp)\" - | swappy -f -"
+                    notification "Screenshot taken"
+                    notification-body "It's in Pictures."
+                }
+                screen-record {
+                    command "wf-recorder"
+                }
+            }
+            "#,
+        );
+        assert_eq!(config.location.name.as_deref(), Some("Reykjavik, Iceland"));
+        assert_eq!(config.location.latitude.map(|v| v.0), Some(64.15));
+        assert_eq!(config.location.longitude.map(|v| v.0), Some(-21.94));
+        let shell = config.shell.unwrap();
+        // Settings alone name no program to run as the shell.
+        assert!(shell.command.is_empty());
+        assert!(shell.fahrenheit);
+        let screenshot = shell.screenshot.unwrap();
+        assert_eq!(
+            screenshot.command.as_deref(),
+            Some(r#"grim -g "$(slurp)" - | swappy -f -"#)
+        );
+        assert_eq!(screenshot.notification.as_deref(), Some("Screenshot taken"));
+        assert_eq!(
+            screenshot.notification_body.as_deref(),
+            Some("It's in Pictures.")
+        );
+        let record = shell.screen_record.unwrap();
+        assert_eq!(record.command.as_deref(), Some("wf-recorder"));
+        assert_eq!(record.notification, None);
+    }
+
+    #[test]
     fn diff_empty_to_default() {
         // We try to write the config defaults in such a way that empty sections (and an empty
         // config) give the same outcome as the default config bundled with niri. This test
@@ -3133,6 +3188,9 @@ mod tests {
         +            command: [
         +                "bento-shell",
         +            ],
+        +            fahrenheit: false,
+        +            screenshot: None,
+        +            screen_record: None,
         +        },
         +    ),
 

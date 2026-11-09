@@ -351,6 +351,11 @@ pub enum Action {
     ShowHotkeyOverlay {},
     /// Show or hide the shell's launcher.
     ToggleLauncher {},
+    /// Show or hide the shell's editor for the focused workspace, to name it or take its name
+    /// away.
+    EditWorkspace {},
+    /// Switch the sound to the next of the outputs pinned in the shell.
+    SwitchAudioOutput {},
     /// Move the focused workspace to the monitor to the left.
     MoveWorkspaceToMonitorLeft {},
     /// Move the focused workspace to the monitor to the right.
