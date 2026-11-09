@@ -139,7 +139,7 @@ export function input({
     let response = null;
     if (typed) {
       const now = Date.now();
-      response = Math.min(Math.max((now - lastTyped) / 2000, 0.04), 0.42);
+      response = Math.min(Math.max((now - lastTyped) / 2000, 0.04), style().response ?? 0.42);
       lastTyped = now;
     }
     caret.set({ left: x, top: y, height: h, opacity: widget.focused ? 1 : 0, response });
@@ -351,8 +351,9 @@ function clearTimeout(node) {
   if (node.gone === "going") node.gone = false;
 }
 
-// bento's style, to line up with: `{ gaps, cornerRadius, animations, slowdown }`. It's sent again as a "style" event
-// whenever it changes.
+// bento's style, to line up with: `{ gaps, cornerRadius, animations, slowdown, response }`,
+// where `response` is how long bento's springs take to settle, in seconds, as windows move.
+// It's sent again as a "style" event whenever it changes.
 export function style() {
   return JSON.parse(native.style()) ?? {};
 }

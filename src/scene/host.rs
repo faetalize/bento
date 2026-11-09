@@ -385,6 +385,15 @@ impl SceneHost {
         self.shell.as_ref()?.next_timer()
     }
 
+    /// Runs due timers, moves the scene on to `now`, with springs that settle in `response`
+    /// seconds where a node doesn't say, and says whether it's still moving.
+    pub fn advance_with(&mut self, now: Instant, slowdown: Option<f64>, response: f64) -> bool {
+        if let Some(shell) = &self.shell {
+            shell.scene.borrow_mut().base_response = response;
+        }
+        self.advance(now, slowdown)
+    }
+
     /// Runs due timers, moves the scene on to `now`, and says whether it's still moving.
     pub fn advance(&mut self, now: Instant, slowdown: Option<f64>) -> bool {
         let Some(shell) = &self.shell else {

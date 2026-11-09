@@ -304,6 +304,9 @@ pub struct Scene {
     layout_dirty: bool,
     /// Nodes that settled, for their scripts.
     settled: Vec<NodeId>,
+    /// How long a spring takes to settle, in seconds, where a node doesn't say: bento's own,
+    /// as its windows move.
+    pub base_response: f64,
     /// What the shell keeps for itself along each output's edges, that windows stay out of:
     /// top, right, bottom and left.
     reserved: std::collections::HashMap<String, [f32; 4]>,
@@ -340,6 +343,7 @@ impl Scene {
             fonts: Fonts::default(),
             layout_dirty: true,
             settled: Vec::new(),
+            base_response: spring::RESPONSE,
             reserved: std::collections::HashMap::new(),
             style: Value::Null,
             wants_keyboard: false,
@@ -738,10 +742,8 @@ impl Scene {
             let Some(node) = node else { continue };
             let mut settled = true;
             for (i, spring) in node.springs.iter_mut().enumerate() {
-                match node.responses[i] {
-                    Some(response) => spring.advance_with(dt, slowdown, response),
-                    None => spring.advance(dt, slowdown),
-                }
+                let response = node.responses[i].unwrap_or(self.base_response);
+                spring.advance_with(dt, slowdown, response);
                 settled &= spring.settle(0.01);
             }
             if settled && node.moving && node.events & SETTLE != 0 {
@@ -1552,6 +1554,25 @@ mod tests {
         scene.append(root, other, None);
         scene.lay_out();
         assert_eq!(scene.frame(other).unwrap()[2], 0.);
+    }
+
+    #[test]
+    fn it_moves_as_fast_as_bentos_windows_do() {
+        let mut scene = Scene::new();
+        let node = panel(&mut scene, serde_json::json!({ "events": ["settle"] }));
+        settle(&mut scene);
+        scene.take_settled();
+        // bento's window movement: a critically damped spring of stiffness 800.
+        scene.base_response = std::f64::consts::TAU / 800f64.sqrt();
+        scene.set(node, &serde_json::json!({ "opacity": 0 }));
+        for _ in 0..18 {
+            scene.advance(1. / 60., Some(1.));
+        }
+        assert_eq!(
+            scene.take_settled(),
+            [node],
+            "settled in under a third of a second"
+        );
     }
 
     #[test]

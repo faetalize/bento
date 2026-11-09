@@ -5052,9 +5052,21 @@ impl Niri {
                 }));
             }
         }
-        let slowdown = {
+        let (slowdown, response) = {
             let config = self.config.borrow();
-            (!config.animations.off).then_some(config.animations.slowdown)
+            // The shell moves as windows do.
+            let response = match config.animations.window_movement.0.kind {
+                niri_config::animations::Kind::Spring(spring) => {
+                    std::f64::consts::TAU / f64::from(spring.stiffness.max(1)).sqrt()
+                }
+                niri_config::animations::Kind::Easing(easing) => {
+                    f64::from(easing.duration_ms.max(1)) / 1000.
+                }
+            };
+            (
+                (!config.animations.off).then_some(config.animations.slowdown),
+                response,
+            )
         };
 
         let dir = self.config.borrow().debug.shell_scripts.clone();
@@ -5070,11 +5082,12 @@ impl Niri {
             "cornerRadius": style.corner_radius,
             "animations": style.animations,
             "slowdown": style.slowdown,
+            "response": response,
         });
         let scene = self.scene.get_or_insert_with(Default::default);
         scene.ensure_loaded(&outputs, dir.as_deref(), style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
-        let moving = scene.advance(Instant::now(), slowdown);
+        let moving = scene.advance_with(Instant::now(), slowdown, response);
         scene.send_commands();
         if scene.wants_data_program(Instant::now()) {
             self.start_scene_data();
