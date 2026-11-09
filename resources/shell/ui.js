@@ -82,6 +82,116 @@ export function box(props = {}, children = []) {
   return new Node("box", props, children);
 }
 
+// A text field. bento keeps its text, caret and selection, and what the keys and clicks do to
+// them; everything about how it looks is here, in plain defaults that `look` overrides:
+// `{ caret, selection, placeholder }`, each a node's props. Its own props, like `size` or
+// `color`, are its text's. `onChange(text)` hears every change, and `onSubmit(text)` Enter.
+// `focus()` gives it the keys, while the shell has the keyboard.
+export function input({
+  placeholder = "",
+  value = "",
+  onChange,
+  onSubmit,
+  look = {},
+  ...props
+} = {}) {
+  const field = new Node("input", { text: value, ...props });
+  const hint = text(placeholder, {
+    position: "absolute", top: 0, left: 0, color: "fg/0.45", ...props, ...look.placeholder,
+  });
+  const caret = box({
+    position: "absolute", top: 0, left: 0, width: 1.5, height: props.size ?? 14,
+    fill: "fg", opacity: 0, radius: 1, ...look.caret,
+  });
+  const marks = [];
+  const wrap = box({ onPress: (event) => {
+    focus(widget);
+    show(native.edit(field.id, JSON.stringify({ point: [event.x, event.y] })));
+  } }, [field, hint, caret]);
+
+  let blink = null;
+  let current = value;
+  const show = (json) => {
+    if (!json) return;
+    const state = JSON.parse(json);
+    const [x, y, , h] = state.caretRect;
+    caret.set({ left: x, top: y, height: h, opacity: widget.focused ? 1 : 0 });
+    hint.set({ opacity: state.text ? 0 : 1 });
+    marks.splice(0).forEach((mark) => mark.remove());
+    for (const [sx, sy, sw, sh] of state.selection) {
+      const mark = box({
+        position: "absolute", left: sx, top: sy, width: sw, height: sh,
+        fill: "accent/0.35", animate: false, ...look.selection,
+      });
+      wrap.add(mark, 0);
+      marks.push(mark);
+    }
+    if (state.text !== current) {
+      current = state.text;
+      onChange?.(current);
+    }
+    // The caret stays lit while typing, and blinks once the typing stops.
+    if (blink) cancel(blink);
+    if (widget.focused) {
+      let lit = true;
+      const tick = () => {
+        lit = !lit;
+        caret.set({ opacity: lit ? 1 : 0 });
+        blink = after(530, tick);
+      };
+      blink = after(530, tick);
+    }
+    return state;
+  };
+
+  const widget = Object.assign(wrap, {
+    focused: false,
+    get text() {
+      return current;
+    },
+    setText(value) {
+      field.set({ text: value });
+      show(native.edit(field.id, "{}"));
+    },
+    focus() {
+      focus(widget);
+    },
+    // Takes a key while it has the focus, and says whether it used it.
+    key(event) {
+      if (!event.pressed) return false;
+      if (event.key === "Return" || event.key === "KP_Enter") {
+        onSubmit?.(current);
+        return true;
+      }
+      const state = show(native.edit(field.id, JSON.stringify(event)));
+      return Boolean(state?.changed);
+    },
+    blurred() {
+      if (blink) cancel(blink);
+      blink = null;
+      caret.set({ opacity: 0 });
+    },
+  });
+  show(native.edit(field.id, "{}"));
+  return widget;
+}
+
+// The text field that gets the keys first, or none.
+let focused = null;
+
+export function focus(field) {
+  if (focused === field) return;
+  if (focused) {
+    focused.focused = false;
+    focused.blurred();
+  }
+  focused = field;
+  if (field) {
+    field.focused = true;
+    field.setText(field.text);
+  }
+}
+
 // An icon from the icon theme by name, or an image file by its path, `size` pixels square
 // unless `width` and `height` say. A symbolic icon, whose name ends in "-symbolic", is drawn in
 // the node's `color`.
@@ -200,6 +310,11 @@ export function __dispatch(json) {
       return;
     case "scroll":
       handlers.get(event.id)?.onScroll?.(event);
+      return;
+    case "key":
+      // The focused text field takes what it can use; the rest goes to the listeners.
+      if (focused?.key(event)) return;
+      for (const fn of listeners.get(event.type) ?? []) fn(event);
       return;
     default:
       for (const fn of listeners.get(event.type) ?? []) fn(event);

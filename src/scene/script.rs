@@ -167,6 +167,26 @@ impl Shell {
                 )
                 .map_err(js)?,
             )?;
+            let s = scene.clone();
+            native.set(
+                "edit",
+                Function::new(ctx.clone(), move |id: u32, key: String| {
+                    let key = serde_json::from_str(&key).unwrap_or_default();
+                    let state = s.borrow_mut().edit(id, &key);
+                    state.map(|state| state.to_string())
+                })
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
+                "frame",
+                Function::new(ctx.clone(), move |id: u32| {
+                    s.borrow()
+                        .frame(id)
+                        .map(|f| serde_json::json!(f).to_string())
+                })
+                .map_err(js)?,
+            )?;
             let a = actions.clone();
             native.set(
                 "action",

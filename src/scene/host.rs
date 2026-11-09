@@ -219,7 +219,9 @@ impl SceneHost {
         };
         let hit = shell.scene.borrow().hit(name, point, CLICK);
         if let Some(id) = hit {
-            shell.send(&serde_json::json!({ "type": "press", "id": id, "button": button }));
+            shell.send(&serde_json::json!({
+                "type": "press", "id": id, "button": button, "x": point[0], "y": point[1],
+            }));
         }
         self.presses.insert(key, (hit, String::from(name), point));
         true
@@ -246,7 +248,9 @@ impl SceneHost {
         };
         if let (Some(id), Some((name, point))) = (pressed, at) {
             if shell.scene.borrow().hit(name, point, CLICK) == Some(id) {
-                shell.send(&serde_json::json!({ "type": "click", "id": id, "button": button }));
+                shell.send(&serde_json::json!({
+                    "type": "click", "id": id, "button": button, "x": point[0], "y": point[1],
+                }));
             }
         }
         true

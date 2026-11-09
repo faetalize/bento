@@ -145,6 +145,8 @@ pub enum Kind {
         style: TextStyle,
         /// The text laid out, at the width it was laid out for.
         laid: Option<(Option<f32>, Rc<Laid>)>,
+        /// For text that's typed into, its caret and selection, which `text` follows.
+        edit: Option<crate::layout::search::Field>,
     },
 }
 
@@ -382,14 +384,15 @@ impl Scene {
         }
     }
 
-    /// Makes a node of `kind`, "box" or "text", with `props`.
+    /// Makes a node of `kind`, "box", "text", "input" or "image", with `props`.
     pub fn create(&mut self, kind: &str, props: &Value) -> NodeId {
         let kind = match kind {
             "image" => Kind::Image(None),
-            "text" => Kind::Text {
+            "text" | "input" => Kind::Text {
                 text: String::new(),
                 style: TextStyle::default(),
                 laid: None,
+                edit: (kind == "input").then(Default::default),
             },
             _ => Kind::Box,
         };
@@ -461,13 +464,21 @@ impl Scene {
                 text,
                 style: text_style,
                 laid,
+                edit,
             } = &mut node.kind
             {
                 let changed = match key.as_str() {
                     "text" => value
                         .as_str()
                         .filter(|v| *v != text.as_str())
-                        .map(|v| *text = String::from(v))
+                        .map(|v| {
+                            *text = String::from(v);
+                            // Set from outside, typing goes on at its end.
+                            if let Some(edit) = edit {
+                                *edit = Default::default();
+                                edit.apply(&crate::layout::search::Edit::Insert(text.clone()));
+                            }
+                        })
                         .is_some(),
                     "size" => value.as_f64().map(|v| text_style.size = v as f32).is_some(),
                     "weight" => value
@@ -778,6 +789,78 @@ impl Scene {
     /// What the shell keeps along output `output`'s edges.
     pub fn reserved(&self, output: &str) -> [f32; 4] {
         self.reserved.get(output).copied().unwrap_or_default()
+    }
+
+    /// Types `key`, a key event as the shell gets it, into input `id`, or with `{ "point": [x,
+    /// y] }` puts its caret nearest that point on its output, with `shift` selecting up to it.
+    /// Says what it holds now, with where its caret and selection are relative to it, or `None`
+    /// if it isn't an input.
+    pub fn edit(&mut self, id: NodeId, key: &Value) -> Option<Value> {
+        use crate::layout::search::Edit;
+
+        let frame = self.node(id).map(|n| Self::drawn(n).0)?;
+        let Self { nodes, fonts, .. } = self;
+        let node = nodes.get_mut(id as usize)?.as_mut()?;
+        let Kind::Text {
+            text,
+            style,
+            laid,
+            edit: Some(field),
+        } = &mut node.kind
+        else {
+            return None;
+        };
+        let width = laid.as_ref().and_then(|(at, _)| *at);
+        let flag = |name: &str| key[name].as_bool().unwrap_or(false);
+        let shift = flag("shift");
+        let before = (field.text().to_owned(), field.caret(), field.anchor());
+        if let Some([x, y]) = key["point"]
+            .as_array()
+            .map(|p| [0, 1].map(|i| p.get(i).and_then(Value::as_f64).unwrap_or(0.) as f32))
+        {
+            let at = fonts.index_at(text, style, width, x - frame[0], y - frame[1]);
+            field.place(at, shift);
+        } else if key["pressed"].as_bool().unwrap_or(true) {
+            let select = shift;
+            let edit = match key["key"].as_str().unwrap_or_default() {
+                "BackSpace" => Some(Edit::Backspace),
+                "Delete" | "KP_Delete" => Some(Edit::Delete),
+                "Left" | "KP_Left" => Some(Edit::Left { select }),
+                "Right" | "KP_Right" => Some(Edit::Right { select }),
+                "Home" | "KP_Home" => Some(Edit::Home { select }),
+                "End" | "KP_End" => Some(Edit::End { select }),
+                "a" | "A" if flag("ctrl") => Some(Edit::SelectAll),
+                _ => key["text"]
+                    .as_str()
+                    .filter(|t| !t.is_empty() && !flag("ctrl") && !flag("alt") && !flag("super"))
+                    .map(|t| Edit::Insert(String::from(t))),
+            };
+            if let Some(edit) = edit {
+                field.apply(&edit);
+            }
+        }
+        let changed = before != (field.text().to_owned(), field.caret(), field.anchor());
+        if field.text() != text.as_str() {
+            *text = field.text().to_owned();
+            *laid = None;
+            let _ = self.tree.mark_dirty(node.taffy);
+            self.layout_dirty = true;
+        }
+        self.changed |= changed;
+        let (caret, selection) = fonts.caret(text, style, width, field.caret(), field.anchor());
+        Some(serde_json::json!({
+            "text": text,
+            "caret": field.caret(),
+            "anchor": field.anchor(),
+            "caretRect": caret,
+            "selection": selection,
+            "changed": changed,
+        }))
+    }
+
+    /// Where node `id` is drawn on its output: x, y, width and height.
+    pub fn frame(&self, id: NodeId) -> Option<[f32; 4]> {
+        self.node(id).map(|n| Self::drawn(n).0)
     }
 
     /// Whether anything needs laying out.
@@ -1114,7 +1197,13 @@ fn measure(
     let Some(Some(node)) = id.and_then(|id| nodes.get_mut(id as usize)) else {
         return taffy::LayoutOutput::HIDDEN;
     };
-    let Kind::Text { text, style, laid } = &mut node.kind else {
+    let Kind::Text {
+        text,
+        style,
+        laid,
+        edit,
+    } = &mut node.kind
+    else {
         let size = Size {
             width: input.known_dimensions.width.unwrap_or(0.),
             height: input.known_dimensions.height.unwrap_or(0.),
@@ -1139,9 +1228,18 @@ fn measure(
             new
         }
     };
+    // Text that's typed into is a line tall even while it's empty.
+    let min_height = if edit.is_some() {
+        style.size * 1.25
+    } else {
+        0.
+    };
     taffy::LayoutOutput::from_outer_size(Size {
         width: input.known_dimensions.width.unwrap_or(laid.width.ceil()),
-        height: input.known_dimensions.height.unwrap_or(laid.height.ceil()),
+        height: input
+            .known_dimensions
+            .height
+            .unwrap_or(laid.height.ceil().max(min_height)),
     })
 }
 
@@ -1383,6 +1481,46 @@ mod tests {
         let open = shapes(&scene)[1];
         assert_eq!([open[2], open[3]], [320., 104.]);
         assert!((open[0] + open[2] / 2. - 960.).abs() < 1., "{open:?}");
+    }
+
+    #[test]
+    fn typing_into_an_input_edits_it_with_its_caret_and_selection() {
+        let mut scene = Scene::new();
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let input = scene.create("input", &serde_json::json!({ "size": 20 }));
+        scene.append(root, input, None);
+        scene.lay_out();
+        let key = |key: &str, text: &str, shift: bool| serde_json::json!({ "key": key, "text": text, "pressed": true, "shift": shift });
+        for c in ["h", "e", "y"] {
+            scene.edit(input, &key(c, c, false)).unwrap();
+        }
+        let state = scene.edit(input, &key("BackSpace", "", false)).unwrap();
+        assert_eq!(state["text"], "he");
+        assert_eq!(state["caret"], 2);
+        let state = scene.edit(input, &key("Left", "", true)).unwrap();
+        assert_eq!(
+            (state["caret"].as_u64(), state["anchor"].as_u64()),
+            (Some(1), Some(2))
+        );
+        assert_eq!(state["selection"].as_array().unwrap().len(), 1);
+        let state = scene.edit(
+            input,
+            &serde_json::json!({ "key": "a", "text": "a", "ctrl": true }),
+        );
+        assert_eq!(state.unwrap()["anchor"], 0);
+        // The caret goes where a press puts it: the start, at the input's left edge.
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        let frame = scene.frame(input).unwrap();
+        let state = scene.edit(
+            input,
+            &serde_json::json!({ "point": [frame[0], frame[1] + 5.] }),
+        );
+        assert_eq!(state.unwrap()["caret"], 0);
+        assert!(
+            scene.edit(root, &key("x", "x", false)).is_none(),
+            "only inputs are typed into"
+        );
     }
 
     #[test]
