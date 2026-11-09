@@ -1687,7 +1687,13 @@ impl State {
                     self.niri.a11y_announce_hotkey_overlay();
                 }
             }
-            Action::ToggleLauncher => self.niri.bento_shell_state.toggle_launcher(),
+            Action::ToggleLauncher => match &self.niri.scene {
+                Some(scene) => {
+                    scene.toggle_launcher();
+                    self.niri.queue_redraw_all();
+                }
+                None => self.niri.bento_shell_state.toggle_launcher(),
+            },
             Action::MoveWorkspaceToMonitorLeft => {
                 if let Some(output) = self.niri.output_left() {
                     self.niri.layout.move_workspace_to_output(&output);

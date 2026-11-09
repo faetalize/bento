@@ -9,6 +9,7 @@
 //! and what's in an island moves with it as their places move together. A node that grows out of a point grows as a circle until it's as wide
 //! as its narrower side, then stretches to its proportions, and shrinks back the same way.
 
+pub mod apps;
 pub mod host;
 pub mod script;
 mod spring;

@@ -86,6 +86,23 @@ export function text(value, props = {}) {
   return new Node("text", { ...props, text: String(value) });
 }
 
+// Runs a bento action, as a bind would, like `action("focus-workspace", [], { workspace: id })`
+// or `action("spawn", ["foot"])`. `properties`, `window` and `workspace` are optional.
+export function action(name, args = [], { properties = {}, window, workspace } = {}) {
+  native.action(JSON.stringify({ name, args, properties, window, workspace }));
+}
+
+// The apps that show in launchers, sorted by name: `{ id, name, generic, comment, keywords,
+// icon }` each.
+export function apps() {
+  return JSON.parse(native.apps());
+}
+
+// Starts the app with desktop entry id `id`.
+export function launch(id) {
+  return native.launch(id);
+}
+
 // Takes the keyboard from the apps, or gives it back. While the shell has it, every key that no
 // shortcut takes comes as a "key" event: `{ key, text, pressed, repeat, shift, ctrl, alt, super }`,
 // where `key` is its name, like "a", "Return" or "Escape", and `text` what it types.
@@ -143,7 +160,8 @@ export function cancel(id) {
 }
 
 // Listens to bento's events: "outputs", "workspaces", "style", "key" while the shell has the
-// keyboard, and "outside", a press anywhere off the shell, to close what's open.
+// keyboard, "outside", a press anywhere off the shell, to close what's open, and "launcher",
+// the launcher's shortcut.
 export function on(type, fn) {
   if (!listeners.has(type)) listeners.set(type, []);
   listeners.get(type).push(fn);

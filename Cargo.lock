@@ -481,6 +481,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
+ "shlex 2.0.1",
  "smithay",
  "smithay-drm-extras",
  "swash",

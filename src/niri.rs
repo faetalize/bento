@@ -931,6 +931,7 @@ impl State {
 
         self.niri.refresh_window_rules();
         self.refresh_ipc_outputs();
+        self.run_scene_actions();
         self.ipc_refresh();
 
         // Needs to be called after updating the keyboard focus.
@@ -2604,6 +2605,31 @@ impl State {
 
         let xkb = xkb.clone();
         self.set_xkb_config(xkb.to_xkb_config());
+    }
+}
+
+impl State {
+    /// Runs the bento actions that bento's own shell asked for.
+    fn run_scene_actions(&mut self) {
+        let Some(scene) = &self.niri.scene else {
+            return;
+        };
+        for request in scene.take_actions() {
+            let request = crate::ipc::action::ActionRequest {
+                name: request["name"].as_str().unwrap_or_default().to_owned(),
+                args: request["args"].as_array().cloned().unwrap_or_default(),
+                properties: request["properties"]
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                window: request["window"].as_u64(),
+                workspace: request["workspace"].as_u64(),
+            };
+            match crate::ipc::action::parse(request, crate::layout::tiling::engine::action_args) {
+                Ok(action) => self.do_action(action, false),
+                Err(err) => warn!("the shell asked for an action that isn't one: {err}"),
+            }
+        }
     }
 }
 
@@ -4941,6 +4967,7 @@ impl Niri {
                     "index": index,
                     "name": ws.name(),
                     "active": mon.active_workspace_idx() == index,
+                    "id": ws.id().get(),
                 }));
             }
         }

@@ -1,6 +1,6 @@
 pub mod client;
 pub mod server;
 
-mod action;
+pub(crate) mod action;
 mod read;
 mod snapshot;

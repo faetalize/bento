@@ -149,6 +149,21 @@ impl SceneHost {
         }
     }
 
+    /// The bento actions the shell asked to run since this was last asked.
+    pub fn take_actions(&self) -> Vec<serde_json::Value> {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.take_actions())
+            .unwrap_or_default()
+    }
+
+    /// Tells the shell that its launcher's shortcut was pressed.
+    pub fn toggle_launcher(&self) {
+        if let Some(shell) = &self.shell {
+            shell.send(&serde_json::json!({ "type": "launcher" }));
+        }
+    }
+
     /// Whether the pointer is over the shell.
     pub fn pointer_over(&self) -> bool {
         self.pointer.is_some()

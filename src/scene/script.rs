@@ -31,6 +31,8 @@ const CALL_TIME_LIMIT: Duration = Duration::from_millis(200);
 /// A loaded shell: its scene, and the script that drives it.
 pub struct Shell {
     pub scene: Rc<RefCell<Scene>>,
+    /// bento actions the shell asked to run, as `{ name, args, properties, window, workspace }`.
+    actions: Rc<RefCell<Vec<serde_json::Value>>>,
     timers: Rc<RefCell<Vec<(Instant, u32)>>>,
     deadline: Rc<Cell<Option<Instant>>>,
     dispatch: Persistent<Function<'static>>,
@@ -114,6 +116,8 @@ impl Shell {
 
         let context = Context::full(&runtime).context("error creating the JS context")?;
         let timers: Rc<RefCell<Vec<(Instant, u32)>>> = Rc::default();
+        let actions: Rc<RefCell<Vec<serde_json::Value>>> = Rc::default();
+        let apps: Rc<RefCell<super::apps::Apps>> = Rc::default();
         let next_timer = Rc::new(Cell::new(0u32));
 
         deadline.set(Some(Instant::now() + CALL_TIME_LIMIT * 5));
@@ -162,6 +166,30 @@ impl Shell {
                     },
                 )
                 .map_err(js)?,
+            )?;
+            let a = actions.clone();
+            native.set(
+                "action",
+                Function::new(ctx.clone(), move |request: String| {
+                    if let Ok(request) = serde_json::from_str(&request) {
+                        a.borrow_mut().push(request);
+                    }
+                })
+                .map_err(js)?,
+            )?;
+            let a = apps.clone();
+            native.set(
+                "apps",
+                Function::new(ctx.clone(), move || {
+                    serde_json::to_string(a.borrow_mut().list()).unwrap_or_default()
+                })
+                .map_err(js)?,
+            )?;
+            let a = apps.clone();
+            native.set(
+                "launch",
+                Function::new(ctx.clone(), move |id: String| a.borrow_mut().launch(&id))
+                    .map_err(js)?,
             )?;
             let s = scene.clone();
             native.set(
@@ -257,6 +285,7 @@ impl Shell {
 
         Ok(Self {
             scene,
+            actions,
             timers,
             deadline,
             dispatch: dispatch?,
@@ -282,6 +311,11 @@ impl Shell {
         if let Err(err) = res {
             warn!("the shell failed handling {event}: {err:?}");
         }
+    }
+
+    /// The bento actions the shell asked to run since this was last asked.
+    pub fn take_actions(&self) -> Vec<serde_json::Value> {
+        std::mem::take(&mut self.actions.borrow_mut())
     }
 
     /// When the next timer is due.
