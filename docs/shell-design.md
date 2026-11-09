@@ -92,6 +92,25 @@ shell sends them up off the screen, and the pointer coming near the top edge bri
 They don't show the focused window or a taskbar. Where one grows near another they melt together, as one piece
 of glass.
 
+## The islands' panels
+
+The clock opens into the calendar: the time and the date, the month, and the weather where the
+user is. Where they are is in bento's config, and bento's settings set it; without a place, the
+weather's room has a button that opens that page of the settings.
+
+The right island opens into the control center: the light or dark style, the sound outputs and
+inputs, the displays' brightness, and buttons for a screenshot and a screen recording. Each of
+those two runs any command the settings give it, alone or with a notification of the user's
+wording once it's done, for tools that show none of their own.
+
+A sound output can be pinned. While any are, the right island has a button that switches to the
+next pinned one, as a shortcut can too.
+
+The bar has a button for the clipboard manager.
+
+A shortcut opens an editor for the focused workspace: its name changes as it's typed, and the
+editor takes the name away and puts it back.
+
 ## The shell is made of glass
 
 The shell, the islands, their panels, the launcher and notifications, is glass: it blurs and

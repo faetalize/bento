@@ -247,13 +247,45 @@ debug {
 }
 ```
 
-To work on bento's own shell and its widgets, point bento at their folder; it reads `main.js` and `ui.js` from there instead of the copies built in, and loads them again whenever they change:
+To work on bento's own shell and its widgets, point bento at their folder; it reads `main.js` from there instead of the copy built in, and every other script there as the module `bento:` and its name, like `bento:ui`, and loads them again whenever they change:
 
 ```kdl
 debug {
     shell-scripts "~/Source/bento/resources/shell"
 }
 ```
+
+The left island shows the workspaces and a minimap of the one on screen: its tiles where they sit, with the part the view shows marked. Scrolling over the minimap moves the focus along the columns, and a click on a tile focuses its window.
+
+The middle island is the clock, and opens into the calendar, with the weather where you are. Settings → Location sets the place, by its name or its coordinates, and Celsius or Fahrenheit. The weather and the search for places come from [Open-Meteo](https://open-meteo.com), which gets the place's coordinates and what you search for, and nothing else:
+
+```kdl
+location {
+    name "Reykjavik, Iceland"
+    latitude 64.1355
+    longitude -21.8954
+}
+```
+
+The right island is the status, and opens into the control center: the light or dark style, the sound outputs and inputs with their volumes, and the displays' brightness (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Its screenshot button takes bento's own screenshot unless a command is set, and its screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Control Center sets them:
+
+```kdl
+shell {
+    fahrenheit
+    screenshot {
+        command "grim -g \"$(slurp)\" - | swappy -f -"
+        notification "Screenshot taken"
+        notification-body "It's in Pictures."
+    }
+    screen-record {
+        command "wf-recorder -f ~/Videos/recording.mp4"
+    }
+}
+```
+
+A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and `switch-audio-output` does the same from a shortcut.
+
+`edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. Neither action is bound by default; Settings → Shortcuts binds them.
 
 A rule can pick the other material for some windows or surfaces:
 
