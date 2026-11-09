@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{Instant, SystemTime};
 
 use smithay::backend::allocator::Format as DrmFormat;
@@ -20,6 +21,31 @@ use crate::render_helpers::framebuffer_effect::FramebufferEffect;
 use crate::render_helpers::glass::{self, GlassFrame};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
+
+/// What bento's own shell keeps along an output's edges, top, right, bottom and left, that the
+/// output's working area leaves out, as layer surfaces' exclusive zones are.
+#[derive(Default)]
+struct Reserved(Mutex<[f64; 4]>);
+
+/// What bento's own shell keeps along `output`'s edges.
+pub fn reserved_on(output: &smithay::output::Output) -> [f64; 4] {
+    output
+        .user_data()
+        .get::<Reserved>()
+        .map_or([0.; 4], |r| *r.0.lock().unwrap())
+}
+
+/// Sets what bento's own shell keeps along `output`'s edges, and says whether it changed.
+pub fn set_reserved_on(output: &smithay::output::Output, edges: [f64; 4]) -> bool {
+    output
+        .user_data()
+        .insert_if_missing_threadsafe(Reserved::default);
+    let reserved = output.user_data().get::<Reserved>().unwrap();
+    let mut current = reserved.0.lock().unwrap();
+    let changed = *current != edges;
+    *current = edges;
+    changed
+}
 
 /// How close islands come for their glass to melt together.
 const MELT: f32 = 24.;
@@ -64,11 +90,16 @@ impl SceneHost {
     /// Loads the shell, again when its files changed, onto `outputs`, each with its logical size,
     /// with bento's own shell and widgets read from `dir` if it's given. A shell that fails to
     /// load leaves the last one.
-    pub fn ensure_loaded(&mut self, outputs: &[(String, (f32, f32))], dir: Option<&Path>) {
+    pub fn ensure_loaded(
+        &mut self,
+        outputs: &[(String, (f32, f32))],
+        dir: Option<&Path>,
+        style: serde_json::Value,
+    ) {
         let mtimes = script::mtimes(dir);
         if self.loaded_mtimes.as_ref() != Some(&mtimes) {
             self.loaded_mtimes = Some(mtimes);
-            match Shell::load(outputs, dir) {
+            match Shell::load(outputs, dir, style.clone()) {
                 Ok(shell) => {
                     self.shell = Some(shell);
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
@@ -80,6 +111,11 @@ impl SceneHost {
         }
 
         let Some(shell) = &self.shell else { return };
+        let restyled = shell.scene.borrow().style != style;
+        if restyled {
+            shell.scene.borrow_mut().style = style.clone();
+            shell.send(&serde_json::json!({ "type": "style", "style": style }));
+        }
         let mut scene = shell.scene.borrow_mut();
         for (name, size) in outputs {
             scene.set_output(name, *size);
@@ -104,6 +140,13 @@ impl SceneHost {
             self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
             shell.send(&serde_json::json!({ "type": "outputs", "outputs": added }));
         }
+    }
+
+    /// What the shell keeps along output `output`'s edges: top, right, bottom and left.
+    pub fn reserved(&self, output: &str) -> [f32; 4] {
+        self.shell
+            .as_ref()
+            .map_or([0.; 4], |shell| shell.scene.borrow().reserved(output))
     }
 
     /// Tells the shell the workspaces, by output, if they changed.

@@ -2533,9 +2533,20 @@ impl State {
         // bento's own shell takes clicks on what it shows.
         if ButtonState::Pressed == button_state && button == Some(MouseButton::Left) {
             let location = pointer.current_location();
+            // It's at the top layer: under overlay surfaces, and under a fullscreen window.
             let hit = self
                 .niri
                 .output_under(location)
+                .filter(|(output, pos)| {
+                    smithay::desktop::layer_map_for_output(output)
+                        .layer_under(smithay::wayland::shell::wlr_layer::Layer::Overlay, *pos)
+                        .is_none()
+                        && !self
+                            .niri
+                            .layout
+                            .monitor_for_output(output)
+                            .is_some_and(|mon| mon.render_above_top_layer())
+                })
                 .map(|(output, pos)| (output.name(), [pos.x as f32, pos.y as f32]));
             if let Some((name, pos)) = hit {
                 if self

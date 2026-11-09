@@ -1,10 +1,11 @@
 // bento's own shell: three islands of glass along the top of each output. The clock opens into
 // the calendar.
 
-import { box, text, root, outputs, every, on, morph } from "bento:ui";
+import { box, text, root, outputs, every, on, morph, style, reserve } from "bento:ui";
 
 const HEIGHT = 36;
-const GAP = 8;
+// bento's gaps: the islands sit that far from the screen's edges, and windows that far below.
+let gaps = style().gaps ?? 8;
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const LONG_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -102,12 +103,21 @@ function build(output) {
 
   const side = (justify, child) => box({ grow: 1, width: 0, justify }, [child]);
   const bar = box(
-    { position: "absolute", top: GAP, left: GAP, right: GAP, align: "start" },
+    { position: "absolute", top: gaps, left: gaps, right: gaps, align: "start" },
     [side("start", left), middle, side("end", right)],
   );
   top.add(bar);
-  shells.set(output, { left, buttons, time, shortDate, bigTime, longDate });
+  reserve(output, { top: gaps + HEIGHT });
+  shells.set(output, { bar, left, buttons, time, shortDate, bigTime, longDate });
 }
+
+on("style", (event) => {
+  gaps = event.style.gaps ?? gaps;
+  for (const [output, shell] of shells) {
+    shell.bar.set({ top: gaps, left: gaps, right: gaps });
+    reserve(output, { top: gaps + HEIGHT });
+  }
+});
 
 for (const output of outputs()) build(output);
 on("outputs", (event) => event.outputs.forEach(build));

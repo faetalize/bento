@@ -258,6 +258,11 @@ pub struct Scene {
     layout_dirty: bool,
     /// Nodes to match once they're laid out: one grows out of the other.
     matches: Vec<(NodeId, NodeId)>,
+    /// What the shell keeps for itself along each output's edges, that windows stay out of:
+    /// top, right, bottom and left.
+    reserved: std::collections::HashMap<String, [f32; 4]>,
+    /// bento's style that the shell lines up with: its gaps and corner radius.
+    pub style: Value,
     /// Whether anything changed since it was last drawn.
     changed: bool,
     pub theme: Theme,
@@ -287,6 +292,8 @@ impl Scene {
             fonts: Fonts::default(),
             layout_dirty: true,
             matches: Vec::new(),
+            reserved: std::collections::HashMap::new(),
+            style: Value::Null,
             changed: true,
             theme: Theme::new(true, None),
         }
@@ -332,6 +339,7 @@ impl Scene {
 
     /// Takes away output `name`'s nodes.
     pub fn remove_output(&mut self, name: &str) {
+        self.reserved.remove(name);
         if let Some(i) = self.roots.iter().position(|r| r.output == name) {
             let root = self.roots.remove(i);
             self.destroy(root.node);
@@ -707,6 +715,16 @@ impl Scene {
             self.destroy(id);
         }
         moving
+    }
+
+    /// Keeps `edges` along output `output`, top, right, bottom and left, for the shell.
+    pub fn reserve(&mut self, output: &str, edges: [f32; 4]) {
+        self.reserved.insert(String::from(output), edges);
+    }
+
+    /// What the shell keeps along output `output`'s edges.
+    pub fn reserved(&self, output: &str) -> [f32; 4] {
+        self.reserved.get(output).copied().unwrap_or_default()
     }
 
     /// Whether anything needs laying out.
@@ -1173,7 +1191,12 @@ mod tests {
 
     #[test]
     fn bentos_own_shell_lays_out_islands_and_the_clock_opens() {
-        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None).unwrap();
+        let shell = Shell::load(
+            &[(String::from("DP-1"), (1920., 1080.))],
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        )
+        .unwrap();
         let mut scene = shell.scene.borrow_mut();
         scene.lay_out();
         scene.advance(1., Some(1.));
@@ -1216,8 +1239,23 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_keeps_the_top_for_its_islands_and_bentos_gaps() {
+        let style = serde_json::json!({ "gaps": 16 });
+        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None, style).unwrap();
+        assert_eq!(
+            shell.scene.borrow().reserved("DP-1"),
+            [16. + 36., 0., 0., 0.]
+        );
+    }
+
+    #[test]
     fn the_clocks_time_travels_into_the_calendars() {
-        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None).unwrap();
+        let shell = Shell::load(
+            &[(String::from("DP-1"), (1920., 1080.))],
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        )
+        .unwrap();
         let texts = |scene: &Scene| -> Vec<([f32; 2], f32, f32)> {
             scene
                 .draw("DP-1")
@@ -1262,7 +1300,12 @@ mod tests {
 
     #[test]
     fn opening_the_clock_leaves_the_other_islands_where_they_are() {
-        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None).unwrap();
+        let shell = Shell::load(
+            &[(String::from("DP-1"), (1920., 1080.))],
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        )
+        .unwrap();
         let glass = |scene: &Scene| -> Vec<[f32; 4]> {
             scene
                 .draw("DP-1")

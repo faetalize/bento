@@ -1678,7 +1678,19 @@ impl<W: LayoutElement> Workspace<W> {
 }
 
 pub(super) fn compute_working_area(output: &Output) -> Rectangle<f64, Logical> {
-    layer_map_for_output(output).non_exclusive_zone().to_f64()
+    let zone = layer_map_for_output(output).non_exclusive_zone().to_f64();
+    // bento's own shell keeps its edges as layer surfaces' exclusive zones do; where both keep
+    // an edge, the larger keeps it.
+    let [top, right, bottom, left] = crate::scene::host::reserved_on(output);
+    let size = crate::utils::output_size(output);
+    let x0 = zone.loc.x.max(left);
+    let y0 = zone.loc.y.max(top);
+    let x1 = (zone.loc.x + zone.size.w).min(size.w - right);
+    let y1 = (zone.loc.y + zone.size.h).min(size.h - bottom);
+    Rectangle::new(
+        Point::new(x0, y0),
+        Size::new((x1 - x0).max(0.), (y1 - y0).max(0.)),
+    )
 }
 
 fn compute_workspace_shadow_config(

@@ -4880,10 +4880,29 @@ impl Niri {
                 .flatten()
                 .unwrap_or(dir)
         });
+        let style = self.shell_style();
+        let style = serde_json::json!({
+            "gaps": style.gaps,
+            "cornerRadius": style.corner_radius,
+        });
         let scene = self.scene.get_or_insert_with(Default::default);
-        scene.ensure_loaded(&outputs, dir.as_deref());
+        scene.ensure_loaded(&outputs, dir.as_deref(), style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         let moving = scene.advance(Instant::now(), slowdown);
+
+        // Windows stay out of what the shell keeps along the outputs' edges.
+        let reserved: Vec<(Output, [f64; 4])> = self
+            .global_space
+            .outputs()
+            .map(|o| (o.clone(), scene.reserved(&o.name()).map(f64::from)))
+            .collect();
+        for (o, edges) in reserved {
+            if crate::scene::host::set_reserved_on(&o, edges) {
+                self.layout.update_output_size(&o);
+                self.queue_redraw(&o);
+            }
+        }
+        let scene = self.scene.as_mut().unwrap();
 
         let scale = output.current_scale().fractional_scale();
         let size: Size<i32, Physical> = output_size(output).to_physical_precise_round(scale);
@@ -5020,20 +5039,6 @@ impl Niri {
         self.window_mru_ui
             .render_output(self, output, ctx.r(), &mut |elem| push(elem.into()));
 
-        // Then bento's own shell, over the layer surfaces.
-        if let Some(scene) = &self.scene {
-            let blur = self.config.borrow().blur;
-            let name = output.name();
-            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Texture(elem)));
-            scene.render_glass(
-                &name,
-                output_scale.x,
-                blur,
-                self.glass_frame(output),
-                &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
-            );
-        }
-
         // Don't draw the focus ring on the workspaces while interactively moving above those
         // workspaces, since the interactively-moved window already has a focus ring.
         let focus_ring = !self.layout.interactive_move_is_moving_above_output(output);
@@ -5104,6 +5109,26 @@ impl Niri {
         push_popups_from_layer!(Layer::Overlay);
         push_normal_from_layer!(Layer::Overlay);
 
+        // bento's own shell, with the top layer.
+        macro_rules! push_scene {
+            () => {{
+                if let Some(scene) = &self.scene {
+                    let blur = self.config.borrow().blur;
+                    let name = output.name();
+                    scene.render_content(&name, &mut |elem| {
+                        push(OutputRenderElements::Texture(elem))
+                    });
+                    scene.render_glass(
+                        &name,
+                        output_scale.x,
+                        blur,
+                        self.glass_frame(output),
+                        &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
+                    );
+                }
+            }};
+        }
+
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
@@ -5112,6 +5137,7 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
+            push_scene!();
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
 
@@ -5131,6 +5157,7 @@ impl Niri {
                 }
             }
         } else {
+            push_scene!();
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
 
@@ -5372,8 +5399,14 @@ impl Niri {
                 let moving = self.update_scene(backend, output);
                 let state = self.output_state.get_mut(output).unwrap();
                 state.unfinished_animations_remain |= moving;
-            } else {
-                self.scene = None;
+            } else if self.scene.take().is_some() {
+                // Without the shell, windows get its edges back.
+                let outputs: Vec<Output> = self.global_space.outputs().cloned().collect();
+                for o in outputs {
+                    if crate::scene::host::set_reserved_on(&o, [0.; 4]) {
+                        self.layout.update_output_size(&o);
+                    }
+                }
             }
             let state = self.output_state.get_mut(output).unwrap();
 

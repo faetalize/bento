@@ -73,6 +73,17 @@ export function morph(from, to) {
   native.match(from.id, to.id);
 }
 
+// bento's style, to line up with: `{ gaps, cornerRadius }`. It's sent again as a "style" event
+// whenever it changes.
+export function style() {
+  return JSON.parse(native.style()) ?? {};
+}
+
+// Keeps `edges` of output `name`, like `{ top: 44 }`, for the shell: windows stay out of them.
+export function reserve(name, { top = 0, right = 0, bottom = 0, left = 0 } = {}) {
+  native.reserve(name, top, right, bottom, left);
+}
+
 // The outputs, by name.
 export function outputs() {
   return JSON.parse(native.outputs());

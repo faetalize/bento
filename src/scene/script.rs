@@ -83,13 +83,18 @@ fn sources(dir: Option<&Path>) -> anyhow::Result<(String, String)> {
 impl Shell {
     /// Loads the user's shell, or bento's own, onto `outputs`, each its logical size, with
     /// bento's own shell and widgets read from `dir` if it's given.
-    pub fn load(outputs: &[(String, (f32, f32))], dir: Option<&Path>) -> anyhow::Result<Self> {
+    pub fn load(
+        outputs: &[(String, (f32, f32))],
+        dir: Option<&Path>,
+        style: serde_json::Value,
+    ) -> anyhow::Result<Self> {
         let (source, ui) = sources(dir)?;
 
         let mut scene = Scene::new();
         for (name, size) in outputs {
             scene.set_output(name, *size);
         }
+        scene.style = style;
         let scene = Rc::new(RefCell::new(scene));
 
         let runtime = Runtime::new().context("error creating the JS runtime")?;
@@ -145,6 +150,23 @@ impl Shell {
                     },
                 )
                 .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
+                "reserve",
+                Function::new(
+                    ctx.clone(),
+                    move |output: String, top: f64, right: f64, bottom: f64, left: f64| {
+                        let edges = [top, right, bottom, left].map(|e| e.max(0.) as f32);
+                        s.borrow_mut().reserve(&output, edges);
+                    },
+                )
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
+                "style",
+                Function::new(ctx.clone(), move || s.borrow().style.to_string()).map_err(js)?,
             )?;
             let s = scene.clone();
             native.set(
