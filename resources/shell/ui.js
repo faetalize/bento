@@ -291,7 +291,7 @@ export function layout(node) {
 
 // Grows `node` out of a point in the middle of its place to its place, in one motion, its
 // corners easing from round to `radius`. Grown again while it shrinks, it turns around from
-// wherever it is. `content`, nodes in it, sharpens in as it grows.
+// wherever it is. `content`, nodes in it, grows with it around its own middle and sharpens in.
 export function grow(node, { radius = 0, content = [] } = {}) {
   const place = layout(node);
   if (!place) return;
@@ -304,7 +304,9 @@ export function grow(node, { radius = 0, content = [] } = {}) {
     ...(fresh ? { jump: { drawSize: [0, 0], radius: Math.min(place[2], place[3]) / 2 } } : {}),
   });
   for (const child of content) {
-    child.set({ opacity: 1, blur: 0, ...(fresh ? { jump: { opacity: 0, blur: 4 } } : {}) });
+    child.set({
+      opacity: 1, blur: 0, scale: 1, ...(fresh ? { jump: { opacity: 0, blur: 4, scale: 0 } } : {}),
+    });
   }
 }
 
@@ -314,7 +316,7 @@ export function shrink(node, { content = [], done } = {}) {
   const place = layout(node);
   if (!place || node.gone) return;
   node.gone = "going";
-  for (const child of content) child.set({ opacity: 0, blur: 4 });
+  for (const child of content) child.set({ opacity: 0, blur: 4, scale: 0 });
   node.set({
     drawSize: [0, 0],
     radius: Math.min(place[2], place[3]) / 2,

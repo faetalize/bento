@@ -255,15 +255,17 @@ function openLauncher(output) {
   });
   const list = box({ direction: "column", gap: 2 });
   const search = box({ padding: [6, 10] }, [field]);
+  // One body, so that it grows around the panel's middle as one.
+  const body = box({ direction: "column", gap: 8 }, [search, list]);
   const panel = box(
     {
       material: "glass", radius: LAUNCHER_RADIUS, width: 560, padding: 12, direction: "column",
-      gap: 8, clip: true,
+      clip: true,
     },
-    [search, list],
+    [body],
   );
   launcherFrame(output).room.add(panel);
-  const content = [search, list];
+  const content = [body];
   launcher = {
     output, panel, field, list, content, rows: [], matches: [], selected: 0, all: apps(),
   };
