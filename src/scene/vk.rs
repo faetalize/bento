@@ -4,9 +4,11 @@
 //! It has a device of its own on bento's GPU. Shapes and glyphs are instanced quads read from one
 //! storage buffer; glyphs come from an atlas that swash rasterizes into.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 use std::os::fd::{FromRawFd as _, OwnedFd};
+use std::rc::Rc;
+use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context as _};
 use ash::vk;
@@ -86,6 +88,9 @@ struct ImageAtlas {
 /// Empty pixels around each image in the atlas, for blurring and smoothing.
 const IMAGE_PAD: u32 = 8;
 
+/// How much larger each next size is that text is drawn at while it grows.
+const SIZE_STEP: f32 = 1.25;
+
 /// An icon's or an image's pixels, premultiplied RGBA, fitted into `size` pixels square.
 fn load_image(source: &ImageSource, size: u32, theme: &str) -> Option<(Vec<u8>, u32, u32)> {
     let path = match source {
@@ -113,6 +118,191 @@ fn load_image(source: &ImageSource, size: u32, theme: &str) -> Option<(Vec<u8>, 
         }
     }
     Some((data, w, h))
+}
+
+/// An icon's or an image's pixels, premultiplied RGBA, and its size.
+type Pixels = (Vec<u8>, u32, u32);
+
+/// How many threads load icons and images.
+const LOADERS: usize = 4;
+
+/// How many bytes of loaded icons and images are kept, to put back in the atlas without loading
+/// them again, before they're all let go.
+const KEPT_PIXELS: usize = 64 * 1024 * 1024;
+
+/// How many glyphs a frame draws itself: more than a few take longer than a frame has, and are
+/// drawn on other threads and shown from the frame after they're done.
+const SYNC_GLYPHS: usize = 12;
+
+/// How many glyphs one thread is given at a time, so that a lot of text is shared among them.
+const GLYPH_BATCH: usize = 24;
+
+/// A glyph as it's drawn: its pixels, their size, and where they sit from the glyph's origin.
+struct Drawn {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    left: i32,
+    top: i32,
+}
+
+enum Job {
+    /// An icon or image, with the icon theme to find it in.
+    Image(ImageKey, String),
+    /// Glyphs of one font at one size.
+    Glyphs {
+        font: parley::FontData,
+        coords: Vec<i16>,
+        keys: Vec<GlyphKey>,
+    },
+}
+
+enum Done {
+    Image(ImageKey, Option<Pixels>),
+    Glyphs(Vec<(GlyphKey, Option<Drawn>)>),
+}
+
+/// Draws the glyphs `keys`, of `font` at one size, with one scaler: setting one up for a size
+/// costs as much as drawing a few glyphs.
+fn draw_glyphs(
+    context: &mut ScaleContext,
+    font: &parley::FontData,
+    coords: &[i16],
+    keys: &[GlyphKey],
+) -> Vec<(GlyphKey, Option<Drawn>)> {
+    let font_ref = swash::FontRef::from_index(font.data.as_ref(), font.index as usize);
+    let (Some(font_ref), Some(first)) = (font_ref, keys.first()) else {
+        return keys.iter().map(|key| (*key, None)).collect();
+    };
+    let mut scaler = context
+        .builder(font_ref)
+        .size(first.size as f32 / 4.)
+        .hint(true)
+        .normalized_coords(coords)
+        .build();
+    keys.iter()
+        .map(|key| {
+            let drawn = Render::new(&[Source::Outline])
+                .format(Format::Alpha)
+                .offset(Vector::new(f32::from(key.subpixel) / 4., 0.))
+                .render(&mut scaler, key.glyph as u16)
+                .filter(|image| image.placement.width > 0 && image.placement.height > 0)
+                .map(|image| Drawn {
+                    width: image.placement.width,
+                    height: image.placement.height,
+                    left: image.placement.left,
+                    top: image.placement.top,
+                    data: image.data,
+                });
+            (*key, drawn)
+        })
+        .collect()
+}
+
+/// Loads icons and images, and draws glyphs when there are many, on threads of its own: finding
+/// an icon's file, reading and drawing it takes milliseconds, and so does a screenful of new
+/// text, which bento's main thread doesn't have in a frame. What's asked for is drawn from the
+/// frame after it's there.
+struct Loader {
+    jobs: mpsc::Sender<Job>,
+    done: mpsc::Receiver<Done>,
+    /// How many threads there are to do the jobs.
+    threads: usize,
+    /// Icons and images asked for and not back yet.
+    pending: HashSet<ImageKey>,
+    /// Loaded, to put in the atlas where it's drawn: `None` for one that can't be loaded.
+    loaded: HashMap<ImageKey, Option<Rc<Pixels>>>,
+    kept: usize,
+    /// Glyphs asked for and not back yet.
+    pending_glyphs: HashSet<GlyphKey>,
+    /// Glyphs that came back, to put in the atlas with the next frame.
+    drawn: Vec<(GlyphKey, Option<Drawn>)>,
+    /// Goes up as what was asked for comes in, for what shows it to be drawn again.
+    epoch: u64,
+}
+
+impl Loader {
+    fn new() -> Self {
+        let (jobs, work) = mpsc::channel::<Job>();
+        let (results, done) = mpsc::channel();
+        let work = Arc::new(Mutex::new(work));
+        let mut threads = 0;
+        for _ in 0..LOADERS {
+            let (work, results) = (work.clone(), results.clone());
+            let spawned = std::thread::Builder::new()
+                .name(String::from("scene loader"))
+                .spawn(move || {
+                    let mut context = ScaleContext::new();
+                    loop {
+                        // Gone once the renderer is.
+                        let Ok(job) = work.lock().unwrap().recv() else {
+                            break;
+                        };
+                        let done = match job {
+                            Job::Image(key, theme) => {
+                                let pixels = load_image(&key.source, key.size, &theme);
+                                Done::Image(key, pixels)
+                            }
+                            Job::Glyphs { font, coords, keys } => {
+                                Done::Glyphs(draw_glyphs(&mut context, &font, &coords, &keys))
+                            }
+                        };
+                        if results.send(done).is_err() {
+                            break;
+                        }
+                    }
+                });
+            match spawned {
+                Ok(_) => threads += 1,
+                Err(err) => warn!("error starting a thread to load for the scene: {err:?}"),
+            }
+        }
+        Self {
+            jobs,
+            done,
+            threads,
+            pending: HashSet::new(),
+            loaded: HashMap::new(),
+            kept: 0,
+            pending_glyphs: HashSet::new(),
+            drawn: Vec::new(),
+            epoch: 0,
+        }
+    }
+
+    /// Takes in what the threads did, and says whether anything came.
+    fn poll(&mut self) -> bool {
+        let mut came = false;
+        while let Ok(done) = self.done.try_recv() {
+            self.take(done);
+            came = true;
+        }
+        came
+    }
+
+    fn take(&mut self, done: Done) {
+        self.epoch += 1;
+        match done {
+            Done::Image(key, pixels) => {
+                if !self.pending.remove(&key) {
+                    // Asked for with another icon theme, which has changed since.
+                    return;
+                }
+                if self.kept > KEPT_PIXELS {
+                    self.loaded.clear();
+                    self.kept = 0;
+                }
+                self.kept += pixels.as_ref().map_or(0, |(data, ..)| data.len());
+                self.loaded.insert(key, pixels.map(Rc::new));
+            }
+            Done::Glyphs(glyphs) => {
+                for (key, _) in &glyphs {
+                    self.pending_glyphs.remove(key);
+                }
+                self.drawn.extend(glyphs);
+            }
+        }
+    }
 }
 
 struct Buffer {
@@ -158,11 +348,14 @@ pub struct Renderer {
     images: ImageAtlas,
     /// The icon theme icons are looked up in.
     icon_theme: String,
+    loader: Loader,
     glyphs: HashMap<GlyphKey, Option<Glyph>>,
     /// The atlas's shelves: where the next glyph goes, and how tall this shelf is.
     shelf: [u32; 3],
     uploads: Vec<(usize, [u32; 4])>,
     staged: usize,
+    /// How many more glyphs this frame draws itself.
+    sync_glyphs: usize,
     scaler: ScaleContext,
     _instance: Instance,
 }
@@ -432,7 +625,9 @@ impl Renderer {
                 shelf: [0, 0, 0],
                 uploads: Vec::new(),
                 staged: 0,
+                sync_glyphs: SYNC_GLYPHS,
                 scaler: ScaleContext::new(),
+                loader: Loader::new(),
                 _instance: instance,
             })
         }
@@ -548,68 +743,132 @@ impl Renderer {
             self.images.placed.clear();
             self.images.shelf = [0, 0, 0];
             self.images.ready = false;
+            self.loader.pending.clear();
+            self.loader.loaded.clear();
+            self.loader.kept = 0;
+            // What shows icons is drawn again, with the new theme's.
+            self.loader.epoch += 1;
         }
     }
 
-    /// Where an icon or image is in its atlas with its room around it, and its own size, loading
-    /// it if it isn't yet, or `None` for one that can't be loaded.
+    /// Takes in the icons, images and glyphs done since, and says whether any came: what shows
+    /// them is to be drawn again.
+    pub fn poll(&mut self) -> bool {
+        self.loader.poll()
+    }
+
+    /// Whether icons, images or glyphs that were asked for are still on their way.
+    pub fn loading(&self) -> bool {
+        !self.loader.pending.is_empty()
+            || !self.loader.pending_glyphs.is_empty()
+            || !self.loader.drawn.is_empty()
+    }
+
+    /// Goes up as what was loading comes in.
+    pub fn epoch(&self) -> u64 {
+        self.loader.epoch
+    }
+
+    /// Asks for an icon or image to be loaded ahead of its first use, at `size` physical pixels.
+    pub fn preload(&mut self, source: ImageSource, size: u32) {
+        let key = ImageKey { source, size };
+        if !self.loader.loaded.contains_key(&key) && self.loader.pending.insert(key.clone()) {
+            let job = Job::Image(key, self.icon_theme.clone());
+            let _ = self.loader.jobs.send(job);
+        }
+    }
+
+    /// Where an icon or image is in its atlas with its room around it, and its own size. One
+    /// that isn't loaded is asked for, and is `None` until it's there, as is one that can't be
+    /// loaded.
     fn image(&mut self, key: ImageKey) -> Option<([u32; 4], [u32; 2])> {
         if let Some(placed) = self.images.placed.get(&key) {
             return placed.map(|at| (at, [at[2] - 2 * IMAGE_PAD, at[3] - 2 * IMAGE_PAD]));
         }
-        let placed = (|| {
-            let (data, w, h) = load_image(&key.source, key.size, &self.icon_theme)?;
-            let (slot_w, slot_h) = (w + 2 * IMAGE_PAD, h + 2 * IMAGE_PAD);
-            let [mut x, mut y, mut shelf_h] = self.images.shelf;
-            if x + slot_w > ATLAS_SIZE {
-                x = 0;
-                y += shelf_h;
-                shelf_h = 0;
+        let Some(loaded) = self.loader.loaded.get(&key) else {
+            if self.loader.pending.insert(key.clone()) {
+                let job = Job::Image(key, self.icon_theme.clone());
+                let _ = self.loader.jobs.send(job);
             }
-            // Copies of four-byte pixels start on four bytes.
-            let offset = self.staged.next_multiple_of(4);
-            if y + slot_h > ATLAS_SIZE || offset + data.len() > STAGING_SIZE {
-                return None;
+            return None;
+        };
+        let placed = match loaded.clone() {
+            Some(pixels) => {
+                let (data, w, h) = &*pixels;
+                let (w, h) = (*w, *h);
+                let (slot_w, slot_h) = (w + 2 * IMAGE_PAD, h + 2 * IMAGE_PAD);
+                let [mut x, mut y, mut shelf_h] = self.images.shelf;
+                if x + slot_w > ATLAS_SIZE {
+                    x = 0;
+                    y += shelf_h;
+                    shelf_h = 0;
+                }
+                // Copies of four-byte pixels start on four bytes.
+                let offset = self.staged.next_multiple_of(4);
+                if offset + data.len() > STAGING_SIZE {
+                    // No room in this frame's uploads: it's there in the next.
+                    self.loader.epoch += 1;
+                    return None;
+                }
+                if y + slot_h > ATLAS_SIZE {
+                    None
+                } else {
+                    self.images.shelf = [x + slot_w, y, shelf_h.max(slot_h)];
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            self.staging.mapped.add(offset),
+                            data.len(),
+                        );
+                    }
+                    self.images
+                        .uploads
+                        .push((offset, [x + IMAGE_PAD, y + IMAGE_PAD, w, h]));
+                    self.staged = offset + data.len();
+                    Some([x, y, slot_w, slot_h])
+                }
             }
-            self.images.shelf = [x + slot_w, y, shelf_h.max(slot_h)];
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    data.as_ptr(),
-                    self.staging.mapped.add(offset),
-                    data.len(),
-                );
-            }
-            self.images
-                .uploads
-                .push((offset, [x + IMAGE_PAD, y + IMAGE_PAD, w, h]));
-            self.staged = offset + data.len();
-            Some([x, y, slot_w, slot_h])
-        })();
+            None => None,
+        };
         self.images.placed.insert(key, placed);
         placed.map(|at| (at, [at[2] - 2 * IMAGE_PAD, at[3] - 2 * IMAGE_PAD]))
     }
 
-    fn glyph(&mut self, key: GlyphKey, font: &parley::FontData, coords: &[i16]) -> Option<Glyph> {
-        if let Some(glyph) = self.glyphs.get(&key) {
-            return *glyph;
-        }
-        let glyph = (|| {
-            let font_ref = swash::FontRef::from_index(font.data.as_ref(), font.index as usize)?;
-            let mut scaler = self
-                .scaler
-                .builder(font_ref)
-                .size(key.size as f32 / 4.)
-                .hint(true)
-                .normalized_coords(coords)
-                .build();
-            let image = Render::new(&[Source::Outline])
-                .format(Format::Alpha)
-                .offset(Vector::new(f32::from(key.subpixel) / 4., 0.))
-                .render(&mut scaler, key.glyph as u16)?;
-            let (w, h) = (image.placement.width, image.placement.height);
-            if w == 0 || h == 0 {
-                return None;
+    /// Sees to it that the glyphs `keys`, one run's, of one font at one size, get into the
+    /// atlas: a few are drawn right away, and more than this frame has time for are drawn on
+    /// other threads, and show from the frame after they're done.
+    fn want_glyphs(&mut self, font: &parley::FontData, coords: &[i16], keys: &[GlyphKey]) {
+        let mut missing: Vec<GlyphKey> = Vec::new();
+        for key in keys {
+            let known = self.glyphs.contains_key(key) || self.loader.pending_glyphs.contains(key);
+            if !known && !missing.contains(key) {
+                missing.push(*key);
             }
+        }
+        if missing.is_empty() {
+            return;
+        }
+        if missing.len() > self.sync_glyphs && self.loader.threads > 0 {
+            for batch in missing.chunks(GLYPH_BATCH) {
+                self.loader.pending_glyphs.extend(batch.iter().copied());
+                let _ = self.loader.jobs.send(Job::Glyphs {
+                    font: font.clone(),
+                    coords: coords.to_vec(),
+                    keys: batch.to_vec(),
+                });
+            }
+            return;
+        }
+        self.sync_glyphs = self.sync_glyphs.saturating_sub(missing.len());
+        for (key, drawn) in draw_glyphs(&mut self.scaler, font, coords, &missing) {
+            self.place_glyph(key, drawn);
+        }
+    }
+
+    /// Puts a drawn glyph in the atlas, or notes that there's nothing to draw for it.
+    fn place_glyph(&mut self, key: GlyphKey, drawn: Option<Drawn>) {
+        let placed = drawn.and_then(|drawn| {
+            let (w, h) = (drawn.width, drawn.height);
             // The next place on the shelf, or a new shelf.
             let (slot_w, slot_h) = (w + 2 * GLYPH_PAD, h + 2 * GLYPH_PAD);
             let [mut x, mut y, mut shelf_h] = self.shelf;
@@ -618,30 +877,29 @@ impl Renderer {
                 y += shelf_h;
                 shelf_h = 0;
             }
-            if y + slot_h > ATLAS_SIZE || self.staged + image.data.len() > STAGING_SIZE {
+            if y + slot_h > ATLAS_SIZE || self.staged + drawn.data.len() > STAGING_SIZE {
                 // Full: it's drawn again from scratch next time.
                 return None;
             }
             self.shelf = [x + slot_w, y, shelf_h.max(slot_h)];
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    image.data.as_ptr(),
+                    drawn.data.as_ptr(),
                     self.staging.mapped.add(self.staged),
-                    image.data.len(),
+                    drawn.data.len(),
                 );
             }
             self.uploads
                 .push((self.staged, [x + GLYPH_PAD, y + GLYPH_PAD, w, h]));
-            self.staged += image.data.len();
+            self.staged += drawn.data.len();
             // The glyph with its padding.
             Some(Glyph {
                 at: [x, y, slot_w, slot_h],
-                left: image.placement.left - GLYPH_PAD as i32,
-                top: image.placement.top + GLYPH_PAD as i32,
+                left: drawn.left - GLYPH_PAD as i32,
+                top: drawn.top + GLYPH_PAD as i32,
             })
-        })();
-        self.glyphs.insert(key, glyph);
-        glyph
+        });
+        self.glyphs.insert(key, placed);
     }
 
     /// Draws `items` into `target`, at `scale`, and waits until it's drawn.
@@ -657,6 +915,11 @@ impl Renderer {
             self.images.shelf = [0, 0, 0];
             self.images.ready = false;
         }
+        self.loader.poll();
+        for (key, drawn) in std::mem::take(&mut self.loader.drawn) {
+            self.place_glyph(key, drawn);
+        }
+        self.sync_glyphs = SYNC_GLYPHS;
 
         let mut gpu: Vec<GpuItem> = Vec::with_capacity(items.len());
         let no_clip = ([0., 0., -1., -1.], [0.; 4]);
@@ -741,13 +1004,14 @@ impl Renderer {
                     color,
                     opacity,
                     scale: by,
+                    still,
                     blur,
                     clip,
                 } => {
                     let (clip_rect, clip_radii) = clip.map_or(no_clip, |c| (c.rect, c.radii));
-                    // Drawn at its own size, the glyphs sit on whole pixels; scaled, they're
-                    // smoothed.
-                    let whole = (by - 1.).abs() < 1e-3;
+                    // While its scale is at rest, the glyphs sit on whole pixels; while it
+                    // changes, they're smoothed.
+                    let whole = *still;
                     let by = by.max(1e-3);
                     for run in &laid.runs {
                         let coords = {
@@ -756,26 +1020,44 @@ impl Renderer {
                             run.coords.hash(&mut hasher);
                             hasher.finish()
                         };
-                        for &(glyph, x, y) in &run.glyphs {
-                            let px = (origin[0] + x * by) * scale;
-                            let py = (origin[1] + y * by) * scale;
-                            let py = if whole { py.round() } else { py };
-                            let subpixel = ((px.fract() * 4.).floor() as u8).min(3);
-                            // Drawn at the size it shows at, in half pixels so that growing text
-                            // isn't drawn again for every hair of its size, and stretched the
-                            // rest of the way.
-                            let shown = run.size * by * scale;
-                            let drawn = ((shown * 2.).round() / 2.).max(0.5);
-                            let stretch = shown / drawn;
-                            let key = GlyphKey {
-                                font: run.font.data.id(),
-                                index: run.font.index,
-                                glyph,
-                                size: (drawn * 4.).round() as u32,
-                                subpixel,
-                                coords,
-                            };
-                            let Some(g) = self.glyph(key, &run.font, &run.coords) else {
+                        // At rest it's drawn at the size it shows at. While it grows or shrinks
+                        // it's drawn at one of a few sizes and made smaller, never larger, which
+                        // would blur it: at its own size below it, and above it at a size from a
+                        // ladder of a quarter more each step. Drawing it at every size it passes
+                        // would take longer than the frames it passes them in.
+                        let shown = run.size * by * scale;
+                        let drawn = if *still {
+                            (shown * 4.).round() / 4.
+                        } else if by <= 1. {
+                            run.size * scale
+                        } else {
+                            let steps = (by.ln() / SIZE_STEP.ln()).ceil();
+                            run.size * scale * SIZE_STEP.powf(steps)
+                        };
+                        let drawn = drawn.max(0.25);
+                        let stretch = shown / drawn;
+                        let placed: Vec<(GlyphKey, f32, f32)> = run
+                            .glyphs
+                            .iter()
+                            .map(|&(glyph, x, y)| {
+                                let px = (origin[0] + x * by) * scale;
+                                let py = (origin[1] + y * by) * scale;
+                                let py = if whole { py.round() } else { py };
+                                let key = GlyphKey {
+                                    font: run.font.data.id(),
+                                    index: run.font.index,
+                                    glyph,
+                                    size: (drawn * 4.).round() as u32,
+                                    subpixel: ((px.fract() * 4.).floor() as u8).min(3),
+                                    coords,
+                                };
+                                (key, px, py)
+                            })
+                            .collect();
+                        let keys: Vec<GlyphKey> = placed.iter().map(|(key, ..)| *key).collect();
+                        self.want_glyphs(&run.font, &run.coords, &keys);
+                        for (key, px, py) in placed {
+                            let Some(Some(g)) = self.glyphs.get(&key).copied() else {
                                 continue;
                             };
                             let gx = if whole { px.floor() } else { px } + g.left as f32 * stretch;
@@ -1014,6 +1296,21 @@ impl Renderer {
 
 #[cfg(test)]
 impl Renderer {
+    /// Waits for the icons, images and glyphs asked for to be there.
+    pub(super) fn wait_for_loads(&mut self) {
+        while !self.loader.pending.is_empty() || !self.loader.pending_glyphs.is_empty() {
+            let Ok(done) = self.loader.done.recv() else {
+                break;
+            };
+            self.loader.take(done);
+        }
+    }
+
+    /// How many glyphs and images are drawn and kept, for tests to see what a frame added.
+    pub(super) fn kept(&self) -> (usize, usize) {
+        (self.glyphs.len(), self.images.placed.len())
+    }
+
     /// What `target` holds, as rows of BGRA pixels.
     pub(super) fn read_back(&self, target: &Target) -> anyhow::Result<Vec<u8>> {
         let (w, h) = target.size;
@@ -1445,6 +1742,13 @@ mod tests {
             blur: 0.,
             clip: None,
         };
+        // It's loaded on another thread, and drawn once it's there.
+        renderer
+            .render(&target, std::slice::from_ref(&icon), 1.)
+            .unwrap();
+        assert!(renderer.loading());
+        renderer.wait_for_loads();
+        assert!(!renderer.loading());
         renderer.render(&target, &[icon], 1.).unwrap();
         let pixels = renderer.read_back(&target).unwrap();
         // BGRA: red is the third byte.
@@ -1480,8 +1784,10 @@ mod tests {
                 clip: None,
             };
             renderer.render(&target, &[icon], 1.).unwrap();
+            renderer.wait_for_loads();
         }
         assert_eq!(renderer.images.placed.len(), 1);
+        assert_eq!(renderer.loader.loaded.len(), 1);
         renderer.destroy_target(target);
     }
 
@@ -1504,14 +1810,115 @@ mod tests {
             color: [1., 1., 1., 1.],
             opacity: 1.,
             scale: 3.,
+            still: true,
             blur: 0.,
             clip: None,
         };
-        renderer.render(&target, &[text], 1.).unwrap();
-        let sizes: std::collections::HashSet<u32> =
-            renderer.glyphs.keys().map(|k| k.size).collect();
+        renderer
+            .render(&target, std::slice::from_ref(&text), 1.)
+            .unwrap();
+        let sizes = |renderer: &Renderer| -> std::collections::HashSet<u32> {
+            renderer.glyphs.keys().map(|k| k.size).collect()
+        };
         // 14 pixels three times, in quarters.
-        assert_eq!(sizes, [14 * 3 * 4].into_iter().collect(), "{sizes:?}");
+        assert_eq!(sizes(&renderer), [14 * 3 * 4].into_iter().collect());
+
+        // On its way there it's drawn at a few sizes, not at each it passes: from 14 pixels to
+        // three times that in sixty frames.
+        renderer.glyphs.clear();
+        for frame in 0..=60 {
+            let Item::Text { laid, .. } = &text else {
+                unreachable!()
+            };
+            let growing = Item::Text {
+                origin: [8., 8.],
+                laid: laid.clone(),
+                color: [1., 1., 1., 1.],
+                opacity: 1.,
+                scale: 1. + 2. * frame as f32 / 60.,
+                still: false,
+                blur: 0.,
+                clip: None,
+            };
+            renderer.render(&target, &[growing], 1.).unwrap();
+        }
+        let passed = sizes(&renderer);
+        assert!(passed.len() <= 6, "{passed:?}");
+        // Never drawn smaller than it shows, which would blur it.
+        assert!(passed.iter().all(|size| *size >= 14 * 4), "{passed:?}");
+        assert!(passed.iter().any(|size| *size >= 14 * 3 * 4), "{passed:?}");
+        renderer.destroy_target(target);
+    }
+
+    /// A lot of new text takes longer to draw than a frame has: the frame that first shows it
+    /// draws a few glyphs of it, and the rest come from other threads for the frames after.
+    #[test]
+    #[ignore]
+    fn a_lot_of_new_text_is_drawn_on_other_threads() {
+        let formats = [DrmFormat {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }];
+        let mut renderer = Renderer::new(None, &formats).unwrap();
+        let target = renderer.create_target((1024, 128)).unwrap();
+        let mut fonts = super::super::text::Fonts::default();
+        let words = "The quick brown fox jumps over the lazy dog, 0123456789 times.";
+        let laid = fonts.lay_out(words, &super::super::text::TextStyle::default(), None);
+        let text = Item::Text {
+            origin: [8., 8.],
+            laid: std::rc::Rc::new(laid),
+            color: [1., 1., 1., 1.],
+            opacity: 1.,
+            scale: 1.,
+            still: true,
+            blur: 0.,
+            clip: None,
+        };
+        renderer
+            .render(&target, std::slice::from_ref(&text), 1.)
+            .unwrap();
+        assert!(
+            renderer.kept().0 <= SYNC_GLYPHS,
+            "{} glyphs",
+            renderer.kept().0
+        );
+        assert!(renderer.loading());
+        let epoch = renderer.epoch();
+
+        renderer.wait_for_loads();
+        assert!(
+            renderer.epoch() > epoch,
+            "what shows it is told to draw again"
+        );
+        renderer
+            .render(&target, std::slice::from_ref(&text), 1.)
+            .unwrap();
+        assert!(!renderer.loading());
+        assert!(renderer.kept().0 > 30, "{} glyphs", renderer.kept().0);
+        let lit = renderer
+            .read_back(&target)
+            .unwrap()
+            .chunks_exact(4)
+            .filter(|px| px[3] > 128)
+            .count();
+        assert!(lit > 500, "{lit} pixels of text");
+
+        // A few new glyphs are drawn in the frame that shows them.
+        let laid = fonts.lay_out("@#", &super::super::text::TextStyle::default(), None);
+        let few = Item::Text {
+            origin: [8., 40.],
+            laid: std::rc::Rc::new(laid),
+            color: [1., 1., 1., 1.],
+            opacity: 1.,
+            scale: 1.,
+            still: true,
+            blur: 0.,
+            clip: None,
+        };
+        let before = renderer.kept().0;
+        renderer.render(&target, &[few], 1.).unwrap();
+        assert_eq!(renderer.kept().0, before + 2);
+        assert!(!renderer.loading());
         renderer.destroy_target(target);
     }
 

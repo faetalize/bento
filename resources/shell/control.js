@@ -273,6 +273,7 @@ export function controlCenter(onToggle) {
   ]);
   const status = [switcher, clipboard, network, volume, battery, charge];
   const panel = expand(pill, content, {
+    hold: "end",
     onToggle: (open) => {
       // The island's own row gives way to the panel, and the lists open closed.
       for (const node of status) node.set({ opacity: open ? 0 : 1, blur: open ? 4 : 0 });

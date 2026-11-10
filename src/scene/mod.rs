@@ -283,9 +283,138 @@ pub enum Item {
         opacity: f32,
         /// How big it's drawn, as a fraction of its size.
         scale: f32,
+        /// Whether its scale is at rest, rather than on its way somewhere.
+        still: bool,
         blur: f32,
         clip: Option<Clip>,
     },
+}
+
+impl Item {
+    /// Whether it draws just as `other` does.
+    pub fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Item::Shape {
+                    rect,
+                    radii,
+                    material,
+                    fill,
+                    border,
+                    opacity,
+                    blur,
+                    clip,
+                },
+                Item::Shape {
+                    rect: rect2,
+                    radii: radii2,
+                    material: material2,
+                    fill: fill2,
+                    border: border2,
+                    opacity: opacity2,
+                    blur: blur2,
+                    clip: clip2,
+                },
+            ) => {
+                (rect, radii, material, fill, border, opacity, blur, clip)
+                    == (
+                        rect2, radii2, material2, fill2, border2, opacity2, blur2, clip2,
+                    )
+            }
+            (
+                Item::Image {
+                    rect,
+                    source,
+                    color,
+                    opacity,
+                    scale,
+                    blur,
+                    clip,
+                },
+                Item::Image {
+                    rect: rect2,
+                    source: source2,
+                    color: color2,
+                    opacity: opacity2,
+                    scale: scale2,
+                    blur: blur2,
+                    clip: clip2,
+                },
+            ) => {
+                (rect, source, color, opacity, scale, blur, clip)
+                    == (rect2, source2, color2, opacity2, scale2, blur2, clip2)
+            }
+            (
+                Item::Text {
+                    origin,
+                    laid,
+                    color,
+                    opacity,
+                    scale,
+                    still,
+                    blur,
+                    clip,
+                },
+                Item::Text {
+                    origin: origin2,
+                    laid: laid2,
+                    color: color2,
+                    opacity: opacity2,
+                    scale: scale2,
+                    still: still2,
+                    blur: blur2,
+                    clip: clip2,
+                },
+            ) => {
+                // The same layout, not one that reads the same: text laid out again is new.
+                Rc::ptr_eq(laid, laid2)
+                    && (origin, color, opacity, scale, still, blur, clip)
+                        == (origin2, color2, opacity2, scale2, still2, blur2, clip2)
+            }
+            _ => false,
+        }
+    }
+
+    /// The rectangle it draws within, in the output's logical coordinates: its own, with its
+    /// blur's spread, cut to what clips it.
+    pub fn bounds(&self) -> [f32; 4] {
+        let (rect, blur, clip) = match self {
+            Item::Shape {
+                rect, blur, clip, ..
+            } => (*rect, *blur, clip),
+            Item::Image {
+                rect, blur, clip, ..
+            } => (*rect, *blur, clip),
+            Item::Text {
+                origin,
+                laid,
+                scale,
+                blur,
+                clip,
+                ..
+            } => (
+                [
+                    origin[0],
+                    origin[1],
+                    laid.reach * scale,
+                    laid.height * scale,
+                ],
+                *blur,
+                clip,
+            ),
+        };
+        // Smoothed edges, glyphs that reach past their line, and a blur's reach.
+        let spread = 4. + blur * 3.;
+        let (mut x0, mut y0) = (rect[0] - spread, rect[1] - spread);
+        let (mut x1, mut y1) = (rect[0] + rect[2] + spread, rect[1] + rect[3] + spread);
+        if let Some(clip) = clip {
+            x0 = x0.max(clip.rect[0] - 1.);
+            y0 = y0.max(clip.rect[1] - 1.);
+            x1 = x1.min(clip.rect[0] + clip.rect[2] + 1.);
+            y1 = y1.min(clip.rect[1] + clip.rect[3] + 1.);
+        }
+        [x0, y0, (x1 - x0).max(0.), (y1 - y0).max(0.)]
+    }
 }
 
 /// A rounded rectangle that what's drawn is cut to.
@@ -320,6 +449,8 @@ pub struct Scene {
     pub style: Value,
     /// Whether the shell wants the keyboard, which then doesn't go to the apps.
     pub wants_keyboard: bool,
+    /// Icons the script will show, with their sizes, to load ahead of their first frame.
+    pub preloads: Vec<(ImageSource, f32)>,
     /// Whether anything changed since it was last drawn.
     changed: bool,
     pub theme: Theme,
@@ -353,6 +484,7 @@ impl Scene {
             reserved: std::collections::HashMap::new(),
             style: Value::Null,
             wants_keyboard: false,
+            preloads: Vec::new(),
             changed: true,
             theme: Theme::new(true, None),
         }
@@ -434,7 +566,14 @@ impl Scene {
         };
         let taffy = self
             .tree
-            .new_leaf_with_context(Style::default(), id)
+            .new_leaf_with_context(
+                // Every node is what its absolute children are placed and sized in.
+                Style {
+                    position: Position::Relative,
+                    ..Style::default()
+                },
+                id,
+            )
             .expect("taffy never fails to add a leaf");
         let mut springs = [Spring::new(0.); SPRINGS];
         springs[OPACITY] = Spring::new(1.);
@@ -982,9 +1121,11 @@ impl Scene {
         // Scaled around its middle, inside whatever its parents are scaled by.
         let own = node.springs[SCALE].value.max(0.) as f32;
         let middle = [rect[0] + rect[2] / 2., rect[1] + rect[3] / 2.];
+        let spring = &node.springs[SCALE];
         let scaling = scaling.then(Scaling {
             by: own,
             offset: [middle[0] * (1. - own), middle[1] * (1. - own)],
+            still: spring.velocity == 0. && (spring.value - spring.target).abs() < 1e-6,
         });
         let rect = scaling.rect(rect);
         let radii = radii.map(|r| r * scaling.by);
@@ -1032,6 +1173,7 @@ impl Scene {
                         color: node.look.color.resolve(&self.theme),
                         opacity,
                         scale: scaling.by,
+                        still: scaling.still,
                         blur,
                         clip,
                     });
@@ -1078,6 +1220,7 @@ impl Scene {
         let scaling = scaling.then(Scaling {
             by: own,
             offset: [middle[0] * (1. - own), middle[1] * (1. - own)],
+            still: true,
         });
         let rect = scaling.rect(rect);
         let half = rect[2].min(rect[3]) / 2.;
@@ -1221,17 +1364,21 @@ fn inside_rounded(point: [f32; 2], rect: [f32; 4], radii: [f32; 4]) -> bool {
 struct Scaling {
     by: f32,
     offset: [f32; 2],
+    /// Whether it's at rest, rather than on its way somewhere.
+    still: bool,
 }
 
 impl Scaling {
     const NONE: Self = Self {
         by: 1.,
         offset: [0., 0.],
+        still: true,
     };
 
     /// This scaling, applied after `inner`.
     fn then(self, inner: Self) -> Self {
         Self {
+            still: self.still && inner.still,
             by: self.by * inner.by,
             offset: [
                 self.by * inner.offset[0] + self.offset[0],
@@ -1852,6 +1999,64 @@ mod tests {
         assert!(laid.width <= place[2] + 0.5, "{} in {place:?}", laid.width);
         // One line of 14 pixel text.
         assert!(laid.height < 28., "{}", laid.height);
+    }
+
+    #[test]
+    fn what_is_absolute_is_placed_and_sized_in_what_holds_it() {
+        let mut scene = Scene::new();
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        // A bar across the output, a column at its end, and a pill in that, none of which say
+        // how they're positioned but the bar.
+        let bar = scene.create(
+            "box",
+            &serde_json::json!({ "position": "absolute", "top": 8, "left": 8, "right": 8 }),
+        );
+        let end = scene.create(
+            "box",
+            &serde_json::json!({ "grow": 1, "width": 0, "direction": "column", "align": "end" }),
+        );
+        let pill = scene.create("box", &serde_json::json!({ "width": 372, "height": 36 }));
+        let holder = scene.create(
+            "box",
+            &serde_json::json!({ "position": "absolute", "top": 16, "left": 0, "right": 0 }),
+        );
+        scene.append(root, bar, None);
+        scene.append(bar, end, None);
+        scene.append(end, pill, None);
+        scene.append(pill, holder, None);
+        assert_eq!(scene.layout(pill), Some([1540., 8., 372., 36.]));
+        // From the pill's left to its right, not the bar's.
+        assert_eq!(scene.layout(holder), Some([1540., 24., 372., 0.]));
+    }
+
+    #[test]
+    fn what_overflows_its_holder_is_held_to_the_side_it_says() {
+        let mut scene = Scene::new();
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let pill = scene.create(
+            "box",
+            &serde_json::json!({ "position": "absolute", "top": 8, "left": 800, "width": 100, "height": 36 }),
+        );
+        scene.append(root, pill, None);
+        let mut held = |justify: &str| {
+            let holder = scene.create(
+                "box",
+                &serde_json::json!({
+                    "position": "absolute", "top": 16, "left": 0, "right": 0, "justify": justify,
+                }),
+            );
+            let content = scene.create(
+                "box",
+                &serde_json::json!({ "width": 340, "height": 50, "shrink": 0 }),
+            );
+            scene.append(pill, holder, None);
+            scene.append(holder, content, None);
+            scene.layout(content).unwrap()
+        };
+        // Wider than the pill, it reaches past it on the sides it isn't held to.
+        assert_eq!(held("start"), [800., 24., 340., 50.]);
+        assert_eq!(held("end"), [560., 24., 340., 50.]);
+        assert_eq!(held("center"), [680., 24., 340., 50.]);
     }
 
     #[test]

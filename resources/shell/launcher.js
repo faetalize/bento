@@ -2,8 +2,14 @@
 
 import {
   box, text, image, input, root, outputs, on, apps, launch, focus, focusedOutput, grow, shrink,
-  opened, closed,
+  opened, closed, preload,
 } from "bento:ui";
+
+// How big an app's icon is in a row.
+const ICON = 40;
+// The apps are read and their icons loaded ahead of the first search, which then has them in
+// its first frame.
+for (const app of apps()) preload(app.icon ?? "application-x-executable", ICON);
 
 // The launcher: a glass search bar in the middle of the focused output, above the windows, that
 // finds apps as you type, its results opening below it. It grows out of a point, and
@@ -119,7 +125,7 @@ function fillLauncher(query) {
         onHover: ({ inside }) => inside && selectRow(i),
       },
       [
-        image(app.icon ?? "application-x-executable", { size: 40 }),
+        image(app.icon ?? "application-x-executable", { size: ICON }),
         box({ direction: "column", grow: 1, shrink: 1, minWidth: 0 }, [
           text(app.name, { size: 16, weight: 600, lines: 1 }),
           app.comment && text(app.comment, { size: 13, color: "fg/0.6", lines: 1 }),

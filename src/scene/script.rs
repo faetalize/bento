@@ -18,7 +18,7 @@ use rquickjs::loader::{BuiltinLoader, BuiltinResolver};
 use rquickjs::prelude::Opt;
 use rquickjs::{CatchResultExt as _, Context, Function, Module, Persistent, Runtime};
 
-use super::Scene;
+use super::{ImageSource, Scene};
 
 /// bento's own shell.
 const MAIN: &str = include_str!("../../resources/shell/main.js");
@@ -281,6 +281,15 @@ impl Shell {
                 "launch",
                 Function::new(ctx.clone(), move |id: String| a.borrow_mut().launch(&id))
                     .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
+                "preload",
+                Function::new(ctx.clone(), move |icon: String, size: f64| {
+                    let source = ImageSource::Icon(icon);
+                    s.borrow_mut().preloads.push((source, size as f32));
+                })
+                .map_err(js)?,
             )?;
             let s = scene.clone();
             native.set(

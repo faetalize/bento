@@ -234,6 +234,9 @@ pub struct Niri {
     pub event_loop: LoopHandle<'static, State>,
     /// bento's own shell, while the config turns it on.
     pub scene: Option<crate::scene::host::SceneHost>,
+    /// The frames that took bento's main thread longer than their output has, since they were
+    /// last told in the log.
+    slow_frames: SlowFrames,
     /// The timer that wakes bento for the shell's next timer, and when.
     scene_timer: Option<(Instant, RegistrationToken)>,
     pub scheduler: Scheduler<()>,
@@ -621,6 +624,26 @@ pub enum KeyboardFocus {
     ExitConfirmDialog,
     Overview,
     Mru,
+}
+
+/// Frames that took longer than their output has for one.
+struct SlowFrames {
+    since: Instant,
+    count: u32,
+    /// The longest: what the shell took of it, and what drawing did.
+    worst: (Duration, Duration),
+    output: String,
+}
+
+impl SlowFrames {
+    fn new(since: Instant) -> Self {
+        Self {
+            since,
+            count: 0,
+            worst: (Duration::ZERO, Duration::ZERO),
+            output: String::new(),
+        }
+    }
 }
 
 #[derive(Default, Clone, PartialEq)]
@@ -2956,6 +2979,7 @@ impl Niri {
 
             event_loop,
             scene: None,
+            slow_frames: SlowFrames::new(Instant::now()),
             scene_timer: None,
             scheduler,
             stop_signal,
@@ -5213,9 +5237,16 @@ impl Niri {
         let node = backend.primary_render_node();
         let name = output.name();
         let theme = self.icon_theme.name().to_owned();
-        backend.with_primary_renderer(|renderer| {
+        let came = backend.with_primary_renderer(|renderer| {
             scene.prepare(renderer, node, &name, size, scale, &theme)
         });
+        // Icons and images that were loading are there: every output that shows them draws them.
+        if came == Some(true) {
+            self.queue_redraw_all();
+        }
+        let scene = self.scene.as_mut().unwrap();
+        // While some still load, the scene keeps looking for them, frame by frame.
+        let moving = moving || scene.loading();
 
         // Wakes up for the shell's next timer.
         let next = scene.next_timer();
@@ -5421,7 +5452,7 @@ impl Niri {
         if let Some(scene) = &self.scene {
             let blur = self.config.borrow().blur;
             let name = output.name();
-            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Texture(elem)));
+            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Scene(elem)));
             scene.render_glass(
                 &name,
                 output_scale.x,
@@ -5658,6 +5689,40 @@ impl Niri {
         }
     }
 
+    /// Notes how long bento's main thread spent on a frame for `output`, on its own shell and on
+    /// drawing, and says in the log, at most once a second, when frames took longer than the
+    /// output gives them: those are the frames that show late.
+    fn note_frame_time(&mut self, output: &Output, shell: Duration, drawing: Duration) {
+        let has = output
+            .current_mode()
+            .filter(|mode| mode.refresh > 0)
+            .map_or(Duration::from_millis(16), |mode| {
+                Duration::from_secs_f64(1000. / f64::from(mode.refresh))
+            });
+        let now = Instant::now();
+        let slow = &mut self.slow_frames;
+        if shell + drawing > has {
+            slow.count += 1;
+            if shell + drawing > slow.worst.0 + slow.worst.1 {
+                slow.worst = (shell, drawing);
+                slow.output = output.name();
+            }
+        }
+        if slow.count > 0 && now.duration_since(slow.since) >= Duration::from_secs(1) {
+            debug!(
+                "{} frames took longer than their output has for one; the longest, on {}: {:.1} ms \
+                 for the shell and {:.1} ms for drawing",
+                slow.count,
+                slow.output,
+                slow.worst.0.as_secs_f64() * 1000.,
+                slow.worst.1.as_secs_f64() * 1000.,
+            );
+            *slow = SlowFrames::new(now);
+        } else if slow.count == 0 {
+            slow.since = now;
+        }
+    }
+
     fn redraw(&mut self, backend: &mut Backend, output: &Output) {
         let _span = tracy_client::span!("Niri::redraw");
 
@@ -5679,6 +5744,7 @@ impl Niri {
         self.update_render_elements(Some(output));
 
         let mut res = RenderResult::Skipped;
+        let mut shell_took = Duration::ZERO;
         if self.monitors_active {
             let state = self.output_state.get_mut(output).unwrap();
             state.unfinished_animations_remain = self.layout.are_animations_ongoing(Some(output));
@@ -5696,7 +5762,9 @@ impl Niri {
 
             // Also bento's own shell.
             if self.config.borrow().debug.scene_shell {
+                let started = Instant::now();
                 let moving = self.update_scene(backend, output);
+                shell_took = started.elapsed();
                 let state = self.output_state.get_mut(output).unwrap();
                 state.unfinished_animations_remain |= moving;
             } else if self.scene.take().is_some() {
@@ -5719,7 +5787,9 @@ impl Niri {
             }
 
             // Render.
+            let started = Instant::now();
             res = backend.render(self, output, target_presentation_time);
+            self.note_frame_time(output, shell_took, started.elapsed());
         }
 
         let is_locked = self.is_locked();
@@ -8169,6 +8239,7 @@ niri_render_elements! {
         WindowMruUi = WindowMruUiRenderElement<R>,
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
+        Scene = crate::scene::host::SceneElement,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }

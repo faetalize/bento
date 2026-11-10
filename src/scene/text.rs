@@ -48,6 +48,9 @@ pub struct GlyphRun {
 pub struct Laid {
     pub width: f32,
     pub height: f32,
+    /// How far right its glyphs reach from its left, which is past its width where it's set to
+    /// the middle or the right of more room than it fills.
+    pub reach: f32,
     pub runs: Vec<GlyphRun>,
 }
 
@@ -199,9 +202,14 @@ impl Fonts {
                 });
             }
         }
+        let reach = runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(|(_, x, _)| x + run.size))
+            .fold(layout.width(), f32::max);
         Laid {
             width: layout.width(),
             height: layout.height(),
+            reach,
             runs,
         }
     }

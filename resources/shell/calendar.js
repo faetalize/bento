@@ -204,6 +204,7 @@ export function calendar(onToggle) {
     }
   };
   const panel = expand(pill, content, {
+    hold: "center",
     onToggle: (open) => {
       if (open) backToToday();
       handOver(open);

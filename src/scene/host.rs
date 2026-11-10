@@ -8,18 +8,24 @@ use std::time::{Instant, SystemTime};
 
 use smithay::backend::allocator::Format as DrmFormat;
 use smithay::backend::drm::DrmNode;
-use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
+use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, GlesTexture};
+use smithay::backend::renderer::utils::{
+    CommitCounter, DamageBag, DamageSet, DamageSnapshot, OpaqueRegions,
+};
 use smithay::backend::renderer::ImportDma;
-use smithay::utils::Transform;
+use smithay::utils::user_data::UserDataMap;
+use smithay::utils::{Buffer, Physical, Rectangle, Scale, Transform};
 
 use super::script::{self, Shell};
 use super::vk::{Renderer, Target};
 use super::{Item, Material, NodeId, Theme, CLICK, HOVER, SCROLL};
+use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::framebuffer_effect::FramebufferEffect;
 use crate::render_helpers::glass::{self, GlassFrame};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
+use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
 
 /// What bento's own shell keeps along an output's edges, top, right, bottom and left, that the
@@ -57,11 +63,173 @@ struct OutputScene {
     next: usize,
     /// What was last drawn, to show.
     shown: Option<TextureBuffer<GlesTexture>>,
+    /// What it was drawn from, to tell what the next frame changes.
+    items: Vec<Item>,
+    /// What bento's compositing knows the scene's picture by, from frame to frame, and where it
+    /// changed in each: only there is the screen drawn again.
+    id: Id,
+    damage: DamageBag<i32, Physical>,
     /// The glass under what was last drawn.
     glass: Vec<([f32; 4], [f32; 4])>,
     effect: FramebufferEffect,
-    /// The generation of the scene last drawn, and at what scale.
-    drawn: Option<(u64, f64)>,
+    /// The generation of the scene last looked at, at what scale, and with which of the icons
+    /// and images that were loading.
+    drawn: Option<(u64, f64, u64)>,
+}
+
+/// The most rectangles a frame's changes are told as; more are told as the one around them all.
+const MAX_DAMAGE: usize = 16;
+
+/// The scene's picture for an output, as bento's compositing draws it: the whole output's size,
+/// and changed only where the scene's items did.
+#[derive(Debug, Clone)]
+pub struct SceneElement {
+    texture: PrimaryGpuTextureRenderElement,
+    id: Id,
+    damage: DamageSnapshot<i32, Physical>,
+}
+
+impl Element for SceneElement {
+    fn id(&self) -> &Id {
+        &self.id
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.damage.current_commit()
+    }
+
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.texture.geometry(scale)
+    }
+
+    fn transform(&self) -> Transform {
+        self.texture.transform()
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        self.texture.src()
+    }
+
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        // The picture is the output's size in its pixels, at its top left, so where it changed
+        // is where the output does.
+        self.damage.damage_since(commit).unwrap_or_else(|| {
+            DamageSet::from_slice(&[Rectangle::from_size(self.geometry(scale).size)])
+        })
+    }
+
+    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        self.texture.opaque_regions(scale)
+    }
+
+    fn alpha(&self) -> f32 {
+        self.texture.alpha()
+    }
+
+    fn kind(&self) -> Kind {
+        self.texture.kind()
+    }
+}
+
+impl RenderElement<GlesRenderer> for SceneElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), GlesError> {
+        RenderElement::<GlesRenderer>::draw(
+            &self.texture,
+            frame,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            cache,
+        )
+    }
+
+    fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        None
+    }
+}
+
+impl<'render> RenderElement<TtyRenderer<'render>> for SceneElement {
+    fn draw(
+        &self,
+        frame: &mut TtyFrame<'_, '_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), TtyRendererError<'render>> {
+        let gles_frame = frame.as_gles_frame();
+        RenderElement::<GlesRenderer>::draw(
+            &self.texture,
+            gles_frame,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            cache,
+        )?;
+        Ok(())
+    }
+
+    fn underlying_storage(
+        &self,
+        _renderer: &mut TtyRenderer<'render>,
+    ) -> Option<UnderlyingStorage<'_>> {
+        None
+    }
+}
+
+/// Where the scene's picture changes from `old` to `new`, in the output's pixels at `scale`:
+/// around each item that isn't the one it was, where it was and where it is. With `loaded`,
+/// around the icons, images and text too, some of which have come in since.
+fn changed(old: &[Item], new: &[Item], scale: f64, loaded: bool) -> Vec<Rectangle<i32, Physical>> {
+    let mut rects: Vec<Rectangle<i32, Physical>> = Vec::new();
+    let mut add = |item: &Item| {
+        let [x, y, w, h] = item.bounds().map(f64::from);
+        if w <= 0. || h <= 0. {
+            return;
+        }
+        let (x0, y0) = ((x * scale).floor() as i32, (y * scale).floor() as i32);
+        let (x1, y1) = (
+            ((x + w) * scale).ceil() as i32,
+            ((y + h) * scale).ceil() as i32,
+        );
+        rects.push(Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()));
+    };
+    let both = old.len().min(new.len());
+    for (was, is) in old.iter().zip(new) {
+        if !was.same(is) {
+            add(was);
+            add(is);
+        } else if loaded && !matches!(is, Item::Shape { .. }) {
+            add(is);
+        }
+    }
+    for item in old[both..].iter().chain(&new[both..]) {
+        add(item);
+    }
+    if rects.len() > MAX_DAMAGE {
+        let around = rects
+            .iter()
+            .copied()
+            .reduce(|all, rect| all.merge(rect))
+            .unwrap();
+        rects = vec![around];
+    }
+    rects
 }
 
 #[derive(Default)]
@@ -533,8 +701,10 @@ impl SceneHost {
         size: (u32, u32),
         scale: f64,
         icon_theme: &str,
-    ) {
-        let Some(shell) = &self.shell else { return };
+    ) -> bool {
+        let Some(shell) = &self.shell else {
+            return false;
+        };
         if self.renderer.is_none() && !self.renderer_failed {
             let formats: Vec<DrmFormat> = renderer.dmabuf_formats().iter().copied().collect();
             match Renderer::new(node, &formats) {
@@ -545,113 +715,151 @@ impl SceneHost {
                 }
             }
         }
-        let Some(vk) = &mut self.renderer else { return };
+        let Some(vk) = &mut self.renderer else {
+            return false;
+        };
         vk.set_icon_theme(icon_theme);
+        // Icons and images loaded since show from this frame on, on every output.
+        let came = vk.poll();
+        // What the script says it will show is loaded before it does.
+        let preloads = std::mem::take(&mut shell.scene.borrow_mut().preloads);
+        for (source, size) in preloads {
+            vk.preload(source, (f64::from(size) * scale).round().max(1.) as u32);
+        }
 
         let scene = shell.scene.borrow();
-        {
-            let items = scene.draw(output);
-            let state = self
-                .outputs
-                .entry(String::from(output))
-                .or_insert_with(|| OutputScene {
-                    targets: Vec::new(),
-                    next: 0,
-                    shown: None,
-                    glass: Vec::new(),
-                    effect: FramebufferEffect::new(),
-                    drawn: None,
-                });
-            if state.drawn == Some((self.generation, scale)) {
-                return;
+        let items = scene.draw(output);
+        let state = self
+            .outputs
+            .entry(String::from(output))
+            .or_insert_with(|| OutputScene {
+                targets: Vec::new(),
+                next: 0,
+                shown: None,
+                items: Vec::new(),
+                id: Id::new(),
+                damage: DamageBag::default(),
+                glass: Vec::new(),
+                effect: FramebufferEffect::new(),
+                drawn: None,
+            });
+        let now = (self.generation, scale, vk.epoch());
+        if state.drawn == Some(now) {
+            return came;
+        }
+        let rescaled = state.drawn.is_none_or(|(_, before, _)| before != scale);
+        let images = state.drawn.is_some_and(|(_, _, epoch)| epoch != vk.epoch());
+        state.drawn = Some(now);
+        // The scene changed, but not in what this output shows: its picture stays.
+        let same = items.len() == state.items.len()
+            && items.iter().zip(&state.items).all(|(a, b)| a.same(b));
+        if same && !rescaled && !images && (state.shown.is_some() || items.is_empty()) {
+            return came;
+        }
+
+        state.glass = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Shape {
+                    rect,
+                    radii,
+                    material: Material::Glass | Material::Acrylic | Material::Mica,
+                    opacity,
+                    ..
+                } if *opacity > 0.01 => Some((*rect, *radii)),
+                _ => None,
+            })
+            .collect();
+        // Showing nothing, it takes no images, and nothing is drawn over what's below.
+        if items.is_empty() {
+            state.shown = None;
+            state.items = items;
+            for (target, _) in state.targets.drain(..) {
+                vk.destroy_target(target);
             }
-            state.drawn = Some((self.generation, scale));
-            state.glass = items
-                .iter()
-                .filter_map(|item| match item {
-                    Item::Shape {
-                        rect,
-                        radii,
-                        material: Material::Glass | Material::Acrylic | Material::Mica,
-                        opacity,
-                        ..
-                    } if *opacity > 0.01 => Some((*rect, *radii)),
-                    _ => None,
-                })
-                .collect();
-            // Showing nothing, it takes no images, and nothing is drawn over what's below.
-            if items.is_empty() {
-                state.shown = None;
-                for (target, _) in state.targets.drain(..) {
-                    vk.destroy_target(target);
-                }
-                return;
+            return came;
+        }
+        if state.targets.first().is_some_and(|(t, _)| t.size != size) {
+            for (target, _) in state.targets.drain(..) {
+                vk.destroy_target(target);
             }
-            if state.targets.first().is_some_and(|(t, _)| t.size != size) {
-                for (target, _) in state.targets.drain(..) {
-                    vk.destroy_target(target);
-                }
-                state.shown = None;
-            }
-            if state.targets.is_empty() {
-                for _ in 0..TARGETS {
-                    let target = match vk.create_target(size) {
-                        Ok(target) => target,
-                        Err(err) => {
-                            warn!("error making the scene's image: {err:?}");
-                            break;
-                        }
-                    };
-                    match renderer.import_dmabuf(&target.dmabuf, None) {
-                        Ok(texture) => state.targets.push((target, texture)),
-                        Err(err) => {
-                            warn!("error showing the scene's image: {err:?}");
-                            vk.destroy_target(target);
-                            break;
-                        }
+            state.shown = None;
+        }
+        if state.targets.is_empty() {
+            for _ in 0..TARGETS {
+                let target = match vk.create_target(size) {
+                    Ok(target) => target,
+                    Err(err) => {
+                        warn!("error making the scene's image: {err:?}");
+                        break;
+                    }
+                };
+                match renderer.import_dmabuf(&target.dmabuf, None) {
+                    Ok(texture) => state.targets.push((target, texture)),
+                    Err(err) => {
+                        warn!("error showing the scene's image: {err:?}");
+                        vk.destroy_target(target);
+                        break;
                     }
                 }
-                if state.targets.is_empty() {
-                    return;
-                }
-                state.next = 0;
             }
-
-            let (target, texture) = &state.targets[state.next];
-            if let Err(err) = vk.render(target, &items, scale as f32) {
-                warn!("error drawing the scene: {err:?}");
-                return;
+            if state.targets.is_empty() {
+                return came;
             }
-            state.shown = Some(TextureBuffer::from_texture(
-                renderer,
-                texture.clone(),
-                scale,
-                Transform::Normal,
-                Vec::new(),
-            ));
-            state.next = (state.next + 1) % state.targets.len();
+            state.next = 0;
         }
+
+        let (target, texture) = &state.targets[state.next];
+        if let Err(err) = vk.render(target, &items, scale as f32) {
+            warn!("error drawing the scene: {err:?}");
+            return came;
+        }
+        // All of it is new after nothing showed or at another scale; else, where it changed.
+        if state.shown.is_none() || rescaled {
+            state.damage.reset();
+        } else {
+            state
+                .damage
+                .add(changed(&state.items, &items, scale, images));
+        }
+        state.items = items;
+        state.shown = Some(TextureBuffer::from_texture(
+            renderer,
+            texture.clone(),
+            scale,
+            Transform::Normal,
+            Vec::new(),
+        ));
+        state.next = (state.next + 1) % state.targets.len();
+        came
+    }
+
+    /// Whether icons or images the scene shows are still being loaded: it's drawn again when
+    /// they're there.
+    pub fn loading(&self) -> bool {
+        self.renderer.as_ref().is_some_and(Renderer::loading)
     }
 
     /// Pushes what output `output`'s scene shows, over its glass.
-    pub fn render_content(
-        &self,
-        output: &str,
-        push: &mut dyn FnMut(PrimaryGpuTextureRenderElement),
-    ) {
-        let Some(buffer) = self.outputs.get(output).and_then(|s| s.shown.as_ref()) else {
+    pub fn render_content(&self, output: &str, push: &mut dyn FnMut(SceneElement)) {
+        let Some(state) = self.outputs.get(output) else {
             return;
         };
-        push(PrimaryGpuTextureRenderElement(
-            TextureRenderElement::from_texture_buffer(
+        let Some(buffer) = &state.shown else {
+            return;
+        };
+        push(SceneElement {
+            texture: PrimaryGpuTextureRenderElement(TextureRenderElement::from_texture_buffer(
                 buffer.clone(),
                 (0., 0.),
                 1.,
                 None,
                 None,
                 Kind::Unspecified,
-            ),
-        ));
+            )),
+            id: state.id.clone(),
+            damage: state.damage.snapshot(),
+        });
     }
 
     /// Pushes the glass under output `output`'s scene.
@@ -1441,7 +1649,7 @@ mod tests {
             let level = bars.iter().find(|bar| bar[0] < track).unwrap();
             (bars[0][1], level[0] + level[2] - track)
         };
-        let (top, filled) = mic(&host);
+        let (_, filled) = mic(&host);
         let speakers = middle_of(&host, "DP-1", "Speakers");
         click(&mut host, "DP-1", speakers);
         let mut tops = Vec::new();
@@ -1674,6 +1882,133 @@ mod tests {
         assert!(commands(&host).contains(&serde_json::json!({ "cmd": "expire", "id": 6 })));
     }
 
+    /// Times what bento does on its main thread for the shell, frame by frame, through first and
+    /// later uses of its panels, on the machine's GPU, and prints the frames that took long. It
+    /// needs a GPU, so it's run by hand, with `--nocapture`.
+    #[test]
+    #[ignore]
+    fn it_times_the_shells_frames() {
+        use smithay::backend::allocator::{Format as DrmFormat, Fourcc, Modifier};
+
+        let started = Instant::now();
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (2560., 1440.))];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.set_workspaces(serde_json::json!({
+            "DP-1": [{ "index": 0, "name": null, "active": true, "focused": true, "id": 7 }],
+        }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        println!("load: {:.1} ms", started.elapsed().as_secs_f64() * 1000.);
+
+        let formats = [DrmFormat {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }];
+        let mut renderer = super::super::vk::Renderer::new(None, &formats).unwrap();
+        renderer.set_icon_theme("Adwaita");
+        let target = renderer.create_target((2560, 1440)).unwrap();
+        let mut now = Instant::now();
+
+        // One frame: the script's timers, layout and springs, then what to draw, then drawing
+        // it. Gives each part's time in milliseconds, and the glyphs and images it added.
+        let mut frame = |host: &mut SceneHost, step: u64| {
+            now += std::time::Duration::from_millis(step);
+            let t = Instant::now();
+            host.advance(now, Some(1.));
+            let advance = t.elapsed().as_secs_f64() * 1000.;
+            let t = Instant::now();
+            let items = host.shell.as_ref().unwrap().scene.borrow().draw("DP-1");
+            let draw = t.elapsed().as_secs_f64() * 1000.;
+            let before = renderer.kept();
+            let t = Instant::now();
+            renderer.render(&target, &items, 1.).unwrap();
+            let render = t.elapsed().as_secs_f64() * 1000.;
+            let after = renderer.kept();
+            (
+                advance,
+                draw,
+                render,
+                after.0.saturating_sub(before.0),
+                after.1.saturating_sub(before.1),
+                items.len(),
+            )
+        };
+        let mut run = |host: &mut SceneHost, what: &str, event: f64, frames: usize| {
+            let mut worst = (0f64, String::new());
+            let mut total = 0.;
+            let mut slow = 0;
+            for i in 0..frames {
+                let (advance, draw, render, glyphs, images, items) = frame(host, 6);
+                let all = advance + draw + render + if i == 0 { event } else { 0. };
+                total += all;
+                if all > 2. {
+                    slow += 1;
+                }
+                if all > worst.0 {
+                    worst = (
+                        all,
+                        format!(
+                            "frame {i}: script+layout {advance:.2}, items {draw:.2}, draw {render:.2} \
+                             ({glyphs} glyphs, {images} images, {items} items)"
+                        ),
+                    );
+                }
+            }
+            println!(
+                "{what:<34} event {event:>6.2} ms | worst frame {:>6.2} ms | over 2 ms: {slow:>2}/{frames} | avg {:.2} | {}",
+                worst.0,
+                total / frames as f64,
+                worst.1
+            );
+        };
+        let timed = |f: &mut dyn FnMut()| {
+            let t = Instant::now();
+            f();
+            t.elapsed().as_secs_f64() * 1000.
+        };
+
+        run(&mut host, "first frames", 0., 5);
+        run(&mut host, "idle", 0., 30);
+        for round in ["cold", "warm"] {
+            println!("--- {round}");
+            let e = timed(&mut || host.toggle_launcher(Some(String::from("DP-1"))));
+            run(&mut host, "launcher opens", e, 40);
+            for key in ["f", "i", "r"] {
+                let e = timed(&mut || type_keys(&mut host, &[key]));
+                run(&mut host, &format!("launcher: typed {key}"), e, 20);
+            }
+            let e = timed(&mut || type_keys(&mut host, &["Escape"]));
+            run(&mut host, "launcher closes", e, 40);
+
+            let status = middle_of(&host, "DP-1", "network-offline-symbolic");
+            let e = timed(&mut || click(&mut host, "DP-1", status));
+            run(&mut host, "control center opens", e, 50);
+            let speakers = middle_of(&host, "DP-1", "Speakers");
+            let e = timed(&mut || click(&mut host, "DP-1", speakers));
+            run(&mut host, "device list opens", e, 40);
+            let e = timed(&mut || type_keys(&mut host, &["Escape"]));
+            run(&mut host, "control center closes", e, 50);
+
+            let e = timed(&mut || click(&mut host, "DP-1", [1280., 26.]));
+            run(&mut host, "calendar opens", e, 50);
+            let e = timed(&mut || type_keys(&mut host, &["Escape"]));
+            run(&mut host, "calendar closes", e, 50);
+
+            let e = timed(&mut || {
+                host.data_line(
+                    r#"{"type":"notification","event":"shown","id":1,"app":"Mail","summary":"A notification","body":"With some text in it, as they have.","actions":[],"urgency":1,"timeout":60000,"image":null,"appIcon":null}"#,
+                )
+            });
+            run(&mut host, "notification shows", e, 40);
+            let e =
+                timed(&mut || host.data_line(r#"{"type":"notification","event":"closed","id":1}"#));
+            run(&mut host, "notification goes", e, 40);
+            let e = timed(&mut || {});
+            run(&mut host, "a second passes (clock)", e, 170);
+        }
+        renderer.destroy_target(target);
+    }
+
     /// Draws the shell's panels on the machine's GPU into PNG files in the folder
     /// `BENTO_SHELL_SHOTS` names, to look at: the glass, which bento's compositing draws, is
     /// stood in for by a plain tint. It needs a GPU, so it's run by hand.
@@ -1715,6 +2050,8 @@ mod tests {
         let target = renderer.create_target((1920, 1080)).unwrap();
         let mut shot = |host: &SceneHost, name: &str, [x0, y0, w, h]: [u32; 4]| {
             let items = host.shell.as_ref().unwrap().scene.borrow().draw("DP-1");
+            renderer.render(&target, &items, 1.).unwrap();
+            renderer.wait_for_loads();
             renderer.render(&target, &items, 1.).unwrap();
             let pixels = renderer.read_back(&target).unwrap();
             let glass: Vec<([f32; 4], [f32; 4])> = items
@@ -1799,6 +2136,62 @@ mod tests {
         settle(&mut host, &mut now);
         shot(&host, "launcher", [560, 240, 800, 420]);
         renderer.destroy_target(target);
+    }
+
+    #[test]
+    fn only_where_the_scene_changed_is_drawn_again() {
+        let shape = |x: f32, opacity: f32| Item::Shape {
+            rect: [x, 10., 100., 36.],
+            radii: [18.; 4],
+            material: Material::None,
+            fill: [1.; 4],
+            border: (0., [0.; 4]),
+            opacity,
+            blur: 0.,
+            clip: None,
+        };
+        let icon = Item::Image {
+            rect: [900., 10., 16., 16.],
+            source: super::super::ImageSource::Icon(String::from("folder-symbolic")),
+            color: [1.; 4],
+            opacity: 1.,
+            scale: 1.,
+            blur: 0.,
+            clip: None,
+        };
+        let before = [shape(0., 1.), shape(400., 1.), icon.clone()];
+        // Nothing changed: nothing's drawn again.
+        assert!(changed(&before, &before, 1., false).is_empty());
+
+        // One island fades: only around it, with the room its smoothed edges take.
+        let after = [shape(0., 1.), shape(400., 0.5), icon.clone()];
+        let rects = changed(&before, &after, 1., false);
+        let around = rects.iter().copied().reduce(|a, b| a.merge(b)).unwrap();
+        assert!(
+            around.loc.x >= 390 && around.loc.x + around.size.w <= 510,
+            "{around:?}"
+        );
+        assert!(around.size.h < 60, "{around:?}");
+
+        // It moves: where it was and where it is. At twice the scale, twice the pixels.
+        let moved = [shape(0., 1.), shape(600., 1.), icon.clone()];
+        let rects = changed(&before, &moved, 2., false);
+        let around = rects.iter().copied().reduce(|a, b| a.merge(b)).unwrap();
+        assert!(
+            around.loc.x >= 780 && around.loc.x + around.size.w <= 1420,
+            "{around:?}"
+        );
+
+        // An icon that was loading came in: around the icons, not the shapes.
+        let rects = changed(&before, &before, 1., true);
+        assert_eq!(rects.len(), 1);
+        assert!(rects[0].loc.x >= 890 && rects[0].size.w <= 30, "{rects:?}");
+
+        // Something added at the end: around it.
+        let more = [shape(0., 1.), shape(400., 1.), icon, shape(1500., 1.)];
+        let rects = changed(&before, &more, 1., false);
+        assert_eq!(rects.len(), 1);
+        assert!(rects[0].loc.x >= 1490, "{rects:?}");
     }
 
     #[test]

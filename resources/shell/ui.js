@@ -253,6 +253,12 @@ export function apps() {
   return JSON.parse(native.apps());
 }
 
+// Loads the icon `name` at `size` ahead of its first use, so that it's there in the frame it's
+// first shown in. An icon that isn't loaded yet shows a few frames late.
+export function preload(name, size = 16) {
+  native.preload(String(name), size);
+}
+
 // Starts the app with desktop entry id `id`.
 export function launch(id) {
   return native.launch(id);
@@ -362,13 +368,22 @@ export function island(props = {}, children = []) {
 // back to an island as wide as what it holds. `onToggle(open)` hears it open and close, as it
 // starts. Gives `{ open, setOpen(open), toggle(), close(), fit() }`: `fit()` sizes an open
 // island again after its content changed.
-export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) {
-  // Presses on the panel that nothing in it takes stay in it.
-  content.set({
-    position: "absolute", top: pad, left: pad, hidden: true, opacity: 0,
-    onClick: () => {},
-  });
-  pill.add(content);
+export function expand(pill, content, { radius = 24, pad = 16, hold = "start", onToggle } = {}) {
+  const inner = content;
+  // Presses on the panel that nothing in it takes stay in it, and it keeps its size in an
+  // island narrower than it.
+  content.set({ shrink: 0, onClick: () => {} });
+  // The content is held to the island's edge that stays put as it grows and shrinks, its start,
+  // its middle or its end, so that it never moves on the screen: only the glass around it does.
+  const holder = box(
+    {
+      position: "absolute", top: pad, left: 0, right: 0, padding: [0, pad], hidden: true,
+      opacity: 0, justify: hold,
+    },
+    [content],
+  );
+  pill.add(holder);
+  content = holder;
   let step;
   const later = (ms, fn) => {
     if (step !== undefined) cancel(step);
@@ -383,7 +398,7 @@ export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) 
     toggle: () => panel.setOpen(!panel.open),
     fit() {
       if (!panel.open) return;
-      const size = layout(content);
+      const size = layout(inner);
       if (size) pill.set({ width: size[2] + 2 * pad, height: size[3] + 2 * pad, radius });
     },
     setOpen(open) {
@@ -396,14 +411,11 @@ export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) 
           content.set({ hidden: false, opacity: 1, blur: 0, jump: { opacity: 0, blur: 6 } });
         });
       } else {
-        // The glass shrinks at once, and the content blurs out faster than its edge comes,
-        // held where it is meanwhile.
-        content.set({
-          opacity: 0, blur: 6, transition: { opacity: 0.1, blur: 0.1, frame: 60 },
-        });
+        // The glass shrinks at once, and the content blurs out faster than its edge comes.
+        content.set({ opacity: 0, blur: 6, transition: { opacity: 0.1, blur: 0.1 } });
         pill.set({ width: "auto", height: ISLAND, radius: ISLAND / 2 });
         later(120, () => {
-          content.set({ hidden: true, transition: { opacity: null, blur: null, frame: null } });
+          content.set({ hidden: true, transition: { opacity: null, blur: null } });
         });
         closed(panel);
       }
