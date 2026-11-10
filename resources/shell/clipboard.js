@@ -43,11 +43,9 @@ export function clipboardPanel(output, pill, onToggle) {
     onClick: () => data("clipboard-clear"),
   });
   const header = box({ gap: 8, align: "center" }, [
-    // A column, so that the field stretches across it.
-    box({
-      grow: 1, shrink: 1, minWidth: 0, direction: "column", padding: [9, 12], radius: 12,
-      fill: "fg/0.08",
-    }, [field]),
+    box({ grow: 1, shrink: 1, minWidth: 0, padding: [9, 12], radius: 12, fill: "fg/0.08" }, [
+      field,
+    ]),
     clear,
   ]);
   const list = box({ direction: "column", gap: 2 });

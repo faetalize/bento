@@ -1888,6 +1888,25 @@ mod tests {
     }
 
     #[test]
+    fn a_search_fields_placeholder_is_on_one_line() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let one_line = |host: &SceneHost, placeholder: &str, size: f32| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let frame = scene.seen("DP-1", placeholder)[0].0;
+            assert!(frame[3] < size * 2., "{placeholder}: {frame:?}");
+        };
+        host.toggle_launcher(Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        one_line(&host, "Search apps", 22.);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+
+        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        one_line(&host, "Search the clipboard", 15.);
+    }
+
+    #[test]
     fn a_notifications_actions_are_buttons_and_reach_the_app_with_a_token() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         let toast = r#"{"type":"notification","event":"shown","id":7,"app":"Chat",

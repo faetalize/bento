@@ -131,7 +131,9 @@ export function input({
     fill: "fg", opacity: 0, radius: 1, ...look.caret,
   });
   const marks = [];
-  const wrap = box({ onPress: (event) => {
+  // It takes the width of the row it's in, so its placeholder isn't wrapped to the width of
+  // what's typed, and a press anywhere along it lands in it.
+  const wrap = box({ grow: 1, shrink: 1, minWidth: 0, onPress: (event) => {
     focus(widget);
     show(native.edit(field.id, JSON.stringify({ point: [event.x, event.y] })));
   } }, [field, hint, caret]);
