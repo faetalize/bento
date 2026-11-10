@@ -5211,7 +5211,8 @@ impl Niri {
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));
         scene.set_minimap(serde_json::Value::Object(minimap));
         let moving = scene.advance_with(Instant::now(), slowdown, response);
-        scene.send_commands();
+        let activation = &mut self.activation_state;
+        scene.send_commands(|| activation.create_external_token(None).0.to_string());
         if scene.wants_data_program(Instant::now()) {
             self.start_scene_data();
         }

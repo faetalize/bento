@@ -368,6 +368,9 @@ export function island(props = {}, children = []) {
 // back to an island as wide as what it holds. `onToggle(open)` hears it open and close, as it
 // starts. Gives `{ open, setOpen(open), toggle(), close(), fit() }`: `fit()` sizes an open
 // island again after its content changed.
+//
+// An island can open into more than one panel: opening one while another is open turns the glass
+// straight from one's size to the other's.
 export function expand(pill, content, { radius = 24, pad = 16, hold = "start", onToggle } = {}) {
   const inner = content;
   // Presses on the panel that nothing in it takes stay in it, and it keeps its size in an
@@ -392,6 +395,13 @@ export function expand(pill, content, { radius = 24, pad = 16, hold = "start", o
       fn();
     });
   };
+  // The content blurs out faster than the glass's edge comes.
+  const leave = () => {
+    content.set({ opacity: 0, blur: 6, transition: { opacity: 0.1, blur: 0.1 } });
+    later(120, () => {
+      content.set({ hidden: true, transition: { opacity: null, blur: null } });
+    });
+  };
   const panel = {
     open: false,
     close: () => panel.setOpen(false),
@@ -401,8 +411,19 @@ export function expand(pill, content, { radius = 24, pad = 16, hold = "start", o
       const size = layout(inner);
       if (size) pill.set({ width: size[2] + 2 * pad, height: size[3] + 2 * pad, radius });
     },
+    // Closes it for another panel of its island, which the glass turns to without shrinking.
+    handOver() {
+      if (!panel.open) return;
+      panel.open = false;
+      leave();
+      closed(panel);
+      onToggle?.(false);
+    },
     setOpen(open) {
       if (panel.open === open) return;
+      if (open) {
+        for (const other of pill.panels) if (other !== panel) other.handOver();
+      }
       panel.open = open;
       if (open) {
         opened(panel);
@@ -411,17 +432,14 @@ export function expand(pill, content, { radius = 24, pad = 16, hold = "start", o
           content.set({ hidden: false, opacity: 1, blur: 0, jump: { opacity: 0, blur: 6 } });
         });
       } else {
-        // The glass shrinks at once, and the content blurs out faster than its edge comes.
-        content.set({ opacity: 0, blur: 6, transition: { opacity: 0.1, blur: 0.1 } });
+        leave();
         pill.set({ width: "auto", height: ISLAND, radius: ISLAND / 2 });
-        later(120, () => {
-          content.set({ hidden: true, transition: { opacity: null, blur: null } });
-        });
         closed(panel);
       }
       onToggle?.(open);
     },
   };
+  pill.panels = [...(pill.panels ?? []), panel];
   return panel;
 }
 

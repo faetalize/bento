@@ -29,11 +29,16 @@ const MODULES: &[(&str, &str)] = &[
         "calendar",
         include_str!("../../resources/shell/calendar.js"),
     ),
+    (
+        "clipboard",
+        include_str!("../../resources/shell/clipboard.js"),
+    ),
     ("control", include_str!("../../resources/shell/control.js")),
     (
         "launcher",
         include_str!("../../resources/shell/launcher.js"),
     ),
+    ("osd", include_str!("../../resources/shell/osd.js")),
     ("toasts", include_str!("../../resources/shell/toasts.js")),
     (
         "workspace",

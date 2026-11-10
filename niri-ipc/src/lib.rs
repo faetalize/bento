@@ -354,6 +354,8 @@ pub enum Action {
     /// Show or hide the shell's editor for the focused workspace, to name it or take its name
     /// away.
     EditWorkspace {},
+    /// Show or hide the shell's clipboard history.
+    ToggleClipboard {},
     /// Switch the sound to the next of the outputs pinned in the shell.
     SwitchAudioOutput {},
     /// Move the focused workspace to the monitor to the left.

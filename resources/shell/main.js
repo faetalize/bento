@@ -35,7 +35,7 @@ let fullscreen = last("fullscreen")?.outputs ?? {};
 function placeIslands(output) {
   const shell = shells.get(output);
   if (!shell) return;
-  const busy = shell.calendar.panel.open || shell.control.panel.open || shell.toasts.count() > 0;
+  const busy = shell.calendar.panel.open || shell.control.busy() || shell.toasts.count() > 0;
   const away = Boolean(fullscreen[output]) && !shell.near && !busy;
   if (away === shell.away) return;
   shell.away = away;
@@ -84,7 +84,7 @@ function build(output) {
   refill(shell.buttons, workspaceButtons(output));
   const left = island({ padding: [0, 10, 0, 5], gap: 8 }, [shell.buttons, minimap(output)]);
   shell.calendar = calendar(place);
-  shell.control = controlCenter(place);
+  shell.control = controlCenter(output, place);
   shell.toasts = toastStack(output, place);
 
   const start = box({ grow: 1, width: 0, justify: "start" }, [left]);

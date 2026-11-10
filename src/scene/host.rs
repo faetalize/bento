@@ -384,14 +384,19 @@ impl SceneHost {
         }
     }
 
-    /// Hands the data program the shell's commands.
-    pub fn send_commands(&mut self) {
+    /// Hands the data program the shell's commands. One with `"token": true` gets an activation
+    /// token from `token` in its place, which lets the app it reaches, like the one a
+    /// notification's action goes to, bring its window forward.
+    pub fn send_commands(&mut self, mut token: impl FnMut() -> String) {
         let Some(shell) = &self.shell else { return };
         let commands = shell.take_commands();
         let Some((_, stdin)) = &mut self.data else {
             return;
         };
-        for command in commands {
+        for mut command in commands {
+            if command["token"] == serde_json::Value::Bool(true) {
+                command["token"] = serde_json::Value::String(token());
+            }
             use std::io::Write as _;
             if writeln!(stdin, "{command}").is_err() {
                 break;
@@ -1864,13 +1869,13 @@ mod tests {
         assert!(shows(&host, "DP-1", "New message"));
         assert!(shows(&host, "DP-1", "Hello & welcome"));
 
-        // A click does what it's for and sends it away, and so does its time running out.
+        // A click on one that isn't for anything sends it away, and so does its time running
+        // out.
         let at = middle_of(&host, "DP-1", "New message");
         commands(&host);
         click(&mut host, "DP-1", at);
         let sent = commands(&host);
-        assert_eq!(sent[0]["cmd"], "invoke");
-        assert_eq!(sent[1], serde_json::json!({ "cmd": "dismiss", "id": 5 }));
+        assert_eq!(sent, [serde_json::json!({ "cmd": "dismiss", "id": 5 })]);
         host.data_line(r#"{"type":"notification","event":"closed","id":5}"#);
         settle(&mut host, &mut now);
         assert!(!shows(&host, "DP-1", "New message"));
@@ -1880,6 +1885,144 @@ mod tests {
         assert!(commands(&host).is_empty());
         settle(&mut host, &mut now);
         assert!(commands(&host).contains(&serde_json::json!({ "cmd": "expire", "id": 6 })));
+    }
+
+    #[test]
+    fn a_notifications_actions_are_buttons_and_reach_the_app_with_a_token() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let toast = r#"{"type":"notification","event":"shown","id":7,"app":"Chat",
+            "summary":"Sam","body":"Lunch?","actions":[["default",""],["reply","Reply"]],
+            "urgency":1,"timeout":60000,"image":null,"appIcon":null}"#
+            .replace('\n', " ");
+        host.data_line(&toast);
+        settle(&mut host, &mut now);
+        commands(&host);
+
+        // Its default action is its own click, and the others are its buttons.
+        let at = middle_of(&host, "DP-1", "Lunch?");
+        click(&mut host, "DP-1", at);
+        let invoke = |key: &str| {
+            serde_json::json!({ "cmd": "invoke", "id": 7, "key": key, "token": true })
+        };
+        assert_eq!(commands(&host), [invoke("default")]);
+        let at = middle_of(&host, "DP-1", "Reply");
+        click(&mut host, "DP-1", at);
+        assert_eq!(commands(&host), [invoke("reply")]);
+
+        // bento puts an activation token in for the app, so it may bring its window forward.
+        let mut program = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = program.stdin.take().unwrap();
+        let mut stdout = program.stdout.take().unwrap();
+        host.data_started(program, stdin);
+        let at = middle_of(&host, "DP-1", "Reply");
+        click(&mut host, "DP-1", at);
+        host.send_commands(|| String::from("a-token"));
+        let (mut program, stdin) = host.data.take().unwrap();
+        drop(stdin);
+        let mut said = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut said).unwrap();
+        program.wait().unwrap();
+        let sent: serde_json::Value = said
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|command| command["cmd"] == "invoke")
+            .unwrap();
+        assert_eq!(sent["token"], "a-token");
+        assert_eq!(sent["key"], "reply");
+    }
+
+    #[test]
+    fn the_clipboard_button_opens_the_history_to_copy_from_and_the_shortcut_too() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        host.data_line(
+            r#"{"type":"clipboard","available":true,"entries":[
+                {"id":3,"kind":"text","text":"second   copy\nwith two lines"},
+                {"id":2,"kind":"image","image":"/nowhere/clipboard-2.png"},
+                {"id":1,"kind":"text","text":"first copy"}]}"#
+                .replace('\n', " ")
+                .as_str(),
+        );
+        settle(&mut host, &mut now);
+        let button = middle_of(&host, "DP-1", "edit-paste-symbolic");
+        click(&mut host, "DP-1", button);
+        settle(&mut host, &mut now);
+        // Newest first, each on a line.
+        assert!(shows(&host, "DP-1", "second copy with two lines"));
+        assert!(shows(&host, "DP-1", "first copy"));
+
+        // Typing finds, and Enter copies what's found and closes it.
+        commands(&host);
+        type_keys(&mut host, &["f", "i", "r"]);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "second copy with two lines"));
+        type_keys(&mut host, &["Return"]);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "clipboard-copy", "id": 1 })]
+        );
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "first copy"));
+
+        // The shortcut opens it on the focused output; a click on one copies it.
+        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        let at = middle_of(&host, "DP-1", "second copy with two lines");
+        click(&mut host, "DP-1", at);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "clipboard-copy", "id": 3 })]
+        );
+    }
+
+    #[test]
+    fn a_volume_changed_elsewhere_shows_its_level_at_the_bottom_for_a_moment() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "60%"));
+
+        // A key turns it up: the level grows out of nothing at the bottom middle, and goes.
+        host.data_line(&DEVICES.replace('\n', " ").replace(
+            r#""active":true,"volume":0.4"#,
+            r#""active":true,"volume":0.6"#,
+        ));
+        for _ in 0..50 {
+            frame(&mut host, &mut now);
+        }
+        assert!(shows(&host, "DP-1", "60%"));
+        let at = middle_of(&host, "DP-1", "60%");
+        assert!(at[1] > 900., "{at:?}");
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "60%"));
+
+        // Another device being picked isn't a change of volume.
+        let headphones = |volume: &str| {
+            DEVICES
+                .replace('\n', " ")
+                .replace(r#""active":true,"volume":0.4"#, r#""active":false,"volume":0.4"#)
+                .replace(
+                    r#""active":false,"volume":0.8"#,
+                    &format!(r#""active":true,"volume":{volume}"#),
+                )
+        };
+        host.data_line(&headphones("0.8"));
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "80%"));
+
+        // Nor is the control center's own slider moving it, which shows it already.
+        open_control_center(&mut host, &mut now);
+        let slider = middle_of(&host, "DP-1", "audio-volume-high-symbolic");
+        click(&mut host, "DP-1", [slider[0] + 150., slider[1]]);
+        host.data_line(&headphones("0.5"));
+        for _ in 0..50 {
+            frame(&mut host, &mut now);
+        }
+        assert!(!shows(&host, "DP-1", "50%"));
     }
 
     /// Times what bento does on its main thread for the shell, frame by frame, through first and
@@ -2129,6 +2272,41 @@ mod tests {
         );
         settle(&mut host, &mut now);
         shot(&host, "toast", [1500, 0, 420, 160]);
+        host.data_line(
+            r#"{"type":"notification","event":"shown","id":2,"app":"Chat","summary":"Sam","body":"Lunch at noon?","actions":[["default",""],["reply","Reply"],["later","Remind Me Later"]],"urgency":1,"timeout":60000,"image":null,"appIcon":null}"#,
+        );
+        settle(&mut host, &mut now);
+        shot(&host, "toast-actions", [1500, 0, 420, 320]);
+        host.data_line(r#"{"type":"notification","event":"closed","id":1}"#);
+        host.data_line(r#"{"type":"notification","event":"closed","id":2}"#);
+        settle(&mut host, &mut now);
+
+        // A picture to copy, which `BENTO_SHELL_PICTURE` can name.
+        let picture = std::env::var("BENTO_SHELL_PICTURE").unwrap_or_default();
+        host.data_line(
+            &serde_json::json!({ "type": "clipboard", "available": true, "entries": [
+                { "id": 4, "kind": "text", "text": "cargo test --lib scene:: -- --nocapture" },
+                { "id": 3, "kind": "image", "image": picture },
+                { "id": 2, "kind": "text", "text": "A long paragraph that was copied from a web page, which goes on for much longer than the panel is wide." },
+                { "id": 1, "kind": "text", "text": "https://example.org/a/link" },
+            ] })
+            .to_string(),
+        );
+        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        shot(&host, "clipboard", [1460, 0, 460, 420]);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+
+        host.data_line(&DEVICES.replace('\n', " ").replace(
+            r#""active":true,"volume":0.4"#,
+            r#""active":true,"volume":0.6"#,
+        ));
+        for _ in 0..50 {
+            frame(&mut host, &mut now);
+        }
+        shot(&host, "volume-level", [660, 960, 600, 120]);
+        settle(&mut host, &mut now);
 
         host.toggle_launcher(Some(String::from("DP-1")));
         settle(&mut host, &mut now);

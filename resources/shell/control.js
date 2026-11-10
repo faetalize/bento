@@ -1,22 +1,16 @@
 // The right island: the status icons, the clipboard's button and the sound output switcher,
 // which opens into the control center: the light or dark style, the screenshot and screen record
-// buttons, the sound devices and the displays' brightness.
+// buttons, the sound devices and the displays' brightness. It opens into the clipboard's history
+// too.
 
 import {
   box, text, image, button, slider, island, expand, refill, drawer, on, config, data, action, last,
   after, run, notify, stored, store, closeAll,
 } from "bento:ui";
+import { clipboardPanel } from "bento:clipboard";
+import { quiet, volumeIcon, micIcon } from "bento:osd";
 
 const WIDTH = 340;
-
-const volumeIcon = ({ volume, muted }) =>
-  muted || volume <= 0 ? "audio-volume-muted-symbolic"
-  : volume < 0.34 ? "audio-volume-low-symbolic"
-  : volume < 0.67 ? "audio-volume-medium-symbolic"
-  : "audio-volume-high-symbolic";
-
-const micIcon = ({ muted }) =>
-  muted ? "microphone-sensitivity-muted-symbolic" : "microphone-sensitivity-high-symbolic";
 
 // The sound devices, as the data program last told them.
 const devices = () => last("audio-devices") ?? { outputs: [], inputs: [] };
@@ -54,11 +48,6 @@ export function switchOutput() {
 }
 on("switch-audio-output", switchOutput);
 
-// The clipboard manager isn't built: its button says so, and this is where it opens.
-function openClipboard() {
-  notify("Clipboard", "The clipboard manager isn't here yet.", "edit-paste-symbolic");
-}
-
 // Runs what the config sets for the screenshot or the screen record button, once the control
 // center is out of the picture, and shows its notification when it's done, if it has one.
 function capture(which) {
@@ -84,16 +73,17 @@ function capture(which) {
 // A section's title.
 const heading = (title) => text(title, { size: 12, weight: 700, color: "fg/0.6" });
 
-// The right island of an output. Gives `{ island, panel }`: `panel` is the control center,
-// which `onToggle(open)` hears open and close.
-export function controlCenter(onToggle) {
+// The right island of `output`. Gives `{ island, panel, busy() }`: `panel` is the control
+// center, and `busy()` says whether the island is open into anything. `onToggle()` hears it open
+// or close into something.
+export function controlCenter(output, onToggle) {
   // The island: the switcher and the clipboard's button, then the status.
   const switcher = button({
     icon: "audio-speakers-symbolic", display: "none",
     onClick: switchOutput,
     onRightClick: () => panel.setOpen(true),
   });
-  const clipboard = button({ icon: "edit-paste-symbolic", onClick: openClipboard });
+  const clipboard = button({ icon: "edit-paste-symbolic", onClick: () => clips.toggle() });
   const network = image("network-offline-symbolic", { color: "fg" });
   const volume = image("audio-volume-muted-symbolic", { color: "fg" });
   const battery = image("battery-missing-symbolic", { color: "fg", display: "none" });
@@ -133,12 +123,15 @@ export function controlCenter(onToggle) {
   const level = (kind, icon) =>
     slider({
       width: WIDTH, icon,
+      // What it changes shows here, not in the on-screen indicator.
       onChange: (value) => {
         const device = active(kind);
+        quiet();
         if (device) data("device-volume", { kind: kind.slice(0, -1), name: device.name, value });
       },
       onIcon: () => {
         const device = active(kind);
+        quiet();
         if (device) {
           data("device-mute", { kind: kind.slice(0, -1), name: device.name, value: !device.muted });
         }
@@ -271,21 +264,29 @@ export function controlCenter(onToggle) {
     ]),
     displaySection,
   ]);
+  // The island's own row gives way to whatever it opens into.
   const status = [switcher, clipboard, network, volume, battery, charge];
+  const busy = () => pill.panels.some((other) => other.open);
+  const toggled = () => {
+    const away = busy();
+    for (const node of status) node.set({ opacity: away ? 0 : 1, blur: away ? 4 : 0 });
+    onToggle?.();
+  };
   const panel = expand(pill, content, {
     hold: "end",
     onToggle: (open) => {
-      // The island's own row gives way to the panel, and the lists open closed.
-      for (const node of status) node.set({ opacity: open ? 0 : 1, blur: open ? 4 : 0 });
+      // The lists open closed.
       if (open && (listOpen.output || listOpen.input)) {
         listOpen.output = listOpen.input = false;
         showDevices(true);
       }
       // A monitor's own buttons change its brightness too.
       if (open) data("brightness-refresh");
-      onToggle?.(open);
+      toggled();
     },
   });
+  const clips = clipboardPanel(output, pill, toggled);
+
 
   const showTheme = () => dark.show({ active: Boolean(last("theme")?.dark) });
   const showNetwork = () => {
@@ -310,5 +311,5 @@ export function controlCenter(onToggle) {
   on("battery", showBattery);
   pinListeners.push(() => showDevices());
 
-  return { island: pill, panel };
+  return { island: pill, panel, busy };
 }

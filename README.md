@@ -285,7 +285,13 @@ shell {
 
 A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and `switch-audio-output` does the same from a shortcut.
 
-`edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. Neither action is bound by default; Settings → Shortcuts binds them.
+When the volume changes elsewhere, by a volume key or a headset's knob, the right island widens into the volume's level for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
+
+The clipboard's button opens its history, and so does `toggle-clipboard`: what was copied, newest first, found by typing, and copied again with a click or Enter (Shift+Delete forgets one). It's kept for the session only, text in memory and pictures in the runtime directory, and what a password manager marks as secret isn't kept. When the app that copied something closes, its copy stays on the clipboard.
+
+Notifications show their actions as buttons, and a click on one does its default action. The app gets an activation token with it, so it can bring its window forward.
+
+`edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. None of these actions is bound by default; Settings → Shortcuts binds them.
 
 A rule can pick the other material for some windows or surfaces:
 

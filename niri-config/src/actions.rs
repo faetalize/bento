@@ -60,6 +60,11 @@ pub fn native_actions() -> Vec<Declaration> {
             vec![],
         ),
         action(
+            "toggle-clipboard",
+            "Show or hide the shell's clipboard history.",
+            vec![],
+        ),
+        action(
             "switch-audio-output",
             "Switch the sound to the next of the outputs pinned in the shell.",
             vec![],
