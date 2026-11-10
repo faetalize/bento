@@ -734,7 +734,7 @@ impl State {
                         modifiers,
                         this.niri.config.borrow().input.disable_power_key_handling,
                         is_inhibiting_shortcuts
-                            || holds_binds(shell_holds, engine_holds, modifiers, mod_key),
+                            || holds_binds(shell_holds, engine_holds, modifiers, mod_key, modified),
                         is_locked,
                         is_in_screenshot,
                     )
@@ -4468,9 +4468,18 @@ fn should_intercept_key<'a>(
 
 /// Whether what holds the keyboard keeps binds from running, as an app inhibiting shortcuts
 /// does. The layout engine keeps them all. bento's own shell keeps only those without the mod
-/// key: it takes typing and editing keys, and Mod binds, like a screenshot, run over it.
-fn holds_binds(shell_holds: bool, engine_holds: bool, mods: Modifiers, mod_key: ModKey) -> bool {
-    engine_holds || (shell_holds && !mods.contains(mod_key.to_modifiers()))
+/// key: it takes typing and editing keys, and Mod binds, like a screenshot, run over it. So do
+/// a device's own keys, like volume, brightness and media keys, which type nothing.
+fn holds_binds(
+    shell_holds: bool,
+    engine_holds: bool,
+    mods: Modifiers,
+    mod_key: ModKey,
+    key: Option<Keysym>,
+) -> bool {
+    // The XF86 keysyms are the ones vendors' extra keys send.
+    let devices_own = key.is_some_and(|key| (0x1008_0000..=0x1008_ffff).contains(&key.raw()));
+    engine_holds || (shell_holds && !mods.contains(mod_key.to_modifiers()) && !devices_own)
 }
 
 fn find_bind<'a, I: Iterator<Item = &'a Bind> + Clone>(
@@ -5363,29 +5372,51 @@ mod tests {
     #[test]
     fn mod_binds_run_over_the_shell_but_not_over_the_layout_engine() {
         let mod_key = ModKey::Super;
+        let a = Some(Keysym::a);
         // Typing into the shell: its keys, not binds.
-        assert!(holds_binds(true, false, Modifiers::empty(), mod_key));
-        assert!(holds_binds(true, false, Modifiers::SHIFT, mod_key));
-        assert!(holds_binds(true, false, Modifiers::CTRL, mod_key));
+        assert!(holds_binds(true, false, Modifiers::empty(), mod_key, a));
+        assert!(holds_binds(true, false, Modifiers::SHIFT, mod_key, a));
+        assert!(holds_binds(true, false, Modifiers::CTRL, mod_key, a));
         // Mod+Shift+S over the shell: a bind, like a screenshot.
         assert!(!holds_binds(
             true,
             false,
             Modifiers::SUPER | Modifiers::SHIFT,
-            mod_key
+            mod_key,
+            Some(Keysym::S),
         ));
         // The layout engine keeps them all.
-        assert!(holds_binds(false, true, Modifiers::SUPER, mod_key));
-        assert!(!holds_binds(false, false, Modifiers::empty(), mod_key));
+        assert!(holds_binds(false, true, Modifiers::SUPER, mod_key, a));
+        assert!(!holds_binds(false, false, Modifiers::empty(), mod_key, a));
 
         // Mod+Q runs while the shell holds the keyboard.
         let bindings = Binds(vec![close_bind(BoundAction::Press(Action::CloseWindow))]);
         let mut state = create_test_state();
-        state.is_inhibiting = holds_binds(true, false, Modifiers::SUPER, mod_key);
+        state.is_inhibiting = holds_binds(true, false, Modifiers::SUPER, mod_key, a);
         assert!(matches!(
             process_close_key(&mut state, &bindings, Modifiers::SUPER, KeyState::Pressed),
             ShouldInterceptResult::InterceptAndHandle(_)
         ));
+    }
+
+    #[test]
+    fn a_devices_own_keys_run_over_the_shell() {
+        let mod_key = ModKey::Super;
+        // A volume key or knob turns the volume while the control center is open, since the
+        // shell types nothing with it.
+        for key in [
+            Keysym::XF86_AudioRaiseVolume,
+            Keysym::XF86_AudioMute,
+            Keysym::XF86_MonBrightnessUp,
+        ] {
+            assert!(
+                !holds_binds(true, false, Modifiers::empty(), mod_key, Some(key)),
+                "{key:?}"
+            );
+        }
+        // The layout engine still keeps them.
+        let volume = Some(Keysym::XF86_AudioRaiseVolume);
+        assert!(holds_binds(false, true, Modifiers::empty(), mod_key, volume));
     }
 
     /// Returns a `Mod+Q` bind with the given action and default flags.
