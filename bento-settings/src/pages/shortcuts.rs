@@ -35,6 +35,9 @@ pub fn category() -> Category {
 struct Choice {
     action: LayoutEngineAction,
     engine: bool,
+    /// A bind's own action that isn't offered, like one of an engine that isn't running, which
+    /// is written back as it is.
+    kept: Option<ActionNode>,
 }
 
 impl Choice {
@@ -55,15 +58,44 @@ fn choices() -> Vec<Choice> {
         .map(|action| Choice {
             action,
             engine: false,
+            kept: None,
         })
         .collect();
     if let Ok(engine) = ipc::layout_engine() {
         choices.extend(engine.actions.into_iter().map(|action| Choice {
             action,
             engine: true,
+            kept: None,
         }));
     }
     choices
+}
+
+/// Which of `choices` a bind with `action` starts on. An action that isn't one of them gets a
+/// choice of its own that keeps it as it is, rather than the bind becoming the first action.
+fn picked_choice(choices: &mut Vec<Choice>, action: Option<&ActionNode>) -> usize {
+    let Some(action) = action else { return 0 };
+    if let Some(at) = choices.iter().position(|c| c.action.name == action.name) {
+        return at;
+    }
+    choices.push(Choice {
+        action: LayoutEngineAction {
+            name: action.name.clone(),
+            description: Some(format!("{} (as written)", action.text())),
+            args: Vec::new(),
+        },
+        engine: false,
+        kept: Some(action.clone()),
+    });
+    choices.len() - 1
+}
+
+/// The action `choice` writes, with its arguments from `fields`.
+fn chosen_action(choice: &Choice, fields: &[Field]) -> Result<ActionNode, String> {
+    match &choice.kept {
+        Some(kept) => Ok(kept.clone()),
+        None => action_node(&choice.action, fields),
+    }
 }
 
 /// A bind as the page shows it.
@@ -291,12 +323,14 @@ pub enum Edit {
 
 /// Opens the dialog to add a shortcut or change one.
 pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
-    let choices = Rc::new(choices());
     let existing = match &edit {
         Edit::Existing(key) => entries(&ctx.store).into_iter().find(|e| e.key == *key),
         Edit::New => None,
     };
     let node = existing.as_ref().and_then(|e| e.node.clone());
+    let mut choices = choices();
+    let picked = picked_choice(&mut choices, node.as_ref().and_then(|n| n.action.as_ref()));
+    let choices = Rc::new(choices);
 
     let dialog = adw::Dialog::builder()
         .title(if existing.is_some() {
@@ -373,13 +407,7 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     action_group.add(&action_row);
     page.add(&action_group);
 
-    let picked = node
-        .as_ref()
-        .and_then(|n| n.action.as_ref())
-        .map(|a| a.name.clone());
-    if let Some(idx) = picked.and_then(|name| choices.iter().position(|c| c.action.name == name)) {
-        action_row.set_selected(idx as u32);
-    }
+    action_row.set_selected(picked as u32);
 
     // The action's arguments, rebuilt when the action changes.
     let args_group = adw::PreferencesGroup::builder().title("Arguments").build();
@@ -504,7 +532,7 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
             ctx.toast("Pick an action first");
             return;
         };
-        let action = match action_node(&choice.action, &fields.borrow()) {
+        let action = match chosen_action(choice, &fields.borrow()) {
             Ok(action) => action,
             Err(message) => {
                 ctx.toast(&message);
@@ -516,10 +544,15 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
             properties: advanced.properties(),
             action: Some(action),
         };
-        let file = if choice.engine {
-            File::Engine
-        } else {
-            File::Main
+        // A kept action stays in the file it's in.
+        let kept_in = choice
+            .kept
+            .as_ref()
+            .and(existing.as_ref().and_then(|e| e.file));
+        let file = match kept_in {
+            Some(file) => file,
+            None if choice.engine => File::Engine,
+            None => File::Main,
         };
         let from = existing
             .as_ref()
@@ -1319,6 +1352,27 @@ mod tests {
 
     use super::*;
     use crate::store::on_own_context;
+
+    #[test]
+    fn a_binds_action_that_isnt_offered_is_kept_as_it_is() {
+        // An engine's action, while that engine isn't the one running.
+        let action = ActionNode {
+            name: String::from("swap-halves"),
+            args: vec![Value::Str(String::from("left"))],
+            properties: Vec::new(),
+        };
+        let mut choices: Vec<Choice> = niri_config::actions::native_actions()
+            .into_iter()
+            .map(|action| Choice {
+                action,
+                engine: false,
+                kept: None,
+            })
+            .collect();
+        let picked = picked_choice(&mut choices, Some(&action));
+        assert_eq!(choices[picked].action.name, "swap-halves");
+        assert_eq!(chosen_action(&choices[picked], &[]), Ok(action));
+    }
 
     fn close_window() -> ActionNode {
         ActionNode {

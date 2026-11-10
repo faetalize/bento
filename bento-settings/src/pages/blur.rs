@@ -35,14 +35,28 @@ const LIGHTS_KEY: &str = "blur.glass.lights";
 const MATERIAL_PATH: &[&str] = &["blur", "material"];
 const LIGHTS_PATH: &[&str] = &["blur", "glass", "light"];
 
-/// What resetting the advanced settings removes from the config.
+/// What resetting the advanced settings removes from the config: what Advanced shows, and
+/// nothing of the glass's look or lights, which are set outside it.
 const ADVANCED_PATHS: &[&[&str]] = &[
     &["blur", "passes"],
     &["blur", "offset"],
     &["blur", "noise"],
     &["blur", "saturation"],
-    &["blur", "glass"],
+    &["blur", "glass", "sheen"],
+    &["blur", "glass", "bezel"],
+    &["blur", "glass", "thickness"],
+    &["blur", "glass", "refractive-index"],
+    &["blur", "glass", "dispersion"],
+    &["blur", "glass", "reflection"],
+    &["blur", "glass", "pattern-depth"],
 ];
+
+/// Removes what Advanced sets from the config, so those settings go back to their defaults.
+fn reset_advanced(doc: &mut crate::kdl::Document) {
+    for path in ADVANCED_PATHS {
+        doc.remove(path);
+    }
+}
 
 static SWITCH: LazyLock<Setting> = LazyLock::new(|| {
     Setting::switch("Blur", "blur", |c| !c.blur.off)
@@ -661,11 +675,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     {
         let ctx = ctx.clone();
         reset.connect_activated(move |_| {
-            ctx.store.edit("blur.advanced", |doc| {
-                for path in ADVANCED_PATHS {
-                    doc.remove(path);
-                }
-            });
+            ctx.store.edit("blur.advanced", reset_advanced);
         });
     }
 
@@ -761,12 +771,19 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
                 widget.set_sensitive(!blur.off);
             }
             let defaults = Blur::default();
+            let (glass, default) = (&blur.glass, &defaults.glass);
             reset.set_sensitive(
                 blur.passes != defaults.passes
                     || blur.offset != defaults.offset
                     || blur.noise != defaults.noise
                     || blur.saturation != defaults.saturation
-                    || blur.glass != defaults.glass,
+                    || glass.sheen != default.sheen
+                    || glass.bezel != default.bezel
+                    || glass.thickness != default.thickness
+                    || glass.refractive_index != default.refractive_index
+                    || glass.dispersion != default.dispersion
+                    || glass.reflection != default.reflection
+                    || glass.pattern_depth != default.pattern_depth,
             );
         }
     };
@@ -1158,6 +1175,25 @@ fn edit_together(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resetting_advanced_leaves_the_glasss_look_and_lights() {
+        let text =
+            "blur {\n    passes 5\n    glass {\n        bezel 30\n        sheen 0.5\n        \
+                    color \"#336699\"\n        pattern \"ribbed\"\n        light {\n            \
+                    angle 45\n        }\n    }\n}\n";
+        let mut doc = crate::kdl::Document::parse(String::from(text)).unwrap();
+        reset_advanced(&mut doc);
+        let after = doc.text();
+        assert!(
+            !after.contains("passes") && !after.contains("bezel"),
+            "{after}"
+        );
+        assert!(!after.contains("sheen"), "{after}");
+        assert!(after.contains("color \"#336699\""), "{after}");
+        assert!(after.contains("pattern \"ribbed\""), "{after}");
+        assert!(after.contains("angle 45"), "{after}");
+    }
 
     #[test]
     fn bentos_defaults_are_the_middle_roughness_and_the_regular_preset() {
