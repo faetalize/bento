@@ -2,8 +2,8 @@
 // month, and the weather where the config says the user is.
 
 import {
-  box, text, image, button, island, expand, refill, morph, on, config, data, action, last,
-  closeAll,
+  box, text, image, button, island, expand, refill, travel, home, after, cancel, paced,
+  settling, on, config, data, action, last, closeAll,
 } from "bento:ui";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -96,9 +96,11 @@ function weatherRows(weather, location) {
 // and `panel` is the calendar, which `onToggle(open)` hears open and close.
 export function calendar(onToggle) {
   let now = new Date();
+  // The island's time and date, and the calendar's. The time is the same text at both sizes,
+  // with the same weight, so that it reads as one.
   const time = text(clockTime(now), { weight: 600, tabular: true });
   const shortDate = text(clockDate(now), { weight: 600 });
-  const bigTime = text(clockTime(now), { size: 40, weight: 700, tabular: true, opacity: 0 });
+  const bigTime = text(clockTime(now), { size: 40, weight: 600, tabular: true, opacity: 0 });
   const bigDate = text(longDate(now), { color: "fg/0.6", opacity: 0 });
 
   // The month on show, which the arrows and scrolling change, and its days.
@@ -176,21 +178,37 @@ export function calendar(onToggle) {
     shortDate,
     time,
   ]);
-  // The time and the date travel to their places in the calendar, blurring out as their larger
-  // selves sharpen in, and back.
-  const swap = (from, to) => {
-    from.forEach((node, i) => morph(node, to[i]));
-    for (const node of from) node.set({ opacity: 0, blur: 4 });
-    for (const node of to) node.set({ opacity: 1, blur: 0, jump: { blur: 4 } });
+  // Opening, the island's time grows into the calendar's and the date travels to the calendar's
+  // date; once there, they hand over to the calendar's own: the time as it is, the date blurring
+  // into its longer self. Closing, they hand back first, then travel home.
+  const QUICK = { opacity: 0.1, blur: 0.1 };
+  let handing;
+  const handOver = (open) => {
+    if (handing !== undefined) cancel(handing);
+    handing = undefined;
+    if (open) {
+      travel(time, bigTime);
+      travel(shortDate, bigDate);
+      handing = after(paced(settling()), () => {
+        handing = undefined;
+        time.set({ opacity: 0, transition: QUICK });
+        bigTime.set({ opacity: 1, transition: QUICK });
+        shortDate.set({ opacity: 0, blur: 4 });
+        bigDate.set({ opacity: 1, blur: 0, jump: { blur: 4 } });
+      });
+    } else {
+      time.set({ opacity: 1, transition: QUICK });
+      bigTime.set({ opacity: 0, transition: QUICK });
+      shortDate.set({ opacity: 1, blur: 0 });
+      bigDate.set({ opacity: 0, blur: 4 });
+      home(time);
+      home(shortDate);
+    }
   };
   const panel = expand(pill, content, {
     onToggle: (open) => {
-      if (open) {
-        backToToday();
-        swap([time, shortDate], [bigTime, bigDate]);
-      } else {
-        swap([bigTime, bigDate], [time, shortDate]);
-      }
+      if (open) backToToday();
+      handOver(open);
       onToggle?.(open);
     },
   });

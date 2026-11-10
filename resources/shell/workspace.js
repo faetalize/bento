@@ -27,13 +27,16 @@ export function minimap(output) {
     fill: "fg/0.16",
   });
   let scrolled = 0;
+  // The tiles as last shown, to scroll along.
+  let shown = [];
   const track = box(
     {
       height: MAP_HEIGHT, width: 0, display: "none", radius: 4, clip: true,
       onScroll: ({ dx, dy }) => {
         scrolled += dy || dx;
         if (Math.abs(scrolled) < SCROLL_STEP) return;
-        action(scrolled < 0 ? "focus-column-left" : "focus-column-right");
+        const next = beside(shown, Math.sign(scrolled));
+        if (next) action("focus-window", [], { window: next.id });
         scrolled = 0;
       },
     },
@@ -47,6 +50,7 @@ export function minimap(output) {
       track.set({ display: "none" });
       return;
     }
+    shown = list;
     // The canvas spans the tiles and the view, which starts at zero.
     const [viewWidth, viewHeight] = map.view;
     const start = Math.min(0, ...list.map((tile) => tile.x));
@@ -90,6 +94,21 @@ export function minimap(output) {
   show(last("minimap")?.outputs?.[output]);
   on("minimap", (event) => show(event.outputs?.[output]));
   return track;
+}
+
+// The tile next to the focused one in `tiles`, to the right with `side` 1 and to the left with
+// -1: the nearest that starts further that way, and of those the one nearest its height. With
+// none focused, the first or the last.
+function beside(tiles, side) {
+  const active = tiles.find((tile) => tile.active);
+  const sorted = [...tiles].sort((a, b) => a.x - b.x || a.y - b.y);
+  if (!active) return side > 0 ? sorted[0] : sorted[sorted.length - 1];
+  const further = sorted.filter((tile) => (tile.x - active.x) * side > 0.5);
+  if (further.length === 0) return null;
+  const column = side > 0 ? further[0].x : further[further.length - 1].x;
+  return further
+    .filter((tile) => Math.abs(tile.x - column) < 0.5)
+    .sort((a, b) => Math.abs(a.y - active.y) - Math.abs(b.y - active.y))[0];
 }
 
 // The workspace editor: a field in the middle of the output with the name of its workspace,

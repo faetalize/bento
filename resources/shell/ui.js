@@ -17,10 +17,11 @@
 // `jump: { ... }` puts any of those somewhere first, to move from there. `response` is how long
 // its moves take, in seconds, and `transition: { frame, opacity, radius, scale, blur, offset,
 // size }` each kind's. `animate: false` puts it at its place at once. `hidden: true` leaves it
-// out at once, neither drawn nor hit.
+// out at once, neither drawn nor hit, and so does `display: "none"`, which leaves it out of the
+// layout too; shown again, it comes in at its place.
 //
 // How things come, go and turn into each other is built from those here: `grow` and `shrink`,
-// `morph`.
+// `travel` and `home`, and panels that `expand` out of their islands.
 //
 // Handlers, each with its event:
 // - onClick, onMiddleClick, onRightClick: pressed and let go on it, with that button, or a touch
@@ -350,15 +351,27 @@ export function island(props = {}, children = []) {
   return pill;
 }
 
-// Opens an island into a panel. `content` is laid over the island, out of its flow, and shows
-// as the island grows to its size with `pad` around it; closed, the island is as tall as an
-// island again and as wide as what it holds. `onToggle(open)` hears it open and close. Gives
-// `{ open, setOpen(open), toggle(), close(), fit() }`: `fit()` sizes an open island again after
-// its content changed.
+// Opens an island into a panel. `content` is laid over the island, out of its flow, and the
+// island grows to its size with `pad` around it; once the glass is most of the way there, the
+// content sharpens in at its place. Closing, the content blurs out first and the glass shrinks
+// back to an island as wide as what it holds. `onToggle(open)` hears it open and close, as it
+// starts. Gives `{ open, setOpen(open), toggle(), close(), fit() }`: `fit()` sizes an open
+// island again after its content changed.
 export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) {
   // Presses on the panel that nothing in it takes stay in it.
-  content.set({ position: "absolute", top: pad, left: pad, opacity: 0, onClick: () => {} });
+  content.set({
+    position: "absolute", top: pad, left: pad, hidden: true, opacity: 0,
+    onClick: () => {},
+  });
   pill.add(content);
+  let step;
+  const later = (ms, fn) => {
+    if (step !== undefined) cancel(step);
+    step = after(paced(ms), () => {
+      step = undefined;
+      fn();
+    });
+  };
   const panel = {
     open: false,
     close: () => panel.setOpen(false),
@@ -374,10 +387,15 @@ export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) 
       if (open) {
         opened(panel);
         panel.fit();
-        content.set({ opacity: 1, blur: 0, jump: { blur: 4 } });
+        later(settling() * 0.5, () => {
+          content.set({ hidden: false, opacity: 1, blur: 0, jump: { opacity: 0, blur: 6 } });
+        });
       } else {
-        pill.set({ width: "auto", height: ISLAND, radius: ISLAND / 2 });
-        content.set({ opacity: 0, blur: 4 });
+        content.set({ opacity: 0, blur: 6, transition: { opacity: 0.12, blur: 0.12 } });
+        later(120, () => {
+          content.set({ hidden: true, transition: { opacity: null, blur: null } });
+          pill.set({ width: "auto", height: ISLAND, radius: ISLAND / 2 });
+        });
         closed(panel);
       }
       onToggle?.(open);
@@ -480,21 +498,34 @@ export function keyboard(take) {
   native.keyboard(Boolean(take));
 }
 
-// Makes `to` grow out of where `from` is, and `from` travel into where `to` goes, so they read
-// as one thing moving to its new place and size. Show one and hide the other as they go.
-export function morph(from, to) {
-  const f = frame(from);
-  const own = layout(from);
-  const t = layout(to);
-  if (!f || !own || !t || f[3] <= 0 || t[3] <= 0) return;
-  const middle = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
-  const [fx, fy] = middle(f);
-  const [ox, oy] = middle(own);
-  const [tx, ty] = middle(t);
-  // `to` starts where `from` is, as tall, and goes to its own place and size.
-  to.set({ offset: [0, 0], scale: 1, jump: { offset: [fx - tx, fy - ty], scale: f[3] / t[3] } });
-  // `from` goes to where `to` goes, as tall as it.
-  from.set({ offset: [tx - ox, ty - oy], scale: t[3] / own[3] });
+// Sends `node` to where `to` is laid out, as tall as it, its start on `to`'s start and its
+// middle on `to`'s middle, as one thing moving to another's place and size. `home(node)` brings
+// it back to its own.
+export function travel(node, to) {
+  const own = layout(node);
+  const target = layout(to);
+  if (!own || !target || own[3] <= 0 || target[3] <= 0) return;
+  // Scaled around its middle, so its start moves by half of what it gains or loses.
+  const scale = target[3] / own[3];
+  const dx = target[0] - own[0] - (own[2] * (1 - scale)) / 2;
+  const dy = target[1] + target[3] / 2 - (own[1] + own[3] / 2);
+  node.set({ offset: [dx, dy], scale });
+}
+
+export function home(node) {
+  node.set({ offset: [0, 0], scale: 1 });
+}
+
+// How long `ms` of motion takes with bento's animation settings: slower with a slowdown, and
+// none with animations off.
+export function paced(ms) {
+  const { animations = true, slowdown = 1 } = style();
+  return animations ? ms * slowdown : 0;
+}
+
+// How long bento's springs take to come most of the way, in milliseconds, at normal speed.
+export function settling() {
+  return (style().response ?? 0.42) * 1000;
 }
 
 // Where a node is drawn now, with its own scale: x, y, width and height.

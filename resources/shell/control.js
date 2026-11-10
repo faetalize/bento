@@ -109,18 +109,23 @@ export function controlCenter(onToggle) {
   );
 
   // The control center: quick buttons, sound, displays.
+  // The quick buttons share the width, each its icon over its label.
+  const TILE = {
+    fill: "fg/0.1", direction: "column", gap: 4, height: 60, radius: 16, grow: 1, width: 0,
+    size: 20,
+  };
   const dark = button({
-    icon: "weather-clear-night-symbolic", label: "Dark", fill: "fg/0.1",
+    icon: "weather-clear-night-symbolic", label: "Dark", ...TILE,
     onClick: () => data("theme", { dark: !dark.active }),
   });
-  const quick = box({ gap: 8 }, [
+  const quick = box({ gap: 8, width: WIDTH }, [
     dark,
     button({
-      icon: "camera-photo-symbolic", label: "Screenshot", fill: "fg/0.1",
+      icon: "camera-photo-symbolic", label: "Screenshot", ...TILE,
       onClick: () => capture("screenshot"),
     }),
     button({
-      icon: "media-record-symbolic", label: "Record", fill: "fg/0.1",
+      icon: "media-record-symbolic", label: "Record", ...TILE,
       onClick: () => capture("screenRecord"),
     }),
   ]);
@@ -145,21 +150,32 @@ export function controlCenter(onToggle) {
   const outputList = box({ direction: "column", gap: 2 });
   const inputList = box({ direction: "column", gap: 2 });
 
-  // A device's row: a click makes it the default one. An output's pin puts it in the switcher.
-  const deviceRow = (kind, device) => {
+  // Each list shows the default device, and opens on a click into the others: a click on one
+  // makes it the default and closes the list. An output's pin puts it in the switcher.
+  const listOpen = { output: false, input: false };
+  const deviceRow = (kind, device, { lead = false } = {}) => {
     const isPinned = pinned.includes(device.name);
+    const others = devices()[`${kind}s`].length > 1;
+    const lit = lead ? "fg/0.1" : null;
     const row = box(
       {
         align: "center", gap: 10, height: 34, padding: [0, 6, 0, 10], radius: 12,
-        fill: device.active ? "fg/0.1" : null, cursor: "pointer",
-        onClick: () => data("device", { kind, name: device.name }),
-        onHover: ({ inside }) =>
-          row.set({ fill: device.active ? "fg/0.1" : inside ? "fg/0.06" : null }),
+        fill: lit, cursor: "pointer",
+        onClick: () => {
+          if (lead) {
+            listOpen[kind] = !listOpen[kind];
+          } else {
+            listOpen[kind] = false;
+            data("device", { kind, name: device.name });
+          }
+          showDevices(true);
+        },
+        onHover: ({ inside }) => row.set({ fill: inside ? "fg/0.14" : lit }),
       },
       [
-        image(device.icon, { color: device.active ? "accent" : "fg" }),
+        image(device.icon, { color: lead ? "accent" : "fg" }),
         box({ grow: 1, shrink: 1 }, [
-          text(short(device.label), { weight: device.active ? 700 : 400 }),
+          text(short(device.label), { weight: lead ? 700 : 400 }),
         ]),
         kind === "output"
           ? button({
@@ -167,14 +183,28 @@ export function controlCenter(onToggle) {
               onClick: () => setPinned(device.name, !isPinned),
             })
           : null,
+        lead && others
+          ? image(listOpen[kind] ? "pan-up-symbolic" : "pan-down-symbolic", {
+              color: "fg/0.6",
+            })
+          : null,
       ],
     );
     return row;
   };
+  const deviceList = (kind, list) => {
+    const active = list.find((device) => device.active) ?? list[0];
+    if (!active) return [];
+    const rest = listOpen[kind] ? list.filter((device) => device !== active) : [];
+    return [
+      deviceRow(kind, active, { lead: true }),
+      ...rest.map((device) => deviceRow(kind, device)),
+    ];
+  };
 
   // What the lists show, to build them again only when that changes, and not as a volume moves.
   let listed = "";
-  const showDevices = () => {
+  const showDevices = (force = false) => {
     const { outputs, inputs } = devices();
     const output = outputs.find((device) => device.active);
     const input = inputs.find((device) => device.active);
@@ -190,11 +220,12 @@ export function controlCenter(onToggle) {
       outputs.map((d) => [d.name, d.label, d.icon, d.active]),
       inputs.map((d) => [d.name, d.label, d.icon, d.active]),
       pinned,
+      listOpen,
     ]);
-    if (key === listed) return;
+    if (key === listed && !force) return;
     listed = key;
-    refill(outputList, outputs.map((device) => deviceRow("output", device)));
-    refill(inputList, inputs.map((device) => deviceRow("input", device)));
+    refill(outputList, deviceList("output", outputs));
+    refill(inputList, deviceList("input", inputs));
     panel.fit();
   };
 
@@ -244,8 +275,12 @@ export function controlCenter(onToggle) {
   const status = [switcher, clipboard, network, volume, battery, charge];
   const panel = expand(pill, content, {
     onToggle: (open) => {
-      // The island's own row gives way to the panel.
-      for (const node of status) node.set({ opacity: open ? 0 : 1 });
+      // The island's own row gives way to the panel, and the lists open closed.
+      for (const node of status) node.set({ opacity: open ? 0 : 1, blur: open ? 4 : 0 });
+      if (open && (listOpen.output || listOpen.input)) {
+        listOpen.output = listOpen.input = false;
+        showDevices(true);
+      }
       // A monitor's own buttons change its brightness too.
       if (open) data("brightness-refresh");
       onToggle?.(open);
@@ -268,12 +303,12 @@ export function controlCenter(onToggle) {
   showTheme();
   showNetwork();
   showBattery();
-  on("audio-devices", showDevices);
+  on("audio-devices", () => showDevices());
   on("brightness", showBrightness);
   on("theme", showTheme);
   on("network", showNetwork);
   on("battery", showBattery);
-  pinListeners.push(showDevices);
+  pinListeners.push(() => showDevices());
 
   return { island: pill, panel };
 }

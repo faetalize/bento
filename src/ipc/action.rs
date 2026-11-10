@@ -35,6 +35,13 @@ pub fn parse(
         }
     }
 
+    // A window given by id is the one to focus, which no bind can name.
+    if request.name == "focus-window" && request.args.is_empty() {
+        if let Some(id) = request.window {
+            return Ok(Action::FocusWindow(id));
+        }
+    }
+
     // `layout-action` is how the command line spells an engine's action: by its name, in the
     // first argument.
     if request.name == "layout-action" {
@@ -441,6 +448,19 @@ mod tests {
             parse(request, engine).unwrap(),
             Action::FocusWorkspace(WorkspaceReference::Id(4))
         );
+    }
+
+    #[test]
+    fn focusing_a_window_given_by_id_needs_no_argument() {
+        let mut request = request("focus-window", json!([]));
+        request.window = Some(12);
+        assert_eq!(parse(request, engine).unwrap(), Action::FocusWindow(12));
+        // Without one, there's no window to focus.
+        assert!(parse(request_focus_window(), engine).is_err());
+    }
+
+    fn request_focus_window() -> ActionRequest {
+        request("focus-window", json!([]))
     }
 
     #[test]

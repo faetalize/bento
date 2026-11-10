@@ -41,13 +41,14 @@ function placeIslands(output) {
   shell.away = away;
   // The pointer brings them back at the screen's edge, and keeps them while it's on them.
   shell.zone.set({ height: away ? EDGE : gaps + ISLAND + gaps });
+  // They slide up off the screen and are left out there, and slide back from there.
   if (away) {
     shell.bar.set({
-      top: -(ISLAND + gaps),
+      offset: [0, -(ISLAND + gaps)],
       onSettle: () => shell.away && shell.bar.set({ hidden: true }),
     });
   } else {
-    shell.bar.set({ hidden: false, top: gaps });
+    shell.bar.set({ hidden: false, offset: [0, 0] });
   }
 }
 
@@ -125,7 +126,8 @@ function build(output) {
 on("style", (event) => {
   gaps = event.style.gaps ?? gaps;
   for (const [output, shell] of shells) {
-    shell.bar.set({ top: shell.away ? -(ISLAND + gaps) : gaps, left: gaps, right: gaps });
+    shell.bar.set({ top: gaps, left: gaps, right: gaps });
+    if (shell.away) shell.bar.set({ offset: [0, -(ISLAND + gaps)] });
     shell.zone.set({ height: shell.away ? EDGE : gaps + ISLAND + gaps });
     reserve(output, { top: gaps + ISLAND });
   }

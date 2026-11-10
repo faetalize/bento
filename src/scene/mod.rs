@@ -235,6 +235,9 @@ pub struct Node {
     /// How long each spring takes to settle, in seconds, where it isn't bento's usual.
     responses: [Option<f64>; SPRINGS],
     placed: bool,
+    /// Whether it was left out of the last layout, hidden or not displayed: shown again, it
+    /// comes in at its place, not from where it was.
+    left_out: bool,
     /// The size it's drawn at, around the middle of its place, or `None` for its place's size.
     draw_size: Option<[f32; 2]>,
     animate: bool,
@@ -359,6 +362,14 @@ impl Scene {
         self.nodes.get(id as usize)?.as_ref()
     }
 
+    /// What `id` holds, for tests to walk the scene.
+    #[cfg(test)]
+    pub fn held(&self, id: NodeId) -> Vec<NodeId> {
+        self.node(id)
+            .map(|node| node.children.clone())
+            .unwrap_or_default()
+    }
+
     fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
         self.nodes.get_mut(id as usize)?.as_mut()
     }
@@ -436,6 +447,7 @@ impl Scene {
             look: Look::default(),
             springs,
             placed: false,
+            left_out: false,
             responses: [None; SPRINGS],
             draw_size: None,
             animate: true,
@@ -543,6 +555,10 @@ impl Scene {
             let [dx, dy] = pair(offset).unwrap_or([0., 0.]);
             node.springs[DX].target = f64::from(dx);
             node.springs[DY].target = f64::from(dy);
+        }
+        // Shown or hidden, it's placed again, or left out.
+        if props.get("hidden").is_some() {
+            self.layout_dirty = true;
         }
         if let Some(size) = props.get("drawSize") {
             node.draw_size = pair(size);
@@ -686,8 +702,19 @@ impl Scene {
     /// x, y, width and height.
     pub fn layout(&mut self, id: NodeId) -> Option<[f32; 4]> {
         self.lay_out();
+        // From the layout itself, so that it's known for what's left out too.
         let node = self.node(id)?;
-        Some([X, Y, W, H].map(|i| node.springs[i].target as f32))
+        let own = self.tree.layout(node.taffy).ok()?;
+        let (mut x, mut y) = (own.location.x, own.location.y);
+        let size = [own.size.width, own.size.height];
+        let mut parent = node.parent;
+        while let Some(above) = parent.and_then(|id| self.node(id)) {
+            let layout = self.tree.layout(above.taffy).ok()?;
+            x += layout.location.x;
+            y += layout.location.y;
+            parent = above.parent;
+        }
+        Some([x, y, size[0], size[1]])
     }
 
     /// Sets the targets of `id` and what's in it from the layout, with its parent's top left at
@@ -695,6 +722,12 @@ impl Scene {
     /// move, whatever its parent does.
     fn place(&mut self, id: NodeId, origin: [f32; 2]) {
         let Some(node) = self.node(id) else { return };
+        // What's left out has no place: shown again, it comes in at its place, not from where
+        // it was.
+        if node.hidden || !self.displayed(node) {
+            self.leave_out(id);
+            return;
+        }
         let Ok(layout) = self.tree.layout(node.taffy) else {
             return;
         };
@@ -717,6 +750,15 @@ impl Scene {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
+        } else if node.left_out {
+            // Its looks are where they were, or where the script put them as it showed it.
+            for i in 0..4 {
+                node.springs[i].jump(f64::from(target[i]));
+            }
+            if node.draw_size.is_none() {
+                node.springs[DW].jump(f64::from(size[0]));
+                node.springs[DH].jump(f64::from(size[1]));
+            }
         } else if !node.animate {
             for i in 0..4 {
                 node.springs[i].jump(f64::from(target[i]));
@@ -731,8 +773,23 @@ impl Scene {
         }
         node.springs[DW].target = f64::from(size[0]);
         node.springs[DH].target = f64::from(size[1]);
+        node.left_out = false;
         for child in children {
             self.place(child, [target[0], target[1]]);
+        }
+    }
+
+    /// Leaves `id` and what's in it out, so the next place they get they're put at.
+    fn leave_out(&mut self, id: NodeId) {
+        let Some(node) = self.node_mut(id) else {
+            return;
+        };
+        if node.left_out || !node.placed {
+            return;
+        }
+        node.left_out = true;
+        for child in node.children.clone() {
+            self.leave_out(child);
         }
     }
 
@@ -1049,11 +1106,32 @@ impl Scene {
     /// one's frame, for tests to find what to press.
     #[cfg(test)]
     pub fn find(&self, output: &str, wanted: &str) -> Vec<[f32; 4]> {
-        fn walk(scene: &Scene, id: NodeId, wanted: &str, found: &mut Vec<[f32; 4]>) {
+        self.seen(output, wanted)
+            .into_iter()
+            .filter(|(_, _, shown)| *shown)
+            .map(|(frame, _, _)| frame)
+            .collect()
+    }
+
+    /// The texts that say `wanted`, and the icons called it, on output `output`, whether they
+    /// show or not: each one's frame, how opaque it's drawn now, and whether it's on its way to
+    /// showing.
+    #[cfg(test)]
+    pub fn seen(&self, output: &str, wanted: &str) -> Vec<([f32; 4], f32, bool)> {
+        fn walk(
+            scene: &Scene,
+            id: NodeId,
+            wanted: &str,
+            opacity: f32,
+            shown: bool,
+            found: &mut Vec<([f32; 4], f32, bool)>,
+        ) {
             let Some(node) = scene.node(id) else { return };
-            if node.hidden || node.springs[OPACITY].target <= 0. || !scene.displayed(node) {
+            if node.hidden || !scene.displayed(node) {
                 return;
             }
+            let opacity = opacity * node.springs[OPACITY].value.clamp(0., 1.) as f32;
+            let shown = shown && node.springs[OPACITY].target > 0.;
             let is_it = match &node.kind {
                 Kind::Text { text, .. } => text == wanted,
                 Kind::Image(Some(ImageSource::Icon(name))) => name == wanted,
@@ -1061,16 +1139,16 @@ impl Scene {
             };
             if let (true, Some(frame)) = (is_it, scene.frame(id)) {
                 if frame[2] > 0. && frame[3] > 0. {
-                    found.push(frame);
+                    found.push((frame, opacity, shown));
                 }
             }
             for child in &node.children {
-                walk(scene, *child, wanted, found);
+                walk(scene, *child, wanted, opacity, shown, found);
             }
         }
         let mut found = Vec::new();
         if let Some(root) = self.root(output) {
-            walk(self, root, wanted, &mut found);
+            walk(self, root, wanted, 1., true, &mut found);
         }
         found
     }
@@ -1671,6 +1749,49 @@ mod tests {
     }
 
     #[test]
+    fn what_shows_again_comes_in_at_its_place_rather_than_from_where_it_was_left_out() {
+        let mut scene = Scene::new();
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let row = scene.create(
+            "box",
+            &serde_json::json!({ "position": "absolute", "top": 100, "left": 600, "gap": 10 }),
+        );
+        let first = scene.create("box", &serde_json::json!({ "width": 50, "height": 20 }));
+        let shown_later = scene.create(
+            "box",
+            &serde_json::json!({ "width": 30, "height": 20, "display": "none", "fill": "fg" }),
+        );
+        let hidden_later = scene.create(
+            "box",
+            &serde_json::json!({ "width": 30, "height": 20, "fill": "fg" }),
+        );
+        scene.append(root, row, None);
+        scene.append(row, first, None);
+        scene.append(row, shown_later, None);
+        scene.append(row, hidden_later, None);
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        scene.set(hidden_later, &serde_json::json!({ "hidden": true }));
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+
+        // The row moves while they're left out.
+        scene.set(row, &serde_json::json!({ "left": 1200 }));
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+
+        // Where it goes is known while it's left out.
+        assert_eq!(scene.layout(hidden_later), Some([1260., 100., 30., 20.]));
+
+        scene.set(shown_later, &serde_json::json!({ "display": "flex" }));
+        scene.set(hidden_later, &serde_json::json!({ "hidden": false }));
+        scene.lay_out();
+        scene.advance(1. / 60., Some(1.));
+        assert_eq!(scene.frame(shown_later).unwrap()[0], 1260.);
+        assert_eq!(scene.frame(hidden_later).unwrap()[0], 1300.);
+    }
+
+    #[test]
     fn what_hears_the_pointer_near_takes_nothing_from_it() {
         let mut scene = Scene::new();
         let root = scene.set_output("DP-1", (1920., 1080.));
@@ -1709,56 +1830,6 @@ mod tests {
             shell.scene.borrow().reserved("DP-1"),
             [16. + 36., 0., 0., 0.]
         );
-    }
-
-    #[test]
-    fn the_clocks_time_travels_into_the_calendars() {
-        let shell = Shell::load(
-            &[(String::from("DP-1"), (1920., 1080.))],
-            None,
-            serde_json::json!({ "gaps": 8 }),
-        )
-        .unwrap();
-        let texts = |scene: &Scene| -> Vec<([f32; 2], f32, f32)> {
-            scene
-                .draw("DP-1")
-                .into_iter()
-                .filter_map(|item| match item {
-                    Item::Text {
-                        origin,
-                        laid,
-                        scale,
-                        opacity,
-                        ..
-                    } => Some(([origin[0], laid.height * scale], scale, opacity)),
-                    _ => None,
-                })
-                .collect()
-        };
-        let mut scene = shell.scene.borrow_mut();
-        scene.lay_out();
-        scene.advance(1., Some(1.));
-        let clock = scene.hit("DP-1", [960., 20.], CLICK).unwrap();
-        drop(scene);
-        shell.send(&serde_json::json!({ "type": "click", "id": clock, "button": 1 }));
-
-        let mut scene = shell.scene.borrow_mut();
-        scene.lay_out();
-        for _ in 0..3 {
-            scene.advance(1. / 60., Some(1.));
-        }
-        // The big time starts as tall as the small one, scaled down, and grows.
-        let starting: Vec<_> = texts(&scene)
-            .into_iter()
-            .filter(|(_, s, _)| *s < 0.9)
-            .collect();
-        assert!(!starting.is_empty(), "{:?}", texts(&scene));
-        for _ in 0..120 {
-            scene.advance(1. / 60., Some(1.));
-        }
-        for (_, scale, _) in texts(&scene) {
-            assert!((scale - 1.).abs() < 0.01, "{:?}", texts(&scene));
-        }
     }
 
     #[test]

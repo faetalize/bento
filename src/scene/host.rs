@@ -685,6 +685,8 @@ impl SceneHost {
 mod tests {
     use std::time::Duration;
 
+    use niri_config::Action;
+
     use super::*;
     use crate::layout::tiling::host::EngineKey;
 
@@ -944,6 +946,27 @@ mod tests {
         host.release(1, 1, Some((output, point)));
     }
 
+    /// The bento actions the shell asked for since this was last asked, as bento runs them: one
+    /// that isn't an action fails the test.
+    fn runs(host: &SceneHost) -> Vec<niri_config::Action> {
+        host.take_actions()
+            .into_iter()
+            .map(|request| {
+                let request = crate::ipc::action::ActionRequest {
+                    name: request["name"].as_str().unwrap_or_default().to_owned(),
+                    args: request["args"].as_array().cloned().unwrap_or_default(),
+                    properties: request["properties"]
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                    window: request["window"].as_u64(),
+                    workspace: request["workspace"].as_u64(),
+                };
+                crate::ipc::action::parse(request, |_| None).unwrap()
+            })
+            .collect()
+    }
+
     /// What the shell told the data program to do since this was last asked.
     fn commands(host: &SceneHost) -> Vec<serde_json::Value> {
         host.shell.as_ref().unwrap().take_commands()
@@ -1022,16 +1045,16 @@ mod tests {
             "{pieces:?}"
         );
 
-        // Scrolling over it moves the focus along, and a click on a tile focuses its window.
+        // Scrolling over it focuses the next tile that way, and a click on a tile its window.
         let over = [last[0] + last[2] / 2., last[1] + last[3] / 2.];
         host.pointer_moved(Some(("DP-1", over)));
         host.scroll([0., 15.]);
-        let actions = host.take_actions();
-        assert_eq!(actions[0]["name"], "focus-column-right");
+        let actions = runs(&host);
+        assert_eq!(actions, vec![Action::FocusWindow(2)]);
+        host.scroll([0., -15.]);
+        assert!(runs(&host).is_empty(), "nothing's left of the first");
         click(&mut host, "DP-1", over);
-        let actions = host.take_actions();
-        assert_eq!(actions[0]["name"], "focus-window");
-        assert_eq!(actions[0]["window"], 3);
+        assert_eq!(runs(&host), vec![Action::FocusWindow(3)]);
     }
 
     #[test]
@@ -1139,7 +1162,12 @@ mod tests {
             .iter()
             .any(|c| c["cmd"] == "brightness-refresh"));
 
-        // A click on a device makes it the default one.
+        // The list shows the default device; a click on it opens the list, and a click on
+        // another makes it the default one.
+        assert!(!shows(&host, "DP-1", "Headphones"));
+        let speakers = middle_of(&host, "DP-1", "Speakers");
+        click(&mut host, "DP-1", speakers);
+        settle(&mut host, &mut now);
         let headphones = middle_of(&host, "DP-1", "Headphones");
         click(&mut host, "DP-1", headphones);
         let sent = commands(&host);
@@ -1182,6 +1210,143 @@ mod tests {
     }
 
     #[test]
+    fn the_clocks_time_grows_into_the_calendars_and_the_date_travels_to_its_own() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let at = clock_texts(&host);
+        let seen = |host: &SceneHost, text: &str| {
+            host.shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .seen("DP-1", text)
+        };
+        let short_date = seen(&host, &at.1)[0].0;
+        click(&mut host, "DP-1", [960., 26.]);
+
+        // On the way, it's the island's time that moves, grows and shows, all the way.
+        let mut lefts = Vec::new();
+        for _ in 0..8 {
+            now += std::time::Duration::from_millis(16);
+            host.advance(now, Some(1.));
+            let times = seen(&host, &at.0);
+            let small = times.iter().find(|(frame, ..)| frame[3] < 30.).copied();
+            let (frame, opacity, _) = small.unwrap_or(times[0]);
+            assert!(opacity > 0.99, "it shows on the way: {times:?}");
+            for (other, opacity, _) in &times {
+                if *other != frame {
+                    assert!(*opacity < 0.01, "only one time shows on the way: {times:?}");
+                }
+            }
+            lefts.push(frame[0]);
+        }
+        settle(&mut host, &mut now);
+
+        // There, the calendar's own time shows where the island's ended up, as big.
+        let times = seen(&host, &at.0);
+        let (big, _, _) = *times
+            .iter()
+            .find(|(_, opacity, _)| *opacity > 0.99)
+            .unwrap();
+        let (small, _, _) = *times
+            .iter()
+            .find(|(_, opacity, _)| *opacity < 0.01)
+            .unwrap();
+        // Its start, top and height: the calendar lays its time out as wide as its column.
+        for i in [0, 1, 3] {
+            assert!((big[i] - small[i]).abs() < 1.5, "{big:?} and {small:?}");
+        }
+        assert!(
+            lefts[0] > big[0] && lefts[7] < lefts[0],
+            "{lefts:?} to {big:?}"
+        );
+
+        // The date travelled to the start of the calendar's date, not to its middle.
+        let long = seen(&host, &at.2)[0].0;
+        let travelled = seen(&host, &at.1)[0].0;
+        assert!(
+            (travelled[0] - long[0]).abs() < 1.5,
+            "{travelled:?} to {long:?}"
+        );
+        assert!(travelled[0] < short_date[0]);
+
+        // Closed, they go home.
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        let back = seen(&host, &at.1)[0];
+        assert!(
+            (back.0[0] - short_date[0]).abs() < 1.5 && back.1 > 0.99,
+            "{back:?}"
+        );
+    }
+
+    /// The island's time, its date and the calendar's date, as the clock shows them now.
+    fn clock_texts(host: &SceneHost) -> (String, String, String) {
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let mut texts = Vec::new();
+        fn walk(scene: &super::super::Scene, id: u32, texts: &mut Vec<String>) {
+            if let Some(node) = scene.node(id) {
+                if let super::super::Kind::Text { text, .. } = &node.kind {
+                    texts.push(text.clone());
+                }
+                for child in scene.held(id) {
+                    walk(scene, child, texts);
+                }
+            }
+        }
+        walk(&scene, scene.root("DP-1").unwrap(), &mut texts);
+        let time = texts
+            .iter()
+            .find(|t| t.len() == 5 && t.as_bytes()[2] == b':')
+            .unwrap()
+            .clone();
+        let short = texts
+            .iter()
+            .find(|t| t.split(' ').count() == 3 && t.len() <= 10)
+            .unwrap()
+            .clone();
+        let long = texts.iter().find(|t| t.contains(", ")).unwrap().clone();
+        (time, short, long)
+    }
+
+    #[test]
+    fn the_control_center_follows_the_volume_changed_elsewhere() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        open_control_center(&mut host, &mut now);
+        // The sound slider's fill: the accent-coloured shape that starts where its icon is.
+        let fill = |host: &SceneHost| {
+            let icon = middle_of(host, "DP-1", "audio-volume-medium-symbolic");
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            scene
+                .draw("DP-1")
+                .into_iter()
+                .find_map(|item| match item {
+                    // Not the track, which is the slider's whole width.
+                    Item::Shape { rect, .. }
+                        if rect[3] == 28.
+                            && rect[2] < 339.
+                            && (rect[1] + 14. - icon[1]).abs() < 2.
+                            && rect[0] < icon[0] =>
+                    {
+                        Some(rect[2])
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let before = fill(&host);
+        // A knob or a media key turns it up.
+        host.data_line(&DEVICES.replace('\n', " ").replace(
+            r#""active":true,"volume":0.4"#,
+            r#""active":true,"volume":0.6"#,
+        ));
+        settle(&mut host, &mut now);
+        let after = fill(&host);
+        assert!((after / before - 1.5).abs() < 0.05, "{before} to {after}");
+    }
+
+    #[test]
     fn pinned_outputs_get_a_switcher_that_goes_around_them() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         host.data_line(&DEVICES.replace('\n', " "));
@@ -1197,8 +1362,11 @@ mod tests {
             .unwrap()
             .contains("No outputs are pinned"));
 
-        // Both outputs pinned, in the control center.
+        // Both outputs pinned, in the control center, with its list open.
         open_control_center(&mut host, &mut now);
+        let speakers = middle_of(&host, "DP-1", "Speakers");
+        click(&mut host, "DP-1", speakers);
+        settle(&mut host, &mut now);
         for row in 0..2 {
             let scene = host.shell.as_ref().unwrap().scene.borrow();
             let pin = scene.find("DP-1", "view-pin-symbolic")[row];

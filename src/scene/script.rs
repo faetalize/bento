@@ -52,6 +52,9 @@ pub struct Shell {
     /// Commands for the data program, like `{ "cmd": "volume", "value": 0.5 }`.
     commands: Rc<RefCell<Vec<serde_json::Value>>>,
     timers: Rc<RefCell<Vec<(Instant, u32)>>>,
+    /// The time the host last moved the shell on to, which timers count from when it's ahead of
+    /// the clock on the wall, as in tests.
+    clock: Rc<Cell<Instant>>,
     deadline: Rc<Cell<Option<Instant>>>,
     dispatch: Persistent<Function<'static>>,
     context: Context,
@@ -172,6 +175,7 @@ impl Shell {
 
         let context = Context::full(&runtime).context("error creating the JS context")?;
         let timers: Rc<RefCell<Vec<(Instant, u32)>>> = Rc::default();
+        let clock = Rc::new(Cell::new(Instant::now()));
         let actions: Rc<RefCell<Vec<serde_json::Value>>> = Rc::default();
         let commands: Rc<RefCell<Vec<serde_json::Value>>> = Rc::default();
         let apps: Rc<RefCell<super::apps::Apps>> = Rc::default();
@@ -324,13 +328,15 @@ impl Shell {
                 .map_err(js)?,
             )?;
             let t = timers.clone();
+            let c = clock.clone();
             native.set(
                 "after",
                 Function::new(ctx.clone(), move |ms: f64| {
                     let id = next_timer.get();
                     next_timer.set(id.wrapping_add(1));
                     let wait = Duration::from_secs_f64(ms.max(0.) / 1000.);
-                    t.borrow_mut().push((Instant::now() + wait, id));
+                    let now = c.get().max(Instant::now());
+                    t.borrow_mut().push((now + wait, id));
                     id
                 })
                 .map_err(js)?,
@@ -406,6 +412,7 @@ impl Shell {
             actions,
             commands,
             timers,
+            clock,
             deadline,
             dispatch: dispatch?,
             context,
@@ -453,6 +460,7 @@ impl Shell {
 
     /// Runs the timers that are due.
     pub fn run_timers(&self, now: Instant) {
+        self.clock.set(self.clock.get().max(now));
         let due: Vec<u32> = {
             let mut timers = self.timers.borrow_mut();
             let due = timers
