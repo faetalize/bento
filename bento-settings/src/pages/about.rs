@@ -6,7 +6,6 @@ use crate::page::{open_file, open_uri, PageContext};
 use crate::store::tilde;
 
 const REPOSITORY: &str = "https://github.com/faetalize/bento";
-const NIRI_DOCS: &str = "https://niri-wm.github.io/niri/Configuration:-Introduction";
 
 pub fn category() -> Category {
     Category::custom("about", "About", build)
@@ -31,8 +30,8 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     let versions = adw::PreferencesGroup::new();
     ctx.anchor("about.version", &versions);
     let version = ipc::version().unwrap_or_else(|_| String::from(env!("CARGO_PKG_VERSION")));
-    versions.add(&info_row("Version", &version));
-    versions.add(&info_row("License", env!("CARGO_PKG_LICENSE")));
+    versions.add(&crate::page::info_row("Version", &version));
+    versions.add(&crate::page::info_row("License", env!("CARGO_PKG_LICENSE")));
     column.append(&versions);
 
     let files = adw::PreferencesGroup::new();
@@ -50,26 +49,15 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         "Report a Problem",
         &format!("{REPOSITORY}/issues"),
     ));
-    links.add(&link_row("niri Documentation", NIRI_DOCS));
+    links.add(&link_row("Documentation", &format!("{REPOSITORY}#readme")));
     column.append(&links);
 
     column.upcast()
 }
 
-fn info_row(title: &str, value: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).build();
-    let label = gtk::Label::builder()
-        .label(value)
-        .selectable(true)
-        .valign(gtk::Align::Center)
-        .css_classes(["dim-label"])
-        .build();
-    row.add_suffix(&label);
-    row
-}
-
 fn file_row(title: &str, path: &std::path::Path) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title(title)
         .subtitle(tilde(path))
         .activatable(true)
@@ -82,6 +70,7 @@ fn file_row(title: &str, path: &std::path::Path) -> adw::ActionRow {
 
 fn link_row(title: &str, uri: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title(title)
         .activatable(true)
         .build();

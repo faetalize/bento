@@ -4,7 +4,6 @@
     <file compressed="true" alias="ph-app-window-symbolic.svg">icons/scalable/actions/ph-app-window-symbolic.svg</file>
     <file compressed="true" alias="ph-arrow-square-out-symbolic.svg">icons/scalable/actions/ph-arrow-square-out-symbolic.svg</file>
     <file compressed="true" alias="ph-browsers-symbolic.svg">icons/scalable/actions/ph-browsers-symbolic.svg</file>
-    <file compressed="true" alias="ph-caret-right-symbolic.svg">icons/scalable/actions/ph-caret-right-symbolic.svg</file>
     <file compressed="true" alias="ph-command-symbolic.svg">icons/scalable/actions/ph-command-symbolic.svg</file>
     <file compressed="true" alias="ph-cursor-symbolic.svg">icons/scalable/actions/ph-cursor-symbolic.svg</file>
     <file compressed="true" alias="ph-folder-open-symbolic.svg">icons/scalable/actions/ph-folder-open-symbolic.svg</file>
@@ -21,13 +20,11 @@
     <file compressed="true" alias="ph-mouse-simple-symbolic.svg">icons/scalable/actions/ph-mouse-simple-symbolic.svg</file>
     <file compressed="true" alias="ph-palette-symbolic.svg">icons/scalable/actions/ph-palette-symbolic.svg</file>
     <file compressed="true" alias="ph-pencil-simple-symbolic.svg">icons/scalable/actions/ph-pencil-simple-symbolic.svg</file>
-    <file compressed="true" alias="ph-plus-symbolic.svg">icons/scalable/actions/ph-plus-symbolic.svg</file>
     <file compressed="true" alias="ph-rocket-launch-symbolic.svg">icons/scalable/actions/ph-rocket-launch-symbolic.svg</file>
     <file compressed="true" alias="ph-sliders-horizontal-symbolic.svg">icons/scalable/actions/ph-sliders-horizontal-symbolic.svg</file>
     <file compressed="true" alias="ph-sparkle-symbolic.svg">icons/scalable/actions/ph-sparkle-symbolic.svg</file>
     <file compressed="true" alias="ph-squares-four-symbolic.svg">icons/scalable/actions/ph-squares-four-symbolic.svg</file>
     <file compressed="true" alias="ph-sun-symbolic.svg">icons/scalable/actions/ph-sun-symbolic.svg</file>
     <file compressed="true" alias="ph-user-circle-symbolic.svg">icons/scalable/actions/ph-user-circle-symbolic.svg</file>
-    <file compressed="true" alias="ph-x-symbolic.svg">icons/scalable/actions/ph-x-symbolic.svg</file>
   </gresource>
 </gresources>

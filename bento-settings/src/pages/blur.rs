@@ -308,6 +308,32 @@ fn lights(glass: &Glass) -> Vec<GlassLight> {
     glass.lights.iter().flatten().copied().collect()
 }
 
+/// The lights left after removing the one at `i`, and the edit that removes it. A light left on
+/// its own is switched on, since it has no switch, and off it would read as No Lights.
+fn removing_light(
+    mut lights: Vec<GlassLight>,
+    i: usize,
+) -> (Vec<GlassLight>, impl Fn(&mut Document) + Send + 'static) {
+    lights.remove(i);
+    let last = lights.is_empty();
+    let lone_off = lights.len() == 1 && !lights[0].on;
+    if lone_off {
+        lights[0].on = true;
+    }
+    let edit = move |doc: &mut Document| {
+        let index = i.to_string();
+        doc.remove(&[LIGHTS_PATH, &[&index]].concat());
+        // An empty list would be the default light again.
+        if last {
+            doc.set(&[LIGHTS_PATH, &["0", "off"]].concat(), Vec::new());
+        }
+        if lone_off {
+            doc.remove(&[LIGHTS_PATH, &["0", "off"]].concat());
+        }
+    };
+    (lights, edit)
+}
+
 /// `lights` as glass has them, with no lights as one switched off.
 fn light_list(lights: &[GlassLight]) -> [Option<GlassLight>; MAX_GLASS_LIGHTS] {
     let mut list = [None; MAX_GLASS_LIGHTS];
@@ -568,7 +594,8 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     }
     ctx.anchor(PRESET_KEY, &preset_row);
     list.append(&preset_row);
-    list.append(&row(&SHADE));
+    let shade = row(&SHADE);
+    list.append(&shade);
     let pattern = {
         let live = live.clone();
         setting_row_watched(&PATTERN, ctx, move |input| {
@@ -604,7 +631,8 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         let color = color.downgrade();
         move |live: &Live, _: Option<&str>| {
             if let Some(color) = color.upgrade() {
-                color.set_sensitive(!live.blur().glass.follow_accent);
+                let blur = live.blur();
+                color.set_sensitive(!blur.off && !blur.glass.follow_accent);
             }
         }
     };
@@ -639,9 +667,9 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     advanced.add_row(&row(&NOISE));
     let mut glass_rows: Vec<gtk::Widget> = vec![
         preset_row.clone().upcast(),
-        pattern,
-        color,
-        follow_accent,
+        pattern.clone(),
+        color.clone(),
+        follow_accent.clone(),
         sheen.upcast(),
     ];
     for setting in GLASS.iter() {
@@ -765,11 +793,15 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             for widget in [
                 material.upcast_ref::<gtk::Widget>(),
                 preset_row.upcast_ref(),
+                shade.upcast_ref(),
+                pattern.upcast_ref(),
+                follow_accent.upcast_ref(),
                 advanced.upcast_ref(),
                 lights_group.upcast_ref(),
             ] {
                 widget.set_sensitive(!blur.off);
             }
+            color.set_sensitive(!blur.off && !blur.glass.follow_accent);
             let defaults = Blur::default();
             let (glass, default) = (&blur.glass, &defaults.glass);
             reset.set_sensitive(
@@ -970,20 +1002,12 @@ fn light_row(
     {
         let (ctx, live) = (ctx.clone(), live.clone());
         remove.connect_clicked(move |_| {
-            let mut lights = lights(&live.blur().glass);
+            let lights = lights(&live.blur().glass);
             if i >= lights.len() {
                 return;
             }
-            lights.remove(i);
-            let last = lights.is_empty();
-            edit_lights(&ctx, &live, &lights, move |doc| {
-                let index = i.to_string();
-                doc.remove(&[LIGHTS_PATH, &[&index]].concat());
-                // An empty list would be the default light again.
-                if last {
-                    doc.set(&[LIGHTS_PATH, &["0", "off"]].concat(), Vec::new());
-                }
-            });
+            let (lights, edit) = removing_light(lights, i);
+            edit_lights(&ctx, &live, &lights, edit);
         });
     }
 
@@ -1175,6 +1199,22 @@ fn edit_together(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_a_light_beside_one_thats_off_leaves_that_one_on() {
+        let text =
+            "blur {\n    glass {\n        light {\n            angle 45\n        }\n        \
+                    light {\n            off\n            angle 200\n        }\n    }\n}\n";
+        let config = niri_config::Config::parse_mem(text).unwrap();
+        let mut doc = crate::kdl::Document::parse(String::from(text)).unwrap();
+        let (left, edit) = removing_light(lights(&config.blur.glass), 0);
+        edit(&mut doc);
+        let after = niri_config::Config::parse_mem(doc.text()).unwrap();
+        // A light on its own has no switch: an off one would read as no lights at all.
+        assert_eq!(left.len(), 1);
+        assert!(left[0].on);
+        assert_eq!(lights(&after.blur.glass).len(), 1, "{}", doc.text());
+    }
 
     #[test]
     fn resetting_advanced_leaves_the_glasss_look_and_lights() {

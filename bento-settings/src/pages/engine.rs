@@ -189,6 +189,7 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
         TilingLayout::File(_) => custom,
     };
     let combo = adw::ComboRow::builder()
+        .use_markup(false)
         .title("Engine")
         .model(&gtk::StringList::new(&labels))
         .selected(selected)
@@ -213,6 +214,7 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
 
     if let Some(path) = file {
         let row = adw::ActionRow::builder()
+            .use_markup(false)
             .title("File")
             .subtitle(tilde(&path))
             .activatable(true)
@@ -278,7 +280,7 @@ fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
 
 fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
     let path = format!("options.{}", option.name);
-    let title = sentence_case(&option.name.replace(['-', '_'], " "));
+    let title = crate::page::title_from(&option.name);
     let description = option.description.clone().unwrap_or_default();
 
     let change: Change = {
@@ -366,6 +368,7 @@ impl Field<'_> {
         match r#type {
             Type::Boolean => {
                 let row = adw::SwitchRow::builder()
+                    .use_markup(false)
                     .title(title)
                     .subtitle(subtitle)
                     .build();
@@ -405,6 +408,7 @@ impl Field<'_> {
             Type::Choice => {
                 let labels: Vec<&str> = choices.iter().map(String::as_str).collect();
                 let row = adw::ComboRow::builder()
+                    .use_markup(false)
                     .title(title)
                     .subtitle(subtitle)
                     .model(&gtk::StringList::new(&labels))
@@ -445,6 +449,7 @@ impl Field<'_> {
             Type::Color => {
                 let button = color_button();
                 let row = adw::ActionRow::builder()
+                    .use_markup(false)
                     .title(title)
                     .subtitle(subtitle)
                     .build();
@@ -519,6 +524,7 @@ fn gradient_row(
         .build();
 
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title(title)
         .subtitle(subtitle)
         .build();
@@ -587,6 +593,7 @@ fn gradient_row(
 
 fn entry_row(title: &str, hint: &str) -> adw::EntryRow {
     let row = adw::EntryRow::builder()
+        .use_markup(false)
         .title(title)
         .show_apply_button(true)
         .build();
@@ -599,7 +606,7 @@ fn entry_row(title: &str, hint: &str) -> adw::EntryRow {
 fn show_text(row: adw::EntryRow) -> ShowValue {
     Box::new(move |value: &Option<OptionValue>| {
         // Don't replace what someone is typing.
-        if row.has_focus() {
+        if crate::page::typing_in(&row) {
             return;
         }
         match value {
@@ -640,7 +647,10 @@ impl ListRow {
         digits: u32,
         change: Change,
     ) -> Rc<Self> {
-        let row = adw::ExpanderRow::builder().title(title).build();
+        let row = adw::ExpanderRow::builder()
+            .use_markup(false)
+            .title(title)
+            .build();
         if !description.is_empty() {
             row.set_tooltip_text(Some(description));
         }
@@ -709,7 +719,7 @@ impl ListRow {
             show(&Some(item.clone()));
 
             let remove = gtk::Button::builder()
-                .icon_name("list-remove-symbolic")
+                .icon_name("user-trash-symbolic")
                 .tooltip_text("Remove")
                 .valign(gtk::Align::Center)
                 .css_classes(["flat"])
@@ -749,7 +759,7 @@ impl ListRow {
 
         let summary: Vec<String> = items.iter().map(summarize).collect();
         self.row.set_subtitle(&if summary.is_empty() {
-            String::from("No items")
+            String::from("No Items")
         } else {
             summary.join(", ")
         });
@@ -808,6 +818,7 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
         .count();
     let total = engine.actions.len();
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title("Shortcuts")
         .subtitle(format!(
             "This engine has {total} {}, {bound} with a shortcut",
@@ -827,6 +838,7 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
 fn failed_group(error: &str) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title("Engine Failed")
         .subtitle(format!(
             "bento runs a fallback engine until the engine's file changes.\n{error}"
@@ -843,6 +855,7 @@ fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
     view.ctx.anchor("engine.actions", &group);
 
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title("Couldn't Reach bento")
         .subtitle(err)
         .build();
@@ -860,12 +873,4 @@ fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
     row.add_suffix(&retry);
     group.add(&row);
     group
-}
-
-fn sentence_case(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }

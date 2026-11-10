@@ -77,6 +77,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
         );
     });
 
+    ctx.anchor("layout.preview", &area);
     let redraw = area.downgrade();
     ctx.store.subscribe(move || {
         if let Some(area) = redraw.upgrade() {

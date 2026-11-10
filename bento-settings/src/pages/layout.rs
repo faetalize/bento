@@ -1,5 +1,6 @@
 use niri_config::{Config, WindowRule};
 
+use crate::kdl::Value;
 use crate::model::{BoolStyle, Category, Group, Setting};
 
 /// The value from the last window rule that matches every window. That's what windows get unless
@@ -14,6 +15,27 @@ pub(super) fn every_window<T>(
         .rev()
         .filter(|rule| rule.matches.is_empty() && rule.excludes.is_empty())
         .find_map(get)
+}
+
+/// Windows' rounded corners: their content cut to the radius, which the focus ring, border and
+/// shadow follow too.
+fn rounded_corners() -> Setting {
+    Setting::switch("Rounded Corners", "window-rule.clip-to-geometry", |c| {
+        every_window(c, |rule| rule.clip_to_geometry).unwrap_or(false)
+    })
+    .style(BoolStyle::Arg)
+    .along("window-rule.geometry-corner-radius", Value::Int(12))
+    .keywords(&["radius", "corner radius", "clip to geometry", "round"])
+    .expands(vec![Setting::number(
+        "Radius",
+        "window-rule.geometry-corner-radius",
+        |c| {
+            every_window(c, |rule| rule.geometry_corner_radius)
+                .map_or(0., |radius| f64::from(radius.top_left))
+        },
+    )
+    .range(0., 64., 1.)
+    .keywords(&["corner radius", "geometry corner radius"])])
 }
 
 pub fn category() -> Category {
@@ -34,23 +56,7 @@ pub fn category() -> Category {
         )
         .group(
             Group::untitled()
-                .setting(
-                    Setting::switch("Rounded Corners", "window-rule.clip-to-geometry", |c| {
-                        every_window(c, |rule| rule.clip_to_geometry).unwrap_or(false)
-                    })
-                    .style(BoolStyle::Arg)
-                    .keywords(&["radius", "corner radius", "clip to geometry", "round"])
-                    .expands(vec![Setting::number(
-                        "Radius",
-                        "window-rule.geometry-corner-radius",
-                        |c| {
-                            every_window(c, |rule| rule.geometry_corner_radius)
-                                .map_or(0., |radius| f64::from(radius.top_left))
-                        },
-                    )
-                    .range(0., 64., 1.)
-                    .keywords(&["corner radius", "geometry corner radius"])]),
-                )
+                .setting(rounded_corners())
                 .setting(
                     Setting::switch("Focus Ring", "layout.focus-ring", |c| {
                         !c.layout.focus_ring.off
@@ -153,4 +159,29 @@ pub fn category() -> Category {
                     .keywords(&["expose", "background", "color"]),
                 ),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kdl::Document;
+    use crate::model::Input;
+
+    #[test]
+    fn rounded_corners_off_leaves_no_corner_rounded_and_on_rounds_them() {
+        let rounded =
+            "window-rule {\n    geometry-corner-radius 12\n    clip-to-geometry true\n}\n";
+        let mut doc = Document::parse(String::from(rounded)).unwrap();
+        rounded_corners().write(&mut doc, Input::Bool(false));
+        assert!(
+            !doc.text().contains("geometry-corner-radius"),
+            "{}",
+            doc.text()
+        );
+
+        rounded_corners().write(&mut doc, Input::Bool(true));
+        let text = doc.text();
+        assert!(text.contains("clip-to-geometry true"), "{text}");
+        assert!(text.contains("geometry-corner-radius 12"), "{text}");
+    }
 }

@@ -262,6 +262,12 @@ pub struct Setting {
     /// Settings that only matter while this switch is on. The switch becomes an expander row
     /// holding them.
     pub children: Vec<Setting>,
+    /// What this switch writes along with its own path: each path is removed when it's switched
+    /// off, and given its value when it's switched on and has none.
+    pub along: Vec<(&'static str, Value)>,
+    /// Paths a change to this setting makes wrong, removed whenever it's written, like a place's
+    /// name when its coordinates are typed in.
+    pub clears: Vec<&'static str>,
 }
 
 impl Setting {
@@ -272,6 +278,8 @@ impl Setting {
             keywords: &[],
             control,
             children: Vec::new(),
+            along: Vec::new(),
+            clears: Vec::new(),
         }
     }
 
@@ -338,6 +346,19 @@ impl Setting {
             "only switches expand"
         );
         self.children = children;
+        self
+    }
+
+    /// Writes `path` along with this switch: removed when it's off, and `value` when it's on
+    /// without one.
+    pub fn along(mut self, path: &'static str, value: Value) -> Self {
+        self.along.push((path, value));
+        self
+    }
+
+    /// Removes `path` whenever this setting is written.
+    pub fn clears(mut self, path: &'static str) -> Self {
+        self.clears.push(path);
         self
     }
 
@@ -409,6 +430,9 @@ impl Setting {
 
     /// Writes a value into the config.
     pub fn write(&self, doc: &mut Document, input: Input) {
+        for cleared in &self.clears {
+            doc.remove(&kdl::split(cleared));
+        }
         let path = self.path_parts();
         match (&self.control, input) {
             (
@@ -418,6 +442,14 @@ impl Setting {
                 Input::Bool(on),
             ) => {
                 let value = on != *inverted;
+                for (other, given) in &self.along {
+                    let other = kdl::split(other);
+                    if !value {
+                        doc.remove(&other);
+                    } else if doc.get(&other).is_none() {
+                        doc.set(&other, vec![given.clone()]);
+                    }
+                }
                 match style {
                     BoolStyle::Flag if value => doc.set(&path, Vec::new()),
                     BoolStyle::Flag | BoolStyle::Arg => doc.set(&path, vec![Value::Bool(value)]),

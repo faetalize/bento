@@ -147,14 +147,14 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     }
     ctx.anchor("account.email", &email);
     group.add(&email);
-    group.add(&info_row("Username", &account.borrow().user));
+    group.add(&crate::page::info_row("Username", &account.borrow().user));
     if let Some(administrator) = account.borrow().administrator {
         let kind = if administrator {
             "Administrator"
         } else {
             "Standard"
         };
-        group.add(&info_row("Account Type", kind));
+        group.add(&crate::page::info_row("Account Type", kind));
     }
     column.append(&group);
 
@@ -163,7 +163,7 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         .title("Password")
         .activatable(true)
         .build();
-    password.add_suffix(&gtk::Image::from_icon_name("ph-caret-right-symbolic"));
+    password.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     {
         let ctx = ctx.clone();
         password.connect_activated(move |row| password_dialog(row, &ctx));
@@ -171,7 +171,10 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     ctx.anchor("account.password", &password);
     security.add(&password);
     if let Some(last_login) = account.borrow().last_login {
-        security.add(&info_row("Last Login", &format_time(last_login)));
+        security.add(&crate::page::info_row(
+            "Last Login",
+            &format_time(last_login),
+        ));
     }
     column.append(&security);
 
@@ -206,10 +209,10 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         *account.borrow_mut() = current.clone();
         show_picture(&avatar, current);
         // Don't replace what someone is typing.
-        if !name.has_focus() {
+        if !crate::page::typing_in(&name) {
             name.set_text(&current.name);
         }
-        if !email.has_focus() {
+        if !crate::page::typing_in(&email) {
             email.set_text(&current.email);
         }
         remove.set_enabled(current.picture.is_some());
@@ -253,18 +256,6 @@ fn choose_picture(account: &Rc<RefCell<Account>>, ctx: &PageContext) {
             }
         });
     });
-}
-
-fn info_row(title: &str, value: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(title).build();
-    let label = gtk::Label::builder()
-        .label(value)
-        .selectable(true)
-        .valign(gtk::Align::Center)
-        .css_classes(["dim-label"])
-        .build();
-    row.add_suffix(&label);
-    row
 }
 
 fn format_time(seconds: i64) -> String {

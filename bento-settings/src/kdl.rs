@@ -383,7 +383,13 @@ impl Document {
                     self.text
                         .insert_str(close_line, &format!("{indent}{text}\n"));
                 } else {
-                    self.text.insert_str(close, &format!(" {text} "));
+                    // A block on one line: the line ends with `;`, as `insert_child` writes it.
+                    let space = if self.text[..close].ends_with(' ') {
+                        ""
+                    } else {
+                        " "
+                    };
+                    self.text.insert_str(close, &format!("{space}{text}; "));
                 }
             }
             None => self
@@ -780,6 +786,15 @@ mod tests {
             doc.set(&split("layout.focus-ring.width"), vec![Value::Float(2.5)])
         });
         assert_eq!(out, "layout { gaps 4; focus-ring { width 2.5; }; }\n");
+    }
+
+    #[test]
+    fn adds_a_bind_to_binds_on_one_line() {
+        let out = edit("binds { Mod+Q { close-window; }; }\n", |doc| {
+            doc.set_bind(&key("Mod+T"), &spawn("Mod+T", "foot"))
+        });
+        assert!(Document::parse(out.clone()).is_ok(), "{out}");
+        assert!(out.contains("Mod+Q { close-window; }") && out.contains("spawn \"foot\""));
     }
 
     #[test]

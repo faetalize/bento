@@ -14,6 +14,26 @@ use crate::page::{keep_alive, PageContext};
 
 const KEY: &str = "location";
 
+fn latitude() -> Setting {
+    Setting::number("Latitude", "location.latitude", |c| {
+        c.location.latitude.map_or(0., |v| v.0)
+    })
+    .range(-90., 90., 0.01)
+    .digits(4)
+    .clears("location.name")
+    .keywords(&["north", "south"])
+}
+
+fn longitude() -> Setting {
+    Setting::number("Longitude", "location.longitude", |c| {
+        c.location.longitude.map_or(0., |v| v.0)
+    })
+    .range(-180., 180., 0.01)
+    .digits(4)
+    .clears("location.name")
+    .keywords(&["east", "west"])
+}
+
 pub fn category() -> Category {
     Category::settings("location", "Location")
         .icon("ph-map-pin-symbolic")
@@ -25,22 +45,8 @@ pub fn category() -> Category {
         ))
         .group(
             Group::new("Coordinates")
-                .setting(
-                    Setting::number("Latitude", "location.latitude", |c| {
-                        c.location.latitude.map_or(0., |v| v.0)
-                    })
-                    .range(-90., 90., 0.01)
-                    .digits(4)
-                    .keywords(&["north", "south"]),
-                )
-                .setting(
-                    Setting::number("Longitude", "location.longitude", |c| {
-                        c.location.longitude.map_or(0., |v| v.0)
-                    })
-                    .range(-180., 180., 0.01)
-                    .digits(4)
-                    .keywords(&["east", "west"]),
-                ),
+                .setting(latitude())
+                .setting(longitude()),
         )
         .group(
             Group::new("Weather").setting(
@@ -82,7 +88,10 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         )
         .build();
 
-    let current = adw::ActionRow::builder().title("Current Place").build();
+    let current = adw::ActionRow::builder()
+        .use_markup(false)
+        .title("Current Place")
+        .build();
     ctx.anchor("location.place", &current);
     let clear = gtk::Button::builder()
         .label("Clear")
@@ -189,11 +198,12 @@ impl State {
         };
         for place in places {
             let row = adw::ActionRow::builder()
-                .title(gtk::glib::markup_escape_text(&place.name))
-                .subtitle(gtk::glib::markup_escape_text(&place.region))
+                .use_markup(false)
+                .title(&place.name)
+                .subtitle(&place.region)
                 .activatable(true)
                 .build();
-            row.add_suffix(&gtk::Image::from_icon_name("ph-caret-right-symbolic"));
+            row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
             let weak = Rc::downgrade(self);
             row.connect_activated(move |_| {
                 if let Some(state) = weak.upgrade() {
@@ -261,6 +271,16 @@ fn places(json: &serde_json::Value) -> Vec<Place> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coordinates_typed_in_are_no_longer_the_named_place() {
+        let text = "location {\n    name \"Reykjavik, Iceland\"\n    latitude 64.1355\n    \
+                    longitude -21.8954\n}\n";
+        let mut doc = crate::kdl::Document::parse(String::from(text)).unwrap();
+        latitude().write(&mut doc, crate::model::Input::Number(10.5));
+        assert!(!doc.text().contains("Reykjavik"), "{}", doc.text());
+        assert!(doc.text().contains("longitude -21.8954"), "{}", doc.text());
+    }
 
     #[test]
     fn it_reads_the_places_a_search_finds() {

@@ -46,6 +46,61 @@ impl PageContext {
 
 /// Keeps a page's state alive as long as `widget`. Pages hand their state to signal handlers as
 /// weak references, so that the handlers don't keep it alive in a cycle; this is what does.
+/// A row that shows a value beside its title, selectable for copying.
+pub fn info_row(title: &str, value: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .use_markup(false)
+        .title(title)
+        .build();
+    let label = gtk::Label::builder()
+        .label(value)
+        .selectable(true)
+        .valign(gtk::Align::Center)
+        .css_classes(["dim-label"])
+        .build();
+    row.add_suffix(&label);
+    row
+}
+
+/// A title for the identifier `name`, like "Center Focused Column" for `center-focused-column`,
+/// in the title case GNOME's guidelines give rows: every word capitalized but short articles,
+/// conjunctions and prepositions inside it.
+pub fn title_from(name: &str) -> String {
+    const SMALL: &[&str] = &[
+        "a", "an", "the", "and", "but", "or", "nor", "for", "on", "at", "to", "from", "by", "of",
+        "in", "with", "as",
+    ];
+    let words: Vec<&str> = name
+        .split(['-', '_', ' '])
+        .filter(|w| !w.is_empty())
+        .collect();
+    let last = words.len().saturating_sub(1);
+    words
+        .iter()
+        .enumerate()
+        .map(|(i, word)| {
+            if i != 0 && i != last && SMALL.contains(word) {
+                return (*word).to_owned();
+            }
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether someone is typing in `widget`: an entry row's own text field has the focus, not the
+/// row, so `has_focus` on the row is never true.
+pub fn typing_in(widget: &impl IsA<gtk::Widget>) -> bool {
+    widget
+        .as_ref()
+        .state_flags()
+        .contains(gtk::StateFlags::FOCUS_WITHIN)
+}
+
 pub fn keep_alive<T: 'static>(widget: &impl IsA<gtk::Widget>, state: Rc<T>) {
     // SAFETY: the key is only ever set here, with this type, and never read back.
     unsafe {
@@ -242,7 +297,7 @@ pub fn setting_row_watched(
             let entry = row.clone();
             let show = move || {
                 // Don't replace what someone is typing.
-                if !entry.has_focus() || entry.text().is_empty() {
+                if !typing_in(&entry) || entry.text().is_empty() {
                     entry.set_text(&get(&store.config()));
                 }
             };
@@ -287,4 +342,17 @@ pub fn setting_row_watched(
     ctx.store.subscribe(refresh);
 
     row.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn titles_from_names_are_in_title_case() {
+        assert_eq!(title_from("center-focused-column"), "Center Focused Column");
+        assert_eq!(title_from("skip_confirmation"), "Skip Confirmation");
+        assert_eq!(title_from("move-to-the-end"), "Move to the End");
+        assert_eq!(title_from("of"), "Of");
+    }
 }

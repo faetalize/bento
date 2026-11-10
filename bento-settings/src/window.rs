@@ -485,6 +485,8 @@ fn update_banner(ui: &Ui) {
 
 fn banner_action(ui: &Ui, banner: &adw::Banner) {
     let status = ui.ctx.store.status();
+    // A change that couldn't be saved says so; the config file's own error is in the file.
+    let saving = status.write_error.is_some();
     let details = status
         .write_error
         .or(status.config_error)
@@ -503,10 +505,16 @@ fn banner_action(ui: &Ui, banner: &adw::Banner) {
         .propagate_natural_height(true)
         .build();
     let dialog = adw::AlertDialog::builder()
-        .heading("Config Error")
+        .heading(if saving {
+            "Couldn't Save"
+        } else {
+            "Config Error"
+        })
         .extra_child(&scrolled)
         .build();
-    dialog.add_response("open", "Open config.kdl");
+    if !saving {
+        dialog.add_response("open", "Open config.kdl");
+    }
     dialog.add_response("close", "Close");
     dialog.set_default_response(Some("close"));
     let path = ui.ctx.store.config_path().to_owned();

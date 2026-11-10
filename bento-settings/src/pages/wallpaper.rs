@@ -179,7 +179,7 @@ fn tile(path: &Path) -> gtk::FlowBoxChild {
 
 fn add_tile() -> gtk::FlowBoxChild {
     let icon = gtk::Image::builder()
-        .icon_name("ph-plus-symbolic")
+        .icon_name("list-add-symbolic")
         .pixel_size(24)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -255,7 +255,7 @@ impl Preview {
             .css_classes(["wallpaper-name", "heading"])
             .build();
         let remove = gtk::Button::builder()
-            .icon_name("ph-x-symbolic")
+            .icon_name("window-close-symbolic")
             .tooltip_text("Remove Wallpaper")
             .halign(gtk::Align::End)
             .valign(gtk::Align::Start)

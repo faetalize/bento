@@ -273,11 +273,14 @@ fn refresh(view: &Rc<View>) {
     for entry in entries(&view.ctx.store) {
         let choice = choices.iter().find(|c| c.action.name == entry.action);
         let title = choice.map_or_else(|| entry.action.clone(), Choice::title);
-        let row = adw::ActionRow::builder().title(&title).build();
+        let row = adw::ActionRow::builder()
+            .use_markup(false)
+            .title(&title)
+            .build();
         let args = entry.node.as_ref().and_then(|node| node.action.as_ref());
         let args = args.map(ActionNode::arguments).unwrap_or_default();
         let subtitle = match (&entry.include, &entry.node) {
-            (Some(path), _) => format!("From {}", tilde(path)),
+            (Some(path), _) => format!("From {}", crate::store::tilde(path)),
             (None, Some(node)) if node.action.is_none() => {
                 String::from("Press and release actions, set in the config file")
             }
@@ -308,10 +311,6 @@ fn refresh(view: &Rc<View>) {
 fn mod_key(store: &Store) -> Modifiers {
     let config = store.config();
     config.input.mod_key.unwrap_or(ModKey::Super).to_modifiers()
-}
-
-fn tilde(path: &Path) -> String {
-    crate::store::tilde(path)
 }
 
 /// What the dialog changes.
@@ -607,7 +606,11 @@ fn save_bind(
         .find(|c| c.action.name == taken.action)
         .map_or_else(|| taken.action.clone(), Choice::title);
     let Some(taken_file) = taken.file else {
-        let file = taken.include.as_deref().map(tilde).unwrap_or_default();
+        let file = taken
+            .include
+            .as_deref()
+            .map(crate::store::tilde)
+            .unwrap_or_default();
         let alert = adw::AlertDialog::new(
             Some("Shortcut Taken"),
             Some(&format!(
@@ -693,8 +696,9 @@ fn reset_all(ctx: &PageContext, parent: &gtk::Button) {
     let alert = adw::AlertDialog::new(
         Some("Reset All Shortcuts?"),
         Some(
-            "Every shortcut goes back to the one bento ships, in the config and in the layout \
-             engine's file. Shortcuts from included files stay as they are.",
+            "Every shortcut goes back to the one bento ships, in the config and in the file of \
+             a layout engine bento ships. Shortcuts from included files and from an engine of \
+             your own stay as they are.",
         ),
     );
     alert.add_response("cancel", "Cancel");
@@ -736,7 +740,7 @@ impl Field {
         index: usize,
     ) -> Self {
         let name = arg.name.clone();
-        let title = sentence_case(&name.replace(['-', '_'], " "));
+        let title = crate::page::title_from(&name);
         let subtitle = arg.description.clone().unwrap_or_default();
         // The value the bind has now, else the declared default.
         let current: Vec<Value> = match current {
@@ -757,6 +761,7 @@ impl Field {
         let (row, value): (gtk::Widget, Box<dyn Fn() -> _>) = match arg.r#type {
             Some(ArgType::Boolean) => {
                 let row = adw::SwitchRow::builder()
+                    .use_markup(false)
                     .title(&title)
                     .subtitle(&subtitle)
                     .active(matches!(first, Some(Value::Bool(true))))
@@ -794,6 +799,7 @@ impl Field {
             Some(ArgType::Choice) => {
                 let choices: Vec<&str> = arg.choices.iter().map(String::as_str).collect();
                 let row = adw::ComboRow::builder()
+                    .use_markup(false)
                     .title(&title)
                     .subtitle(&subtitle)
                     .model(&gtk::StringList::new(&choices))
@@ -833,7 +839,11 @@ impl Field {
                     }
                     _ => first.as_ref().map(text_of).unwrap_or_default(),
                 };
-                let row = adw::EntryRow::builder().title(&title).text(&text).build();
+                let row = adw::EntryRow::builder()
+                    .use_markup(false)
+                    .title(&title)
+                    .text(&text)
+                    .build();
                 if !subtitle.is_empty() {
                     row.set_tooltip_text(Some(&subtitle));
                 }
@@ -923,7 +933,7 @@ fn action_node(action: &LayoutEngineAction, fields: &[Field]) -> Result<ActionNo
             // A default left out before a given argument has to be written after all.
             None => match &arg.default {
                 Some(default) => node.args.extend(crate::store::option_value(default)),
-                None => return Err(format!("Fill in “{}”", sentence_case(&arg.name))),
+                None => return Err(format!("Fill in “{}”", crate::page::title_from(&arg.name))),
             },
         }
     }
@@ -1085,12 +1095,20 @@ impl Recording {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let finish_ = finish.clone();
-        keys.connect_key_pressed(move |_, keyval, _, state| {
+        keys.connect_key_pressed(move |controller, keyval, keycode, state| {
             if keyval == gdk::Key::Escape && modifiers(state).is_empty() {
                 finish_(None);
                 return glib::Propagation::Stop;
             }
-            let Some(name) = keyval
+            // The key's own symbol, without what Shift makes of it: Shift+/ is `Shift+Slash`, as
+            // bento's defaults write it, so a key taken by another bind is seen as taken.
+            let unshifted = gdk::Display::default()
+                .and_then(|display| {
+                    let group = controller.group() as i32;
+                    display.translate_key(keycode, gdk::ModifierType::empty(), group)
+                })
+                .map_or(keyval, |(key, ..)| key);
+            let Some(name) = unshifted
                 .to_lower()
                 .name()
                 .filter(|_| !is_modifier_key(keyval))
@@ -1260,14 +1278,6 @@ fn dim_label(text: &str) -> gtk::Label {
         .valign(gtk::Align::Center)
         .css_classes(["dim-label"])
         .build()
-}
-
-fn sentence_case(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 /// The modifiers a key shows, with the compositor's Mod key spelled out, and the same as GDK's.
