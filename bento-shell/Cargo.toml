@@ -22,5 +22,6 @@ bento-ipc = { version = "26.4.0", path = "../bento-ipc" }
 serde_json.workspace = true
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-scanner = "0.31.11"
 soup3 = "0.8"

@@ -4,6 +4,7 @@
 pub mod audio;
 pub mod battery;
 pub mod brightness;
+pub mod clipboard;
 mod dbus;
 pub mod devices;
 pub mod ipc;

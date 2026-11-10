@@ -545,6 +545,7 @@ dependencies = [
  "soup3",
  "wayland-backend",
  "wayland-client",
+ "wayland-protocols",
  "wayland-scanner",
 ]
 

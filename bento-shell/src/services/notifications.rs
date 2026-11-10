@@ -51,6 +51,10 @@ const XML: &str = r#"
       <arg type="u" name="id"/>
       <arg type="s" name="action_key"/>
     </signal>
+    <signal name="ActivationToken">
+      <arg type="u" name="id"/>
+      <arg type="s" name="activation_token"/>
+    </signal>
   </interface>
 </node>
 "#;
@@ -173,11 +177,15 @@ impl Notifications {
     }
 
     /// Tells the app that the user picked one of a notification's actions, and closes it unless
-    /// it's resident.
-    pub fn invoke(&self, id: u32, action_key: &str) {
+    /// it's resident. With an activation `token`, the app may bring its window forward, which
+    /// the spec has it hear just before the action.
+    pub fn invoke(&self, id: u32, action_key: &str, token: Option<&str>) {
         let Some(resident) = self.shown.borrow().get(&id).map(|shown| shown.resident) else {
             return;
         };
+        if let Some(token) = token.filter(|token| !token.is_empty()) {
+            self.emit("ActivationToken", &(id, token).to_variant());
+        }
         self.emit("ActionInvoked", &(id, action_key).to_variant());
         if !resident {
             self.close(id, Reason::Dismissed);

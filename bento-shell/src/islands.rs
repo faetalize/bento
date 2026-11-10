@@ -1159,7 +1159,7 @@ fn fill_banner(banner: &gtk::Box, notification: &Notification, shell: &Weak<Shel
             let shell_ = shell.clone();
             button.connect_clicked(move |_| {
                 if let Some(shell) = shell_.upgrade() {
-                    shell.notifications.invoke(id, &key);
+                    shell.notifications.invoke(id, &key, None);
                 }
             });
             actions.append(&button);
@@ -1177,7 +1177,7 @@ fn fill_banner(banner: &gtk::Box, notification: &Notification, shell: &Weak<Shel
         };
         gesture.set_state(gtk::EventSequenceState::Claimed);
         if has_default {
-            shell.notifications.invoke(id, "default");
+            shell.notifications.invoke(id, "default", None);
         } else {
             shell.notifications.dismiss(id);
         }

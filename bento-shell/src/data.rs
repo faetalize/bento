@@ -2,7 +2,8 @@
 //!
 //! bento starts it and reads what it says from its stdout, a JSON object per line: the speaker's
 //! volume, the sound devices, the displays' brightness, the light or dark style, the weather, the
-//! network, the battery, notifications and the tray's items, each as it changes. Pictures, like a
+//! network, the battery, notifications, the clipboard's history and the tray's items, each as it
+//! changes. Pictures, like a
 //! notification's image or a tray icon an app draws itself, are written as PNG files under
 //! `$XDG_RUNTIME_DIR/bento-shell` and named by their path. It takes commands on its stdin, a JSON
 //! object per line, like `{ "cmd": "volume", "value": 0.5 }`.
@@ -17,6 +18,7 @@ use gtk::prelude::*;
 use serde_json::{json, Value};
 
 use crate::services::brightness::BrightnessService;
+use crate::services::clipboard::{ClipboardService, Content};
 use crate::services::devices::{Device, DeviceService, Kind};
 use crate::services::weather::{Place, WeatherService};
 use crate::services::{
@@ -237,6 +239,20 @@ pub fn run() -> glib::ExitCode {
             "image": image,
         }));
     });
+    let clipboard = ClipboardService::start(pictures(), |available, entries| {
+        let entries: Vec<Value> = entries
+            .iter()
+            .map(|entry| match &entry.content {
+                Content::Text(_) => json!({
+                    "id": entry.id, "kind": "text", "text": entry.preview(),
+                }),
+                Content::Image { path, .. } => json!({
+                    "id": entry.id, "kind": "image", "image": path.to_string_lossy(),
+                }),
+            })
+            .collect();
+        say(&json!({ "type": "clipboard", "available": available, "entries": entries }));
+    });
     let tray = Tray::start(|items| {
         let items: Vec<Value> = items
             .iter()
@@ -311,9 +327,14 @@ pub fn run() -> glib::ExitCode {
                 "notify" => notify(text("summary"), text("body"), text("icon")),
                 "dismiss" => notifications.dismiss(id()),
                 "expire" => notifications.expire(id()),
-                "invoke" => {
-                    notifications.invoke(id(), command["key"].as_str().unwrap_or("default"))
-                }
+                "invoke" => notifications.invoke(
+                    id(),
+                    command["key"].as_str().unwrap_or("default"),
+                    command["token"].as_str(),
+                ),
+                "clipboard-copy" => clipboard.copy(command["id"].as_u64().unwrap_or(0)),
+                "clipboard-delete" => clipboard.delete(command["id"].as_u64().unwrap_or(0)),
+                "clipboard-clear" => clipboard.clear(),
                 "activate" => tray.activate(&item(), 0, 0),
                 "secondary" => tray.secondary_activate(&item(), 0, 0),
                 "context" => tray.context_menu(&item(), 0, 0),
