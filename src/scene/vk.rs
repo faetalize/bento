@@ -748,6 +748,7 @@ impl Renderer {
                     // Drawn at its own size, the glyphs sit on whole pixels; scaled, they're
                     // smoothed.
                     let whole = (by - 1.).abs() < 1e-3;
+                    let by = by.max(1e-3);
                     for run in &laid.runs {
                         let coords = {
                             use std::hash::{Hash, Hasher};
@@ -760,26 +761,32 @@ impl Renderer {
                             let py = (origin[1] + y * by) * scale;
                             let py = if whole { py.round() } else { py };
                             let subpixel = ((px.fract() * 4.).floor() as u8).min(3);
+                            // Drawn at the size it shows at, in half pixels so that growing text
+                            // isn't drawn again for every hair of its size, and stretched the
+                            // rest of the way.
+                            let shown = run.size * by * scale;
+                            let drawn = ((shown * 2.).round() / 2.).max(0.5);
+                            let stretch = shown / drawn;
                             let key = GlyphKey {
                                 font: run.font.data.id(),
                                 index: run.font.index,
                                 glyph,
-                                size: (run.size * scale * 4.).round() as u32,
+                                size: (drawn * 4.).round() as u32,
                                 subpixel,
                                 coords,
                             };
                             let Some(g) = self.glyph(key, &run.font, &run.coords) else {
                                 continue;
                             };
-                            let gx = if whole { px.floor() } else { px } + g.left as f32 * by;
-                            let gy = py - g.top as f32 * by;
+                            let gx = if whole { px.floor() } else { px } + g.left as f32 * stretch;
+                            let gy = py - g.top as f32 * stretch;
                             let atlas = ATLAS_SIZE as f32;
                             gpu.push(GpuItem {
                                 rect: [
                                     gx / scale,
                                     gy / scale,
-                                    g.at[2] as f32 * by / scale,
-                                    g.at[3] as f32 * by / scale,
+                                    g.at[2] as f32 * stretch / scale,
+                                    g.at[3] as f32 * stretch / scale,
                                 ],
                                 radii: [0.; 4],
                                 fill: premul(*color),
@@ -1475,6 +1482,36 @@ mod tests {
             renderer.render(&target, &[icon], 1.).unwrap();
         }
         assert_eq!(renderer.images.placed.len(), 1);
+        renderer.destroy_target(target);
+    }
+
+    /// Text scaled up is drawn at the size it shows at, so that it's as sharp as text that size,
+    /// rather than its own size stretched.
+    #[test]
+    #[ignore]
+    fn scaled_text_is_drawn_at_the_size_it_shows() {
+        let formats = [DrmFormat {
+            code: Fourcc::Argb8888,
+            modifier: Modifier::Linear,
+        }];
+        let mut renderer = Renderer::new(None, &formats).unwrap();
+        let target = renderer.create_target((256, 128)).unwrap();
+        let mut fonts = super::super::text::Fonts::default();
+        let laid = fonts.lay_out("12:34", &super::super::text::TextStyle::default(), None);
+        let text = Item::Text {
+            origin: [8., 8.],
+            laid: std::rc::Rc::new(laid),
+            color: [1., 1., 1., 1.],
+            opacity: 1.,
+            scale: 3.,
+            blur: 0.,
+            clip: None,
+        };
+        renderer.render(&target, &[text], 1.).unwrap();
+        let sizes: std::collections::HashSet<u32> =
+            renderer.glyphs.keys().map(|k| k.size).collect();
+        // 14 pixels three times, in quarters.
+        assert_eq!(sizes, [14 * 3 * 4].into_iter().collect(), "{sizes:?}");
         renderer.destroy_target(target);
     }
 

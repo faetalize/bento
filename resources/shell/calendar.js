@@ -3,7 +3,7 @@
 
 import {
   box, text, image, button, island, expand, refill, travel, home, after, cancel, paced,
-  settling, on, config, data, action, last, closeAll,
+  settling, on, config, data, action, last, closeAll, ACTIVE,
 } from "bento:ui";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -96,8 +96,9 @@ function weatherRows(weather, location) {
 // and `panel` is the calendar, which `onToggle(open)` hears open and close.
 export function calendar(onToggle) {
   let now = new Date();
-  // The island's time and date, and the calendar's. The time is the same text at both sizes,
-  // with the same weight, so that it reads as one.
+  // The island's time and date, and the calendar's date. The island's time is the calendar's
+  // too: opening, it grows into the room the calendar keeps for it, as big as the calendar's
+  // time would be, and stays there.
   const time = text(clockTime(now), { weight: 600, tabular: true });
   const shortDate = text(clockDate(now), { weight: 600 });
   const bigTime = text(clockTime(now), { size: 40, weight: 600, tabular: true, opacity: 0 });
@@ -117,7 +118,7 @@ export function calendar(onToggle) {
     weeks(shown).forEach((date, i) => {
       const today = sameDay(date, now);
       const inMonth = date.getMonth() === shown.getMonth();
-      days[i].circle.set({ fill: today ? "accent" : null });
+      days[i].circle.set({ fill: today ? ACTIVE : null });
       days[i].label.set({
         text: String(date.getDate()),
         weight: today ? 700 : 400,
@@ -174,14 +175,14 @@ export function calendar(onToggle) {
     month,
     weather,
   ]);
-  const pill = island({ gap: 10, cursor: "pointer", onClick: () => panel.toggle() }, [
+  // Held to its middle, which stays put as the island grows both ways.
+  const pill = island({ gap: 10, justify: "center", cursor: "pointer", onClick: () => panel.toggle() }, [
     shortDate,
     time,
   ]);
-  // Opening, the island's time grows into the calendar's and the date travels to the calendar's
-  // date; once there, they hand over to the calendar's own: the time as it is, the date blurring
-  // into its longer self. Closing, they hand back first, then travel home.
-  const QUICK = { opacity: 0.1, blur: 0.1 };
+  // Opening, the island's time grows into the calendar's place for it, and the date travels to
+  // the start of the calendar's date and, once there, blurs into it. Closing, the date blurs
+  // back into the island's at once, and both go home with the glass.
   let handing;
   const handOver = (open) => {
     if (handing !== undefined) cancel(handing);
@@ -191,16 +192,13 @@ export function calendar(onToggle) {
       travel(shortDate, bigDate);
       handing = after(paced(settling()), () => {
         handing = undefined;
-        time.set({ opacity: 0, transition: QUICK });
-        bigTime.set({ opacity: 1, transition: QUICK });
         shortDate.set({ opacity: 0, blur: 4 });
         bigDate.set({ opacity: 1, blur: 0, jump: { blur: 4 } });
       });
     } else {
-      time.set({ opacity: 1, transition: QUICK });
-      bigTime.set({ opacity: 0, transition: QUICK });
-      shortDate.set({ opacity: 1, blur: 0 });
-      bigDate.set({ opacity: 0, blur: 4 });
+      const QUICK = { opacity: 0.1, blur: 0.1 };
+      shortDate.set({ opacity: 1, blur: 0, transition: QUICK });
+      bigDate.set({ opacity: 0, blur: 4, transition: QUICK });
       home(time);
       home(shortDate);
     }

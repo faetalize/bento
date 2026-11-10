@@ -120,9 +120,9 @@ function fillLauncher(query) {
       },
       [
         image(app.icon ?? "application-x-executable", { size: 40 }),
-        box({ direction: "column", shrink: 1 }, [
-          text(app.name, { size: 16, weight: 600 }),
-          app.comment && text(app.comment, { size: 13, color: "fg/0.6" }),
+        box({ direction: "column", grow: 1, shrink: 1, minWidth: 0 }, [
+          text(app.name, { size: 16, weight: 600, lines: 1 }),
+          app.comment && text(app.comment, { size: 13, color: "fg/0.6", lines: 1 }),
         ]),
       ],
     ),

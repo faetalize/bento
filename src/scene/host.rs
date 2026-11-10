@@ -1242,23 +1242,29 @@ mod tests {
         }
         settle(&mut host, &mut now);
 
-        // There, the calendar's own time shows where the island's ended up, as big.
+        // There, the island's time stays, as big as the calendar's room for it, and it's the
+        // only time that shows.
         let times = seen(&host, &at.0);
-        let (big, _, _) = *times
+        let shown: Vec<_> = times
             .iter()
-            .find(|(_, opacity, _)| *opacity > 0.99)
-            .unwrap();
-        let (small, _, _) = *times
+            .filter(|(_, opacity, _)| *opacity > 0.99)
+            .collect();
+        assert_eq!(shown.len(), 1, "{times:?}");
+        let (room, _, _) = *times
             .iter()
             .find(|(_, opacity, _)| *opacity < 0.01)
             .unwrap();
-        // Its start, top and height: the calendar lays its time out as wide as its column.
+        let grown = shown[0].0;
+        // It's the island's time grown, as wide as its figures, not the calendar's room, which
+        // is as wide as its column.
+        assert!(grown[2] < room[2] - 50., "{grown:?} is the room {room:?}");
+        // Its start, top and height: the calendar lays its room out as wide as its column.
         for i in [0, 1, 3] {
-            assert!((big[i] - small[i]).abs() < 1.5, "{big:?} and {small:?}");
+            assert!((grown[i] - room[i]).abs() < 1.5, "{grown:?} in {room:?}");
         }
         assert!(
-            lefts[0] > big[0] && lefts[7] < lefts[0],
-            "{lefts:?} to {big:?}"
+            lefts[0] > room[0] && lefts[7] < lefts[0],
+            "{lefts:?} to {room:?}"
         );
 
         // The date travelled to the start of the calendar's date, not to its middle.
@@ -1314,26 +1320,26 @@ mod tests {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         host.data_line(&DEVICES.replace('\n', " "));
         open_control_center(&mut host, &mut now);
-        // The sound slider's fill: the accent-coloured shape that starts where its icon is.
+        // How much of the sound slider shows filled: its level is the track's width slid left,
+        // so it's where the level ends, from where the track starts.
         let fill = |host: &SceneHost| {
             let icon = middle_of(host, "DP-1", "audio-volume-medium-symbolic");
             let scene = host.shell.as_ref().unwrap().scene.borrow();
-            scene
+            let bars: Vec<[f32; 4]> = scene
                 .draw("DP-1")
                 .into_iter()
-                .find_map(|item| match item {
-                    // Not the track, which is the slider's whole width.
+                .filter_map(|item| match item {
                     Item::Shape { rect, .. }
-                        if rect[3] == 28.
-                            && rect[2] < 339.
-                            && (rect[1] + 14. - icon[1]).abs() < 2.
-                            && rect[0] < icon[0] =>
+                        if rect[3] == 28. && (rect[1] + 14. - icon[1]).abs() < 2. =>
                     {
-                        Some(rect[2])
+                        Some(rect)
                     }
                     _ => None,
                 })
-                .unwrap()
+                .collect();
+            let track = bars.iter().map(|bar| bar[0]).fold(f32::MIN, f32::max);
+            let level = bars.iter().find(|bar| bar[0] < track).unwrap();
+            level[0] + level[2] - track
         };
         let before = fill(&host);
         // A knob or a media key turns it up.
@@ -1344,6 +1350,134 @@ mod tests {
         settle(&mut host, &mut now);
         let after = fill(&host);
         assert!((after / before - 1.5).abs() < 0.05, "{before} to {after}");
+    }
+
+    /// Steps `host` on a frame, at 16 ms.
+    fn frame(host: &mut SceneHost, now: &mut Instant) {
+        *now += std::time::Duration::from_millis(16);
+        host.advance(*now, Some(1.));
+    }
+
+    #[test]
+    fn what_the_island_holds_stays_put_as_it_opens_and_closes() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(&DEVICES.replace('\n', " "));
+        settle(&mut host, &mut now);
+        let at = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            scene.seen("DP-1", "network-offline-symbolic")[0].0
+        };
+        let before = at(&host);
+        let status = middle_of(&host, "DP-1", "network-offline-symbolic");
+        click(&mut host, "DP-1", status);
+        for _ in 0..20 {
+            frame(&mut host, &mut now);
+            assert_eq!(at(&host), before, "opening");
+        }
+        type_keys(&mut host, &["Escape"]);
+        for _ in 0..20 {
+            frame(&mut host, &mut now);
+            assert_eq!(at(&host), before, "closing");
+        }
+    }
+
+    #[test]
+    fn a_panel_closes_in_one_motion() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let glass = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            scene
+                .draw("DP-1")
+                .into_iter()
+                .filter_map(|item| match item {
+                    Item::Shape {
+                        rect,
+                        material: Material::Glass,
+                        ..
+                    } => Some(rect[3]),
+                    _ => None,
+                })
+                .fold(0., f32::max)
+        };
+        click(&mut host, "DP-1", [960., 26.]);
+        settle(&mut host, &mut now);
+        let open = glass(&host);
+        type_keys(&mut host, &["Escape"]);
+        frame(&mut host, &mut now);
+        frame(&mut host, &mut now);
+        assert!(
+            glass(&host) < open - 5.,
+            "the glass starts shrinking at once"
+        );
+    }
+
+    #[test]
+    fn a_list_opens_like_a_drawer_and_a_slider_keeps_its_level_as_it_moves() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        // The microphone at half, so that its level shows.
+        host.data_line(&DEVICES.replace('\n', " ").replace(
+            r#""active":true,"volume":1.0"#,
+            r#""active":true,"volume":0.5"#,
+        ));
+        open_control_center(&mut host, &mut now);
+        // The microphone's slider, below the outputs, and how much of it shows filled.
+        let mic = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let icon = scene.seen("DP-1", "microphone-sensitivity-high-symbolic")[0].0;
+            let bars: Vec<[f32; 4]> = scene
+                .draw("DP-1")
+                .into_iter()
+                .filter_map(|item| match item {
+                    Item::Shape { rect, .. }
+                        if rect[3] == 28.
+                            && (rect[1] + 14. - (icon[1] + icon[3] / 2.)).abs() < 2. =>
+                    {
+                        Some(rect)
+                    }
+                    _ => None,
+                })
+                .collect();
+            let track = bars.iter().map(|bar| bar[0]).fold(f32::MIN, f32::max);
+            let level = bars.iter().find(|bar| bar[0] < track).unwrap();
+            (bars[0][1], level[0] + level[2] - track)
+        };
+        let (top, filled) = mic(&host);
+        let speakers = middle_of(&host, "DP-1", "Speakers");
+        click(&mut host, "DP-1", speakers);
+        let mut tops = Vec::new();
+        let mut listed = false;
+        for _ in 0..20 {
+            frame(&mut host, &mut now);
+            let (now_top, now_filled) = mic(&host);
+            assert!(
+                (now_filled - filled).abs() < 1.,
+                "the level moves with its slider"
+            );
+            tops.push(now_top);
+            // What the list holds shows only inside it, cut to the list, which is as wide as
+            // the panel's column, and that ends above the slider it pushes down.
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            for item in scene.draw("DP-1") {
+                if let Item::Text {
+                    clip: Some(clip), ..
+                } = item
+                {
+                    // The outputs' list, which starts above the slider; the inputs' is below it.
+                    if clip.rect[2] == 340. && clip.rect[1] < now_top {
+                        listed = true;
+                        let bottom = clip.rect[1] + clip.rect[3];
+                        assert!(bottom <= now_top + 0.5, "{clip:?} over {now_top}");
+                    }
+                }
+            }
+        }
+        assert!(listed, "the list cuts what it holds to itself");
+        // The slider below was pushed down little by little.
+        assert!(
+            tops[0] < tops[19] && tops[1] - tops[0] < tops[19] - tops[0],
+            "{tops:?}"
+        );
+        assert!(shows(&host, "DP-1", "Headphones"));
     }
 
     #[test]
@@ -1638,6 +1772,10 @@ mod tests {
 
         open_control_center(&mut host, &mut now);
         shot(&host, "control-center", [1500, 0, 420, 560]);
+        let speakers = middle_of(&host, "DP-1", "Speakers");
+        click(&mut host, "DP-1", speakers);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-list", [1500, 0, 420, 620]);
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
 

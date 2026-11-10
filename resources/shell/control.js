@@ -3,16 +3,11 @@
 // buttons, the sound devices and the displays' brightness.
 
 import {
-  box, text, image, button, slider, island, expand, refill, on, config, data, action, last,
+  box, text, image, button, slider, island, expand, refill, drawer, on, config, data, action, last,
   after, run, notify, stored, store, closeAll,
 } from "bento:ui";
 
 const WIDTH = 340;
-// How much of a device's name a row shows.
-const NAME_LENGTH = 36;
-
-const short = (name) =>
-  name.length > NAME_LENGTH ? `${name.slice(0, NAME_LENGTH - 1).trimEnd()}…` : name;
 
 const volumeIcon = ({ volume, muted }) =>
   muted || volume <= 0 ? "audio-volume-muted-symbolic"
@@ -104,7 +99,11 @@ export function controlCenter(onToggle) {
   const battery = image("battery-missing-symbolic", { color: "fg", display: "none" });
   const charge = text("", { weight: 600, tabular: true, display: "none" });
   const pill = island(
-    { gap: 8, padding: [0, 14, 0, 6], cursor: "pointer", onClick: () => panel.toggle() },
+    // Held to its right edge, which stays put as the island grows to the left.
+    {
+      gap: 8, padding: [0, 14, 0, 6], justify: "end", cursor: "pointer",
+      onClick: () => panel.toggle(),
+    },
     [switcher, clipboard, network, volume, battery, charge],
   );
 
@@ -174,8 +173,8 @@ export function controlCenter(onToggle) {
       },
       [
         image(device.icon, { color: lead ? "accent" : "fg" }),
-        box({ grow: 1, shrink: 1 }, [
-          text(short(device.label), { weight: lead ? 700 : 400 }),
+        box({ grow: 1, shrink: 1, minWidth: 0 }, [
+          text(device.label, { weight: lead ? 700 : 400, lines: 1 }),
         ]),
         kind === "output"
           ? button({
@@ -224,8 +223,8 @@ export function controlCenter(onToggle) {
     ]);
     if (key === listed && !force) return;
     listed = key;
-    refill(outputList, deviceList("output", outputs));
-    refill(inputList, deviceList("input", inputs));
+    drawer(outputList, deviceList("output", outputs));
+    drawer(inputList, deviceList("input", inputs));
     panel.fit();
   };
 

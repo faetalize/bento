@@ -233,7 +233,8 @@ export function focus(field) {
 // the node's `color`.
 export function image(source, props = {}) {
   const from = String(source).startsWith("/") && !props.icon ? { src: source } : { icon: source };
-  return new Node("image", { size: 16, ...from, ...props });
+  // An icon keeps its size when a row is short of room; the text beside it gives way.
+  return new Node("image", { size: 16, shrink: 0, ...from, ...props });
 }
 
 export function text(value, props = {}) {
@@ -306,6 +307,10 @@ export function stored(key, fallback = null) {
 export function store(key, value) {
   native.store(JSON.stringify({ ...JSON.parse(native.stored()), [key]: value }));
 }
+
+// What's lit, like the current workspace, today or a slider's level: the accent, see-through
+// enough to keep the glass under it.
+export const ACTIVE = "accent/0.6";
 
 // What's open over the desktop, a panel or the launcher: one at a time, with the keyboard while
 // it is, closed by Escape or a press elsewhere. Each is `{ close() }`: `opened(it)` when it
@@ -391,10 +396,14 @@ export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) 
           content.set({ hidden: false, opacity: 1, blur: 0, jump: { opacity: 0, blur: 6 } });
         });
       } else {
-        content.set({ opacity: 0, blur: 6, transition: { opacity: 0.12, blur: 0.12 } });
+        // The glass shrinks at once, and the content blurs out faster than its edge comes,
+        // held where it is meanwhile.
+        content.set({
+          opacity: 0, blur: 6, transition: { opacity: 0.1, blur: 0.1, frame: 60 },
+        });
+        pill.set({ width: "auto", height: ISLAND, radius: ISLAND / 2 });
         later(120, () => {
-          content.set({ hidden: true, transition: { opacity: null, blur: null } });
-          pill.set({ width: "auto", height: ISLAND, radius: ISLAND / 2 });
+          content.set({ hidden: true, transition: { opacity: null, blur: null, frame: null } });
         });
         closed(panel);
       }
@@ -402,6 +411,41 @@ export function expand(pill, content, { radius = 24, pad = 16, onToggle } = {}) 
     },
   };
   return panel;
+}
+
+// Fills `list` like a drawer: it's cut to its own frame, so rows that come show as it opens over
+// them, and rows that go stay while it closes over them, and leave once it's closed. It sets the
+// rows' `display`.
+export function drawer(list, children) {
+  children = children.filter(Boolean);
+  const before = layout(list)?.[3] ?? 0;
+  const old = list.held ?? [];
+  // Rows still on their way out from the last change go now.
+  for (const row of list.leaving ?? []) row.remove();
+  list.leaving = null;
+  list.held = children;
+  for (const child of children) list.add(child);
+  for (const row of old) row.set({ display: "none" });
+  list.set({ clip: true, height: "auto" });
+  const after = layout(list)?.[3] ?? 0;
+  if (after >= before || old.length === 0) {
+    for (const row of old) row.remove();
+    return;
+  }
+  // Closing: the old rows stay, and the new ones take their places once it's closed.
+  for (const row of old) row.set({ display: "flex" });
+  for (const child of children) child.set({ display: "none" });
+  list.leaving = old;
+  list.set({
+    height: after,
+    onSettle: () => {
+      if (list.leaving !== old) return;
+      for (const row of old) row.remove();
+      list.leaving = null;
+      for (const child of children) child.set({ display: "flex" });
+      list.set({ height: "auto" });
+    },
+  });
 }
 
 // Replaces what `node` holds with `children`.
@@ -415,7 +459,7 @@ export function refill(node, children) {
 // fills it with the accent colour. Its other props are its box's.
 export function button({ icon, label, onClick, active = false, size = 16, ...props } = {}) {
   let lit = active;
-  const idle = () => (lit ? "accent" : props.fill ?? null);
+  const idle = () => (lit ? ACTIVE : props.fill ?? null);
   const ink = () => (lit ? "#ffffff" : "fg");
   const glyph = icon ? image(icon, { size, color: ink() }) : null;
   const words = label !== undefined ? text(label, { weight: 600, color: ink() }) : null;
@@ -447,10 +491,13 @@ export function button({ icon, label, onClick, active = false, size = 16, ...pro
 export function slider({ value = 0, width = 240, icon, onChange, onIcon } = {}) {
   const HEIGHT = 28;
   let current = value;
+  // The level is the track's width, slid out from the left by as much as it isn't filled, so
+  // that it goes wherever the track goes, and only its slide is quick, to keep up with a drag.
   const filled = (v) => Math.max(HEIGHT, v * width);
   const fill = box({
-    position: "absolute", top: 0, left: 0, height: HEIGHT, width: filled(value),
-    radius: HEIGHT / 2, fill: "accent", response: 0.08,
+    position: "absolute", top: 0, left: 0, height: HEIGHT, width,
+    radius: HEIGHT / 2, fill: ACTIVE, offset: [filled(value) - width, 0],
+    transition: { offset: 0.08 },
   });
   const glyph = icon
     ? image(icon, { size: 16, color: "#ffffff", position: "absolute", top: 6, left: 6 })
@@ -459,7 +506,7 @@ export function slider({ value = 0, width = 240, icon, onChange, onIcon } = {}) 
     const next = Math.min(Math.max(v, 0), 1);
     if (next === current) return;
     current = next;
-    fill.set({ width: filled(next) });
+    fill.set({ offset: [filled(next) - width, 0] });
     if (tell) onChange?.(next);
   };
   // Where a press or a drag at `x` on the output puts it.

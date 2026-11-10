@@ -6,7 +6,7 @@
 
 import {
   box, text, island, refill, root, outputs, every, on, style, reserve, action, after, cancel,
-  last, stored, ISLAND,
+  last, stored, ISLAND, ACTIVE,
 } from "bento:ui";
 import { calendar } from "bento:calendar";
 import { controlCenter } from "bento:control";
@@ -62,7 +62,7 @@ function workspaceButtons(output) {
         padding: [0, ws.name ? 9 : 0],
         align: "center",
         justify: "center",
-        fill: ws.active ? "accent" : undefined,
+        fill: ws.active ? ACTIVE : undefined,
         cursor: "pointer",
         onClick: () => action("focus-workspace", [], { workspace: ws.id }),
         onHover: ws.active ? undefined : ({ inside }) => hovered.set({ fill: inside ? "fg/0.12" : null }),

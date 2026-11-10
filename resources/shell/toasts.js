@@ -53,7 +53,9 @@ function show(notification) {
   const picture = notification.image ?? notification.appIcon;
   const body = plain(notification.body);
   const words = box({ direction: "column", gap: 2, shrink: 1, width: WIDTH - 24 - 32 - 12 }, [
-    text(plain(notification.summary) || notification.app || "Notification", { weight: 700 }),
+    text(plain(notification.summary) || notification.app || "Notification", {
+      weight: 700, lines: 1,
+    }),
     body ? text(body, { size: 13, color: "fg/0.7" }) : null,
   ]);
   const content = box({ gap: 12, align: "start" }, [

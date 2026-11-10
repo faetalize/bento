@@ -530,6 +530,10 @@ impl Scene {
                         })
                         .is_some(),
                     "tabular" => value.as_bool().map(|v| text_style.tabular = v).is_some(),
+                    "lines" => value
+                        .as_u64()
+                        .map(|v| text_style.one_line = v == 1)
+                        .is_some(),
                     _ => false,
                 };
                 if changed {
@@ -1277,6 +1281,20 @@ fn measure(
         };
         return taffy::LayoutOutput::from_outer_size(size);
     };
+    // Text on one line can be cut down to its ellipsis, which is as narrow as it gets.
+    if style.one_line
+        && input.known_dimensions.width.is_none()
+        && input.available_space.width == AvailableSpace::MinContent
+    {
+        let ellipsis = fonts.lay_out("…", style, None);
+        return taffy::LayoutOutput::from_outer_size(Size {
+            width: ellipsis.width.ceil(),
+            height: input
+                .known_dimensions
+                .height
+                .unwrap_or(ellipsis.height.ceil()),
+        });
+    }
     let max_width = input
         .known_dimensions
         .width
@@ -1789,6 +1807,51 @@ mod tests {
         scene.advance(1. / 60., Some(1.));
         assert_eq!(scene.frame(shown_later).unwrap()[0], 1260.);
         assert_eq!(scene.frame(hidden_later).unwrap()[0], 1300.);
+    }
+
+    #[test]
+    fn one_line_text_is_cut_short_to_its_room_and_lets_what_is_beside_it_be() {
+        let mut scene = Scene::new();
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let row = scene.create(
+            "box",
+            &serde_json::json!({ "position": "absolute", "top": 0, "left": 0, "width": 200, "gap": 10 }),
+        );
+        let icon = scene.create(
+            "box",
+            &serde_json::json!({ "width": 32, "height": 32, "shrink": 0 }),
+        );
+        let name = scene.create(
+            "text",
+            &serde_json::json!({
+                "text": "Navi 21/23 HDMI/DP Audio Controller Digital Stereo (HDMI 3)",
+                "lines": 1,
+            }),
+        );
+        let pin = scene.create(
+            "box",
+            &serde_json::json!({ "width": 24, "height": 24, "shrink": 0 }),
+        );
+        scene.append(root, row, None);
+        scene.append(row, icon, None);
+        scene.append(row, name, None);
+        scene.append(row, pin, None);
+        scene.lay_out();
+        // The icon and the pin keep their size, and the name takes what's left, on one line.
+        assert_eq!(scene.layout(icon).unwrap()[2], 32.);
+        assert_eq!(scene.layout(pin).unwrap()[2], 24.);
+        let place = scene.layout(name).unwrap();
+        assert!(place[2] <= 200. - 32. - 24. - 20. + 0.5, "{place:?}");
+        let Kind::Text {
+            laid: Some((_, laid)),
+            ..
+        } = &scene.node(name).unwrap().kind
+        else {
+            panic!("not laid out");
+        };
+        assert!(laid.width <= place[2] + 0.5, "{} in {place:?}", laid.width);
+        // One line of 14 pixel text.
+        assert!(laid.height < 28., "{}", laid.height);
     }
 
     #[test]

@@ -17,6 +17,8 @@ pub struct TextStyle {
     pub align: f32,
     /// Figures all as wide, for clocks and numbers that change.
     pub tabular: bool,
+    /// On one line, cut short with an ellipsis where it doesn't fit, rather than wrapped.
+    pub one_line: bool,
 }
 
 impl Default for TextStyle {
@@ -27,6 +29,7 @@ impl Default for TextStyle {
             family: String::from("sans-serif"),
             align: 0.,
             tabular: false,
+            one_line: false,
         }
     }
 }
@@ -144,8 +147,36 @@ impl Fonts {
         Cursor::from_point(&layout, x, y).index()
     }
 
-    /// Lays `text` out, wrapping at `max_width` if it's given.
+    /// Lays `text` out, wrapping at `max_width` if it's given, or on one line cut short with an
+    /// ellipsis to fit in it if the style says so.
     pub fn lay_out(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Laid {
+        if !style.one_line {
+            return self.lay_out_wrapped(text, style, max_width);
+        }
+        let whole = self.lay_out_wrapped(text, style, None);
+        let Some(room) = max_width.filter(|room| whole.width > *room) else {
+            return whole;
+        };
+        // The most of it that fits with the ellipsis, by its characters.
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
+        let cut = |fonts: &mut Self, keep: usize| {
+            let end = chars.get(keep).map_or(text.len(), |(at, _)| *at);
+            let shown = format!("{}…", text[..end].trim_end());
+            fonts.lay_out_wrapped(&shown, style, None)
+        };
+        let (mut low, mut high) = (0, chars.len());
+        while low < high {
+            let middle = (low + high + 1) / 2;
+            if cut(self, middle).width <= room {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        cut(self, low)
+    }
+
+    fn lay_out_wrapped(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Laid {
         let layout = self.build(text, style, max_width);
         let mut runs = Vec::new();
         for line in layout.lines() {
