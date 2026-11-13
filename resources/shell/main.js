@@ -10,7 +10,7 @@ import {
 } from "bento:ui";
 import { calendar } from "bento:calendar";
 import { controlCenter } from "bento:control";
-import { toastStack } from "bento:toasts";
+import { toastStack, hideToasts } from "bento:toasts";
 import { minimap } from "bento:workspace";
 import "bento:launcher";
 
@@ -35,6 +35,8 @@ let fullscreen = last("fullscreen")?.outputs ?? {};
 function placeIslands(output) {
   const shell = shells.get(output);
   if (!shell) return;
+  // The control center lists the notifications, so their toasts make way for it.
+  if (shell.control.panel.open) hideToasts(output);
   const busy = shell.calendar.panel.open || shell.control.busy() || shell.toasts.count() > 0;
   const away = Boolean(fullscreen[output]) && !shell.near && !busy;
   if (away === shell.away) return;
@@ -85,7 +87,8 @@ function build(output) {
   const left = island({ padding: [0, 10, 0, 5], gap: 8 }, [shell.buttons, minimap(output)]);
   shell.calendar = calendar(place);
   shell.control = controlCenter(output, place);
-  shell.toasts = toastStack(output, place);
+  // While the control center is open it lists notifications itself, so none come as toasts.
+  shell.toasts = toastStack(output, place, () => shell.control.panel.open);
 
   const start = box({ grow: 1, width: 0, justify: "start" }, [left]);
   // Notifications come out under the right island, below its panel when it's open.

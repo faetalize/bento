@@ -1375,26 +1375,28 @@ mod tests {
             .iter()
             .any(|c| c["cmd"] == "brightness-refresh"));
 
-        // The list shows the default device; a click on it opens the list, and a click on
-        // another makes it the default one.
+        // The devices are behind the volume's arrow, on a page of their own; a click on one
+        // makes it the default, and the page's back button goes back.
         assert!(!shows(&host, "DP-1", "Headphones"));
-        let speakers = middle_of(&host, "DP-1", "Speakers");
-        click(&mut host, "DP-1", speakers);
-        settle(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
         let headphones = middle_of(&host, "DP-1", "Headphones");
         click(&mut host, "DP-1", headphones);
-        let sent = commands(&host);
         assert_eq!(
-            sent[0],
+            commands(&host)[0],
             serde_json::json!({ "cmd": "device", "kind": "output", "name": "b" })
         );
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Headphones"));
 
         // A press halfway along the brightness slider sets it to a half.
         let sun = middle_of(&host, "DP-1", "display-brightness-symbolic");
-        let halfway = [sun[0] - 14. + 170., sun[1]];
+        let track = sun[0] - 14.;
+        let halfway = [track + 160., sun[1]];
         host.press(1, 1, Some(("DP-1", halfway)));
         // Dragged, it follows the pointer.
-        host.pointer_at(Some(("DP-1", [halfway[0] + 85., halfway[1]])));
+        host.pointer_at(Some(("DP-1", [track + 240., halfway[1]])));
         host.release(1, 1, Some(("DP-1", halfway)));
         let sent = commands(&host);
         assert_eq!(sent[0]["cmd"], "brightness");
@@ -1408,8 +1410,8 @@ mod tests {
             "{sent:?}"
         );
 
-        // The style's button turns the dark style off while it's on.
-        let dark = middle_of(&host, "DP-1", "Dark");
+        // The dark style's tile turns it off while it's on.
+        let dark = middle_of(&host, "DP-1", "Dark Style");
         click(&mut host, "DP-1", dark);
         assert_eq!(
             commands(&host)[0],
@@ -1420,6 +1422,19 @@ mod tests {
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
+    }
+
+    /// Opens the page behind the control center's `index`th arrow: the volume's is the first.
+    fn open_page(host: &mut SceneHost, now: &mut Instant, index: usize) {
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let arrow = scene.find("DP-1", "go-next-symbolic")[index];
+        drop(scene);
+        click(
+            host,
+            "DP-1",
+            [arrow[0] + arrow[2] / 2., arrow[1] + arrow[3] / 2.],
+        );
+        settle(host, now);
     }
 
     #[test]
@@ -1625,72 +1640,233 @@ mod tests {
     }
 
     #[test]
-    fn a_list_opens_like_a_drawer_and_a_slider_keeps_its_level_as_it_moves() {
+    fn more_notifications_open_like_a_drawer_and_the_glass_grows_with_them() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
-        // The microphone at half, so that its level shows.
-        host.data_line(&DEVICES.replace('\n', " ").replace(
-            r#""active":true,"volume":1.0"#,
-            r#""active":true,"volume":0.5"#,
-        ));
+        for id in 1..=5 {
+            host.data_line(&notification(id, &format!("Message {id}"), false));
+        }
         open_control_center(&mut host, &mut now);
-        // The microphone's slider, below the outputs, and how much of it shows filled.
-        let mic = |host: &SceneHost| {
-            let scene = host.shell.as_ref().unwrap().scene.borrow();
-            let icon = scene.seen("DP-1", "microphone-sensitivity-high-symbolic")[0].0;
-            let bars: Vec<[f32; 4]> = scene
-                .draw("DP-1")
-                .into_iter()
-                .filter_map(|item| match item {
-                    Item::Shape { rect, .. }
-                        if rect[3] == 28.
-                            && (rect[1] + 14. - (icon[1] + icon[3] / 2.)).abs() < 2. =>
-                    {
-                        Some(rect)
-                    }
-                    _ => None,
-                })
-                .collect();
-            let track = bars.iter().map(|bar| bar[0]).fold(f32::MIN, f32::max);
-            let level = bars.iter().find(|bar| bar[0] < track).unwrap();
-            (bars[0][1], level[0] + level[2] - track)
-        };
-        let (_, filled) = mic(&host);
-        let speakers = middle_of(&host, "DP-1", "Speakers");
-        click(&mut host, "DP-1", speakers);
-        let mut tops = Vec::new();
-        let mut listed = false;
+        // The newest three, and the rest behind a button.
+        assert!(shows(&host, "DP-1", "Message 5") && shows(&host, "DP-1", "Message 3"));
+        assert!(!shows(&host, "DP-1", "Message 2"));
+        let rest = middle_of(&host, "DP-1", "Show 2 More");
+        click(&mut host, "DP-1", rest);
+        // The glass grows little by little, rather than jumping to its size.
+        let mut heights = Vec::new();
         for _ in 0..20 {
             frame(&mut host, &mut now);
-            let (now_top, now_filled) = mic(&host);
-            assert!(
-                (now_filled - filled).abs() < 1.,
-                "the level moves with its slider"
-            );
-            tops.push(now_top);
-            // What the list holds shows only inside it, cut to the list, which is as wide as
-            // the panel's column, and that ends above the slider it pushes down.
-            let scene = host.shell.as_ref().unwrap().scene.borrow();
-            for item in scene.draw("DP-1") {
-                if let Item::Text {
-                    clip: Some(clip), ..
-                } = item
-                {
-                    // The outputs' list, which starts above the slider; the inputs' is below it.
-                    if clip.rect[2] == 340. && clip.rect[1] < now_top {
-                        listed = true;
-                        let bottom = clip.rect[1] + clip.rect[3];
-                        assert!(bottom <= now_top + 0.5, "{clip:?} over {now_top}");
-                    }
-                }
-            }
+            heights.push(panel_height(&host));
         }
-        assert!(listed, "the list cuts what it holds to itself");
-        // The slider below was pushed down little by little.
         assert!(
-            tops[0] < tops[19] && tops[1] - tops[0] < tops[19] - tops[0],
-            "{tops:?}"
+            heights[0] < heights[19] && heights[1] - heights[0] < heights[19] - heights[0],
+            "{heights:?}"
         );
-        assert!(shows(&host, "DP-1", "Headphones"));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Message 1"));
+        assert!(!shows(&host, "DP-1", "Show 2 More"));
+    }
+
+    #[test]
+    fn the_wifi_tile_switches_it_and_its_page_joins_a_network_with_its_password() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let wifi = |enabled: bool, joining: Option<&str>| {
+            serde_json::json!({
+                "type": "wifi", "available": true, "enabled": enabled, "joining": joining,
+                "networks": [
+                    { "ssid": "Home", "strength": 80, "secure": true, "known": true, "active": true },
+                    { "ssid": "Cafe", "strength": 40, "secure": true, "known": false, "active": false },
+                    { "ssid": "Open", "strength": 30, "secure": false, "known": false, "active": false },
+                ],
+            })
+            .to_string()
+        };
+        host.data_line(&wifi(true, None));
+        open_control_center(&mut host, &mut now);
+        // The tile says where it's joined, and a click turns Wi-Fi off.
+        assert!(shows(&host, "DP-1", "Home"));
+        commands(&host);
+        let tile = middle_of(&host, "DP-1", "Wi-Fi");
+        click(&mut host, "DP-1", tile);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "wifi-enable", "on": false })]
+        );
+
+        // Its arrow opens the networks, and looks for more.
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let arrows = scene.find("DP-1", "go-next-symbolic");
+        let wifi_arrow = arrows
+            .iter()
+            .find(|arrow| (arrow[1] - tile[1]).abs() < 20.)
+            .copied()
+            .unwrap();
+        drop(scene);
+        click(
+            &mut host,
+            "DP-1",
+            [wifi_arrow[0] + 10., wifi_arrow[1] + 10.],
+        );
+        settle(&mut host, &mut now);
+        assert!(commands(&host).contains(&serde_json::json!({ "cmd": "wifi-scan" })));
+        assert!(shows(&host, "DP-1", "Cafe") && shows(&host, "DP-1", "Connected"));
+
+        // An open network is joined at once; a new one with a password asks for it first.
+        let open = middle_of(&host, "DP-1", "Open");
+        click(&mut host, "DP-1", open);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "wifi-join", "ssid": "Open" })]
+        );
+        let cafe = middle_of(&host, "DP-1", "Cafe");
+        click(&mut host, "DP-1", cafe);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Password"));
+        // A list that comes while it's typed doesn't take the field away.
+        host.data_line(&wifi(true, None));
+        type_keys(&mut host, &["p", "w", "Return"]);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "wifi-join", "ssid": "Cafe", "password": "pw" })]
+        );
+
+        // A join that fails says so.
+        host.data_line(r#"{"type":"wifi-error","ssid":"Cafe","message":"Wrong password."}"#);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Wrong password."));
+    }
+
+    #[test]
+    fn tiles_show_only_with_something_behind_them_and_power_mode_has_a_page() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        open_control_center(&mut host, &mut now);
+        // Nothing says there's Wi-Fi, Bluetooth or power modes.
+        assert!(!shows(&host, "DP-1", "Wi-Fi"));
+        assert!(!shows(&host, "DP-1", "Bluetooth"));
+        assert!(!shows(&host, "DP-1", "Power Mode"));
+        assert!(shows(&host, "DP-1", "Do Not Disturb"));
+
+        host.data_line(
+            r#"{"type":"power-profile","available":true,"active":"balanced","profiles":["power-saver","balanced","performance"]}"#,
+        );
+        host.data_line(r#"{"type":"bluetooth","available":true,"powered":false,"discovering":false,"devices":[]}"#);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Bluetooth"));
+        let mode = middle_of(&host, "DP-1", "Power Mode");
+        click(&mut host, "DP-1", mode);
+        settle(&mut host, &mut now);
+        commands(&host);
+        let performance = middle_of(&host, "DP-1", "Performance");
+        click(&mut host, "DP-1", performance);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "power-profile", "name": "performance" })]
+        );
+    }
+
+    #[test]
+    fn do_not_disturb_keeps_toasts_away_and_clear_all_dismisses_every_one() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        open_control_center(&mut host, &mut now);
+        let quiet = middle_of(&host, "DP-1", "Do Not Disturb");
+        click(&mut host, "DP-1", quiet);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        // The island says it's on.
+        assert!(shows(&host, "DP-1", "notifications-disabled-symbolic"));
+
+        host.data_line(&notification(1, "Quietly", false));
+        host.data_line(&notification(2, "Also quietly", false));
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Quietly"), "no toast");
+
+        // They're in the control center, and Clear All dismisses them.
+        open_control_center(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Quietly") && shows(&host, "DP-1", "Also quietly"));
+        commands(&host);
+        let clear = middle_of(&host, "DP-1", "Clear All");
+        click(&mut host, "DP-1", clear);
+        let sent = commands(&host);
+        assert!(sent.contains(&serde_json::json!({ "cmd": "dismiss", "id": 1 })));
+        assert!(sent.contains(&serde_json::json!({ "cmd": "dismiss", "id": 2 })));
+    }
+
+    #[test]
+    fn the_power_menu_asks_twice_to_restart_and_the_settings_button_opens_them() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        open_control_center(&mut host, &mut now);
+        let power = middle_of(&host, "DP-1", "system-shutdown-symbolic");
+        click(&mut host, "DP-1", power);
+        settle(&mut host, &mut now);
+        commands(&host);
+        let restart = middle_of(&host, "DP-1", "Restart");
+        click(&mut host, "DP-1", restart);
+        assert!(commands(&host).is_empty(), "the first click only asks");
+        assert!(shows(&host, "DP-1", "Click again to confirm"));
+        let restart = middle_of(&host, "DP-1", "Restart");
+        click(&mut host, "DP-1", restart);
+        assert_eq!(commands(&host), [serde_json::json!({ "cmd": "reboot" })]);
+        assert!(!host.wants_keyboard(), "it closes");
+
+        open_control_center(&mut host, &mut now);
+        let settings = middle_of(&host, "DP-1", "emblem-system-symbolic");
+        click(&mut host, "DP-1", settings);
+        assert_eq!(
+            host.take_actions()[0]["args"],
+            serde_json::json!(["bento-settings"])
+        );
+    }
+
+    #[test]
+    fn whats_playing_shows_with_its_controls() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(
+            r#"{"type":"media","players":[{"id":"org.mpris.MediaPlayer2.music","name":"Music","icon":null,"playing":true,"title":"A Song","artist":"Someone","art":null,"canNext":true,"canPrevious":false,"canPlay":true}]}"#,
+        );
+        open_control_center(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "A Song") && shows(&host, "DP-1", "Someone"));
+        commands(&host);
+        let pause = middle_of(&host, "DP-1", "media-playback-pause-symbolic");
+        click(&mut host, "DP-1", pause);
+        let next = middle_of(&host, "DP-1", "media-skip-forward-symbolic");
+        click(&mut host, "DP-1", next);
+        let previous = middle_of(&host, "DP-1", "media-skip-backward-symbolic");
+        click(&mut host, "DP-1", previous);
+        let player = "org.mpris.MediaPlayer2.music";
+        assert_eq!(
+            commands(&host),
+            [
+                serde_json::json!({ "cmd": "media", "player": player, "action": "PlayPause" }),
+                serde_json::json!({ "cmd": "media", "player": player, "action": "Next" }),
+            ],
+            "a player that can't go back isn't asked to"
+        );
+    }
+
+    /// A notification as the data program says it.
+    fn notification(id: u32, summary: &str, transient: bool) -> String {
+        serde_json::json!({
+            "type": "notification", "event": "shown", "id": id, "app": "Chat",
+            "summary": summary, "body": "", "actions": [], "urgency": 1, "timeout": -1,
+            "image": null, "appIcon": null, "transient": transient,
+        })
+        .to_string()
+    }
+
+    /// How tall the control center's glass is.
+    fn panel_height(host: &SceneHost) -> f32 {
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        scene
+            .draw("DP-1")
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Shape {
+                    rect,
+                    material: Material::Glass,
+                    ..
+                } if rect[0] > 960. => Some(rect[3]),
+                _ => None,
+            })
+            .fold(0., f32::max)
     }
 
     #[test]
@@ -1709,11 +1885,9 @@ mod tests {
             .unwrap()
             .contains("No outputs are pinned"));
 
-        // Both outputs pinned, in the control center, with its list open.
+        // Both outputs pinned, on the control center's sound page.
         open_control_center(&mut host, &mut now);
-        let speakers = middle_of(&host, "DP-1", "Speakers");
-        click(&mut host, "DP-1", speakers);
-        settle(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
         for row in 0..2 {
             let scene = host.shell.as_ref().unwrap().scene.borrow();
             let pin = scene.find("DP-1", "view-pin-symbolic")[row];
@@ -1767,7 +1941,7 @@ mod tests {
         let (mut host, mut now) = loaded(style);
         open_control_center(&mut host, &mut now);
         commands(&host);
-        let button = middle_of(&host, "DP-1", "Screenshot");
+        let button = middle_of(&host, "DP-1", "camera-photo-symbolic");
         click(&mut host, "DP-1", button);
         // The control center closes first, to stay out of the picture.
         assert!(!host.wants_keyboard());
@@ -1787,7 +1961,7 @@ mod tests {
 
         // The record button, with no command set, opens the settings to set one.
         open_control_center(&mut host, &mut now);
-        let record = middle_of(&host, "DP-1", "Record");
+        let record = middle_of(&host, "DP-1", "media-record-symbolic");
         click(&mut host, "DP-1", record);
         let actions = host.take_actions();
         assert_eq!(actions[0]["name"], "spawn");
@@ -1801,7 +1975,7 @@ mod tests {
     fn without_a_command_the_screenshot_button_takes_bentos_own() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         open_control_center(&mut host, &mut now);
-        let button = middle_of(&host, "DP-1", "Screenshot");
+        let button = middle_of(&host, "DP-1", "camera-photo-symbolic");
         click(&mut host, "DP-1", button);
         settle(&mut host, &mut now);
         assert_eq!(host.take_actions()[0]["name"], "screenshot");
@@ -1869,8 +2043,7 @@ mod tests {
         assert!(shows(&host, "DP-1", "New message"));
         assert!(shows(&host, "DP-1", "Hello & welcome"));
 
-        // A click on one that isn't for anything sends it away, and so does its time running
-        // out.
+        // A click on one that isn't for anything sends it away.
         let at = middle_of(&host, "DP-1", "New message");
         commands(&host);
         click(&mut host, "DP-1", at);
@@ -1880,11 +2053,22 @@ mod tests {
         settle(&mut host, &mut now);
         assert!(!shows(&host, "DP-1", "New message"));
 
-        // One that says how long it stays is told to go once that's up.
+        // Once its time is up, the toast goes and the notification stays, in the control
+        // center.
         host.data_line(&toast.replace("60000", "1000").replace(":5,", ":6,"));
-        assert!(commands(&host).is_empty());
         settle(&mut host, &mut now);
-        assert!(commands(&host).contains(&serde_json::json!({ "cmd": "expire", "id": 6 })));
+        assert!(!shows(&host, "DP-1", "New message"));
+        assert!(commands(&host).iter().all(|c| c["cmd"] != "expire"));
+        open_control_center(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "New message"));
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+
+        // A transient one ends with its toast, and isn't kept.
+        host.data_line(&notification(7, "Sound Output Switched", true));
+        settle(&mut host, &mut now);
+        settle(&mut host, &mut now);
+        assert!(commands(&host).contains(&serde_json::json!({ "cmd": "expire", "id": 7 })));
     }
 
     #[test]
@@ -1920,9 +2104,8 @@ mod tests {
         // Its default action is its own click, and the others are its buttons.
         let at = middle_of(&host, "DP-1", "Lunch?");
         click(&mut host, "DP-1", at);
-        let invoke = |key: &str| {
-            serde_json::json!({ "cmd": "invoke", "id": 7, "key": key, "token": true })
-        };
+        let invoke =
+            |key: &str| serde_json::json!({ "cmd": "invoke", "id": 7, "key": key, "token": true });
         assert_eq!(commands(&host), [invoke("default")]);
         let at = middle_of(&host, "DP-1", "Reply");
         click(&mut host, "DP-1", at);
@@ -2023,7 +2206,10 @@ mod tests {
         let headphones = |volume: &str| {
             DEVICES
                 .replace('\n', " ")
-                .replace(r#""active":true,"volume":0.4"#, r#""active":false,"volume":0.4"#)
+                .replace(
+                    r#""active":true,"volume":0.4"#,
+                    r#""active":false,"volume":0.4"#,
+                )
                 .replace(
                     r#""active":false,"volume":0.8"#,
                     &format!(r#""active":true,"volume":{volume}"#),
@@ -2269,13 +2455,58 @@ mod tests {
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
 
-        open_control_center(&mut host, &mut now);
-        shot(&host, "control-center", [1500, 0, 420, 560]);
-        let speakers = middle_of(&host, "DP-1", "Speakers");
-        click(&mut host, "DP-1", speakers);
+        host.data_line(
+            r#"{"type":"wifi","available":true,"enabled":true,"joining":null,"networks":[{"ssid":"Home","strength":80,"secure":true,"known":true,"active":true},{"ssid":"Cafe Corner","strength":55,"secure":true,"known":false,"active":false},{"ssid":"Library Guest","strength":20,"secure":false,"known":false,"active":false}]}"#,
+        );
+        host.data_line(
+            r#"{"type":"bluetooth","available":true,"powered":true,"discovering":false,"devices":[{"path":"/a","name":"Headphones","icon":"audio-headphones-symbolic","paired":true,"connected":true,"connecting":false}]}"#,
+        );
+        host.data_line(
+            r#"{"type":"power-profile","available":true,"active":"performance","profiles":["power-saver","balanced","performance"]}"#,
+        );
+        host.data_line(
+            r#"{"type":"media","players":[{"id":"org.mpris.MediaPlayer2.music","name":"Music","icon":null,"playing":true,"title":"A Song With a Long Name","artist":"Someone","art":null,"canNext":true,"canPrevious":true,"canPlay":true}]}"#,
+        );
+        host.data_line(&notification(41, "Build finished", false));
+        host.data_line(
+            r#"{"type":"notification","event":"shown","id":42,"app":"Chat","summary":"Sam","body":"Lunch at noon? I found a place near the station.","actions":[["default",""],["reply","Reply"]],"urgency":1,"timeout":-1,"image":null,"appIcon":null,"transient":false}"#,
+        );
         settle(&mut host, &mut now);
-        shot(&host, "control-center-list", [1500, 0, 420, 620]);
+        open_control_center(&mut host, &mut now);
+        shot(&host, "control-center", [1480, 0, 440, 1000]);
+        open_page(&mut host, &mut now, 0);
+        shot(&host, "control-center-sound", [1480, 0, 440, 500]);
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
+        let wifi = middle_of(&host, "DP-1", "Wi-Fi");
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let arrow = scene
+            .find("DP-1", "go-next-symbolic")
+            .into_iter()
+            .find(|arrow| (arrow[1] - wifi[1]).abs() < 20.)
+            .unwrap();
+        drop(scene);
+        click(&mut host, "DP-1", [arrow[0] + 10., arrow[1] + 10.]);
+        settle(&mut host, &mut now);
+        let cafe = middle_of(&host, "DP-1", "Cafe Corner");
+        click(&mut host, "DP-1", cafe);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-wifi", [1480, 0, 440, 400]);
         type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        open_control_center(&mut host, &mut now);
+        let power = middle_of(&host, "DP-1", "system-shutdown-symbolic");
+        click(&mut host, "DP-1", power);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-power", [1480, 0, 440, 320]);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        for id in [41, 42] {
+            host.data_line(&format!(
+                r#"{{"type":"notification","event":"closed","id":{id}}}"#
+            ));
+        }
         settle(&mut host, &mut now);
 
         host.event("edit-workspace", Some(String::from("DP-1")));

@@ -38,6 +38,10 @@ const MODULES: &[(&str, &str)] = &[
         "launcher",
         include_str!("../../resources/shell/launcher.js"),
     ),
+    (
+        "notifications",
+        include_str!("../../resources/shell/notifications.js"),
+    ),
     ("osd", include_str!("../../resources/shell/osd.js")),
     ("toasts", include_str!("../../resources/shell/toasts.js")),
     (

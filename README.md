@@ -267,7 +267,15 @@ location {
 }
 ```
 
-The right island is the status, and opens into the control center: the light or dark style, the sound outputs and inputs with their volumes, and the displays' brightness (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Its screenshot button takes bento's own screenshot unless a command is set, and its screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Control Center sets them:
+The right island is the status, and opens into the control center, laid out like a phone's quick settings:
+
+- Along the top, buttons for a screenshot, a screen recording, bento's settings and the power menu (suspend, and restart, power off and log out, which ask for a second click).
+- The volume, and the brightness of that monitor (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Their arrows open the sound devices, with the microphone, and every display's brightness.
+- Tiles for Wi-Fi (NetworkManager), Bluetooth (BlueZ), Do Not Disturb, the dark style, the power mode (power-profiles-daemon) and the microphone. A tile only shows when its service runs; a click switches it, and its arrow opens a page: Wi-Fi joins networks, asking for a new one's password, and Bluetooth connects devices and pairs nearby ones that need no code.
+- What's playing, from any app that says so over MPRIS.
+- The notifications. A toast goes after a moment and its notification stays here until it's dismissed, unless the app marked it as transient. With Do Not Disturb on, only critical notifications come as toasts.
+
+The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Control Center sets them:
 
 ```kdl
 shell {

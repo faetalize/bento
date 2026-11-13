@@ -5417,7 +5417,13 @@ mod tests {
         }
         // The layout engine still keeps them.
         let volume = Some(Keysym::XF86_AudioRaiseVolume);
-        assert!(holds_binds(false, true, Modifiers::empty(), mod_key, volume));
+        assert!(holds_binds(
+            false,
+            true,
+            Modifiers::empty(),
+            mod_key,
+            volume
+        ));
     }
 
     /// Returns a `Mod+Q` bind with the given action and default flags.

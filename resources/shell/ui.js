@@ -288,8 +288,10 @@ export function run(command, done) {
 }
 
 // Shows a notification, with an icon by its name or path.
-export function notify(summary, body = "", icon = "") {
-  data("notify", { summary, body, icon });
+// Shows a notification. A `transient` one, like saying which sound output plays now, is only a
+// toast, and isn't kept in the control center.
+export function notify(summary, body = "", icon = "", { transient = false } = {}) {
+  data("notify", { summary, body, icon, transient });
 }
 
 // The last event of a kind that came, like `last("audio-devices")`, for what's built after it.
@@ -570,6 +572,39 @@ export function slider({ value = 0, width = 240, icon, onChange, onIcon } = {}) 
   return track;
 }
 
+// A switch: a pill whose knob slides to its end when it's on, lit with the accent. `show(on)`
+// shows another state without telling `onChange`.
+export function toggle({ on = false, onChange } = {}) {
+  const [WIDTH, HEIGHT, KNOB] = [40, 22, 16];
+  const travel = WIDTH - KNOB - 6;
+  let lit = Boolean(on);
+  const knob = box({
+    position: "absolute", top: 3, left: 3, width: KNOB, height: KNOB, radius: KNOB / 2,
+    fill: "#ffffff", offset: [lit ? travel : 0, 0],
+  });
+  const set = (value) => {
+    lit = value;
+    knob.set({ offset: [lit ? travel : 0, 0] });
+    track.set({ fill: lit ? ACTIVE : "fg/0.2" });
+  };
+  const track = box(
+    {
+      width: WIDTH, height: HEIGHT, radius: HEIGHT / 2, shrink: 0, cursor: "pointer",
+      fill: lit ? ACTIVE : "fg/0.2",
+      onClick: () => {
+        set(!lit);
+        onChange?.(lit);
+      },
+    },
+    [knob],
+  );
+  Object.defineProperty(track, "on", { get: () => lit });
+  track.show = (value) => {
+    if (Boolean(value) !== lit) set(Boolean(value));
+  };
+  return track;
+}
+
 // Takes the keyboard from the apps, or gives it back. While the shell has it, every key that no
 // shortcut takes comes as a "key" event: `{ key, text, pressed, repeat, shift, ctrl, alt, super }`,
 // where `key` is its name, like "a", "Return" or "Escape", and `text` what it types.
@@ -716,7 +751,12 @@ export function cancel(id) {
 // muted }`, "network" `{ connected, name, wifiStrength, icon }`, "battery" `{ present,
 // percentage, charging, icon }`, "tray" `{ items: [{ id, title, icon, menu, attention }] }` and
 // "notification" `{ event: "shown" | "replaced" | "closed", id, app, appIcon, summary, body,
-// actions, urgency, timeout, image }`.
+// actions, urgency, timeout, image, transient }`, "wifi" `{ available, enabled, joining,
+// networks: [{ ssid, strength, secure, known, active }] }` and "wifi-error" `{ ssid, message }`,
+// "bluetooth" `{ available, powered, discovering, devices: [{ path, name, icon, paired,
+// connected, connecting }] }` and "bluetooth-error" `{ message }`, "power-profile" `{ available,
+// active, profiles }`, "media" `{ players: [{ id, name, icon, playing, title, artist, art,
+// canNext, canPrevious, canPlay }] }` and "clipboard" `{ available, entries }`.
 export function on(type, fn) {
   if (!listeners.has(type)) listeners.set(type, []);
   listeners.get(type).push(fn);

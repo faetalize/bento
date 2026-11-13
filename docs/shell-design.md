@@ -98,10 +98,14 @@ The clock opens into the calendar: the time and the date, the month, and the wea
 user is. Where they are is in bento's config, and bento's settings set it; without a place, the
 weather's room has a button that opens that page of the settings.
 
-The right island opens into the control center: the light or dark style, the sound outputs and
-inputs, the displays' brightness, and buttons for a screenshot and a screen recording. Each of
-those two runs any command the settings give it, alone or with a notification of the user's
-wording once it's done, for tools that show none of their own.
+The right island opens into the control center, which is laid out like a modern phone's quick
+settings: an easy way into bento's settings, quick actions, toggles for what matters most, what's
+playing, and the notification center. Not everything is laid out at once: what has more to it
+than a switch, like the networks or the sound devices, opens behind it, in the panel.
+
+The control center's screenshot and screen recording buttons each run any command the settings
+give them, alone or with a notification of the user's wording once it's done, for tools that show
+none of their own.
 
 A sound output can be pinned. While any are, the right island has a button that switches to the
 next pinned one, as a shortcut can too.
