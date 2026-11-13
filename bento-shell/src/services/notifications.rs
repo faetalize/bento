@@ -95,6 +95,8 @@ pub struct Notification {
     /// dismissed.
     pub expire_timeout: i32,
     pub image: Option<gdk::Texture>,
+    /// Whether it's only for now, like a change of volume, and isn't kept once it's been shown.
+    pub transient: bool,
 }
 
 impl Notification {
@@ -306,6 +308,7 @@ impl Notifications {
             urgency: hints.urgency,
             expire_timeout,
             image,
+            transient: hints.transient,
         };
         let replaced = self
             .shown
@@ -364,6 +367,7 @@ impl Drop for Notifications {
 struct Hints {
     urgency: u8,
     resident: bool,
+    transient: bool,
     image: Option<Image>,
 }
 
@@ -396,6 +400,9 @@ impl Hints {
                 .unwrap_or(1)
                 .min(2),
             resident: lookup("resident")
+                .and_then(|value| value.get::<bool>())
+                .unwrap_or(false),
+            transient: lookup("transient")
                 .and_then(|value| value.get::<bool>())
                 .unwrap_or(false),
             image: pixels.or(path).or(icon),
@@ -558,18 +565,23 @@ mod tests {
             Hints {
                 urgency: 1,
                 resident: false,
+                transient: false,
                 image: None,
             }
         );
     }
 
     #[test]
-    fn urgency_and_resident_are_read() {
+    fn urgency_resident_and_transient_are_read() {
         let parsed = hints(&[
             ("urgency", 2u8.to_variant()),
             ("resident", true.to_variant()),
+            ("transient", true.to_variant()),
         ]);
-        assert_eq!((parsed.urgency, parsed.resident), (2, true));
+        assert_eq!(
+            (parsed.urgency, parsed.resident, parsed.transient),
+            (2, true, true)
+        );
         assert_eq!(hints(&[("urgency", 9u8.to_variant())]).urgency, 2);
     }
 

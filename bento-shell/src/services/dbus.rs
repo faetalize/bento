@@ -133,3 +133,61 @@ impl Drop for NameWatch {
         }
     }
 }
+
+/// Runs something a moment after it's first asked for, once for every ask in that moment, so a
+/// burst of changes, like every access point's signal moving, is read once.
+#[derive(Default)]
+pub struct Soon(std::rc::Rc<std::cell::Cell<bool>>);
+
+impl Soon {
+    pub fn ask(&self, after: std::time::Duration, f: impl FnOnce() + 'static) {
+        if self.0.replace(true) {
+            return;
+        }
+        let waiting = self.0.clone();
+        glib::timeout_add_local_once(after, move || {
+            waiting.set(false);
+            f();
+        });
+    }
+}
+
+/// Calls `method` on `interface`, logging what went wrong. Gives its reply.
+pub async fn call(
+    bus: &DBusConnection,
+    name: &str,
+    path: &str,
+    interface: &str,
+    method: &str,
+    args: Option<Variant>,
+) -> Result<Variant, glib::Error> {
+    let reply = bus
+        .call_future(
+            Some(name),
+            path,
+            interface,
+            method,
+            args.as_ref(),
+            None,
+            DBusCallFlags::NONE,
+            -1,
+        )
+        .await;
+    if let Err(err) = &reply {
+        eprintln!("bento-shell --data: {interface}.{method} on {path} failed: {err}");
+    }
+    reply
+}
+
+/// Sets one of an object's properties.
+pub async fn set_property(
+    bus: &DBusConnection,
+    name: &str,
+    path: &str,
+    interface: &str,
+    property: &str,
+    value: Variant,
+) -> Result<Variant, glib::Error> {
+    let args = (interface, property, value).to_variant();
+    call(bus, name, path, PROPERTIES, "Set", Some(args)).await
+}

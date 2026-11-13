@@ -3,16 +3,20 @@
 
 pub mod audio;
 pub mod battery;
+pub mod bluetooth;
 pub mod brightness;
 pub mod clipboard;
 mod dbus;
 pub mod devices;
 pub mod ipc;
+pub mod media;
 pub mod network;
 pub mod notifications;
 pub mod power;
+pub mod profiles;
 pub mod tray;
 pub mod weather;
+pub mod wifi;
 
 pub use audio::{Audio, AudioService};
 pub use battery::{Battery, BatteryService};

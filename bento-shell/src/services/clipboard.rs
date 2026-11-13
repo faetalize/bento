@@ -121,7 +121,12 @@ fn pick(mimes: &[String]) -> Option<(&'static str, bool)> {
         return None;
     }
     let text = TEXT.iter().find(|kind| has(kind)).map(|kind| (*kind, true));
-    text.or_else(|| IMAGE.iter().find(|kind| has(kind)).map(|kind| (*kind, false)))
+    text.or_else(|| {
+        IMAGE
+            .iter()
+            .find(|kind| has(kind))
+            .map(|kind| (*kind, false))
+    })
 }
 
 /// What was copied, as `bytes` of the kind `mime`, if it's kept.
@@ -149,7 +154,10 @@ fn content(mime: &str, bytes: Vec<u8>, path: impl FnOnce(&str) -> PathBuf) -> Op
 /// entries that fell out of it.
 fn add(entries: &mut VecDeque<Entry>, id: u64, content: Content) -> Vec<Entry> {
     let mut gone = Vec::new();
-    let entry = match entries.iter().position(|entry| entry.content.same(&content)) {
+    let entry = match entries
+        .iter()
+        .position(|entry| entry.content.same(&content))
+    {
         Some(at) => {
             let old = entries.remove(at).unwrap();
             // The one copied again keeps its own file, and the new file goes.
@@ -214,11 +222,11 @@ impl ClipboardService {
                 let fd = inner.connection.backend().poll_fd().as_raw_fd();
                 *this.inner.borrow_mut() = Some(inner);
                 let weak = Rc::downgrade(&this);
-                glib::source::unix_fd_add_local(fd, glib::IOCondition::IN, move |_, _| {
-                    match weak.upgrade() {
-                        Some(this) if this.pump() => glib::ControlFlow::Continue,
-                        _ => glib::ControlFlow::Break,
-                    }
+                glib::source::unix_fd_add_local(fd, glib::IOCondition::IN, move |_, _| match weak
+                    .upgrade()
+                {
+                    Some(this) if this.pump() => glib::ControlFlow::Continue,
+                    _ => glib::ControlFlow::Break,
                 });
                 this.pump();
                 this.changed();
@@ -233,11 +241,15 @@ impl ClipboardService {
 
     fn connect(this: &Rc<Self>, dir: PathBuf) -> Result<Inner, String> {
         let connection = Connection::connect_to_env().map_err(|err| err.to_string())?;
-        let (globals, queue) = registry_queue_init::<State>(&connection).map_err(|err| err.to_string())?;
+        let (globals, queue) =
+            registry_queue_init::<State>(&connection).map_err(|err| err.to_string())?;
         let qh = queue.handle();
-        let manager: ExtDataControlManagerV1 =
-            globals.bind(&qh, 1..=1, ()).map_err(|err| err.to_string())?;
-        let seat: WlSeat = globals.bind(&qh, 1..=1, ()).map_err(|err| err.to_string())?;
+        let manager: ExtDataControlManagerV1 = globals
+            .bind(&qh, 1..=1, ())
+            .map_err(|err| err.to_string())?;
+        let seat: WlSeat = globals
+            .bind(&qh, 1..=1, ())
+            .map_err(|err| err.to_string())?;
         let device = manager.get_data_device(&seat, &qh, ());
         let state = State {
             seat: Some(seat),
@@ -392,7 +404,12 @@ impl State {
     }
 
     /// The clipboard is `offer` now, or empty.
-    fn selection(&mut self, conn: &Connection, qh: &QueueHandle<State>, offer: Option<ExtDataControlOfferV1>) {
+    fn selection(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<State>,
+        offer: Option<ExtDataControlOfferV1>,
+    ) {
         self.generation += 1;
         let Some(offer) = offer else {
             // The app that had it went: what it copied is still here to paste.
@@ -480,7 +497,15 @@ impl Dispatch<WlRegistry, GlobalListContents> for State {
 }
 
 impl Dispatch<WlSeat, ()> for State {
-    fn event(_: &mut Self, _: &WlSeat, _: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &WlSeat,
+        _: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<ExtDataControlManagerV1, ()> for State {
@@ -581,7 +606,11 @@ mod tests {
     #[test]
     fn it_takes_text_before_a_picture_and_leaves_secrets() {
         assert_eq!(
-            pick(&mimes(&["text/html", "UTF8_STRING", "text/plain;charset=utf-8"])),
+            pick(&mimes(&[
+                "text/html",
+                "UTF8_STRING",
+                "text/plain;charset=utf-8"
+            ])),
             Some(("text/plain;charset=utf-8", true))
         );
         assert_eq!(
@@ -604,8 +633,12 @@ mod tests {
         );
         assert_eq!(content("text/plain", b"  \n".to_vec(), path), None);
         assert_eq!(content("text/plain", vec![0xff, 0xfe], path), None);
-        let picture = content("image/png", vec![1, 2, 3], |ext| PathBuf::from(format!("/a.{ext}")));
-        assert!(matches!(picture, Some(Content::Image { path, .. }) if path == Path::new("/a.png")));
+        let picture = content("image/png", vec![1, 2, 3], |ext| {
+            PathBuf::from(format!("/a.{ext}"))
+        });
+        assert!(
+            matches!(picture, Some(Content::Image { path, .. }) if path == Path::new("/a.png"))
+        );
     }
 
     #[test]

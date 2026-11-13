@@ -17,10 +17,14 @@ use gtk::gdk;
 use gtk::prelude::*;
 use serde_json::{json, Value};
 
+use crate::services::bluetooth::BluetoothService;
 use crate::services::brightness::BrightnessService;
 use crate::services::clipboard::{ClipboardService, Content};
 use crate::services::devices::{Device, DeviceService, Kind};
+use crate::services::media::MediaService;
+use crate::services::profiles::ProfileService;
 use crate::services::weather::{Place, WeatherService};
+use crate::services::wifi::WifiService;
 use crate::services::{
     power, AudioService, BatteryService, NetworkService, NotificationEvent, Notifications, Tray,
     TrayIcon, TrayItem,
@@ -77,14 +81,18 @@ fn run_command(id: Value, command: &str) {
     });
 }
 
-/// Shows a notification, through whichever program shows them.
-fn notify(summary: String, body: String, icon: String) {
+/// Shows a notification, through whichever program shows them. A `transient` one, like saying
+/// which sound output plays now, isn't kept once it's been seen.
+fn notify(summary: String, body: String, icon: String, transient: bool) {
     glib::spawn_future_local(async move {
         let Ok(bus) = gio::bus_get_future(gio::BusType::Session).await else {
             return;
         };
         let actions: Vec<String> = Vec::new();
-        let hints: std::collections::HashMap<String, glib::Variant> = Default::default();
+        let mut hints: std::collections::HashMap<String, glib::Variant> = Default::default();
+        if transient {
+            hints.insert(String::from("transient"), true.to_variant());
+        }
         let message = ("bento", 0u32, icon, summary, body, actions, hints, -1i32);
         let reply = bus
             .call_future(
@@ -274,6 +282,7 @@ pub fn run() -> glib::ExitCode {
             "actions": notification.actions,
             "urgency": notification.urgency,
             "timeout": notification.expire_timeout,
+            "transient": notification.transient,
             "image": image,
         }));
     });
@@ -291,6 +300,10 @@ pub fn run() -> glib::ExitCode {
             .collect();
         say(&json!({ "type": "clipboard", "available": available, "entries": entries }));
     });
+    let wifi = WifiService::start(say);
+    let bluetooth = BluetoothService::start(say);
+    let profiles = ProfileService::start(say);
+    let media = MediaService::start(say);
     let tray = Tray::start(|items| {
         let items: Vec<Value> = items
             .iter()
@@ -362,7 +375,26 @@ pub fn run() -> glib::ExitCode {
                     weather.set_place(place);
                 }
                 "run" => run_command(command["id"].clone(), &text("command")),
-                "notify" => notify(text("summary"), text("body"), text("icon")),
+                "notify" => notify(
+                    text("summary"),
+                    text("body"),
+                    text("icon"),
+                    command["transient"].as_bool().unwrap_or(false),
+                ),
+                "wifi-enable" => wifi.enable(command["on"].as_bool().unwrap_or(true)),
+                "wifi-scan" => wifi.scan(),
+                "wifi-join" => {
+                    wifi.join(text("ssid"), command["password"].as_str().map(String::from))
+                }
+                "wifi-disconnect" => wifi.disconnect(),
+                "wifi-forget" => wifi.forget(&text("ssid")),
+                "bluetooth-power" => bluetooth.power(command["on"].as_bool().unwrap_or(true)),
+                "bluetooth-scan" => bluetooth.scan(command["on"].as_bool().unwrap_or(true)),
+                "bluetooth-connect" => bluetooth.connect(text("path")),
+                "bluetooth-disconnect" => bluetooth.disconnect(text("path")),
+                "bluetooth-forget" => bluetooth.forget(text("path")),
+                "power-profile" => profiles.set(text("name")),
+                "media" => media.control(&text("player"), &text("action")),
                 "dismiss" => notifications.dismiss(id()),
                 "expire" => notifications.expire(id()),
                 "invoke" => notifications.invoke(
