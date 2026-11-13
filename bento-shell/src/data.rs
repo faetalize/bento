@@ -125,9 +125,46 @@ fn pictures() -> PathBuf {
 
 /// Writes `texture` as `name`.png, and gives its path.
 fn save(texture: &gdk::Texture, name: &str) -> Option<String> {
-    let path = pictures().join(format!("{name}.png"));
-    texture.save_to_png(&path).ok()?;
+    let png = texture.save_to_png_bytes();
+    let path = save_png(&pictures(), name, &png)?;
     Some(path.to_string_lossy().into_owned())
+}
+
+/// Writes the PNG `png` for `name` in `dir`, and gives its path. The path is named after what's
+/// in it too, since the shell keeps each picture it loaded by its path: a notification that
+/// replaces another keeps its id but has a picture of its own, and a tray icon changes. The
+/// earlier picture for `name` goes.
+fn save_png(dir: &std::path::Path, name: &str, png: &[u8]) -> Option<PathBuf> {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    png.hash(&mut hasher);
+    let file = format!("{name}-{:016x}.png", hasher.finish());
+    let path = dir.join(&file);
+    forget_pictures(dir, name, Some(&file));
+    if !path.exists() {
+        std::fs::write(&path, png).ok()?;
+    }
+    Some(path)
+}
+
+/// Removes the pictures written for `name` in `dir`, but `keep`.
+fn forget_pictures(dir: &std::path::Path, name: &str, keep: Option<&str>) {
+    let Ok(files) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let prefix = format!("{name}-");
+    for file in files.flatten() {
+        let file_name = file.file_name();
+        let file_name = file_name.to_string_lossy();
+        // The rest is the hash alone, so `notification-7-` doesn't take `notification-70-…`.
+        let ours = file_name
+            .strip_prefix(&prefix)
+            .and_then(|rest| rest.strip_suffix(".png"))
+            .is_some_and(|hash| hash.len() == 16 && hash.chars().all(|c| c.is_ascii_hexdigit()));
+        if ours && Some(&*file_name) != keep {
+            let _ = std::fs::remove_file(file.path());
+        }
+    }
 }
 
 fn tray_item(item: &TrayItem, index: usize) -> Value {
@@ -216,6 +253,7 @@ pub fn run() -> glib::ExitCode {
             NotificationEvent::Shown(n) => ("shown", n),
             NotificationEvent::Replaced(n) => ("replaced", n),
             NotificationEvent::Closed(id) => {
+                forget_pictures(&pictures(), &format!("notification-{id}"), None);
                 say(&json!({ "type": "notification", "event": "closed", "id": id }));
                 return;
             }
@@ -350,4 +388,26 @@ pub fn run() -> glib::ExitCode {
     let _keep = (network, battery);
     main_loop.run();
     glib::ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn another_picture_for_the_same_thing_gets_another_path() {
+        let dir = std::env::temp_dir().join(format!("bento-pictures-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A notification that replaces another keeps its id, with a picture of its own: a path
+        // that showed one picture never shows another, since the shell keeps what it loaded.
+        let first = save_png(&dir, "notification-7", b"one").unwrap();
+        let second = save_png(&dir, "notification-7", b"two").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        // The earlier one goes, and another notification's stays.
+        let other = save_png(&dir, "notification-70", b"one").unwrap();
+        save_png(&dir, "notification-7", b"three").unwrap();
+        assert!(!first.exists() && !second.exists() && other.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
