@@ -114,6 +114,22 @@ pub fn spawn_sh(command: String, token: Option<XdgActivationToken>) {
     spawn(vec![String::from("sh"), String::from("-c"), command], token);
 }
 
+/// A program bento keeps running and talks to through its stdin and stdout, like the shell's data
+/// program. It starts as programs bento spawns for the user do: hearing every signal and with the
+/// usual open-file limit, so it stops when asked and its own children don't inherit bento's.
+pub fn kept(program: impl AsRef<OsStr>) -> Command {
+    let mut process = Command::new(program);
+    process.stdin(Stdio::piped()).stdout(Stdio::piped());
+    unsafe {
+        process.pre_exec(|| {
+            crate::utils::signals::unblock_all()?;
+            restore_nofile_rlimit();
+            Ok(())
+        })
+    };
+    process
+}
+
 fn spawn_sync(
     command: impl AsRef<OsStr>,
     args: impl IntoIterator<Item = impl AsRef<OsStr>>,
@@ -524,5 +540,33 @@ mod systemd {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::io::Read as _;
+
+    use super::*;
+    use crate::utils::signals;
+
+    #[test]
+    fn a_kept_program_hears_the_signals_bento_holds_back() {
+        // bento holds back SIGINT, SIGTERM and SIGHUP to read them itself; a program it keeps
+        // would hold them back too and never stop when asked.
+        signals::block_early().unwrap();
+        let spawned = kept("cat").arg("/proc/self/status").spawn();
+        signals::unblock_all().unwrap();
+
+        let mut status = String::new();
+        let mut child = spawned.unwrap();
+        child.stdout.take().unwrap().read_to_string(&mut status).unwrap();
+        child.wait().unwrap();
+        let blocked = status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigBlk:"))
+            .unwrap()
+            .trim();
+        assert_eq!(u64::from_str_radix(blocked, 16).unwrap(), 0, "{status}");
     }
 }

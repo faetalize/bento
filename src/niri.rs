@@ -5014,13 +5014,10 @@ impl Niri {
     /// Starts the shell's data program, `bento-shell --data`, and hands what it says to the shell.
     fn start_scene_data(&mut self) {
         use std::io::Read as _;
-        use std::process::{Command, Stdio};
 
         let Some(scene) = &mut self.scene else { return };
-        let spawned = Command::new("bento-shell")
+        let spawned = crate::utils::spawning::kept("bento-shell")
             .arg("--data")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
             .spawn();
         let mut child = match spawned {
             Ok(child) => child,
