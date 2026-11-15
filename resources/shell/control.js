@@ -14,7 +14,7 @@
 
 import {
   box, text, image, input, button, slider, toggle, island, expand, refill, drawer, on, config,
-  data, action, last, after, cancel, run, notify, stored, store, closeAll, focus, ACTIVE,
+  data, action, last, after, cancel, run, notify, stored, store, closeAll, focus, ACTIVE, ICON_ROOM,
 } from "bento:ui";
 import { clipboardPanel } from "bento:clipboard";
 import { quiet, volumeIcon, micIcon } from "bento:osd";
@@ -193,18 +193,24 @@ export function controlCenter(output, onToggle) {
     onRightClick: () => panel.setOpen(true),
   });
   const clipboard = button({ icon: "edit-paste-symbolic", onClick: () => clips.toggle() });
-  const quietIcon = image("notifications-disabled-symbolic", { color: "fg", display: "none" });
-  const network = image("network-offline-symbolic", { color: "fg" });
-  const volume = image("audio-volume-muted-symbolic", { color: "fg", display: "none" });
-  const battery = image("battery-missing-symbolic", { color: "fg", display: "none" });
-  const charge = text("", { weight: 600, tabular: true, display: "none" });
+  const room = { margin: [0, ICON_ROOM] };
+  const quietIcon = image("notifications-disabled-symbolic", {
+    color: "fg", display: "none", ...room,
+  });
+  const network = image("network-offline-symbolic", { color: "fg", ...room });
+  const volume = image("audio-volume-muted-symbolic", { color: "fg", display: "none", ...room });
+  // The battery and its charge read as one thing, so they sit closer.
+  const battery = image("battery-missing-symbolic", { color: "fg" });
+  const charge = text("", { weight: 600, tabular: true });
+  const batteryCharge = box({ align: "center", gap: 4, display: "none", ...room }, [battery, charge]);
   // A dot while there are notifications that haven't been looked at.
-  const dot = box({ width: 6, height: 6, radius: 3, fill: "accent", display: "none" });
-  const status = [switcher, clipboard, quietIcon, network, volume, battery, charge, dot];
+  const dot = box({ width: 6, height: 6, radius: 3, fill: "accent", display: "none", ...room });
+  const status = [switcher, clipboard, quietIcon, network, volume, batteryCharge, dot];
   const pill = island(
-    // Held to its right edge, which stays put as the island grows to the left.
+    // Held to its right edge, which stays put as the island grows to the left. The first and
+    // last icons are 14 from its ends, past the room each icon has.
     {
-      gap: 8, padding: [0, 14, 0, 6], justify: "end", cursor: "pointer",
+      gap: 8, padding: [0, 14 - ICON_ROOM], justify: "end", cursor: "pointer",
       onClick: () => panel.toggle(),
     },
     status,
@@ -822,8 +828,9 @@ export function controlCenter(output, onToggle) {
     const state = last("battery");
     const shown = state?.present ? "flex" : "none";
     const percent = `${Math.round(state?.percentage ?? 0)}%`;
-    battery.set({ icon: state?.icon || "battery-missing-symbolic", display: shown });
-    charge.set({ text: percent, display: shown });
+    battery.set({ icon: state?.icon || "battery-missing-symbolic" });
+    charge.set({ text: percent });
+    batteryCharge.set({ display: shown });
     batteryWords.set({
       text: state?.present ? `${percent}${state.charging ? " · Charging" : ""}` : "",
     });

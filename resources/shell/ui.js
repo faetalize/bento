@@ -1,7 +1,7 @@
 // bento's widgets: nodes in bento's scene, which bento lays out, animates and draws.
 //
-// A node takes props: layout (direction, gap, padding, width, height, grow, align, justify,
-// position, top/left/right/bottom, display), look (fill, material, tint, radius, border,
+// A node takes props: layout (direction, gap, padding, margin, width, height, grow, align,
+// justify, position, top/left/right/bottom, display), look (fill, material, tint, radius, border,
 // opacity, scale, blur, clip, color, cursor, hidden), text (text, size, weight, family,
 // textAlign, tabular) and motion.
 //
@@ -491,6 +491,10 @@ export function refill(node, children) {
 
 // A button: an icon, a label, or both, in a pill that lights up under the pointer. `active`
 // fills it with the accent colour. Its other props are its box's.
+// The room on either side of an icon that's a button, inside its hover. An island gives its
+// icons that aren't buttons as much room too, so that every icon in it is as far from the next.
+export const ICON_ROOM = 6;
+
 export function button({ icon, label, onClick, active = false, size = 16, ...props } = {}) {
   let lit = active;
   const idle = () => (lit ? ACTIVE : props.fill ?? null);
@@ -500,7 +504,7 @@ export function button({ icon, label, onClick, active = false, size = 16, ...pro
   const pill = box(
     {
       align: "center", justify: "center", gap: 8, radius: 14, height: 28,
-      padding: [0, words ? 12 : 6], cursor: "pointer", ...props,
+      padding: [0, words ? 12 : ICON_ROOM], cursor: "pointer", ...props,
       fill: idle(),
       onClick: (event) => onClick?.(event),
       onHover: ({ inside }) => pill.set({ fill: inside && !lit ? "fg/0.12" : idle() }),
