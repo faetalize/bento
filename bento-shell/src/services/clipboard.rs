@@ -48,6 +48,8 @@ const PREVIEW: usize = 2000;
 const SECRET: &str = "x-kde-passwordManagerHint";
 /// What this offers alongside what it copies, to know its own copies when they come back.
 const OWN: &str = "application/x-bento-clipboard";
+/// How long the clipboard stays empty before the newest thing kept is offered in its place.
+const REFILL: std::time::Duration = std::time::Duration::from_millis(250);
 /// The kinds of text taken, best first.
 const TEXT: &[&str] = &[
     "text/plain;charset=utf-8",
@@ -403,20 +405,39 @@ impl State {
         self.entries.push_front(entry);
     }
 
+    /// Offers the newest thing kept, a moment after the clipboard emptied, if it's still empty:
+    /// what the app that went had copied is still here to paste.
+    ///
+    /// It waits because the clipboard also empties for a moment when an app throws its last copy
+    /// away just before making the next one, as some apps do. Offering right away would land
+    /// after the app's new copy and replace it with the old one.
+    fn refill_soon(&self) {
+        let generation = self.generation;
+        let service = self.service.clone();
+        glib::timeout_add_local_once(REFILL, move || {
+            let Some(service) = service.upgrade() else { return };
+            service.with(|state, qh| {
+                if state.generation != generation || state.source.is_some() {
+                    return;
+                }
+                if let Some(id) = state.entries.front().map(|entry| entry.id) {
+                    state.copy(qh, id);
+                }
+            });
+            service.changed();
+        });
+    }
+
     /// The clipboard is `offer` now, or empty.
     fn selection(
         &mut self,
         conn: &Connection,
-        qh: &QueueHandle<State>,
         offer: Option<ExtDataControlOfferV1>,
     ) {
         self.generation += 1;
         let Some(offer) = offer else {
-            // The app that had it went: what it copied is still here to paste.
-            if self.source.is_none() {
-                if let Some(id) = self.entries.front().map(|entry| entry.id) {
-                    self.copy(qh, id);
-                }
+            if self.source.is_none() && !self.entries.is_empty() {
+                self.refill_soon();
             }
             return;
         };
@@ -527,10 +548,10 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for State {
         event: ext_data_control_device_v1::Event,
         _: &(),
         conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
     ) {
         match event {
-            ext_data_control_device_v1::Event::Selection { id } => state.selection(conn, qh, id),
+            ext_data_control_device_v1::Event::Selection { id } => state.selection(conn, id),
             ext_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
                 offer.destroy();
             }
