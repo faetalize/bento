@@ -205,11 +205,16 @@ export function controlCenter(output, onToggle) {
   const preview = box({ align: "center", gap: 8, padding: [0, ICON_ROOM] }, [
     quietIcon, network, volume, battery, charge, dot,
   ]);
-  const status = [switcher, clipboard, preview];
+  // A faint line between targets, with the gap at either side: icons of neighbouring targets are
+  // a button's room, the gap, the line, the gap and a button's room apart, 21 in all.
+  const divider = () => box({ width: 1, height: 16, fill: "fg/0.15" });
+  const afterSwitcher = divider();
+  afterSwitcher.set({ display: "none" });
+  const status = [switcher, afterSwitcher, clipboard, divider(), preview];
   const pill = island(
     // Held to its right edge, which stays put as the island grows to the left.
     {
-      gap: 8, padding: [0, 14 - ICON_ROOM, 0, 6], justify: "end", cursor: "pointer",
+      gap: 4, padding: [0, 14 - ICON_ROOM, 0, 6], justify: "end", cursor: "pointer",
       onClick: () => panel.toggle(),
     },
     status,
@@ -795,6 +800,7 @@ export function controlCenter(output, onToggle) {
     inputLevel.show(Math.min(mic?.volume ?? 0, 1), micIcon(mic ?? { muted: true }));
     // The switcher shows while outputs are pinned, as the one that plays.
     switcher.set({ display: pinned.length > 0 ? "flex" : "none" });
+    afterSwitcher.set({ display: pinned.length > 0 ? "flex" : "none" });
     switcher.show({ icon: out?.icon ?? "audio-speakers-symbolic" });
     soundPage.refresh();
     showTiles();
