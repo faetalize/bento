@@ -489,12 +489,12 @@ export function refill(node, children) {
   for (const child of node.held) node.add(child);
 }
 
-// A button: an icon, a label, or both, in a pill that lights up under the pointer. `active`
-// fills it with the accent colour. Its other props are its box's.
-// The room on either side of an icon that's a button, inside its hover. An island gives its
-// icons that aren't buttons as much room too, so that every icon in it is as far from the next.
+// The room on either side of an icon that's a button, inside its hover. Other targets in an
+// island get as much, so that the island's targets are all as far apart.
 export const ICON_ROOM = 6;
 
+// A button: an icon, a label, or both, in a pill that lights up under the pointer. `active`
+// fills it with the accent colour. Its other props are its box's.
 export function button({ icon, label, onClick, active = false, size = 16, ...props } = {}) {
   let lit = active;
   const idle = () => (lit ? ACTIVE : props.fill ?? null);
