@@ -2,3 +2,6 @@
 /result
 
 .idea
+# Snapshots that failed to match, which insta leaves to review.
+*.pending-snap
+*.snap.new
