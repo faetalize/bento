@@ -1881,3 +1881,15 @@ describe("random operations", () => {
         }
     });
 });
+
+test("focus follows the mouse as the options say", async () => {
+    const off = await load();
+    off.open();
+    assert.deepEqual(off.focusFollowsMouse, { on: false, maxScroll: null });
+
+    const on = await load({ options: { "focus-follows-mouse": "in-view" } });
+    on.open();
+    assert.deepEqual(on.focusFollowsMouse, { on: true, maxScroll: 0 });
+    on.setOptions({ "focus-follows-mouse": "always" });
+    assert.deepEqual(on.focusFollowsMouse, { on: true, maxScroll: null });
+});

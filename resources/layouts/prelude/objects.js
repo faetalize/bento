@@ -85,6 +85,8 @@ class Recorder {
         this.clearedTimers = [];
         /** Whether the engine holds the keyboard, if it took or gave it back. */
         this.keyboard = undefined;
+        /** Whether a window gets focus when the pointer comes onto it, if the engine said. */
+        this.focusFollowsMouse = undefined;
     }
 }
 
@@ -680,6 +682,19 @@ export class Bento extends EventTarget {
         }
     }
 
+    setFocusFollowsMouse(on, opts = {}) {
+        const s = this.#s;
+        const maxScroll = opts?.maxScroll ?? null;
+        const scrollOk = maxScroll === null || (Number.isFinite(maxScroll) && maxScroll >= 0);
+        if (typeof on !== "boolean" || !scrollOk) {
+            throw new TypeError("setFocusFollowsMouse takes a boolean and { maxScroll: number >= 0 }");
+        }
+        if (s.querying) {
+            return;
+        }
+        s.rec.focusFollowsMouse = { on, maxScroll };
+    }
+
     grabKeyboard() {
         const s = this.#s;
         // bento says whether the keyboard can be taken: not on the lock screen, nor while it's
@@ -1201,6 +1216,9 @@ export class Session {
         }
         if (rec.keyboard !== undefined) {
             out.keyboard = rec.keyboard;
+        }
+        if (rec.focusFollowsMouse !== undefined) {
+            out.focusFollowsMouse = rec.focusFollowsMouse;
         }
         if (rec.timers.length > 0) {
             out.timers = rec.timers;

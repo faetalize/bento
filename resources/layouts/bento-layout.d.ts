@@ -495,6 +495,14 @@ export interface Bento extends EventTarget<BentoEvents> {
     clearTimeout(id: number): void;
 
     /**
+     * Whether a window gets keyboard focus when the pointer comes onto it, and off by default:
+     * the engine's windows, bento's floating ones, and panels that take focus on demand. With
+     * `maxScroll`, only a window that focusing would scroll the view to by at most that share of
+     * the working area's width, so `0` is only windows already in view. bento keeps it until the
+     * engine says otherwise, and an engine that's replaced takes it with it.
+     */
+    setFocusFollowsMouse(on: boolean, opts?: { maxScroll?: number | null }): void;
+    /**
      * Takes the keyboard for a short interaction the person started, like picking a window by a
      * letter shown on it. While the engine holds it, keys go to `keydown`/`keyup` and apps get
      * none. Escape ends it unless a `keydown` listener prevents its default, and so do a click

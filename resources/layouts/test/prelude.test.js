@@ -322,6 +322,16 @@ test("an engine doesn't minimize unless it says so", () => {
     );
 });
 
+test("setFocusFollowsMouse tells bento, and checks what it's given", () => {
+    const h = host((bento) => {
+        assert.throws(() => bento.setFocusFollowsMouse("yes"), TypeError);
+        assert.throws(() => bento.setFocusFollowsMouse(true, { maxScroll: -1 }), TypeError);
+        bento.setFocusFollowsMouse(true, { maxScroll: 0 });
+    });
+    h.open();
+    assert.deepEqual(h.focusFollowsMouse, { on: true, maxScroll: 0 });
+});
+
 test("minimizerequest reaches the window", () => {
     const seen = [];
     const h = host(

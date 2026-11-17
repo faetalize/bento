@@ -215,6 +215,37 @@ fn dragging_under_windows11_leaves_the_view_alone() {
     drop_windows11(&mut layout);
 }
 
+/// An engine that has focus follow the pointer, up to a quarter of the view's width away.
+const FOLLOWING: &str = r#"
+export const meta = { api: 2, name: "following" };
+export default function create(bento) {
+    bento.setFocusFollowsMouse(true, { maxScroll: 0.25 });
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 0, y: 0, w: 100, h: 100 });
+        e.window.focus();
+    });
+}
+"#;
+
+#[test]
+fn the_engine_says_whether_focus_follows_the_pointer() {
+    use crate::layout::tiling::host::FocusFollowsMouse;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("following", FOLLOWING), ops.clone());
+    assert_eq!(
+        layout.focus_follows_mouse(),
+        Some(FocusFollowsMouse {
+            max_scroll: Some(0.25)
+        })
+    );
+
+    // windows11 never asks for it.
+    let layout = check_ops_with_options(options_for("windows11"), ops);
+    assert_eq!(layout.focus_follows_mouse(), None);
+}
+
 #[test]
 fn layout_action_binds_are_checked_against_declared_args() {
     use crate::layout::tiling::engine;

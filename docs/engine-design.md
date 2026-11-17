@@ -329,6 +329,14 @@ happens under such an engine: the camera stays where the engine puts it.
 An engine can turn off, per window, the border, focus ring and shadow that bento draws around
 it, to draw its own decorations instead.
 
+### Engines decide whether focus follows the pointer
+
+Whether a window gets focus when the pointer comes onto it is part of an engine's paradigm, so
+it's the engine's to say, not bento's config: `niri.js` and `bento.js` have it as an option, and
+`windows11.js` never has it. bento does the focusing as the engine asks, for the engine's
+windows, floating ones and panels that take the keyboard on demand, and the engine can limit it
+to windows that focusing doesn't scroll the view to.
+
 ### Engines can zoom the camera
 
 A workspace's camera can zoom as well as move, so the engine can show more or less of the canvas

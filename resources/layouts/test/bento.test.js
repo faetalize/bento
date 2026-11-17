@@ -1287,6 +1287,7 @@ describe("layout API", () => {
                 ["preset-widths", ["33.333%", "50%", "66.667%"]],
                 ["preset-heights", ["33.333%", "50%", "66.667%"]],
                 ["hint-color", "#7fc8ff80"],
+                ["focus-follows-mouse", "never"],
             ],
         );
         assert.deepEqual(
@@ -2454,4 +2455,14 @@ describe("grid", () => {
             }
         }
     });
+});
+
+test("focus follows the mouse as the options say", async () => {
+    const off = await setup();
+    off.open();
+    assert.deepEqual(off.focusFollowsMouse, { on: false, maxScroll: null });
+
+    const on = await setup({ options: { "focus-follows-mouse": "always" } });
+    on.open();
+    assert.deepEqual(on.focusFollowsMouse, { on: true, maxScroll: null });
 });

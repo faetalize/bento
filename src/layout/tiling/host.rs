@@ -225,6 +225,13 @@ fn modifiers_json([shift, ctrl, alt, logo]: [bool; 4]) -> Value {
     json!({ "shift": shift, "ctrl": ctrl, "alt": alt, "super": logo })
 }
 
+/// Windows get focus when the pointer comes onto them, as the running layout asks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FocusFollowsMouse {
+    /// Only windows that focusing scrolls the view to by at most this many working area widths.
+    pub max_scroll: Option<f64>,
+}
+
 /// What the layout engine was told about the session, and what it asked bento to do that needs
 /// remembering.
 #[derive(Debug, Default)]
@@ -268,6 +275,8 @@ pub struct Host {
     timer_requests: Vec<TimerRequest>,
     /// Whether the layout holds the keyboard.
     keyboard_grabbed: bool,
+    /// Whether windows get focus when the pointer comes onto them, as the layout says.
+    focus_follows_mouse: Option<FocusFollowsMouse>,
     keyboard_owner: KeyboardOwner,
     /// Whether the layout was last told that it can take the keyboard.
     keyboard_told: Option<bool>,
@@ -294,6 +303,8 @@ impl Host {
         self.instance += 1;
         // The layout that held the keyboard and waited for timers is gone, and isn't told.
         self.keyboard_grabbed = false;
+        // What it said about focus goes with it.
+        self.focus_follows_mouse = None;
         self.keyboard_told = None;
         if !self.timers.is_empty() {
             self.timers.clear();
@@ -915,6 +926,11 @@ impl<W: LayoutElement> Layout<W> {
             Some(false) => self.host.keyboard_grabbed = false,
             None => (),
         }
+        if let Some(request) = out.focus_follows_mouse {
+            self.host.focus_follows_mouse = request.on.then(|| FocusFollowsMouse {
+                max_scroll: request.max_scroll.filter(|scroll| scroll.is_finite()),
+            });
+        }
 
         for (ws_id, window) in out.focus {
             self.host.resend_workspaces.insert(ws_id);
@@ -1223,6 +1239,11 @@ impl<W: LayoutElement> Layout<W> {
         }
         queue(json!({ "type": "timer", "id": id }));
         self.flush_engine();
+    }
+
+    /// Whether windows get focus when the pointer comes onto them, as the layout asks.
+    pub fn focus_follows_mouse(&self) -> Option<FocusFollowsMouse> {
+        self.host.focus_follows_mouse
     }
 
     /// Whether the layout holds the keyboard: keys go to it and not to the apps.

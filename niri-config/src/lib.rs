@@ -1404,7 +1404,6 @@ mod tests {
                 disable-power-key-handling
 
                 warp-mouse-to-focus
-                focus-follows-mouse
                 workspace-auto-back-and-forth
 
                 mod-key "Mod5"
@@ -1780,11 +1779,6 @@ mod tests {
                 warp_mouse_to_focus: Some(
                     WarpMouseToFocus {
                         mode: None,
-                    },
-                ),
-                focus_follows_mouse: Some(
-                    FocusFollowsMouse {
-                        max_scroll_amount: None,
                     },
                 ),
                 workspace_auto_back_and_forth: true,

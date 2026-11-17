@@ -760,8 +760,8 @@ Everything outside the tiled windows, like workspaces, monitors, floating window
 
 The `windows11` engine manages windows the way Windows 11 does, in behaviour only.
 Windows overlap and stay where you put them: each opens at the size it asks for, centred, a step down and to the right of a window already there, and dialogs open centred over their parent.
-Focusing a window raises it.
-Every window is the engine's, so bento's floating layer is off under it.
+Focusing a window raises it, and focus never follows the pointer: a window takes focus when you click it.
+Every window is the engine's, so bento's floating layer is off under it, and windows move with the pointer from the first pixel without the view ever scrolling.
 
 - **Snapping.**
   Dragging a window to the left or right edge of the screen snaps it to that half, to a corner to that quarter, and to the top edge maximizes it, with a preview of where it will go.

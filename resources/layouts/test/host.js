@@ -70,6 +70,8 @@ export class TestHost {
     constructor(module, opts = {}) {
         this.meta = JSON.parse(prelude.load(module));
         this.options = opts.options ?? {};
+        /** What the engine said about focus following the pointer, `{ on, maxScroll }`. */
+        this.focusFollowsMouse = null;
         this.outputOptions = opts.outputOptions ?? {};
         this.workspaceOptions = opts.workspaceOptions ?? {};
         this.config = {
@@ -445,6 +447,9 @@ export class TestHost {
     // What the engine asks of bento.
 
     apply(out) {
+        if (out.focusFollowsMouse !== undefined) {
+            this.focusFollowsMouse = out.focusFollowsMouse;
+        }
         if ((out.ops ?? []).length > 0) {
             // Like bento, tell the engine about groups again after it changed some.
             this.toldGroups = null;

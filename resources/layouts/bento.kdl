@@ -54,6 +54,11 @@ options {
     // The hints that show the window picked for swap, split and stuff, and where a dragged
     // window would land. Colors are written "#rgb", "#rrggbb" or "#rrggbbaa".
     hint-color "#7fc8ff80"
+
+    // Focus a window when the pointer comes onto it, floating windows and panels that take the
+    // keyboard on demand included: "never", "in-view" for windows already fully in view, which
+    // focusing doesn't scroll to, or "always".
+    focus-follows-mouse "never"
 }
 
 // Window rules have the same match and exclude as the ones in config.kdl, and set what the

@@ -7906,8 +7906,9 @@ impl Niri {
         }
     }
 
+    /// Focuses what the pointer came onto, when the layout engine asks for focus to follow it.
     pub fn handle_focus_follows_mouse(&mut self, new_focus: &PointContents) {
-        let Some(ffm) = self.config.borrow().input.focus_follows_mouse else {
+        let Some(ffm) = self.layout.focus_follows_mouse() else {
             return;
         };
 
@@ -7937,8 +7938,8 @@ impl Niri {
                     return;
                 }
 
-                if let Some(threshold) = ffm.max_scroll_amount {
-                    if self.layout.scroll_amount_to_activate(window) > threshold.0 {
+                if let Some(threshold) = ffm.max_scroll {
+                    if self.layout.scroll_amount_to_activate(window) > threshold {
                         return;
                     }
                 }
