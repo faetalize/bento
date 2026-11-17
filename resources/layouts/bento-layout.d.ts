@@ -155,6 +155,13 @@ export interface Meta {
      * comes as `minimizerequest`, as does a taskbar's minimize.
      */
     minimize?: boolean;
+    /**
+     * Whether windows move freely, the way floating windows do; false by default. With it on, a
+     * drag takes a window from the first pixel and keeps it opaque, a title bar dragged sideways
+     * moves its window instead of scrolling the view, and bento never scrolls the view during a
+     * drag: the camera stays where the engine puts it.
+     */
+    freeDrag?: boolean;
 }
 
 // Events.

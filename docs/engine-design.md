@@ -321,6 +321,11 @@ Moving and resizing a window with the pointer are bento's mechanics, and the eng
 they do. Besides bento's own ways to start them, like dragging with the modifier held, an engine
 can start them itself, like when the title bar it draws is dragged.
 
+An engine whose windows move freely, like `windows11.js`, says so, and bento then drags its
+windows the way it drags floating ones: from the first pixel, opaque, and by the title bar in
+any direction. bento's own view scrolling during a drag is for tiling engines, so it never
+happens under such an engine: the camera stays where the engine puts it.
+
 An engine can turn off, per window, the border, focus ring and shadow that bento draws around
 it, to draw its own decorations instead.
 

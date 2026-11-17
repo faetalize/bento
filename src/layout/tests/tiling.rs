@@ -156,6 +156,65 @@ fn windows11_layout_runs_in_the_engine() {
     ");
 }
 
+/// Starts dragging window 3 of a windows11 workspace by a point inside it, and moves the pointer
+/// `dx` to the right.
+fn drag_windows11(dx: f64) -> Layout<TestWindow> {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ];
+    ops.extend(settle());
+    ops.extend([
+        Op::InteractiveMoveBegin {
+            window: 3,
+            output_idx: 1,
+            px: 600.,
+            py: 300.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 3,
+            dx,
+            dy: 0.,
+            output_idx: 1,
+            px: 600. + dx,
+            py: 300.,
+        },
+    ]);
+    check_ops_with_options(options_for("windows11"), ops)
+}
+
+/// Ends the drag, so that no engine events stay queued for the next test on the thread.
+fn drop_windows11(layout: &mut Layout<TestWindow>) {
+    let mut ops = vec![Op::InteractiveMoveEnd { window: 3 }];
+    ops.extend(settle());
+    check_ops_on_layout(layout, ops);
+}
+
+#[test]
+fn a_windows11_window_follows_the_pointer_from_the_start() {
+    // A tiled window holds its place until the pointer is far from it; a free one comes along
+    // at once, as a floating window does.
+    let mut layout = drag_windows11(12.);
+    assert!(matches!(
+        layout.interactive_move,
+        Some(InteractiveMoveState::Moving(_))
+    ));
+    drop_windows11(&mut layout);
+}
+
+#[test]
+fn dragging_under_windows11_leaves_the_view_alone() {
+    // Near the screen's edge, bento scrolls the view under a tiling engine; the camera is the
+    // engine's, and windows11's never moves.
+    let mut layout = drag_windows11(12.);
+    for (_, _, ws) in layout.workspaces() {
+        assert!(!ws.scrolling().is_camera_gesture());
+    }
+    drop_windows11(&mut layout);
+}
+
 #[test]
 fn layout_action_binds_are_checked_against_declared_args() {
     use crate::layout::tiling::engine;

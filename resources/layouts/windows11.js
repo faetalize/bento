@@ -35,6 +35,8 @@ export const meta = {
     // Every window is free, so there's no second layer for floating ones.
     floating: false,
     minimize: true,
+    // Windows move with the pointer from the first pixel, and the view never scrolls.
+    freeDrag: true,
     actions: {
         "snap-left": {
             description:

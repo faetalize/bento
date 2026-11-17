@@ -1712,6 +1712,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn dnd_scroll_gesture_begin(&mut self) {
+        // Under an engine whose windows move freely, the view stays where the engine has it.
+        if engine::free_drag_enabled() {
+            return;
+        }
         if self
             .camera
             .gesture

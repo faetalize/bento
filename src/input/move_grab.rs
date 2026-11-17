@@ -200,8 +200,12 @@ impl MoveGrab {
                     })
                     .unwrap_or(false);
 
-                let is_view_offset =
-                    self.enable_view_offset && !is_floating && c.x.abs() > c.y.abs();
+                // Sideways, a title bar drag of a tiled window scrolls the view, unless windows move
+                // freely under the engine.
+                let is_view_offset = self.enable_view_offset
+                    && !is_floating
+                    && !crate::layout::tiling::engine::free_drag_enabled()
+                    && c.x.abs() > c.y.abs();
 
                 let started = if is_view_offset {
                     self.begin_view_offset(data)

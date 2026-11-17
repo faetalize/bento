@@ -38,6 +38,7 @@ test("load checks the module and describes the engine", () => {
                 description: "d",
                 floating: false,
                 minimize: true,
+                freeDrag: true,
                 actions: {
                     go: {
                         description: "Goes.",
@@ -59,6 +60,7 @@ test("load checks the module and describes the engine", () => {
     assert.equal(meta.name, "described");
     assert.equal(meta.floating, false);
     assert.equal(meta.minimize, true);
+    assert.equal(meta.freeDrag, true);
     assert.deepEqual(
         meta.actions[0].args.map((a) => [a.name, a.type, a.default]),
         [
@@ -313,6 +315,7 @@ test("floatrequest reaches the window", () => {
 test("an engine doesn't minimize unless it says so", () => {
     const meta = JSON.parse(prelude.load({ meta: { api: 2, name: "plain" }, default() {} }));
     assert.equal(meta.minimize, false);
+    assert.equal(meta.freeDrag, false);
     assert.throws(
         () => prelude.load({ meta: { api: 2, name: "odd", minimize: "yes" }, default() {} }),
         /`meta.minimize` must be a boolean/,

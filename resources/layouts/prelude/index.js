@@ -66,6 +66,9 @@ export function load(module) {
     if (given.minimize !== undefined && typeof given.minimize !== "boolean") {
         throw new Error("`meta.minimize` must be a boolean");
     }
+    if (given.freeDrag !== undefined && typeof given.freeDrag !== "boolean") {
+        throw new Error("`meta.freeDrag` must be a boolean");
+    }
 
     layoutModule = module;
     meta = { ...given, actions, options, windowRules };
@@ -96,6 +99,7 @@ export function load(module) {
         windowRules: Object.entries(windowRules).map(specJson),
         floating: given.floating !== false,
         minimize: given.minimize === true,
+        freeDrag: given.freeDrag === true,
     });
 }
 

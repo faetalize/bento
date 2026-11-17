@@ -3661,7 +3661,10 @@ impl<W: LayoutElement> Layout<W> {
                     pointer_ratio_within_window,
                 });
 
-                if !is_floating && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
+                // A tiled window holds its place until the pointer is well away; a free one comes
+                // along at once, like a floating one.
+                let free = is_floating || tiling::engine::free_drag_enabled();
+                if !free && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
                     return true;
                 }
 
@@ -3744,7 +3747,7 @@ impl<W: LayoutElement> Layout<W> {
                     for ws in self.workspaces_mut() {
                         ws.dnd_scroll_gesture_end();
                     }
-                } else {
+                } else if !tiling::engine::free_drag_enabled() {
                     // Animate to semitransparent.
                     tile.animate_alpha(
                         1.,
@@ -3905,12 +3908,14 @@ impl<W: LayoutElement> Layout<W> {
                 ws.dnd_scroll_gesture_end();
             }
 
-            // Also animate the tile back to opaque.
-            move_.tile.animate_alpha(
-                INTERACTIVE_MOVE_ALPHA,
-                1.,
-                self.options.animations.window_movement.0,
-            );
+            // Also animate the tile back to opaque, if it went see-through.
+            if !tiling::engine::free_drag_enabled() {
+                move_.tile.animate_alpha(
+                    INTERACTIVE_MOVE_ALPHA,
+                    1.,
+                    self.options.animations.window_movement.0,
+                );
+            }
         }
 
         // Dragging in the overview shouldn't switch the workspace and so on.
