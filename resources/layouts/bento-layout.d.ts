@@ -5,7 +5,7 @@
 // workspace and window. It's a single ES module that bento loads from the main config:
 //
 //     tiling {
-//         layout "bento"              // built in; also "niri", or a path to a .js file
+//         layout "bento"              // built in; also "niri" and "windows11", or a .js file
 //     }
 //
 // The engine's options, binds and window rules live in its own .kdl file, see

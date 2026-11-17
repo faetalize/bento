@@ -62,6 +62,10 @@ const PRELUDE_MODULES: &[(&str, &str)] = &[
 const BUILT_IN: &[(&str, &str)] = &[
     ("bento", include_str!("../../../resources/layouts/bento.js")),
     ("niri", include_str!("../../../resources/layouts/niri.js")),
+    (
+        "windows11",
+        include_str!("../../../resources/layouts/windows11.js"),
+    ),
     ("fallback", FALLBACK),
 ];
 

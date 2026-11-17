@@ -23,9 +23,10 @@ This README covers what's specific to bento. For everything else, see [niri's do
 - Everything niri has, except that tiling is done by a layout engine
 - Layout engines are JavaScript files that decide how a whole workspace behaves: where windows go, which window has focus, where the view points and what actions do. Point the config at one, and bento reloads it as you edit it. See [Layout engines](#layout-engines), and start from the [template](resources/layouts/examples/template.js) to write your own
 - Engines run in a sandbox, with no access to files or the network, so you can try ones other people share
-- Two engines ship with bento:
+- Three engines ship with bento:
   - `bento`, the default: a grid of cells, 12 rows tall, that scrolls sideways. Windows cover rectangles of cells, push each other aside, and slide left with gravity. See [The bento engine](#the-bento-engine)
   - `niri`: niri's scrollable columns. See [The niri engine](#the-niri-engine)
+  - `windows11`: overlapping windows that snap to halves and quarters, with Snap Assist, an Alt+Tab switcher and minimizing, the way Windows 11 manages windows. See [The windows11 engine](#the-windows11-engine)
 - Support for more experimental Wayland protocols
 
 ## Installing
@@ -381,7 +382,7 @@ Engines aren't interchangeable presets.
 Each one defines how the workspace works, with actions of its own.
 So each engine has a config file of its own for its options and its binds, loaded only while that engine runs:
 
-- `engines/bento.kdl` and `engines/niri.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
+- `engines/bento.kdl`, `engines/niri.kdl` and `engines/windows11.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
 - the engine file's path with `.kdl` instead of `.js` for an engine file, so `~/.config/bento/layouts/spiral.kdl` for the one above.
 
 The first time a built-in engine runs without its file, bento writes its defaults there, with binds for moving around and resizing windows; from then on the file is yours.
@@ -754,6 +755,31 @@ It differs in these ways:
   The engine exposes its columns for each workspace, with their windows, widths, display and active window, for the shell and scripts to read through bento's socket.
 
 Everything outside the tiled windows, like workspaces, monitors, floating windows and the overview, is bento's, the same as with every engine.
+
+## The windows11 engine
+
+The `windows11` engine manages windows the way Windows 11 does, in behaviour only.
+Windows overlap and stay where you put them: each opens at the size it asks for, centred, a step down and to the right of a window already there, and dialogs open centred over their parent.
+Focusing a window raises it.
+Every window is the engine's, so bento's floating layer is off under it.
+
+- **Snapping.**
+  Dragging a window to the left or right edge of the screen snaps it to that half, to a corner to that quarter, and to the top edge maximizes it, with a preview of where it will go.
+  Dragging it away gives it its own size back.
+  `Mod+Left` and `Mod+Right` snap to a half, and toward the other side give the window its own size back; `Mod+Up` and `Mod+Down` go between halves, quarters, maximized and minimized.
+- **Snap Assist.**
+  After a window snaps, the other windows show as thumbnails in the space left, to pick one to fill it, with the pointer or with the arrows and Enter.
+  `Mod+Z` shows the snap layouts (halves, two thirds and a third, three columns, quarters) to snap the focused window into a zone, and then fills the other zones the same way.
+- **Shared edges.**
+  Windows snapped side by side resize together: dragging the edge between them moves it for all of them.
+- **Switching and minimizing.**
+  `Alt+Tab` shows the workspace's windows, minimized ones included, most recently used first, and letting go of Alt picks one.
+  Apps' minimize buttons and taskbars minimize windows, and so does `Mod+Down`; `Mod+Comma` minimizes every window on the workspace, or brings them back.
+  GTK apps show a minimize button only under an engine that minimizes, like this one, and only with it turned on in bento Settings, under Appearance, Title Bar Buttons.
+- **Options.**
+  `snap-assist` and `edge-snap` in `engines/windows11.kdl` turn Snap Assist and snapping by dragging off.
+
+A window is drawn in one place at a time, so the switcher and Snap Assist show only the workspace's own windows, and a window shown as a thumbnail leaves its place on the screen while it is one.
 
 ## Status
 

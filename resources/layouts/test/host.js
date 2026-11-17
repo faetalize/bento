@@ -992,8 +992,9 @@ export class TestHost {
 
     /**
      * Opens a window on the active workspace of the focused monitor, or on `opts.workspace`. `opts`
-     * can set `minSize`, `maxSize`, `borders`, `appId`, `title`, `rules`, `mode`, `activate`
-     * (default true), `reason`, `rect`, `pointer` and `nextTo`.
+     * can set `size`, the size it asked for (by default it has none yet), `minSize`, `maxSize`,
+     * `borders`, `appId`, `title`, `rules`, `mode`, `activate` (default true), `reason`, `rect`,
+     * `pointer` and `nextTo`.
      */
     open(opts = {}) {
         const id = this.nextWindowId++;
@@ -1003,7 +1004,7 @@ export class TestHost {
             appId: opts.appId ?? null,
             title: opts.title ?? null,
             workspace: ws,
-            size: { w: 0, h: 0 },
+            size: opts.size ?? { w: 0, h: 0 },
             minSize: opts.minSize ?? { w: 0, h: 0 },
             maxSize: opts.maxSize ?? { w: 0, h: 0 },
             borders: opts.borders ?? { w: 0, h: 0 },

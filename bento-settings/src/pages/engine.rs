@@ -35,11 +35,21 @@ pub fn category() -> Category {
             "javascript",
             "bento.js",
             "niri",
+            "windows11",
+            "floating",
+            "snap",
         ])
         .search_item(
             "engine.choice",
             "Layout Engine",
-            &["switch engine", "bento", "niri", "custom", "file"],
+            &[
+                "switch engine",
+                "bento",
+                "niri",
+                "windows11",
+                "custom",
+                "file",
+            ],
         )
         .search_item(
             "engine.options",
@@ -166,7 +176,11 @@ fn set_layout(ctx: &PageContext, layout: String) {
 }
 
 /// Engines that ship with bento, as the config names them and as the app shows them.
-const BUILT_IN: &[(&str, &str)] = &[("bento", "Bento"), ("niri", "Niri")];
+const BUILT_IN: &[(&str, &str)] = &[
+    ("bento", "Bento"),
+    ("niri", "Niri"),
+    ("windows11", "Windows 11"),
+];
 
 fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();

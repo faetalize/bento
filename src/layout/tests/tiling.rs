@@ -135,6 +135,28 @@ fn bento_layout_runs_in_the_engine() {
 }
 
 #[test]
+fn windows11_layout_runs_in_the_engine() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::FocusWindow(2),
+        Op::LayoutAction("snap-left", vec![], None),
+        Op::FocusWindow(1),
+        Op::LayoutAction("snap-right", vec![], None),
+        add_window(3),
+    ];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for("windows11"), ops);
+    // The third window opens at the size it asks for, centred.
+    assert_snapshot!(format_tiles(&layout), @"
+      616 × 688 at x:  648 y: 16
+      616 × 688 at x:   16 y: 16
+      100 × 200 at x:  590 y:260 focused
+    ");
+}
+
+#[test]
 fn layout_action_binds_are_checked_against_declared_args() {
     use crate::layout::tiling::engine;
 

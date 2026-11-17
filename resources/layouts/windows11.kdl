@@ -1,0 +1,62 @@
+// Options and binds for the windows11 engine, loaded only while it runs. bento copies this file to
+// ~/.config/bento/engines/windows11.kdl the first time the engine runs without one; from then on
+// it's yours to edit.
+//
+// A key bound here can't also be bound in config.kdl.
+// https://github.com/faetalize/bento#layout-engines
+
+// Everything below is at its default.
+//
+// Options can differ per output and per named workspace: an `output` or `workspace` block next to
+// `options` holds the options that change there. A workspace has the options above, then those
+// of its output, then its own, each replacing the one before it:
+//
+// workspace "games" {
+//     options {
+//         edge-snap false
+//     }
+// }
+options {
+    // After a window snaps to a half or a quarter, show the other windows in the space left, to
+    // pick one to fill it. Arrows and Tab move between them, Enter picks, and Escape or a click
+    // elsewhere dismisses.
+    snap-assist true
+
+    // Snap a window dragged to an edge of the screen: the left or right edge snaps it to that
+    // half, a corner to that quarter, and the top edge maximizes it. Dragging it away gives it its
+    // own size back.
+    edge-snap true
+}
+
+binds {
+    // Snap the focused window to the left or right half. Toward the other side it gets its own
+    // size back, and toward the side it's on it goes on to the monitor there.
+    Mod+Left  { snap-left; }
+    Mod+Right { snap-right; }
+
+    // Up maximizes, or from a half snaps to its top quarter. Down restores a maximized window,
+    // snaps a half to its bottom quarter, or minimizes.
+    Mod+Up   { snap-up; }
+    Mod+Down { snap-down; }
+
+    // Switch windows, most recently used first: hold Alt and press Tab to go on, Shift to go
+    // back, and let go of Alt to pick. Escape keeps the window you were on.
+    Alt+Tab       { switch-windows; }
+    Alt+Shift+Tab { switch-windows-back; }
+
+    // Pick a layout and a zone of it for the focused window, then the windows for the other zones.
+    Mod+Z { show-layouts; }
+
+    // Minimize every window on the workspace, or bring them back. In config.kdl, Mod+D opens the
+    // launcher and Mod+M maximizes a window to the screen's edges.
+    Mod+Comma { show-desktop; }
+
+    // Minimize the focused window. Mod+Down does it too, for a window at its own size.
+    // Mod+Shift+M { minimize; }
+
+    // Move the focused window to the monitor beside, keeping its place there. In config.kdl,
+    // Mod+Shift+Left and Right focus the monitor beside, and bento's own move-window-to-monitor
+    // binds on Mod+Shift+Ctrl keep the window's place too.
+    // Mod+Shift+Alt+Ctrl+Left  { move-to-monitor-left; }
+    // Mod+Shift+Alt+Ctrl+Right { move-to-monitor-right; }
+}
