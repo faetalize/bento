@@ -2,7 +2,7 @@
 // ~/.config/bento/engines/bento.kdl the first time the engine runs without one; from then on
 // it's yours to edit.
 //
-// A key bound here can't also be bound in config.kdl.
+// A key bound here and in config.kdl runs the bind here while this engine runs.
 // https://github.com/faetalize/bento#layout-engines
 
 // Everything below is at its default.

@@ -387,7 +387,7 @@ So each engine has a config file of its own for its options and its binds, loade
 
 The first time a built-in engine runs without its file, bento writes its defaults there, with binds for moving around and resizing windows; from then on the file is yours.
 Switching engines switches which file is loaded, so nothing breaks.
-A key bound in both the config and the engine's file is an error.
+A key bound in both the config and the engine's file runs the engine's bind while that engine runs, and the config's under the others; `bento validate` lists the keys an engine takes over, and bento Settings shows the config's shortcut as not in use.
 
 When the engine file changes, bento reloads it, just like the config.
 Engines can keep their state across reloads, so your windows stay where they are while you work on an engine.

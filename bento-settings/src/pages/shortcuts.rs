@@ -109,6 +109,8 @@ struct Entry {
     node: Option<BindNode>,
     /// The action's name, from the file or the parsed config.
     action: String,
+    /// Whether the engine's file binds its key too, and so takes it over while the engine runs.
+    taken_over: bool,
 }
 
 fn entries(store: &Store) -> Vec<Entry> {
@@ -119,8 +121,18 @@ fn entries(store: &Store) -> Vec<Entry> {
     let engine_binds = read_binds(&engine);
 
     let mut entries = Vec::new();
-    for bind in &config.binds.0 {
-        let path = config.bind_files.get(&bind.key).map(Path::to_owned);
+    let active = config
+        .binds
+        .0
+        .iter()
+        .map(|bind| (bind, &config.bind_files, false));
+    let taken = config
+        .taken_over
+        .0
+        .iter()
+        .map(|bind| (bind, &config.taken_over_files, true));
+    for (bind, files, taken_over) in active.chain(taken) {
+        let path = files.get(&bind.key).map(Path::to_owned);
         let (file, nodes) = match &path {
             Some(path) if *path == main => (Some(File::Main), &main_binds),
             Some(path) if *path == engine => (Some(File::Engine), &engine_binds),
@@ -139,6 +151,7 @@ fn entries(store: &Store) -> Vec<Entry> {
             include: if file.is_none() { path } else { None },
             node: node.cloned(),
             action,
+            taken_over,
         });
     }
     entries
@@ -280,6 +293,9 @@ fn refresh(view: &Rc<View>) {
         let args = entry.node.as_ref().and_then(|node| node.action.as_ref());
         let args = args.map(ActionNode::arguments).unwrap_or_default();
         let subtitle = match (&entry.include, &entry.node) {
+            _ if entry.taken_over => {
+                String::from("Not in use: the engine's shortcut takes this key")
+            }
             (Some(path), _) => format!("From {}", crate::store::tilde(path)),
             (None, Some(node)) if node.action.is_none() => {
                 String::from("Press and release actions, set in the config file")
@@ -291,8 +307,10 @@ fn refresh(view: &Rc<View>) {
         }
         row.add_suffix(&shortcut_label(&entry.key, mod_key));
 
-        let editable =
-            entry.file.is_some() && entry.node.as_ref().is_some_and(|n| n.action.is_some());
+        // A shortcut the engine took over is changed through the engine's, which has its key.
+        let editable = !entry.taken_over
+            && entry.file.is_some()
+            && entry.node.as_ref().is_some_and(|n| n.action.is_some());
         if editable {
             row.set_activatable(true);
             row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -571,9 +589,10 @@ fn save_bind(
     file: File,
     from: Option<(Key, File)>,
 ) {
-    let taken = entries(&ctx.store)
-        .into_iter()
-        .find(|e| e.key.conflicts_with(&key) && from.is_none_or(|(old, _)| old != e.key));
+    // A shortcut the engine took over isn't in use, so it doesn't take the key.
+    let taken = entries(&ctx.store).into_iter().find(|e| {
+        !e.taken_over && e.key.conflicts_with(&key) && from.is_none_or(|(old, _)| old != e.key)
+    });
 
     let commit = {
         let (ctx, dialog) = (ctx.clone(), dialog.clone());

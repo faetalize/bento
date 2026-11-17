@@ -451,6 +451,11 @@ engine declares, and all but gradients can be lists. They can differ per monitor
 own `layout {}` settings: the engine's file can set options for an `output` or a `workspace`, and
 the engine reads each workspace's options from the workspace.
 
+A key can be bound in both files. The engine's file only loads while its engine runs, so it's
+the narrower layer, and its bind takes the key over meanwhile, the way a workspace's options
+override its output's. Switching engines never fails on a key; `bento validate` and bento
+Settings say which keys the running engine takes over.
+
 The main config picks the engine with `tiling { layout "…" }`. A built-in engine's file is
 `~/.config/bento/engines/<name>.kdl`, like `engines/niri.kdl`. An engine from a file has its
 `.kdl` next to the `.js`, with the same name: `layout "~/layouts/mine.js"` loads

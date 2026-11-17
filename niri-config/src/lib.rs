@@ -107,6 +107,11 @@ pub struct Config {
     pub layer_rules: Vec<LayerRule>,
     pub binds: Binds,
     pub bind_files: BindFiles,
+    /// The main config's binds whose keys the running engine's file binds too, which its binds
+    /// take over while it runs.
+    pub taken_over: Binds,
+    /// The files `taken_over`'s binds are written in.
+    pub taken_over_files: BindFiles,
     pub switch_events: SwitchBinds,
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
@@ -2888,6 +2893,10 @@ mod tests {
                 ],
             ),
             bind_files: BindFiles(16),
+            taken_over: Binds(
+                [],
+            ),
+            taken_over_files: BindFiles(0),
             switch_events: SwitchBinds {
                 lid_open: None,
                 lid_close: None,

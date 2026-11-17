@@ -490,7 +490,8 @@ fn action_name(action: &Action) -> String {
     }
 }
 
-fn key_name(screen_reader: bool, mod_key: ModKey, key: &Key) -> String {
+/// The key as people read it, like `Super + Shift + T`.
+pub fn key_name(screen_reader: bool, mod_key: ModKey, key: &Key) -> String {
     let mut name = String::new();
 
     // Do not show modifiers implied by the trigger.
