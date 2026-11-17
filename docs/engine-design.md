@@ -205,6 +205,14 @@ however its paradigm wants: `niri.js` keeps a fullscreen window as a column in t
 can be scrolled away from, and `bento.js` keeps its cells so it goes back to its place. bento
 draws a fullscreen window above panels.
 
+### Engines that minimize say so
+
+Minimizing is the engine's too, but only an engine that has somewhere for minimized windows to
+go declares it, like a desktop-style `windows11.js`. Under one that does, apps are told they can
+ask to minimize, so GTK shows its minimize button, and an app's or a taskbar's asking reaches the
+engine as `minimizerequest`. Under one that doesn't, apps are told they can't, and no minimize
+button shows.
+
 ### bento's native config works under every engine
 
 bento only ships what makes sense under every engine: spawning, screenshots, workspaces,

@@ -149,6 +149,12 @@ export interface Meta {
      * windows that ask to float stay with the engine, which gets `floatrequest`.
      */
     floating?: boolean;
+    /**
+     * Whether the engine minimizes windows; false by default. With it on, apps are told they can
+     * ask to minimize, so GTK shows a minimize button where the title bar has one, and asking
+     * comes as `minimizerequest`, as does a taskbar's minimize.
+     */
+    minimize?: boolean;
 }
 
 // Events.
@@ -382,6 +388,11 @@ export interface WindowEvents {
     moderequest: ModeRequestEvent;
     activaterequest: ActivateRequestEvent;
     floatrequest: FloatRequestEvent;
+    /**
+     * With `meta.minimize`, the app or a taskbar asks to minimize the window. What minimizing is,
+     * like hiding it with `setVisible(false)`, is the engine's.
+     */
+    minimizerequest: BentoEvent;
     resizebegin: ResizeEvent;
     resizeupdate: ResizeEvent;
     resizeend: BentoEvent;

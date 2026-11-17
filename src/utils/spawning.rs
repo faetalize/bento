@@ -560,7 +560,12 @@ mod tests {
 
         let mut status = String::new();
         let mut child = spawned.unwrap();
-        child.stdout.take().unwrap().read_to_string(&mut status).unwrap();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut status)
+            .unwrap();
         child.wait().unwrap();
         let blocked = status
             .lines()

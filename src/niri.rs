@@ -318,6 +318,8 @@ pub struct Niri {
     // Smithay state.
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// Whether apps are told they can ask to minimize, which follows the layout engine.
+    pub wm_minimize: bool,
     pub xdg_decoration_state: XdgDecorationState,
     pub kde_decoration_state: KdeDecorationState,
     pub layer_shell_state: WlrLayerShellState,
@@ -1801,6 +1803,7 @@ impl State {
         }
 
         self.niri.layout.update_config(&config);
+        self.niri.sync_wm_capabilities();
         if let Err(problems) = crate::layout::tiling::engine::check(&config) {
             for problem in problems {
                 warn!("{problem}");
@@ -2705,9 +2708,10 @@ impl Niri {
         }
 
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
+        let wm_minimize = crate::layout::tiling::engine::minimize_enabled();
         let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
             &display_handle,
-            [WmCapabilities::Fullscreen, WmCapabilities::Maximize],
+            wm_capabilities(wm_minimize),
         );
         let xdg_decoration_state =
             XdgDecorationState::new_with_filter::<State, _>(&display_handle, |client| {
@@ -3011,6 +3015,7 @@ impl Niri {
 
             compositor_state,
             xdg_shell_state,
+            wm_minimize,
             xdg_decoration_state,
             kde_decoration_state,
             layer_shell_state,
@@ -5011,6 +5016,25 @@ impl Niri {
     }
 
     /// What glass on `output` takes from it: the pointer while it shows, which carries a light.
+    /// Tells apps whether they can ask to minimize, after the layout engine changed: only a layout
+    /// that minimizes windows hears them ask, and GTK shows a minimize button only when they can.
+    pub fn sync_wm_capabilities(&mut self) {
+        let minimize = crate::layout::tiling::engine::minimize_enabled();
+        if minimize == self.wm_minimize {
+            return;
+        }
+        self.wm_minimize = minimize;
+        let capabilities = wm_capabilities(minimize);
+        self.xdg_shell_state
+            .replace_capabilities(capabilities.clone());
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            toplevel.with_pending_state(|state| state.capabilities.replace(capabilities.clone()));
+        }
+        // Windows not yet configured get them with their first configure.
+        self.layout
+            .with_windows_mut(|mapped, _| mapped.set_needs_configure());
+    }
+
     /// Starts the shell's data program, `bento-shell --data`, and hands what it says to the shell.
     fn start_scene_data(&mut self) {
         use std::io::Read as _;
@@ -8241,4 +8265,14 @@ niri_render_elements! {
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }
+}
+
+/// What apps are told they can ask of their windows: fullscreen and maximize always, and minimize
+/// when the layout engine minimizes windows.
+fn wm_capabilities(minimize: bool) -> Vec<WmCapabilities> {
+    let mut capabilities = vec![WmCapabilities::Fullscreen, WmCapabilities::Maximize];
+    if minimize {
+        capabilities.push(WmCapabilities::Minimize);
+    }
+    capabilities
 }

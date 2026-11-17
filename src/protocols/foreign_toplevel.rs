@@ -47,6 +47,7 @@ pub trait ForeignToplevelHandler {
     fn unset_fullscreen(&mut self, wl_surface: WlSurface);
     fn set_maximized(&mut self, wl_surface: WlSurface);
     fn unset_maximized(&mut self, wl_surface: WlSurface);
+    fn minimize(&mut self, wl_surface: WlSurface);
 }
 
 struct ToplevelData {
@@ -573,8 +574,9 @@ where
             zwlr_foreign_toplevel_handle_v1::Request::UnsetMaximized => {
                 state.unset_maximized(surface)
             }
-            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized => (),
-            zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized => (),
+            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized => state.minimize(surface),
+            // Bringing a minimized window back is showing and focusing it.
+            zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized => state.activate(surface),
             zwlr_foreign_toplevel_handle_v1::Request::Activate { .. } => {
                 state.activate(surface);
             }

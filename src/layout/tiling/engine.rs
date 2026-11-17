@@ -136,6 +136,10 @@ pub struct LayoutMeta {
     pub window_rules: Vec<OptionMeta>,
     /// Whether bento's floating layer exists under this layout.
     pub floating: bool,
+    /// Whether the layout minimizes windows: apps are told they can ask, and their asking reaches
+    /// the layout.
+    #[serde(default)]
+    pub minimize: bool,
 }
 
 impl LayoutMeta {
@@ -696,6 +700,11 @@ pub fn name() -> String {
 /// Whether bento's floating layer exists under the current layout.
 pub fn floating_enabled() -> bool {
     ENGINE.with_borrow(|engine| engine.as_ref().is_none_or(|engine| engine.meta.floating))
+}
+
+/// Whether the current layout minimizes windows.
+pub fn minimize_enabled() -> bool {
+    ENGINE.with_borrow(|engine| engine.as_ref().is_some_and(|engine| engine.meta.minimize))
 }
 
 /// Metadata of the current layout.

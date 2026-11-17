@@ -582,6 +582,14 @@ impl ForeignToplevelHandler for State {
             self.niri.layout.set_maximized(&window, false);
         }
     }
+
+    fn minimize(&mut self, wl_surface: WlSurface) {
+        if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&wl_surface) {
+            let window = mapped.window.clone();
+            self.niri.layout.request_minimize(&window);
+            self.niri.queue_redraw_all();
+        }
+    }
 }
 
 impl ExtWorkspaceHandler for State {

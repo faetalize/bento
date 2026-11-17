@@ -1474,6 +1474,23 @@ impl<W: LayoutElement> Layout<W> {
         self.engine_event(event);
     }
 
+    /// Tells the layout that `window` asks to be minimized, if the layout minimizes windows.
+    pub fn request_minimize(&mut self, window: &W::Id) {
+        if !engine::minimize_enabled() {
+            return;
+        }
+        let Some(ws) = self
+            .workspaces()
+            .map(|(_, _, ws)| ws)
+            .find(|ws| ws.scrolling().has_window(window))
+        else {
+            return;
+        };
+        ws.scrolling()
+            .queue_window_event(window, "minimizerequest", json!({}));
+        self.flush_engine();
+    }
+
     /// Tells the layout that a window asks to float, when floating is off.
     pub(in crate::layout) fn queue_float_request(
         &self,

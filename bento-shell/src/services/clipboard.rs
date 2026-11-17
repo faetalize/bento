@@ -415,7 +415,9 @@ impl State {
         let generation = self.generation;
         let service = self.service.clone();
         glib::timeout_add_local_once(REFILL, move || {
-            let Some(service) = service.upgrade() else { return };
+            let Some(service) = service.upgrade() else {
+                return;
+            };
             service.with(|state, qh| {
                 if state.generation != generation || state.source.is_some() {
                     return;
@@ -429,11 +431,7 @@ impl State {
     }
 
     /// The clipboard is `offer` now, or empty.
-    fn selection(
-        &mut self,
-        conn: &Connection,
-        offer: Option<ExtDataControlOfferV1>,
-    ) {
+    fn selection(&mut self, conn: &Connection, offer: Option<ExtDataControlOfferV1>) {
         self.generation += 1;
         let Some(offer) = offer else {
             if self.source.is_none() && !self.entries.is_empty() {

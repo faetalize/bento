@@ -37,6 +37,7 @@ test("load checks the module and describes the engine", () => {
                 name: "described",
                 description: "d",
                 floating: false,
+                minimize: true,
                 actions: {
                     go: {
                         description: "Goes.",
@@ -57,6 +58,7 @@ test("load checks the module and describes the engine", () => {
     );
     assert.equal(meta.name, "described");
     assert.equal(meta.floating, false);
+    assert.equal(meta.minimize, true);
     assert.deepEqual(
         meta.actions[0].args.map((a) => [a.name, a.type, a.default]),
         [
@@ -306,6 +308,33 @@ test("floatrequest reaches the window", () => {
     const b = h.open();
     h.send({ type: "floatrequest", id: b, reason: "dialog", parent: a, size: { w: 200, h: 100 } });
     assert.deepEqual(seen, [["dialog", a, { w: 200, h: 100 }]]);
+});
+
+test("an engine doesn't minimize unless it says so", () => {
+    const meta = JSON.parse(prelude.load({ meta: { api: 2, name: "plain" }, default() {} }));
+    assert.equal(meta.minimize, false);
+    assert.throws(
+        () => prelude.load({ meta: { api: 2, name: "odd", minimize: "yes" }, default() {} }),
+        /`meta.minimize` must be a boolean/,
+    );
+});
+
+test("minimizerequest reaches the window", () => {
+    const seen = [];
+    const h = host(
+        (bento) => {
+            placing(bento);
+            bento.addEventListener("windowadd", (e) => {
+                e.window.addEventListener("minimizerequest", (m) => seen.push(m.target.id));
+            });
+        },
+        {},
+        { minimize: true },
+    );
+    h.open();
+    const b = h.open();
+    h.send({ type: "minimizerequest", id: b });
+    assert.deepEqual(seen, [b]);
 });
 
 test("queries get the first answer and change nothing", () => {
