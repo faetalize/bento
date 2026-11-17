@@ -17,6 +17,42 @@ pub fn category() -> Category {
                     &["highlight", "color", "theme"],
                 ),
         )
+        .group(
+            Group::custom(super::title_buttons::build)
+                .search_item(
+                    "appearance.title-buttons.maximize",
+                    "Maximize Button",
+                    &[
+                        "title bar",
+                        "titlebar",
+                        "window buttons",
+                        "decorations",
+                        "headerbar",
+                    ],
+                )
+                .search_item(
+                    "appearance.title-buttons.minimize",
+                    "Minimize Button",
+                    &[
+                        "title bar",
+                        "titlebar",
+                        "window buttons",
+                        "decorations",
+                        "headerbar",
+                    ],
+                )
+                .search_item(
+                    "appearance.title-buttons.placement",
+                    "Title Bar Button Placement",
+                    &[
+                        "left",
+                        "right",
+                        "window buttons",
+                        "decorations",
+                        "close button",
+                    ],
+                ),
+        )
         .group(Group::custom(super::wallpaper::build).search_item(
             "appearance.wallpaper",
             "Wallpaper",

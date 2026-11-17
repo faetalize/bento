@@ -19,6 +19,7 @@ mod preview;
 pub mod shortcuts;
 mod system;
 mod theme;
+mod title_buttons;
 mod wallpaper;
 
 use crate::model::{Content, Section};
