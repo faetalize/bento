@@ -1725,8 +1725,11 @@ mod tests {
             scene.advance(1. / 60., Some(1.));
         }
         let open = shapes(&scene)[1];
-        // As big as the calendar in it, with its room around.
-        assert_eq!([open[2], open[3]], [340., 478.]);
+        // As big as the calendar in it, with its room around. The calendar is as tall as its
+        // text, which is a pixel or two taller or shorter with the fonts one machine has and
+        // another doesn't.
+        assert_eq!(open[2], 340.);
+        assert!((open[3] - 478.).abs() <= 4., "{open:?}");
         assert!((open[0] + open[2] / 2. - 960.).abs() < 1., "{open:?}");
     }
 
