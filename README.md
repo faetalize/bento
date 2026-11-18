@@ -240,13 +240,15 @@ debug {
 }
 ```
 
-bento draws its own shell too, while it's being built: islands of glass along the top of each output, scripted in JavaScript. `~/.config/bento/shell/main.js`, if it's there, replaces bento's own (`resources/shell/main.js`), and bento loads it again whenever it changes. It's off unless turned on:
+bento draws its own shell too, while it's being built: islands of glass along the top of each output, scripted in JavaScript. `~/.config/bento/shell/main.js`, if it's there, replaces bento's own (`resources/shell/main.js`), and bento loads it again whenever it changes. It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
 
 ```kdl
-debug {
-    scene-shell
+shell {
+    built-in
 }
 ```
+
+A shell program named with `shell "…"` keeps running alongside it.
 
 To work on bento's own shell and its widgets, point bento at their folder; it reads `main.js` from there instead of the copy built in, and every other script there as the module `bento:` and its name, like `bento:ui`, and loads them again whenever they change:
 

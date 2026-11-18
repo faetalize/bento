@@ -5783,7 +5783,13 @@ impl Niri {
                 .is_current_cursor_animated(output.current_scale().integer_scale());
 
             // Also bento's own shell.
-            if self.config.borrow().debug.scene_shell {
+            let built_in = self
+                .config
+                .borrow()
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.built_in());
+            if built_in {
                 let started = Instant::now();
                 let moving = self.update_scene(backend, output);
                 shell_took = started.elapsed();

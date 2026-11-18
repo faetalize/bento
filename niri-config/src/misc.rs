@@ -20,6 +20,11 @@ pub struct SpawnShAtStartup {
 pub struct Shell {
     #[knuffel(arguments)]
     pub command: Vec<String>,
+    /// Whether bento draws its own shell, the scene: its bar, control center, notifications and
+    /// launcher. It's on top of the program, if the config names one too. A flag that can be
+    /// written `built-in false`, the way bento Settings turns it off.
+    #[knuffel(child)]
+    pub built_in: Option<Flag>,
     /// Temperatures in Fahrenheit rather than Celsius.
     #[knuffel(child)]
     pub fahrenheit: bool,
@@ -29,6 +34,13 @@ pub struct Shell {
     /// What the control center's screen record button runs.
     #[knuffel(child)]
     pub screen_record: Option<ShellCommand>,
+}
+
+impl Shell {
+    /// Whether bento draws its own shell.
+    pub fn built_in(&self) -> bool {
+        self.built_in.is_some_and(|flag| flag.0)
+    }
 }
 
 /// A command one of the shell's buttons runs, with `sh -c`, and the notification it shows once

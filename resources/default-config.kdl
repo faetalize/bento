@@ -248,7 +248,10 @@ layout {
 
 // The shell: the bar, the launcher and notifications around the workspaces. bento starts it with
 // a private connection of its own, and starts it again if it exits.
-shell "bento-shell"
+shell "bento-shell" {
+    // Draw bento's own shell, which is experimental, alongside the program.
+    // built-in
+}
 
 // To run a shell command (with variables, pipes, etc.), use spawn-sh-at-startup:
 // spawn-sh-at-startup "qs -c ~/source/qs/MyAwesomeShell"

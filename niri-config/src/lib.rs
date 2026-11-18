@@ -2943,7 +2943,6 @@ mod tests {
                 disable_10bit_output: false,
                 nested_show_host_cursor: false,
                 glass_shader: None,
-                scene_shell: false,
                 shell_scripts: None,
             },
             workspaces: [
@@ -3123,6 +3122,7 @@ mod tests {
                 longitude -21.94
             }
             shell {
+                built-in
                 fahrenheit
                 screenshot {
                     command "grim -g \"$(slurp)\" - | swappy -f -"
@@ -3141,6 +3141,9 @@ mod tests {
         let shell = config.shell.unwrap();
         // Settings alone name no program to run as the shell.
         assert!(shell.command.is_empty());
+        assert!(shell.built_in());
+        let off = do_parse("shell \"bento-shell\" {\n    built-in false\n}\n");
+        assert!(!off.shell.unwrap().built_in());
         assert!(shell.fahrenheit);
         let screenshot = shell.screenshot.unwrap();
         assert_eq!(
@@ -3191,6 +3194,7 @@ mod tests {
         +            command: [
         +                "bento-shell",
         +            ],
+        +            built_in: None,
         +            fahrenheit: false,
         +            screenshot: None,
         +            screen_record: None,

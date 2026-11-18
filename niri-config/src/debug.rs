@@ -30,8 +30,6 @@ pub struct Debug {
     /// A glass shader to draw glass with instead of bento's own, compiled again whenever its
     /// file changes.
     pub glass_shader: Option<PathBuf>,
-    /// Draws bento's own shell, the scene, until it can stand in for the shell program.
-    pub scene_shell: bool,
     /// A folder to read bento's own shell and widgets from, `main.js` and `ui.js`, instead of
     /// the ones built in, loaded again whenever they change.
     pub shell_scripts: Option<PathBuf>,
@@ -87,8 +85,6 @@ pub struct DebugPart {
     pub nested_show_host_cursor: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub glass_shader: Option<PathBuf>,
-    #[knuffel(child)]
-    pub scene_shell: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub shell_scripts: Option<PathBuf>,
 }
@@ -117,7 +113,6 @@ impl MergeWith<DebugPart> for Debug {
             skip_cursor_only_updates_during_vrr,
             disable_10bit_output,
             nested_show_host_cursor,
-            scene_shell,
         );
 
         merge_clone_opt!(

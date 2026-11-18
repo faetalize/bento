@@ -1,4 +1,4 @@
-//! What the buttons in the shell's control center run.
+//! bento's own shell: whether bento draws it, and what the buttons in its control center run.
 
 use niri_config::{Config, ShellCommand};
 
@@ -15,17 +15,39 @@ fn screen_record(config: &Config) -> ShellCommand {
 }
 
 pub fn category() -> Category {
-    Category::settings("control-center", "Control Center")
+    Category::settings("control-center", "Shell")
         .icon("ph-sliders-horizontal-symbolic")
         .keywords(&[
             "quick settings",
+            "control center",
             "shell",
+            "bar",
+            "panel",
             "buttons",
             "screenshot",
             "screen record",
             "recording",
             "command",
         ])
+        .group(
+            Group::untitled()
+                .description(
+                    "bento draws its own bar, control center, notifications and launcher. Still \
+                     experimental. A shell program named in the config keeps running alongside \
+                     it.",
+                )
+                .setting(
+                    Setting::switch("Built-in Shell", "shell.built-in", |c| {
+                        c.shell.as_ref().is_some_and(|shell| shell.built_in())
+                    })
+                    .keywords(&[
+                        "bar",
+                        "panel",
+                        "experimental",
+                        "desktop shell",
+                    ]),
+                ),
+        )
         .group(
             Group::new("Screenshot Button")
                 .description(
