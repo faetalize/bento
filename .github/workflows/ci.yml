@@ -22,6 +22,8 @@ env:
   DEPS_PKG: git curl rust llvm pkgconf pixman libudev-devd libdisplay-info seatd libinput libxkbcommon pipewire mesa-libs cairo devel/glib20 gettext-runtime harfbuzz pango
 
 jobs:
+  # bento-shell and bento-settings need GTK 4.18 and libadwaita 1.7, newer than Ubuntu 24.04's,
+  # so the jobs on Ubuntu leave them out and the Fedora job builds, lints and tests them.
   test:
     strategy:
       fail-fast: false
@@ -44,10 +46,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build tests
-        run: cargo test --no-run --all --exclude niri-visual-tests
+        run: cargo test --no-run --all --exclude niri-visual-tests --exclude bento-shell --exclude bento-settings
 
       - name: Test
-        run: cargo test --all --exclude niri-visual-tests -- --nocapture
+        run: cargo test --all --exclude niri-visual-tests --exclude bento-shell --exclude bento-settings -- --nocapture
 
   layout-engines:
     name: layout engine tests
@@ -159,10 +161,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build tests
-        run: cargo test --no-run --all --exclude niri-visual-tests --release
+        run: cargo test --no-run --all --exclude niri-visual-tests --exclude bento-shell --exclude bento-settings --release
 
       - name: Test
-        run: cargo test --all --exclude niri-visual-tests --release
+        run: cargo test --all --exclude niri-visual-tests --exclude bento-shell --exclude bento-settings --release
 
   visual-tests:
     strategy:
@@ -235,7 +237,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run clippy
-        run: cargo clippy --all --all-targets
+        run: cargo clippy --all --all-targets --exclude bento-shell --exclude bento-settings
 
   rustfmt:
     runs-on: ubuntu-24.04
@@ -264,10 +266,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo dnf update -y
-          sudo dnf install -y ${{ env.DEPS_DNF }} libadwaita-devel
+          sudo dnf install -y ${{ env.DEPS_DNF }} libadwaita-devel gtk4-layer-shell-devel pulseaudio-libs-devel libsoup3-devel clippy
 
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --all
+      - run: cargo clippy -p bento-shell -p bento-settings --all-targets
+      - run: cargo test -p bento-shell -p bento-settings
 
   freebsd:
     runs-on: ubuntu-24.04
