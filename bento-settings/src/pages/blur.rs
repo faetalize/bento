@@ -1197,6 +1197,8 @@ fn edit_together(
 }
 
 #[cfg(test)]
+// The tests set a few fields, some nested, of a large config.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

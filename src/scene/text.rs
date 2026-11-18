@@ -169,7 +169,7 @@ impl Fonts {
         };
         let (mut low, mut high) = (0, chars.len());
         while low < high {
-            let middle = (low + high + 1) / 2;
+            let middle = (low + high).div_ceil(2);
             if cut(self, middle).width <= room {
                 low = middle;
             } else {

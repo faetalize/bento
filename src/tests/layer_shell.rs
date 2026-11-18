@@ -261,8 +261,13 @@ fn multiple_commits_before_mapping() {
 /// shell, so it gets the keys even while the shell's launcher is open.
 #[test]
 fn an_overlay_surface_takes_the_keyboard_from_bentos_shell() {
-    let mut config = niri_config::Config::default();
-    config.debug.scene_shell = true;
+    let config = niri_config::Config {
+        shell: Some(niri_config::Shell {
+            built_in: Some(niri_config::utils::Flag(true)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
     let mut f = Fixture::with_config(config);
     f.add_output(1, (1920, 1080));
 

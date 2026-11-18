@@ -6,8 +6,9 @@
 //! frame as everything else, so the shell's motion never waits on anything.
 //!
 //! A node's frame is where it is on its output, so a node moves only when its own place does,
-//! and what's in an island moves with it as their places move together. A node that grows out of a point grows as a circle until it's as wide
-//! as its narrower side, then stretches to its proportions, and shrinks back the same way.
+//! and what's in an island moves with it as their places move together. A node that grows out of a
+//! point grows as a circle until it's as wide as its narrower side, then stretches to its
+//! proportions, and shrinks back the same way.
 
 pub mod apps;
 pub mod host;
@@ -886,8 +887,8 @@ impl Scene {
         let size = node.draw_size.unwrap_or([target[2], target[3]]);
         if !node.placed {
             node.placed = true;
-            for i in 0..4 {
-                node.springs[i].jump(f64::from(target[i]));
+            for (spring, value) in node.springs.iter_mut().zip(target) {
+                spring.jump(f64::from(value));
             }
             if !node.placed_size {
                 node.springs[DW].jump(f64::from(size[0]));
@@ -895,24 +896,24 @@ impl Scene {
             }
         } else if node.left_out {
             // Its looks are where they were, or where the script put them as it showed it.
-            for i in 0..4 {
-                node.springs[i].jump(f64::from(target[i]));
+            for (spring, value) in node.springs.iter_mut().zip(target) {
+                spring.jump(f64::from(value));
             }
             if node.draw_size.is_none() {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
         } else if !node.animate {
-            for i in 0..4 {
-                node.springs[i].jump(f64::from(target[i]));
+            for (spring, value) in node.springs.iter_mut().zip(target) {
+                spring.jump(f64::from(value));
             }
             if node.draw_size.is_none() {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
         }
-        for i in 0..4 {
-            node.springs[i].target = f64::from(target[i]);
+        for (spring, value) in node.springs.iter_mut().zip(target) {
+            spring.target = f64::from(value);
         }
         node.springs[DW].target = f64::from(size[0]);
         node.springs[DH].target = f64::from(size[1]);

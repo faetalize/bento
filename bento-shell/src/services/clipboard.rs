@@ -200,8 +200,11 @@ struct Inner {
 
 pub struct ClipboardService {
     inner: RefCell<Option<Inner>>,
-    on_change: Box<dyn Fn(bool, &VecDeque<Entry>)>,
+    on_change: OnChange,
 }
+
+/// What hears whether there's a clipboard, and the history, when they change.
+type OnChange = Box<dyn Fn(bool, &VecDeque<Entry>)>;
 
 impl ClipboardService {
     /// Starts watching the clipboard, with pictures written to `dir`. `on_change` hears whether

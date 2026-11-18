@@ -114,6 +114,7 @@ impl FramebufferEffect {
 
     /// Renders glass in the shapes, which are in the coordinates of the clip geometry, or of
     /// `params.geometry` without a clip.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_glass(
         &self,
         ns: Option<usize>,

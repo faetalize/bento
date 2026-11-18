@@ -2,8 +2,9 @@
 //!
 //! The shell is `~/.config/bento/shell/main.js` if it's there, or bento's own otherwise. Both
 //! import bento's widgets from `bento:ui`. bento's own shell and widgets are built in, or read from
-//! a folder that `debug { shell-scripts }` names, to work on them. A changed file is loaded again; a shell that fails to
-//! load or throws leaves the last working one on screen, and the error is logged.
+//! a folder that `debug { shell-scripts }` names, to work on them. A changed file is loaded again;
+//! a shell that fails to load or throws leaves the last working one on screen, and the error is
+//! logged.
 //!
 //! Scripts never run per frame: only when something happens, like a click, a timer or bento's
 //! state changing. A call that runs too long is stopped.

@@ -298,7 +298,7 @@ where
 /// Reads `set_shapes`' array: native-endian int32 quintuples.
 fn parse_shapes(bytes: &[u8]) -> Option<Vec<GlassShape>> {
     const QUINTUPLE: usize = 5 * 4;
-    if bytes.len() % QUINTUPLE != 0 || bytes.len() / QUINTUPLE > MAX_GLASS_SHAPES {
+    if !bytes.len().is_multiple_of(QUINTUPLE) || bytes.len() / QUINTUPLE > MAX_GLASS_SHAPES {
         return None;
     }
 
@@ -325,7 +325,7 @@ fn parse_shapes(bytes: &[u8]) -> Option<Vec<GlassShape>> {
 /// Reads `set_rects`' array: native-endian float32 sextuples.
 fn parse_rects(bytes: &[u8]) -> Option<Vec<GlassShape>> {
     const SEXTUPLE: usize = 6 * 4;
-    if bytes.len() % SEXTUPLE != 0 || bytes.len() / SEXTUPLE > MAX_GLASS_SHAPES {
+    if !bytes.len().is_multiple_of(SEXTUPLE) || bytes.len() / SEXTUPLE > MAX_GLASS_SHAPES {
         return None;
     }
 
@@ -351,7 +351,7 @@ fn parse_rects(bytes: &[u8]) -> Option<Vec<GlassShape>> {
 /// Reads `set_paths`' array: native-endian float32 septuples.
 fn parse_paths(bytes: &[u8]) -> Option<Vec<GlassCurve>> {
     const SEPTUPLE: usize = 7 * 4;
-    if bytes.len() % SEPTUPLE != 0 || bytes.len() / SEPTUPLE > MAX_GLASS_CURVES {
+    if !bytes.len().is_multiple_of(SEPTUPLE) || bytes.len() / SEPTUPLE > MAX_GLASS_CURVES {
         return None;
     }
 

@@ -1351,20 +1351,20 @@ impl<W: LayoutElement> TilingSpace<W> {
                         push(RescaleRenderElement::from_element(elem, origin, zoom).into());
                     }
                 }
-                RenderItem::Window(slot) if let Some(look) = slot.copy => {
+                RenderItem::Window(slot) => match slot.copy {
                     // A copy is drawn only where the workspace is, not with windows moving
                     // between workspaces.
-                    if !layer.is_normal() {
-                        continue;
+                    Some(_) if !layer.is_normal() => (),
+                    Some(look) => {
+                        let here = self.window_by_layout_id(slot.id);
+                        if let Some(win) = here.or_else(|| elsewhere(slot.id)) {
+                            self.render_copy(ctx.r(), &slot, look, win, push);
+                        }
                     }
-                    let here = self.window_by_layout_id(slot.id);
-                    if let Some(win) = here.or_else(|| elsewhere(slot.id)) {
-                        self.render_copy(ctx.r(), &slot, look, win, push);
+                    None => {
+                        self.render_window(ctx.r(), &slot, xray_pos, focus_ring, layer, push);
                     }
-                }
-                RenderItem::Window(slot) => {
-                    self.render_window(ctx.r(), &slot, xray_pos, focus_ring, layer, push);
-                }
+                },
             }
         }
     }

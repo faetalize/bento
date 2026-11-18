@@ -239,7 +239,7 @@ impl<'a> Converter<'a> {
                 };
                 let percent = percent.and_then(|p| p.parse::<f64>().ok());
                 match (name_of(key), percent) {
-                    ("max-scroll-amount", Some(percent)) if percent == 0. => mode = "in-view",
+                    ("max-scroll-amount", Some(0.)) => mode = "in-view",
                     (name, _) => self.notes.push(format!(
                         "focus-follows-mouse's {name} became \"always\": the engine's \
                          focus-follows-mouse is \"never\", \"in-view\" or \"always\"."

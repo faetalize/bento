@@ -296,6 +296,10 @@ fn smoothstep(from: f64, to: f64, x: f64) -> f64 {
     t * t * (3. - 2. * t)
 }
 
+/// Something for each face of each island, which has a widget or not; an island that isn't there
+/// has nothing.
+type Faces<T> = Vec<Option<Vec<(T, Option<gtk::Widget>)>>>;
+
 mod imp {
     use super::*;
 
@@ -375,7 +379,7 @@ mod imp {
         fn size_allocate(&self, width: i32, _height: i32, _baseline: i32) {
             let width = width as f32;
             // The places measure the faces, so they're asked with nothing borrowed.
-            let places: Vec<Option<Vec<(Place, Option<gtk::Widget>)>>> = self
+            let places: Faces<Place> = self
                 .islands
                 .borrow()
                 .iter()
@@ -389,7 +393,7 @@ mod imp {
                     })
                 })
                 .collect();
-            let placed: Vec<Option<Vec<(Rect, Option<gtk::Widget>)>>> = places
+            let placed: Faces<Rect> = places
                 .into_iter()
                 .map(|faces| {
                     faces.map(|faces| {

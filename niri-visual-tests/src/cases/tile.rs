@@ -2,6 +2,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use niri::layout::Options;
+use niri::render_helpers::glass::GlassFrame;
 use niri::render_helpers::xray::XrayPos;
 use niri::render_helpers::{RenderCtx, RenderTarget};
 use niri_config::Color;
@@ -126,6 +127,7 @@ impl TestCase for Tile {
             renderer,
             target: RenderTarget::Output,
             xray: None,
+            glass: GlassFrame::default(),
         };
         let xray_pos = XrayPos::new(location, 1.);
         self.tile

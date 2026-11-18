@@ -40,8 +40,11 @@ pub struct BrightnessService {
     displays: RefCell<Vec<Display>>,
     /// The displays being set, each with the value to send once the one on its way is there.
     setting: RefCell<HashMap<String, Option<f64>>>,
-    on_change: Box<dyn Fn(&[Display])>,
+    on_change: OnChange,
 }
+
+/// What hears the displays when they change.
+type OnChange = Box<dyn Fn(&[Display])>;
 
 impl BrightnessService {
     pub fn start(on_change: impl Fn(&[Display]) + 'static) -> Rc<Self> {
@@ -92,7 +95,7 @@ impl BrightnessService {
                     continue;
                 }
                 let value = match &display.how {
-                    How::Backlight(name) => read_backlight(name).map(|(now, max)| (now, max)),
+                    How::Backlight(name) => read_backlight(name),
                     How::Ddc(bus) => {
                         let bus = bus.to_string();
                         run(&["ddcutil", "getvcp", "10", "--brief", "--bus", &bus])
