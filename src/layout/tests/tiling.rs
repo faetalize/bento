@@ -594,7 +594,12 @@ fn native_action_table_lists_every_bindable_action() {
 
 /// Options for an API 2 layout engine from `source`, which runs from a file.
 fn options_for_source(name: &str, source: &str) -> Options {
-    let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{}", std::process::id()));
+    // Each call gets a file of its own: tests that run at the same time and load the same engine
+    // would otherwise write it over while another reads it, and that one would get an empty file.
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{pid}-{call}"));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.js"));
     std::fs::write(&path, source).unwrap();
