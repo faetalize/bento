@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use niri::animation::Clock;
 use niri::layout::{ActivateWindow, AddWindowTarget, LayoutElement as _, Options, SizingMode};
+use niri::render_helpers::glass::GlassFrame;
 use niri::render_helpers::{RenderCtx, RenderTarget};
 use niri_config::{Color, OutputName};
 use smithay::backend::renderer::element::RenderElement;
@@ -263,6 +264,7 @@ impl TestCase for Layout {
             renderer,
             target: RenderTarget::Output,
             xray: None,
+            glass: GlassFrame::default(),
         };
         self.layout
             .monitor_for_output(&self.output)

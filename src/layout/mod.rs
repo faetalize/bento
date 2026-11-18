@@ -60,7 +60,7 @@ use self::workspace::{OutputId, Workspace};
 use crate::animation::{Animation, Clock};
 use crate::input::swipe_tracker::SwipeTracker;
 use crate::niri_render_elements;
-use crate::render_helpers::background_effect::BackgroundEffectElement;
+use crate::render_helpers::background_effect::{BackgroundEffectElement, CapturedEffect};
 use crate::render_helpers::offscreen::OffscreenData;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::snapshot::RenderSnapshot;
@@ -203,18 +203,21 @@ pub trait LayoutElement {
     /// Renders the background effect behind the main surface of the element, also cut to `clip`
     /// if it's given, a rounded rectangle in the same space as `geometry`.
     #[allow(clippy::too_many_arguments)]
-    fn render_background_effect(
+    /// The window's background effect, for a tile whose window has its geometry at `geometry`,
+    /// ready to draw on the screen apart from the window, as when the window is drawn through a
+    /// buffer, or after it's gone, under its closing animation.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_background_effect(
         &self,
-        _ctx: RenderCtx<GlesRenderer>,
         _geometry: Rectangle<f64, Logical>,
         _scale: f64,
         _clip_to_geometry: bool,
         _surface_anim_scale: Scale<f64>,
         _radius: CornerRadius,
+        _should_block_out: bool,
         _clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
-        _xray_pos: XrayPos,
-        _push: &mut dyn FnMut(BackgroundEffectElement),
-    ) {
+    ) -> Option<CapturedEffect> {
+        None
     }
 
     /// Requests the element to change its size.
@@ -3658,7 +3661,10 @@ impl<W: LayoutElement> Layout<W> {
                     pointer_ratio_within_window,
                 });
 
-                if !is_floating && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
+                // A tiled window holds its place until the pointer is well away; a free one comes
+                // along at once, like a floating one.
+                let free = is_floating || tiling::engine::free_drag_enabled();
+                if !free && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
                     return true;
                 }
 
@@ -3741,7 +3747,7 @@ impl<W: LayoutElement> Layout<W> {
                     for ws in self.workspaces_mut() {
                         ws.dnd_scroll_gesture_end();
                     }
-                } else {
+                } else if !tiling::engine::free_drag_enabled() {
                     // Animate to semitransparent.
                     tile.animate_alpha(
                         1.,
@@ -3902,12 +3908,14 @@ impl<W: LayoutElement> Layout<W> {
                 ws.dnd_scroll_gesture_end();
             }
 
-            // Also animate the tile back to opaque.
-            move_.tile.animate_alpha(
-                INTERACTIVE_MOVE_ALPHA,
-                1.,
-                self.options.animations.window_movement.0,
-            );
+            // Also animate the tile back to opaque, if it went see-through.
+            if !tiling::engine::free_drag_enabled() {
+                move_.tile.animate_alpha(
+                    INTERACTIVE_MOVE_ALPHA,
+                    1.,
+                    self.options.animations.window_movement.0,
+                );
+            }
         }
 
         // Dragging in the overview shouldn't switch the workspace and so on.

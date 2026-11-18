@@ -23,6 +23,7 @@ use solid_color::{SolidColorBuffer, SolidColorRenderElement};
 
 use self::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use self::texture::{TextureBuffer, TextureRenderElement};
+use crate::render_helpers::glass::GlassFrame;
 use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::xray::Xray;
 
@@ -34,6 +35,7 @@ pub mod damage;
 pub mod debug;
 pub mod effect_buffer;
 pub mod framebuffer_effect;
+pub mod glass;
 pub mod gradient_fade_texture;
 pub mod memory;
 pub mod offscreen;
@@ -58,6 +60,8 @@ pub struct RenderCtx<'a, R> {
     pub renderer: &'a mut R,
     pub target: RenderTarget,
     pub xray: Option<&'a Xray>,
+    /// What glass takes from outside its config.
+    pub glass: GlassFrame,
 }
 
 impl<'a, R> RenderCtx<'a, R> {
@@ -68,6 +72,7 @@ impl<'a, R> RenderCtx<'a, R> {
             renderer: self.renderer,
             target: self.target,
             xray: self.xray,
+            glass: self.glass,
         }
     }
 }
@@ -78,6 +83,7 @@ impl<'a, R: AsGlesRenderer> RenderCtx<'a, R> {
             renderer: self.renderer.as_gles_renderer(),
             target: self.target,
             xray: self.xray,
+            glass: self.glass,
         }
     }
 }

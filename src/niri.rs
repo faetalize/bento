@@ -161,6 +161,7 @@ use crate::layout::{
     HitType, Layout, LayoutElement as _, LayoutElementRenderElement, MonitorRenderElement, NodeHit,
 };
 use crate::niri_render_elements;
+use crate::protocols::bento_shell::BentoShellState;
 use crate::protocols::ext_workspace::{self, ExtWorkspaceManagerState};
 use crate::protocols::foreign_toplevel::{self, ForeignToplevelManagerState};
 use crate::protocols::gamma_control::GammaControlManagerState;
@@ -169,6 +170,9 @@ use crate::protocols::output_management::OutputManagementManagerState;
 use crate::protocols::screencopy::{Screencopy, ScreencopyBuffer, ScreencopyManagerState};
 use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::debug::push_opaque_regions;
+#[cfg(feature = "dbus")]
+use crate::render_helpers::glass;
+use crate::render_helpers::glass::GlassFrame;
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::solid_color::{SolidColorBuffer, SolidColorRenderElement};
@@ -194,8 +198,8 @@ use crate::utils::vblank_throttle::VBlankThrottle;
 use crate::utils::watcher::Watcher;
 use crate::utils::xwayland::satellite::Satellite;
 use crate::utils::{
-    center, center_f64, get_monotonic_time, ipc_transform_to_smithay, is_mapped, logical_output,
-    make_screenshot_path, output_matches_name, output_size, panel_orientation,
+    center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
+    logical_output, make_screenshot_path, output_matches_name, output_size, panel_orientation,
     send_scale_transform, winit_scale, write_png_rgba8, xwayland,
 };
 use crate::wallpaper::Wallpapers;
@@ -230,6 +234,13 @@ pub struct Niri {
     pub config_file_watcher: Option<Watcher>,
 
     pub event_loop: LoopHandle<'static, State>,
+    /// bento's own shell, while the config turns it on.
+    pub scene: Option<crate::scene::host::SceneHost>,
+    /// The frames that took bento's main thread longer than their output has, since they were
+    /// last told in the log.
+    slow_frames: SlowFrames,
+    /// The timer that wakes bento for the shell's next timer, and when.
+    scene_timer: Option<(Instant, RegistrationToken)>,
     pub scheduler: Scheduler<()>,
     pub stop_signal: LoopSignal,
     pub display_handle: DisplayHandle,
@@ -309,6 +320,8 @@ pub struct Niri {
     // Smithay state.
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    /// Whether apps are told they can ask to minimize, which follows the layout engine.
+    pub wm_minimize: bool,
     pub xdg_decoration_state: XdgDecorationState,
     pub kde_decoration_state: KdeDecorationState,
     pub layer_shell_state: WlrLayerShellState,
@@ -350,6 +363,9 @@ pub struct Niri {
     pub gamma_control_manager_state: GammaControlManagerState,
     pub activation_state: XdgActivationState,
     pub mutter_x11_interop_state: MutterX11InteropManagerState,
+    pub bento_shell_state: BentoShellState,
+    /// The shell bento starts.
+    pub shell: crate::shell::Shell,
 
     // This will not work as is outside of tests, so it is gated with #[cfg(test)] for now. In
     // particular, shaders will need to learn about the single pixel buffer. Also, it must be
@@ -384,6 +400,9 @@ pub struct Niri {
     /// it knows them by.
     pub engine_timers: HashMap<(u64, u64), RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
+    /// Whether the keyboard focus is on something above bento's own shell, which then gets the
+    /// keys even if the shell wants them.
+    pub focus_above_shell: bool,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
     pub is_fdo_idle_inhibited: Arc<AtomicBool>,
@@ -611,6 +630,26 @@ pub enum KeyboardFocus {
     Mru,
 }
 
+/// Frames that took longer than their output has for one.
+struct SlowFrames {
+    since: Instant,
+    count: u32,
+    /// The longest: what the shell took of it, and what drawing did.
+    worst: (Duration, Duration),
+    output: String,
+}
+
+impl SlowFrames {
+    fn new(since: Instant) -> Self {
+        Self {
+            since,
+            count: 0,
+            worst: (Duration::ZERO, Duration::ZERO),
+            output: String::new(),
+        }
+    }
+}
+
 #[derive(Default, Clone, PartialEq)]
 pub struct PointContents {
     // Output under point.
@@ -631,6 +670,11 @@ pub struct PointContents {
     // If the point is over a node that the tiling layout draws, which takes the pointer from the
     // windows below it, this is that node.
     pub node: Option<NodeHit>,
+    // If the point is over bento's own shell, the output's name and the point on it.
+    pub shell: Option<(String, [f32; 2])>,
+    // Point is over something above bento's own shell: an overlay surface, or one of bento's own
+    // screens. A press there isn't one on the desktop around what the shell shows.
+    pub above_shell: bool,
 }
 
 /// A press on a node that the tiling layout draws, by a mouse button, a touch or a tablet tool's
@@ -920,6 +964,7 @@ impl State {
 
         self.niri.refresh_window_rules();
         self.refresh_ipc_outputs();
+        self.run_scene_actions();
         self.ipc_refresh();
 
         // Needs to be called after updating the keyboard focus.
@@ -1278,6 +1323,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, false);
+        self.niri.update_shell_hover(&under, location);
 
         pointer.motion(
             self,
@@ -1449,8 +1495,10 @@ impl State {
             KeyboardFocus::LockScreen { .. } => KeyboardOwner::LockScreen,
             _ => KeyboardOwner::Other,
         });
-        // While it holds the keyboard, the apps have no focus.
-        let withheld = self.niri.layout.keyboard_grabbed();
+        // What's above bento's own shell takes the keyboard from it.
+        self.niri.focus_above_shell = self.niri.is_above_shell(&focus);
+        // While it holds the keyboard, or bento's own shell does, the apps have no focus.
+        let withheld = self.niri.keyboard_held();
 
         let keyboard = self.niri.seat.get_keyboard().unwrap();
         if self.niri.keyboard_focus != focus {
@@ -1757,6 +1805,7 @@ impl State {
         }
 
         self.niri.layout.update_config(&config);
+        self.niri.sync_wm_capabilities();
         if let Err(problems) = crate::layout::tiling::engine::check(&config) {
             for problem in problems {
                 warn!("{problem}");
@@ -1997,6 +2046,8 @@ impl State {
         if recent_windows_changed {
             self.niri.window_mru_ui.update_config();
         }
+
+        self.niri.update_shell();
 
         if xwls_changed {
             // If xwl-s was previously working and is now off, we don't try to kill it or stop
@@ -2379,6 +2430,7 @@ impl State {
                     target: RenderTarget::Output,
                     renderer,
                     xray: None,
+                    glass: GlassFrame::default(),
                 };
 
                 self.niri.fill_xray_elements(ctx.r(), output);
@@ -2530,11 +2582,39 @@ impl State {
 
     #[cfg(feature = "dbus")]
     pub fn on_portal_settings_msg(&mut self, msg: PortalSettingsToNiri) {
-        let PortalSettingsToNiri::IconTheme(theme) = msg;
+        match msg {
+            PortalSettingsToNiri::IconTheme(theme) => {
+                trace!("portal icon theme: {theme:?}");
+                self.niri.icon_theme.set_portal(theme);
+                self.apply_icon_theme();
+            }
+            PortalSettingsToNiri::AccentColor(color) => {
+                trace!("portal accent colour: {color:?}");
+                if glass::set_accent(color) {
+                    self.niri.queue_redraw_all();
+                }
+            }
+            PortalSettingsToNiri::Dark(dark) => {
+                trace!("portal dark style: {dark}");
+                if glass::set_dark(dark) {
+                    self.niri.queue_redraw_all();
+                }
+            }
+        }
+    }
 
-        trace!("portal icon theme: {theme:?}");
-        self.niri.icon_theme.set_portal(theme);
-        self.apply_icon_theme();
+    /// Draws glass with the config's debug glass shader, if it names one and its file changed, or
+    /// with bento's own again once it doesn't.
+    fn follow_glass_shader(&mut self) {
+        let path = self.niri.config.borrow().debug.glass_shader.clone();
+        let path = path.map(|path| expand_home(&path).ok().flatten().unwrap_or(path));
+        let mut swapped = false;
+        self.backend.with_primary_renderer(|renderer| {
+            swapped = shaders::follow_glass_shader(renderer, path.as_deref());
+        });
+        if swapped {
+            self.niri.queue_redraw_all();
+        }
     }
 
     /// Gives the layout the icon theme that applies now, so that the engines' images follow it.
@@ -2561,6 +2641,31 @@ impl State {
 
         let xkb = xkb.clone();
         self.set_xkb_config(xkb.to_xkb_config());
+    }
+}
+
+impl State {
+    /// Runs the bento actions that bento's own shell asked for.
+    fn run_scene_actions(&mut self) {
+        let Some(scene) = &self.niri.scene else {
+            return;
+        };
+        for request in scene.take_actions() {
+            let request = crate::ipc::action::ActionRequest {
+                name: request["name"].as_str().unwrap_or_default().to_owned(),
+                args: request["args"].as_array().cloned().unwrap_or_default(),
+                properties: request["properties"]
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+                window: request["window"].as_u64(),
+                workspace: request["workspace"].as_u64(),
+            };
+            match crate::ipc::action::parse(request, crate::layout::tiling::engine::action_args) {
+                Ok(action) => self.do_action(action, false),
+                Err(err) => warn!("the shell asked for an action that isn't one: {err}"),
+            }
+        }
     }
 }
 
@@ -2605,9 +2710,10 @@ impl Niri {
         }
 
         let compositor_state = CompositorState::new_v6::<State>(&display_handle);
+        let wm_minimize = crate::layout::tiling::engine::minimize_enabled();
         let xdg_shell_state = XdgShellState::new_with_capabilities::<State>(
             &display_handle,
-            [WmCapabilities::Fullscreen, WmCapabilities::Maximize],
+            wm_capabilities(wm_minimize),
         );
         let xdg_decoration_state =
             XdgDecorationState::new_with_filter::<State, _>(&display_handle, |client| {
@@ -2723,6 +2829,9 @@ impl Niri {
 
         let mutter_x11_interop_state =
             MutterX11InteropManagerState::new::<State, _>(&display_handle, move |_| true);
+        let bento_shell_state =
+            BentoShellState::new::<State, _>(&display_handle, crate::shell::Shell::is_shell);
+        let shell = crate::shell::Shell::new(&event_loop);
 
         #[cfg(test)]
         let single_pixel_buffer_state = SinglePixelBufferState::new::<State>(&display_handle);
@@ -2791,6 +2900,17 @@ impl Niri {
                 |_, _, state| {
                     state.niri.send_frame_callbacks_on_fallback_timer();
                     TimeoutAction::ToDuration(Duration::from_secs(1))
+                },
+            )
+            .unwrap();
+
+        // A glass shader from the config's debug section is compiled again when its file changes.
+        event_loop
+            .insert_source(
+                Timer::from_duration(Duration::from_millis(500)),
+                |_, _, state| {
+                    state.follow_glass_shader();
+                    TimeoutAction::ToDuration(Duration::from_millis(500))
                 },
             )
             .unwrap();
@@ -2864,6 +2984,9 @@ impl Niri {
             config_file_watcher: None,
 
             event_loop,
+            scene: None,
+            slow_frames: SlowFrames::new(Instant::now()),
+            scene_timer: None,
             scheduler,
             stop_signal,
             socket_name,
@@ -2894,6 +3017,7 @@ impl Niri {
 
             compositor_state,
             xdg_shell_state,
+            wm_minimize,
             xdg_decoration_state,
             kde_decoration_state,
             layer_shell_state,
@@ -2948,11 +3072,14 @@ impl Niri {
             gamma_control_manager_state,
             activation_state,
             mutter_x11_interop_state,
+            bento_shell_state,
+            shell,
             #[cfg(test)]
             single_pixel_buffer_state,
 
             seat,
             keyboard_focus: KeyboardFocus::Layout { surface: None },
+            focus_above_shell: false,
             layer_shell_on_demand_focus: None,
             idle_inhibiting_surfaces: HashSet::new(),
             is_fdo_idle_inhibited: Arc::new(AtomicBool::new(false)),
@@ -3048,6 +3175,7 @@ impl Niri {
             primary_selection_disabled: config.clipboard.disable_primary,
             restricted,
             credentials_unknown,
+            shell: None,
         });
 
         if let Err(err) = self.display_handle.insert_client(client, data) {
@@ -3704,8 +3832,10 @@ impl Niri {
         // consistent with the visuals.
 
         if self.exit_confirm_dialog.is_open() {
+            rv.above_shell = true;
             return rv;
         } else if self.is_locked() {
+            rv.above_shell = true;
             let Some(state) = self.output_state.get(output) else {
                 return rv;
             };
@@ -3731,6 +3861,7 @@ impl Niri {
         }
 
         if self.screenshot_ui.is_open() || self.window_mru_ui.is_open() {
+            rv.above_shell = true;
             return rv;
         }
 
@@ -3816,14 +3947,31 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
+        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
+        let shell_under = || {
+            let name = output.name();
+            let point = [pos_within_output.x as f32, pos_within_output.y as f32];
+            self.scene
+                .as_ref()
+                .filter(|scene| scene.covers(&name, point))
+                .map(|_| (name, point))
+        };
+
         let mut under =
             layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
+        rv.above_shell = under.is_some();
 
         let is_overview_open = self.layout.is_overview_open();
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
+            if under.is_none() {
+                if let Some(hit) = shell_under() {
+                    rv.shell = Some(hit);
+                    return rv;
+                }
+            }
             under = under
                 .or_else(interactive_moved_window_under)
                 .or_else(node_under)
@@ -3839,6 +3987,13 @@ impl Niri {
                 rv.overview = is_overview_open;
                 rv.hot_corner = true;
                 return rv;
+            }
+
+            if under.is_none() {
+                if let Some(hit) = shell_under() {
+                    rv.shell = Some(hit);
+                    return rv;
+                }
             }
 
             under = under
@@ -3889,6 +4044,85 @@ impl Niri {
 
     /// Tells the nodes that the tiling layout draws where the pointer is: the ones it left and
     /// entered, and with `moved`, the one it's on.
+    /// Tells bento's own shell where the pointer is over it, if it is, and shows the pointer as it
+    /// says there.
+    pub fn update_shell_hover(&mut self, under: &PointContents, pos: Point<f64, Logical>) {
+        // Where the pointer is on its output, for what in the shell hears it near, whatever is
+        // under it there, unless that's above the shell.
+        let at = (under.output.is_some() && !under.above_shell)
+            .then(|| self.output_under(pos))
+            .flatten()
+            .map(|(output, point)| (output.name(), [point.x as f32, point.y as f32]));
+        let Some(scene) = &mut self.scene else { return };
+        if scene.pointer_at(at.as_ref().map(|(name, point)| (name.as_str(), *point))) {
+            self.queue_redraw_all();
+        }
+        let Some(scene) = &mut self.scene else { return };
+        let was_over = scene.pointer_over();
+        let at = under
+            .shell
+            .as_ref()
+            .map(|(name, point)| (name.as_str(), *point));
+        let cursor = scene.pointer_moved(at);
+        if let Some(cursor) = cursor {
+            let icon = match cursor.as_str() {
+                "pointer" => CursorIcon::Pointer,
+                "text" => CursorIcon::Text,
+                "grab" => CursorIcon::Grab,
+                _ => CursorIcon::Default,
+            };
+            self.cursor_manager
+                .set_cursor_image(CursorImageStatus::Named(icon));
+            self.queue_redraw_all();
+        } else if was_over {
+            // What's under takes the pointer back, and shows its own when it gets it.
+            self.cursor_manager
+                .set_cursor_image(CursorImageStatus::default_named());
+            self.queue_redraw_all();
+        }
+    }
+
+    /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps. It holds
+    /// it from what's below it: the windows and the layers under the overlay one.
+    pub fn shell_holds_keyboard(&self) -> bool {
+        !self.is_locked()
+            && !self.focus_above_shell
+            && self.scene.as_ref().is_some_and(|s| s.wants_keyboard())
+    }
+
+    /// Whether `focus` is on something drawn above bento's own shell: an overlay surface, or one
+    /// of bento's own screens.
+    fn is_above_shell(&self, focus: &KeyboardFocus) -> bool {
+        match focus {
+            KeyboardFocus::Layout { .. } | KeyboardFocus::Overview => false,
+            KeyboardFocus::LayerShell { surface } => self.global_space.outputs().any(|output| {
+                layer_map_for_output(output)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .is_some_and(|layer| layer.layer() == Layer::Overlay)
+            }),
+            KeyboardFocus::LockScreen { .. }
+            | KeyboardFocus::ScreenshotUi
+            | KeyboardFocus::ExitConfirmDialog
+            | KeyboardFocus::Mru => true,
+        }
+    }
+
+    /// Whether the keyboard is held from the apps, by the shell or the layout engine.
+    pub fn keyboard_held(&self) -> bool {
+        self.shell_holds_keyboard() || self.layout.keyboard_grabbed()
+    }
+
+    /// Gives a key to what holds the keyboard: bento's own shell, or the layout engine.
+    pub fn deliver_held_key(&mut self, key: crate::layout::tiling::host::EngineKey) {
+        if self.shell_holds_keyboard() {
+            if let Some(scene) = &self.scene {
+                scene.key(&key);
+            }
+        } else {
+            self.layout.engine_key(key);
+        }
+    }
+
     pub fn update_node_hover(&mut self, under: &PointContents, moved: bool) {
         let modifiers = self.node_modifiers();
         if moved {
@@ -4776,10 +5010,297 @@ impl Niri {
         let mut ctx = ctx.r();
         let state = self.output_state.get(output).unwrap();
         ctx.xray = Some(&state.xray);
+        ctx.glass = self.glass_frame(output);
 
         self.render_inner(ctx, output, include_pointer, push);
 
         self.clear_xray_elements(output);
+    }
+
+    /// What glass on `output` takes from it: the pointer while it shows, which carries a light.
+    /// Tells apps whether they can ask to minimize, after the layout engine changed: only a layout
+    /// that minimizes windows hears them ask, and GTK shows a minimize button only when they can.
+    pub fn sync_wm_capabilities(&mut self) {
+        let minimize = crate::layout::tiling::engine::minimize_enabled();
+        if minimize == self.wm_minimize {
+            return;
+        }
+        self.wm_minimize = minimize;
+        let capabilities = wm_capabilities(minimize);
+        self.xdg_shell_state
+            .replace_capabilities(capabilities.clone());
+        for toplevel in self.xdg_shell_state.toplevel_surfaces() {
+            toplevel.with_pending_state(|state| state.capabilities.replace(capabilities.clone()));
+        }
+        // Windows not yet configured get them with their first configure.
+        self.layout
+            .with_windows_mut(|mapped, _| mapped.set_needs_configure());
+    }
+
+    /// Starts the shell's data program, `bento-shell --data`, and hands what it says to the shell.
+    fn start_scene_data(&mut self) {
+        use std::io::Read as _;
+
+        let Some(scene) = &mut self.scene else { return };
+        let spawned = crate::utils::spawning::kept("bento-shell")
+            .arg("--data")
+            .spawn();
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(err) => {
+                warn!("error starting the shell's data program: {err:?}");
+                scene.data_ended(Instant::now());
+                return;
+            }
+        };
+        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+            return;
+        };
+        // A file reads from a shared reference, which the event loop gives.
+        let stdout = std::fs::File::from(std::os::fd::OwnedFd::from(stdout));
+        let _ = smithay::reexports::rustix::fs::fcntl_setfl(
+            &stdout,
+            smithay::reexports::rustix::fs::OFlags::NONBLOCK,
+        );
+        scene.data_started(child, stdin);
+
+        let mut pending: Vec<u8> = Vec::new();
+        let source = Generic::new(stdout, Interest::READ, Mode::Level);
+        let res = self
+            .event_loop
+            .insert_source(source, move |_, stdout, state| {
+                let mut chunk = [0; 16384];
+                let mut ended = false;
+                loop {
+                    match (&**stdout).read(&mut chunk) {
+                        Ok(0) => {
+                            ended = true;
+                            break;
+                        }
+                        Ok(n) => pending.extend_from_slice(&chunk[..n]),
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            ended = true;
+                            break;
+                        }
+                    }
+                }
+                let Some(scene) = &mut state.niri.scene else {
+                    return Ok(PostAction::Remove);
+                };
+                while let Some(end) = pending.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=end).collect();
+                    scene.data_line(&String::from_utf8_lossy(&line));
+                }
+                if ended {
+                    scene.data_ended(Instant::now());
+                }
+                state.niri.queue_redraw_all();
+                Ok(if ended {
+                    PostAction::Remove
+                } else {
+                    PostAction::Continue
+                })
+            });
+        if let Err(err) = res {
+            warn!("error reading the shell's data program: {err:?}");
+        }
+    }
+
+    /// Moves bento's own shell on and draws `output`'s part of it, and says whether it's still
+    /// moving.
+    fn update_scene(&mut self, backend: &mut Backend, output: &Output) -> bool {
+        let outputs: Vec<(String, (f32, f32))> = self
+            .global_space
+            .outputs()
+            .map(|o| {
+                let size = output_size(o);
+                (o.name(), (size.w as f32, size.h as f32))
+            })
+            .collect();
+        let mut workspaces = serde_json::Map::new();
+        // Which outputs show a fullscreen window. The overview shows the desktop around it.
+        let mut fullscreen = serde_json::Map::new();
+        let mut minimap = serde_json::Map::new();
+        let overview = self.layout.is_overview_open();
+        let focused_output = self.layout.active_output().map(|o| o.name());
+        for (mon, index, ws) in self.layout.workspaces() {
+            let Some(mon) = mon else { continue };
+            if mon.active_workspace_idx() == index {
+                fullscreen.insert(
+                    mon.output_name().clone(),
+                    serde_json::Value::Bool(!overview && ws.shows_fullscreen()),
+                );
+                // Where its tiles sit around the view, for a minimap: where they're headed, so
+                // that a move tells the shell once and the shell moves there itself.
+                let active = ws.active_window().map(|win| win.id().get());
+                let tiles: Vec<serde_json::Value> = ws
+                    .tiles_with_ipc_layouts()
+                    .filter_map(|(tile, layout)| {
+                        let (x, y) = layout.tile_pos_in_workspace_view?;
+                        let (w, h) = layout.tile_size;
+                        let id = tile.window().id().get();
+                        Some(serde_json::json!({
+                            "id": id, "x": x, "y": y, "w": w, "h": h,
+                            "active": Some(id) == active,
+                            "floating": ws.is_floating(&tile.window().window),
+                        }))
+                    })
+                    .collect();
+                let view = ws.view_size();
+                minimap.insert(
+                    mon.output_name().clone(),
+                    serde_json::json!({ "view": [view.w, view.h], "tiles": tiles }),
+                );
+            }
+            let list = workspaces
+                .entry(mon.output_name().clone())
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+            if let serde_json::Value::Array(list) = list {
+                list.push(serde_json::json!({
+                    "index": index,
+                    "name": ws.name(),
+                    "active": mon.active_workspace_idx() == index,
+                    "focused": mon.active_workspace_idx() == index
+                        && Some(mon.output_name()) == focused_output.as_ref(),
+                    "id": ws.id().get(),
+                }));
+            }
+        }
+        let (slowdown, response) = {
+            let config = self.config.borrow();
+            // The shell moves as windows do.
+            let response = match config.animations.window_movement.0.kind {
+                niri_config::animations::Kind::Spring(spring) => {
+                    std::f64::consts::TAU / f64::from(spring.stiffness.max(1)).sqrt()
+                }
+                niri_config::animations::Kind::Easing(easing) => {
+                    f64::from(easing.duration_ms.max(1)) / 1000.
+                }
+            };
+            (
+                (!config.animations.off).then_some(config.animations.slowdown),
+                response,
+            )
+        };
+
+        let dir = self.config.borrow().debug.shell_scripts.clone();
+        let dir = dir.map(|dir| {
+            crate::utils::expand_home(&dir)
+                .ok()
+                .flatten()
+                .unwrap_or(dir)
+        });
+        let style = self.shell_style();
+        // What the config sets for the shell rides along with the style, and scripts hear of
+        // either changing.
+        let settings = {
+            let config = self.config.borrow();
+            let shell = config.shell.clone().unwrap_or_default();
+            let command = |c: Option<niri_config::ShellCommand>| {
+                c.filter(|c| c.command.as_deref().is_some_and(|c| !c.trim().is_empty()))
+                    .map(|c| {
+                        serde_json::json!({
+                            "command": c.command,
+                            "notification": c.notification.filter(|t| !t.trim().is_empty()),
+                            "body": c.notification_body,
+                        })
+                    })
+            };
+            let location = &config.location;
+            let place = location.latitude.zip(location.longitude).map(|(lat, lon)| {
+                serde_json::json!({
+                    "name": location.name, "latitude": lat.0, "longitude": lon.0,
+                })
+            });
+            serde_json::json!({
+                "location": place,
+                "fahrenheit": shell.fahrenheit,
+                "screenshot": command(shell.screenshot),
+                "screenRecord": command(shell.screen_record),
+            })
+        };
+        let style = serde_json::json!({
+            "gaps": style.gaps,
+            "cornerRadius": style.corner_radius,
+            "animations": style.animations,
+            "slowdown": style.slowdown,
+            "response": response,
+            "config": settings,
+        });
+        let scene = self.scene.get_or_insert_with(Default::default);
+        scene.ensure_loaded(&outputs, dir.as_deref(), style);
+        scene.set_workspaces(serde_json::Value::Object(workspaces));
+        scene.set_fullscreen(serde_json::Value::Object(fullscreen));
+        scene.set_minimap(serde_json::Value::Object(minimap));
+        let moving = scene.advance_with(Instant::now(), slowdown, response);
+        let activation = &mut self.activation_state;
+        scene.send_commands(|| activation.create_external_token(None).0.to_string());
+        if scene.wants_data_program(Instant::now()) {
+            self.start_scene_data();
+        }
+        let scene = self.scene.as_mut().unwrap();
+
+        // Windows stay out of what the shell keeps along the outputs' edges.
+        let reserved: Vec<(Output, [f64; 4])> = self
+            .global_space
+            .outputs()
+            .map(|o| (o.clone(), scene.reserved(&o.name()).map(f64::from)))
+            .collect();
+        for (o, edges) in reserved {
+            if crate::scene::host::set_reserved_on(&o, edges) {
+                self.layout.update_output_size(&o);
+                self.queue_redraw(&o);
+            }
+        }
+        let scene = self.scene.as_mut().unwrap();
+
+        let scale = output.current_scale().fractional_scale();
+        let size: Size<i32, Physical> = output_size(output).to_physical_precise_round(scale);
+        let size = (size.w.max(1) as u32, size.h.max(1) as u32);
+        let node = backend.primary_render_node();
+        let name = output.name();
+        let theme = self.icon_theme.name().to_owned();
+        let came = backend.with_primary_renderer(|renderer| {
+            scene.prepare(renderer, node, &name, size, scale, &theme)
+        });
+        // Icons and images that were loading are there: every output that shows them draws them.
+        if came == Some(true) {
+            self.queue_redraw_all();
+        }
+        let scene = self.scene.as_mut().unwrap();
+        // While some still load, the scene keeps looking for them, frame by frame.
+        let moving = moving || scene.loading();
+
+        // Wakes up for the shell's next timer.
+        let next = scene.next_timer();
+        if next != self.scene_timer.as_ref().map(|(at, _)| *at) {
+            if let Some((_, token)) = self.scene_timer.take() {
+                self.event_loop.remove(token);
+            }
+            if let Some(at) = next {
+                let token = self
+                    .event_loop
+                    .insert_source(Timer::from_deadline(at), |_, _, state| {
+                        state.niri.scene_timer = None;
+                        state.niri.queue_redraw_all();
+                        TimeoutAction::Drop
+                    })
+                    .unwrap();
+                self.scene_timer = Some((at, token));
+            }
+        }
+        moving
+    }
+
+    fn glass_frame(&self, output: &Output) -> GlassFrame {
+        let pointer = self
+            .pointer_visibility
+            .is_visible()
+            .then(|| self.global_space.output_geometry(output))
+            .flatten()
+            .map(|geo| self.seat.get_pointer().unwrap().current_location() - geo.loc.to_f64());
+        GlassFrame { pointer }
     }
 
     fn render_inner<R: NiriRenderer>(
@@ -4948,6 +5469,22 @@ impl Niri {
         // The overlay layer elements go next.
         push_popups_from_layer!(Layer::Overlay);
         push_normal_from_layer!(Layer::Overlay);
+
+        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
+        // Showing nothing, it pushes nothing, so a fullscreen window can still go straight to the
+        // display.
+        if let Some(scene) = &self.scene {
+            let blur = self.config.borrow().blur;
+            let name = output.name();
+            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Scene(elem)));
+            scene.render_glass(
+                &name,
+                output_scale.x,
+                blur,
+                self.glass_frame(output),
+                &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
+            );
+        }
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
@@ -5176,6 +5713,40 @@ impl Niri {
         }
     }
 
+    /// Notes how long bento's main thread spent on a frame for `output`, on its own shell and on
+    /// drawing, and says in the log, at most once a second, when frames took longer than the
+    /// output gives them: those are the frames that show late.
+    fn note_frame_time(&mut self, output: &Output, shell: Duration, drawing: Duration) {
+        let has = output
+            .current_mode()
+            .filter(|mode| mode.refresh > 0)
+            .map_or(Duration::from_millis(16), |mode| {
+                Duration::from_secs_f64(1000. / f64::from(mode.refresh))
+            });
+        let now = Instant::now();
+        let slow = &mut self.slow_frames;
+        if shell + drawing > has {
+            slow.count += 1;
+            if shell + drawing > slow.worst.0 + slow.worst.1 {
+                slow.worst = (shell, drawing);
+                slow.output = output.name();
+            }
+        }
+        if slow.count > 0 && now.duration_since(slow.since) >= Duration::from_secs(1) {
+            debug!(
+                "{} frames took longer than their output has for one; the longest, on {}: {:.1} ms \
+                 for the shell and {:.1} ms for drawing",
+                slow.count,
+                slow.output,
+                slow.worst.0.as_secs_f64() * 1000.,
+                slow.worst.1.as_secs_f64() * 1000.,
+            );
+            *slow = SlowFrames::new(now);
+        } else if slow.count == 0 {
+            slow.since = now;
+        }
+    }
+
     fn redraw(&mut self, backend: &mut Backend, output: &Output) {
         let _span = tracy_client::span!("Niri::redraw");
 
@@ -5197,6 +5768,7 @@ impl Niri {
         self.update_render_elements(Some(output));
 
         let mut res = RenderResult::Skipped;
+        let mut shell_took = Duration::ZERO;
         if self.monitors_active {
             let state = self.output_state.get_mut(output).unwrap();
             state.unfinished_animations_remain = self.layout.are_animations_ongoing(Some(output));
@@ -5212,6 +5784,30 @@ impl Niri {
                 .cursor_manager
                 .is_current_cursor_animated(output.current_scale().integer_scale());
 
+            // Also bento's own shell.
+            let built_in = self
+                .config
+                .borrow()
+                .shell
+                .as_ref()
+                .is_some_and(|s| s.built_in());
+            if built_in {
+                let started = Instant::now();
+                let moving = self.update_scene(backend, output);
+                shell_took = started.elapsed();
+                let state = self.output_state.get_mut(output).unwrap();
+                state.unfinished_animations_remain |= moving;
+            } else if self.scene.take().is_some() {
+                // Without the shell, windows get its edges back.
+                let outputs: Vec<Output> = self.global_space.outputs().cloned().collect();
+                for o in outputs {
+                    if crate::scene::host::set_reserved_on(&o, [0.; 4]) {
+                        self.layout.update_output_size(&o);
+                    }
+                }
+            }
+            let state = self.output_state.get_mut(output).unwrap();
+
             // Also check layer surfaces.
             if !state.unfinished_animations_remain {
                 state.unfinished_animations_remain |= layer_map_for_output(output)
@@ -5221,7 +5817,9 @@ impl Niri {
             }
 
             // Render.
+            let started = Instant::now();
             res = backend.render(self, output, target_presentation_time);
+            self.note_frame_time(output, shell_took, started.elapsed());
         }
 
         let is_locked = self.is_locked();
@@ -5896,6 +6494,7 @@ impl Niri {
                         renderer,
                         target: RenderTarget::ScreenCapture,
                         xray: None,
+                        glass: GlassFrame::default(),
                     };
                     let offset = screencopy.region_loc().upscale(-1);
                     let mut elements = Vec::new();
@@ -5974,6 +6573,7 @@ impl Niri {
             renderer,
             target: RenderTarget::ScreenCapture,
             xray: None,
+            glass: GlassFrame::default(),
         };
         let offset = screencopy.region_loc().upscale(-1);
         let mut elements = Vec::new();
@@ -6061,6 +6661,7 @@ impl Niri {
                     renderer: &mut *renderer,
                     target: RenderTarget::ScreenCapture,
                     xray: None,
+                    glass: GlassFrame::default(),
                 };
                 let mut elements = Vec::new();
                 self.render(ctx, output, draw_cursor, &mut |elem| {
@@ -6493,6 +7094,7 @@ impl Niri {
                     renderer,
                     target,
                     xray: None,
+                    glass: GlassFrame::default(),
                 };
                 let elements = self.render_to_vec(ctx, &output, false);
                 let elements = elements.iter().rev();
@@ -6575,6 +7177,7 @@ impl Niri {
             renderer,
             target: RenderTarget::ScreenCapture,
             xray: None,
+            glass: GlassFrame::default(),
         };
         let elements = self.render_to_vec(ctx, output, include_pointer);
         let elements = elements.iter().rev();
@@ -6630,6 +7233,7 @@ impl Niri {
             renderer,
             target: RenderTarget::ScreenCapture,
             xray: None,
+            glass: GlassFrame::default(),
         };
         mapped.render(
             ctx,
@@ -6808,6 +7412,7 @@ impl Niri {
                 renderer,
                 target: RenderTarget::ScreenCapture,
                 xray: None,
+                glass: GlassFrame::default(),
             };
             let elements = self.render_to_vec(ctx, output, include_pointer);
 
@@ -7309,8 +7914,9 @@ impl Niri {
         }
     }
 
+    /// Focuses what the pointer came onto, when the layout engine asks for focus to follow it.
     pub fn handle_focus_follows_mouse(&mut self, new_focus: &PointContents) {
-        let Some(ffm) = self.config.borrow().input.focus_follows_mouse else {
+        let Some(ffm) = self.layout.focus_follows_mouse() else {
             return;
         };
 
@@ -7340,8 +7946,8 @@ impl Niri {
                     return;
                 }
 
-                if let Some(threshold) = ffm.max_scroll_amount {
-                    if self.layout.scroll_amount_to_activate(window) > threshold.0 {
+                if let Some(threshold) = ffm.max_scroll {
+                    if self.layout.scroll_amount_to_activate(window) > threshold {
                         return;
                     }
                 }
@@ -7382,6 +7988,7 @@ impl Niri {
                         renderer,
                         target,
                         xray: None,
+                        glass: GlassFrame::default(),
                     };
                     let elements = self.render_to_vec(ctx, &output, false);
                     let elements = elements.iter().rev();
@@ -7603,11 +8210,17 @@ pub struct ClientState {
     pub restricted: bool,
     /// We cannot retrieve this client's socket credentials.
     pub credentials_unknown: bool,
+    /// Set for the shell's private connection: told when it disconnects.
+    pub shell: Option<calloop::channel::Sender<ClientId>>,
 }
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, client_id: ClientId, _reason: DisconnectReason) {
+        if let Some(shell) = &self.shell {
+            let _ = shell.send(client_id);
+        }
+    }
 }
 
 fn scale_relocate_crop<E: Element>(
@@ -7657,7 +8270,18 @@ niri_render_elements! {
         WindowMruUi = WindowMruUiRenderElement<R>,
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
+        Scene = crate::scene::host::SceneElement,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }
+}
+
+/// What apps are told they can ask of their windows: fullscreen and maximize always, and minimize
+/// when the layout engine minimizes windows.
+fn wm_capabilities(minimize: bool) -> Vec<WmCapabilities> {
+    let mut capabilities = vec![WmCapabilities::Fullscreen, WmCapabilities::Maximize];
+    if minimize {
+        capabilities.push(WmCapabilities::Minimize);
+    }
+    capabilities
 }

@@ -5,11 +5,13 @@ use std::sync::Arc;
 use arrayvec::ArrayVec;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::foreign_toplevel_list::v1::server::{
-    ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1}, ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
+    ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
+    ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
 };
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_protocols_wlr::foreign_toplevel::v1::server::{
-    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1}, zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
+    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
@@ -17,15 +19,15 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
 };
-use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use smithay::wayland::shell::xdg::{
-    ToplevelState, ToplevelStateSet, XdgToplevelSurfaceRoleAttributes
+    ToplevelState, ToplevelStateSet, XdgToplevelSurfaceRoleAttributes,
 };
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 
 use crate::niri::State;
 use crate::protocols::EmptyData;
-use crate::window::mapped::MappedId;
 use crate::utils::with_toplevel_role_and_current;
+use crate::window::mapped::MappedId;
 
 const EXT_LIST_VERSION: u32 = 1;
 const WLR_MANAGEMENT_VERSION: u32 = 3;
@@ -45,6 +47,7 @@ pub trait ForeignToplevelHandler {
     fn unset_fullscreen(&mut self, wl_surface: WlSurface);
     fn set_maximized(&mut self, wl_surface: WlSurface);
     fn unset_maximized(&mut self, wl_surface: WlSurface);
+    fn minimize(&mut self, wl_surface: WlSurface);
 }
 
 struct ToplevelData {
@@ -571,8 +574,9 @@ where
             zwlr_foreign_toplevel_handle_v1::Request::UnsetMaximized => {
                 state.unset_maximized(surface)
             }
-            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized => (),
-            zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized => (),
+            zwlr_foreign_toplevel_handle_v1::Request::SetMinimized => state.minimize(surface),
+            // Bringing a minimized window back is showing and focusing it.
+            zwlr_foreign_toplevel_handle_v1::Request::UnsetMinimized => state.activate(surface),
             zwlr_foreign_toplevel_handle_v1::Request::Activate { .. } => {
                 state.activate(surface);
             }

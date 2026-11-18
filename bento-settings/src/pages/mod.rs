@@ -4,16 +4,22 @@
 mod about;
 mod account;
 mod appearance;
+mod blur;
+mod blur_live;
+mod blur_preview;
+mod control_center;
 mod engine;
 mod input;
 mod layout;
 mod layouts;
+mod location;
 mod migrate;
 mod planned;
 mod preview;
 pub mod shortcuts;
 mod system;
 mod theme;
+mod title_buttons;
 mod wallpaper;
 
 use crate::model::{Content, Section};
@@ -27,6 +33,7 @@ pub fn sections() -> Vec<Section> {
                 appearance::category(),
                 layout::category(),
                 engine::category(),
+                control_center::category(),
                 planned::workspaces(),
                 planned::window_rules(),
             ],
@@ -46,6 +53,7 @@ pub fn sections() -> Vec<Section> {
             vec![
                 planned::displays(),
                 planned::startup(),
+                location::category(),
                 system::category(),
                 about::category(),
             ],

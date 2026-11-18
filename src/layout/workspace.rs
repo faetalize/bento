@@ -494,6 +494,12 @@ impl<W: LayoutElement> Workspace<W> {
             .find_map(|id| outputs.clone().position(|output| id.matches(output)))
     }
 
+    /// Where the top-left corner of the view is on the canvas, where the camera is going while
+    /// it moves.
+    pub fn camera(&self) -> Point<f64, Logical> {
+        self.scrolling.camera_target()
+    }
+
     pub fn active_window(&self) -> Option<&W> {
         if self.floating_is_active.get() {
             self.floating.active_window()
@@ -1201,19 +1207,26 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn render_scrolling<R: NiriRenderer>(
+    /// Draws the tiled windows and what the layout draws. `elsewhere` finds a window that isn't on
+    /// this workspace by its layout id, for a copy of it.
+    pub fn render_scrolling<'w, R: NiriRenderer>(
         &self,
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
         layer: RenderLayer,
+        elsewhere: &dyn Fn(u64) -> Option<&'w W>,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         let scrolling_focus_ring = focus_ring && !self.floating_is_active();
-        self.scrolling
-            .render(ctx, xray_pos, scrolling_focus_ring, layer, &mut |elem| {
-                push(elem.into())
-            });
+        self.scrolling.render(
+            ctx,
+            xray_pos,
+            scrolling_focus_ring,
+            layer,
+            elsewhere,
+            &mut |elem| push(elem.into()),
+        );
     }
 
     pub fn render_floating<R: NiriRenderer>(
@@ -1265,6 +1278,11 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn fullscreen_window_above_top_layer(&self) -> Option<&W> {
         self.scrolling.fullscreen_window_above_top_layer()
+    }
+
+    /// Whether the window it shows is fullscreen, from when the view heads for it.
+    pub fn shows_fullscreen(&self) -> bool {
+        self.scrolling.active_fullscreen_window().is_some()
     }
 
     pub fn is_floating_visible(&self) -> bool {
@@ -1672,7 +1690,19 @@ impl<W: LayoutElement> Workspace<W> {
 }
 
 pub(super) fn compute_working_area(output: &Output) -> Rectangle<f64, Logical> {
-    layer_map_for_output(output).non_exclusive_zone().to_f64()
+    let zone = layer_map_for_output(output).non_exclusive_zone().to_f64();
+    // bento's own shell keeps its edges as layer surfaces' exclusive zones do; where both keep
+    // an edge, the larger keeps it.
+    let [top, right, bottom, left] = crate::scene::host::reserved_on(output);
+    let size = crate::utils::output_size(output);
+    let x0 = zone.loc.x.max(left);
+    let y0 = zone.loc.y.max(top);
+    let x1 = (zone.loc.x + zone.size.w).min(size.w - right);
+    let y1 = (zone.loc.y + zone.size.h).min(size.h - bottom);
+    Rectangle::new(
+        Point::new(x0, y0),
+        Size::new((x1 - x0).max(0.), (y1 - y0).max(0.)),
+    )
 }
 
 fn compute_workspace_shadow_config(

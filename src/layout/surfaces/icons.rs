@@ -2,8 +2,10 @@
 //!
 //! Icons are PNGs or SVGs; at one size, a PNG wins over an SVG.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use std::{env, fs};
 
 #[derive(Debug, PartialEq)]
@@ -157,13 +159,115 @@ fn icon_file(dir: &Path, name: &str) -> Option<PathBuf> {
         .find(|file| file.is_file())
 }
 
+/// A theme as it is on disk: its index, and where each icon's files are, by the icon's name, as
+/// the directory in the index and the file, in the index's order.
+#[derive(Debug, Default)]
+struct ThemeFiles {
+    index: Index,
+    files: HashMap<String, Vec<(usize, PathBuf)>>,
+}
+
+/// Reads `theme` from `base_dirs`: its index, and every icon in its directories. A directory
+/// in an earlier base wins over the same one in a later base, and a PNG over an SVG next to it.
+fn list_theme(base_dirs: &[PathBuf], theme: &str) -> Option<ThemeFiles> {
+    let index = base_dirs.iter().find_map(|base| {
+        let text = fs::read_to_string(base.join(theme).join("index.theme")).ok()?;
+        Some(parse_index(&text))
+    })?;
+
+    let mut files: HashMap<String, Vec<(usize, PathBuf)>> = HashMap::new();
+    for (at, dir) in index.dirs.iter().enumerate() {
+        // The icons of this directory, each from the first base that has it.
+        let mut found: HashMap<String, (usize, PathBuf)> = HashMap::new();
+        for base in base_dirs {
+            let Ok(entries) = fs::read_dir(base.join(theme).join(&dir.path)) else {
+                continue;
+            };
+            let mut here: HashMap<String, (usize, PathBuf)> = HashMap::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(rank) = path
+                    .extension()
+                    .and_then(|extension| EXTENSIONS.iter().position(|e| *e == extension))
+                else {
+                    continue;
+                };
+                let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+                // A link counts if it leads to a file.
+                let is_file = match entry.file_type() {
+                    Ok(kind) if kind.is_file() => true,
+                    Ok(kind) if kind.is_symlink() => path.is_file(),
+                    _ => false,
+                };
+                if !is_file || here.get(name).is_some_and(|(other, _)| *other <= rank) {
+                    continue;
+                }
+                here.insert(name.to_owned(), (rank, path));
+            }
+            for (name, file) in here {
+                found.entry(name).or_insert(file);
+            }
+        }
+        for (name, (_, path)) in found {
+            files.entry(name).or_default().push((at, path));
+        }
+    }
+    Some(ThemeFiles { index, files })
+}
+
+/// How long a theme read from disk is used before it's read again, so that icons installed
+/// meanwhile are found.
+const THEME_AGE: Duration = Duration::from_secs(5);
+
+type ThemeCache = HashMap<(Vec<PathBuf>, String), (Instant, Option<Arc<ThemeFiles>>)>;
+
+/// `theme` in `base_dirs`, read from disk at most once in a while: reading one means listing
+/// hundreds of directories, which is too much to do for every icon.
+fn cached_theme(base_dirs: &[PathBuf], theme: &str) -> Option<Arc<ThemeFiles>> {
+    static CACHE: Mutex<Option<ThemeCache>> = Mutex::new(None);
+    let key = (base_dirs.to_vec(), theme.to_owned());
+    {
+        let cache = CACHE.lock().unwrap();
+        if let Some((read, files)) = cache.as_ref().and_then(|cache| cache.get(&key)) {
+            if read.elapsed() < THEME_AGE {
+                return files.clone();
+            }
+        }
+    }
+    // Read without the lock held, so other threads' lookups go on meanwhile.
+    let files = list_theme(base_dirs, theme).map(Arc::new);
+    let mut cache = CACHE.lock().unwrap();
+    cache
+        .get_or_insert_with(HashMap::new)
+        .insert(key, (Instant::now(), files.clone()));
+    files
+}
+
 /// The file of the icon `name` that best fits `size` physical pixels, from `theme` or the themes
 /// it inherits from, with `hicolor` as the last resort.
 pub fn find(theme: &str, name: &str, size: u32) -> Option<PathBuf> {
-    find_in(&base_dirs(), theme, name, size)
+    let base_dirs = base_dirs();
+    find_with(&base_dirs, theme, name, size, |theme| {
+        cached_theme(&base_dirs, theme)
+    })
 }
 
+#[cfg(test)]
 fn find_in(base_dirs: &[PathBuf], theme: &str, name: &str, size: u32) -> Option<PathBuf> {
+    find_with(base_dirs, theme, name, size, |theme| {
+        list_theme(base_dirs, theme).map(Arc::new)
+    })
+}
+
+fn find_with(
+    base_dirs: &[PathBuf],
+    theme: &str,
+    name: &str,
+    size: u32,
+    mut read: impl FnMut(&str) -> Option<Arc<ThemeFiles>>,
+) -> Option<PathBuf> {
     let mut visited = HashSet::new();
     let mut queue = VecDeque::from([theme.to_owned()]);
 
@@ -177,28 +281,21 @@ fn find_in(base_dirs: &[PathBuf], theme: &str, name: &str, size: u32) -> Option<
             continue;
         }
 
-        let Some(index) = base_dirs.iter().find_map(|base| {
-            let text = fs::read_to_string(base.join(&theme).join("index.theme")).ok()?;
-            Some(parse_index(&text))
-        }) else {
+        let Some(files) = read(&theme) else {
             continue;
         };
 
-        let best = index
-            .dirs
-            .iter()
-            .filter_map(|dir| {
-                let file = base_dirs
-                    .iter()
-                    .find_map(|base| icon_file(&base.join(&theme).join(&dir.path), name))?;
-                Some((dir.distance(size), file))
-            })
-            .min_by_key(|(distance, _)| *distance);
+        let best = files
+            .files
+            .get(name)
+            .into_iter()
+            .flatten()
+            .min_by_key(|(dir, _)| files.index.dirs[*dir].distance(size));
         if let Some((_, file)) = best {
-            return Some(file);
+            return Some(file.clone());
         }
 
-        queue.extend(index.inherits);
+        queue.extend(files.index.inherits.iter().cloned());
     }
 
     // Icons that aren't in a theme.

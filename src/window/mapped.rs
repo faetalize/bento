@@ -30,8 +30,9 @@ use crate::layout::{
     LayoutElementRenderSnapshot, SizingMode,
 };
 use crate::niri_render_elements;
-use crate::render_helpers::background_effect::BackgroundEffectElement;
+use crate::render_helpers::background_effect::CapturedEffect;
 use crate::render_helpers::border::BorderRenderElement;
+use crate::render_helpers::glass::GlassFrame;
 use crate::render_helpers::offscreen::OffscreenData;
 use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::snapshot::RenderSnapshot;
@@ -553,6 +554,7 @@ impl Mapped {
                 renderer,
                 target: RenderTarget::Screencast,
                 xray: None,
+                glass: GlassFrame::default(),
             },
             location,
             scale,
@@ -747,22 +749,17 @@ impl LayoutElement for Mapped {
         }
     }
 
-    fn render_background_effect(
+    fn capture_background_effect(
         &self,
-        ctx: RenderCtx<GlesRenderer>,
         geometry: Rectangle<f64, Logical>,
         scale: f64,
         clip_to_geometry: bool,
         surface_anim_scale: Scale<f64>,
         radius: CornerRadius,
+        should_block_out: bool,
         clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
-        xray_pos: XrayPos,
-        push: &mut dyn FnMut(BackgroundEffectElement),
-    ) {
-        let should_block_out = ctx.target.should_block_out(self.rules.block_out_from);
-        background_effect::render_for_tile(
-            ctx,
-            None,
+    ) -> Option<CapturedEffect> {
+        background_effect::capture_for_tile(
             geometry,
             scale,
             clip_to_geometry,
@@ -774,9 +771,7 @@ impl LayoutElement for Mapped {
             self.rules.background_effect,
             should_block_out,
             clip,
-            xray_pos,
-            push,
-        );
+        )
     }
 
     fn request_size(

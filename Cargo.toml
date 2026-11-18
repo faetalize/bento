@@ -2,6 +2,7 @@
 members = [
     "bento-ipc",
     "bento-settings",
+    "bento-shell",
     "niri-config",
     "niri-ipc",
     "niri-visual-tests",
@@ -114,6 +115,12 @@ wayland-server = "0.31.14"
 xcursor = "0.3.11"
 zbus = { version = "5", optional = true }
 rquickjs = { version = "0.14", features = ["loader"] }
+ash = "0.38"
+taffy = "0.15.1"
+naga = { version = "29", features = ["wgsl-in", "spv-out"] }
+parley = "0.7.0"
+swash = "0.2.10"
+shlex = "2.0.1"
 
 [dependencies.smithay]
 workspace = true
@@ -124,6 +131,7 @@ features = [
     "backend_libinput",
     "backend_session_libseat",
     "backend_udev",
+    "backend_vulkan",
     "backend_winit",
     "desktop",
     "renderer_gl",

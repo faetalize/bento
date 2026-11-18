@@ -40,7 +40,7 @@ use serde_json::Value;
 pub mod socket;
 
 /// A point in logical pixels.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Default)]
 pub struct Point {
     /// Horizontal position.
     pub x: f64,
@@ -129,6 +129,11 @@ pub enum Request {
     /// Focuses a window.
     FocusWindow {
         /// The window's id.
+        id: u64,
+    },
+    /// Focuses a workspace, wherever it is.
+    FocusWorkspace {
+        /// The workspace's id.
         id: u64,
     },
     /// Sets whether a window asks for attention.
@@ -326,6 +331,11 @@ pub struct Workspace {
     pub active: bool,
     /// Whether a window on it asks for attention.
     pub urgent: bool,
+    /// Where the top-left corner of the view is on its canvas, in the coordinates of its windows'
+    /// `rect`s; where the camera is going while it moves. A bento from before it said so gives
+    /// the canvas's origin.
+    #[serde(default)]
+    pub camera: Point,
 }
 
 /// How a window is sized.

@@ -108,7 +108,7 @@ impl State {
                 self.start_engine_key_repeat(key.clone());
             }
         }
-        self.niri.layout.engine_key(key);
+        self.niri.deliver_held_key(key);
 
         // FIXME: granular.
         self.niri.queue_redraw_all();
@@ -133,11 +133,11 @@ impl State {
             .niri
             .event_loop
             .insert_source(timer, move |_, _, state| {
-                if !state.niri.layout.keyboard_grabbed() {
+                if !state.niri.keyboard_held() {
                     state.niri.engine_key_repeat_timer = None;
                     return TimeoutAction::Drop;
                 }
-                state.niri.layout.engine_key(key.clone());
+                state.niri.deliver_held_key(key.clone());
                 state.niri.queue_redraw_all();
                 TimeoutAction::ToDuration(repeat_duration)
             })

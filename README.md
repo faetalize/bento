@@ -23,9 +23,10 @@ This README covers what's specific to bento. For everything else, see [niri's do
 - Everything niri has, except that tiling is done by a layout engine
 - Layout engines are JavaScript files that decide how a whole workspace behaves: where windows go, which window has focus, where the view points and what actions do. Point the config at one, and bento reloads it as you edit it. See [Layout engines](#layout-engines), and start from the [template](resources/layouts/examples/template.js) to write your own
 - Engines run in a sandbox, with no access to files or the network, so you can try ones other people share
-- Two engines ship with bento:
+- Three engines ship with bento:
   - `bento`, the default: a grid of cells, 12 rows tall, that scrolls sideways. Windows cover rectangles of cells, push each other aside, and slide left with gravity. See [The bento engine](#the-bento-engine)
   - `niri`: niri's scrollable columns. See [The niri engine](#the-niri-engine)
+  - `windows11`: overlapping windows that snap to halves and quarters, with Snap Assist, an Alt+Tab switcher and minimizing, the way Windows 11 manages windows. See [The windows11 engine](#the-windows11-engine)
 - Support for more experimental Wayland protocols
 
 ## Installing
@@ -50,6 +51,7 @@ Next, get latest stable Rust: https://rustup.rs/
 
 Then, build bento with `cargo build --release`.
 For the settings app, also install libadwaita (`libadwaita-1-dev` on Ubuntu, `libadwaita-devel` on Fedora) and build it with `cargo build --release -p bento-settings`.
+For the shell, also install gtk4-layer-shell and PulseAudio's client library (`libgtk4-layer-shell-dev` and `libpulse-dev` on Ubuntu, `gtk4-layer-shell-devel` and `pulseaudio-libs-devel` on Fedora) and build it with `cargo build --release -p bento-shell`.
 
 Check Cargo.toml for a list of build features.
 For example, you can replace systemd integration with dinit integration using `cargo build --release --no-default-features --features dinit,dbus,xdp-gnome-screencast`.
@@ -74,12 +76,16 @@ These may vary depending on your distribution.
 | `resources/bento-portals.conf` | `/usr/local/share/xdg-desktop-portal/` |
 | `resources/bento.service` (systemd) | `/etc/systemd/user/` |
 | `resources/bento-shutdown.target` (systemd) | `/etc/systemd/user/` |
+| `resources/xdg-desktop-portal-graphical-session.conf` (systemd) | `/etc/systemd/user/xdg-desktop-portal.service.d/graphical-session.conf` |
 | `resources/dinit/bento` (dinit) | `/etc/dinit.d/user/` |
 | `resources/dinit/bento.target` (dinit) | `/etc/dinit.d/user/` |
 | `target/release/bento-settings` (settings app) | `/usr/local/bin/` |
+| `target/release/bento-shell` (shell) | `/usr/local/bin/` |
 | `resources/io.github.faetalize.bento.Settings.desktop` (settings app) | `/usr/local/share/applications/` |
 
 Doing this will make bento appear in GDM and other display managers.
+
+The portal drop-in keeps xdg-desktop-portal from starting between sessions, when something on the bus asks for it after you log out and before bento has set `XDG_CURRENT_DESKTOP`. Started then, it can't find bento's portals, so screencasting fails for the whole next session.
 
 `bento.service` and the dinit service start `bento` by name rather than by full path, so put it in `/usr/local/bin/` or `/usr/bin/` where they'll find it.
 
@@ -93,7 +99,7 @@ sudo ln -s /usr/local/bin/bento /usr/local/bin/niri
 ## Starting bento
 
 After installing, start bento from your display manager like GDM.
-Press <kbd>Super</kbd><kbd>T</kbd> to run a terminal ([Alacritty](https://github.com/alacritty/alacritty)) and <kbd>Super</kbd><kbd>D</kbd> to run an application launcher ([fuzzel](https://codeberg.org/dnkl/fuzzel)).
+Press <kbd>Super</kbd><kbd>T</kbd> to run a terminal ([Alacritty](https://github.com/alacritty/alacritty)) and <kbd>Super</kbd><kbd>D</kbd> to open the shell's launcher.
 Press <kbd>Super</kbd><kbd>Shift</kbd><kbd>/</kbd> to see the important hotkeys, and <kbd>Super</kbd><kbd>Shift</kbd><kbd>E</kbd> to exit bento.
 
 If you're not using a display manager, you should run `bento-session` (systemd/dinit) or `bento --session` (others) from a TTY.
@@ -135,14 +141,27 @@ When a session starts, bento links `~/.config/niri` to `~/.config/bento` if noth
 A real `~/.config/niri` stays untouched, and bento won't see what tools write there.
 After linking, niri itself can't run from that config if it uses anything specific to bento, like `tiling {}`.
 
-### Desktop shells
+### The shell
+
+bento's shell, `bento-shell`, is the desktop around the workspaces: a glass bar along the top of each monitor with the workspaces, the clock, the tray and the status icons, and the calendar, quick settings, notifications and the volume indicator that grow out of it.
+`toggle-launcher`, bound to <kbd>Super</kbd><kbd>D</kbd>, opens its launcher.
+
+The config names the shell, and bento starts it, and starts it again if it exits:
+
+```kdl
+shell "bento-shell"
+```
+
+bento hands it a Wayland connection of its own, through `WAYLAND_SOCKET`. On that connection only, the `bento_shell_v1` protocol (`resources/bento-shell-v1.xml`) gives the shell bento's commands for it, like `toggle-launcher`, and glass: the shell gives bento rounded shapes for each of its surfaces, and bento refracts, blurs and lights what's behind them, melting shapes that come close into one piece.
+Without a `shell` line, bento starts no shell.
+
+### Other desktop shells
 
 bento sets `XDG_CURRENT_DESKTOP=bento:niri`, so portals and tools that look for niri find it, but it has no niri IPC socket.
 Desktop shells made for niri, such as [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) and [Noctalia](https://github.com/noctalia-dev/noctalia-shell), lose what they read from that socket.
 Shells get the basics from Wayland protocols: `ext-workspace`, foreign-toplevel and output management.
 
-The default bento config runs Waybar, so with a desktop shell you might get two bars on screen.
-To fix this, stop Waybar with `pkill waybar` command, then open `~/.config/bento/config.kdl` and delete the `spawn-at-startup "waybar"` line.
+To run one instead of bento's, name it with `shell`, or remove the `shell` line and start it with `spawn-at-startup`.
 
 ### Settings
 
@@ -166,6 +185,135 @@ layout {
 It fills each monitor, cropped to fit, and takes the place of `background-color`.
 Set it per monitor with a `layout {}` section inside `output`.
 A shell's own wallpaper draws above it, so turn that off to see bento's; in Noctalia, run `noctalia msg config-set wallpaper.enabled false`.
+
+### Glass
+
+What bento blurs behind windows, layer surfaces and popups, whether a `background-effect` rule asks for it or the app does, is glass: blurred, bent like through a lens near its rounded edges, with the edges catching the light.
+The `blur {}` section sets it for everything, and the even blur, without glass's edge, is the `plain` material:
+
+```kdl
+blur {
+    material "glass" // or "plain"
+    passes 2     // with offset, how far the blur reaches, about offset × 2^passes
+    offset 2.05  // 0 doesn't blur at all; above about 3 a pass ghosts, so add a pass instead
+    noise 0.01
+    saturation 1.15
+    shade 0.7    // how far what's blurred is taken towards the window colour, so text on it
+                 // reads over any wallpaper; bento follows the desktop's light or dark style
+    shade-dark "#222226"  // the window colour in dark style, libadwaita's
+    shade-light "#fafafb" // and in light style
+
+    // How glass bends and lights what's behind it.
+    glass {
+        bezel 20             // how far in from its edge it curves, in logical pixels
+        thickness 40         // how tall it is, in logical pixels
+        refractive-index 1.5 // 1 doesn't bend at all
+        dispersion 0.14      // how much more red bends than blue
+        reflection 0.5       // how much it reflects where it's seen edge on, at its very edge
+        sheen 0.6            // how shiny it is, from rough 0 to polished 1
+        color "#f0f7f4"      // the colour light takes on through it, deeper towards the edge;
+                             // its alpha is how strong, so "#ffffff00" is clear
+        // follow-accent     // take on the desktop's accent colour instead, faintly
+        pattern "smooth"     // or "reeded", "hammered" or "frosted", pressed into the top
+        pattern-depth 0.5    // how deep the pattern is, from flat 0 to 1
+        pointer-light 0.5    // how bright the light the pointer carries is, 0 for none
+
+        // The lights it catches, up to four, far away like the sun. Any lights given replace
+        // this one; `off` keeps a light without it shining.
+        light {
+            intensity 0.6    // how bright its reflection is, and how much it shades the bezel
+            angle 315        // where it comes from, clockwise from the top
+            height 40        // how high it is, from 0 along the screen to 90 straight above
+            size 0.35        // how big it looks, from a point 0 to a broad window 1
+        }
+    }
+}
+```
+
+Every setting left out keeps its default, shown here.
+
+To work on the glass shader itself, point bento at a copy of it; bento compiles it again whenever the file changes, and keeps the one before when it doesn't compile:
+
+```kdl
+debug {
+    glass-shader "~/Source/bento/src/render_helpers/shaders/glass.frag"
+}
+```
+
+bento draws its own shell too, while it's being built: islands of glass along the top of each output, scripted in JavaScript. `~/.config/bento/shell/main.js`, if it's there, replaces bento's own (`resources/shell/main.js`), and bento loads it again whenever it changes. It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
+
+```kdl
+shell {
+    built-in
+}
+```
+
+A shell program named with `shell "…"` keeps running alongside it.
+
+To work on bento's own shell and its widgets, point bento at their folder; it reads `main.js` from there instead of the copy built in, and every other script there as the module `bento:` and its name, like `bento:ui`, and loads them again whenever they change:
+
+```kdl
+debug {
+    shell-scripts "~/Source/bento/resources/shell"
+}
+```
+
+The left island shows the workspaces and a minimap of the one on screen: its tiles where they sit, with the part the view shows marked. Scrolling over the minimap moves the focus along the columns, and a click on a tile focuses its window.
+
+The middle island is the clock, and opens into the calendar, with the weather where you are. Settings → Location sets the place, by its name or its coordinates, and Celsius or Fahrenheit. The weather and the search for places come from [Open-Meteo](https://open-meteo.com), which gets the place's coordinates and what you search for, and nothing else:
+
+```kdl
+location {
+    name "Reykjavik, Iceland"
+    latitude 64.1355
+    longitude -21.8954
+}
+```
+
+The right island is the status, and opens into the control center, laid out like a phone's quick settings:
+
+- Along the top, buttons for a screenshot, a screen recording, bento's settings and the power menu (suspend, and restart, power off and log out, which ask for a second click).
+- The volume, and the brightness of that monitor (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Their arrows open the sound devices, with the microphone, and every display's brightness.
+- Tiles for Wi-Fi (NetworkManager), Bluetooth (BlueZ), Do Not Disturb, the dark style, the power mode (power-profiles-daemon) and the microphone. A tile only shows when its service runs; a click switches it, and its arrow opens a page: Wi-Fi joins networks, asking for a new one's password, and Bluetooth connects devices and pairs nearby ones that need no code.
+- What's playing, from any app that says so over MPRIS.
+- The notifications. A toast goes after a moment and its notification stays here until it's dismissed, unless the app marked it as transient. With Do Not Disturb on, only critical notifications come as toasts.
+
+The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Control Center sets them:
+
+```kdl
+shell {
+    fahrenheit
+    screenshot {
+        command "grim -g \"$(slurp)\" - | swappy -f -"
+        notification "Screenshot taken"
+        notification-body "It's in Pictures."
+    }
+    screen-record {
+        command "wf-recorder -f ~/Videos/recording.mp4"
+    }
+}
+```
+
+A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and `switch-audio-output` does the same from a shortcut.
+
+When the volume changes elsewhere, by a volume key or a headset's knob, the right island widens into the volume's level for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
+
+The clipboard's button opens its history, and so does `toggle-clipboard`: what was copied, newest first, found by typing, and copied again with a click or Enter (Shift+Delete forgets one). It's kept for the session only, text in memory and pictures in the runtime directory, and what a password manager marks as secret isn't kept. When the app that copied something closes, its copy stays on the clipboard.
+
+Notifications show their actions as buttons, and a click on one does its default action. The app gets an activation token with it, so it can bring its window forward.
+
+`edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. None of these actions is bound by default; Settings → Shortcuts binds them.
+
+A rule can pick the other material for some windows or surfaces:
+
+```kdl
+window-rule {
+    match app-id="^org\.gnome\.Nautilus$"
+    background-effect {
+        material "plain"
+    }
+}
+```
 
 ### Default applications
 
@@ -200,7 +348,7 @@ Requests:
 - `action` runs an action by name with its arguments and properties, as written in a bind, and parses it the way the config does, so the same things are invalid.
   Besides bento's actions it runs the running engine's, by their names.
   `window` and `workspace` aim it at another window or workspace than the focused one.
-- `output` changes a monitor's configuration temporarily, `pickWindow` and `pickColor` let the user pick, `loadConfigFile` reloads the config, `focusWindow`, `setWindowUrgent` and `stopCast` do what they say.
+- `output` changes a monitor's configuration temporarily, `pickWindow` and `pickColor` let the user pick, `loadConfigFile` reloads the config, `focusWindow`, `focusWorkspace`, `setWindowUrgent` and `stopCast` do what they say.
 - `subscribe` takes the kinds of events to get, or all of them.
   A new subscriber first gets the current state as events like `monitorAdded` and `windowAdded`.
   The events are `monitorAdded`, `monitorChanged`, `monitorRemoved`, the same for `workspace`, `window` and `group`, `focusChanged`, `engineChanged`, `engineStateChanged`, `keyboardLayoutsChanged`, `keyboardLayoutSwitched`, `overviewChanged`, `castsChanged`, `configLoaded`, `screenshotCaptured` and `touchpadToggled`.
@@ -236,12 +384,12 @@ Engines aren't interchangeable presets.
 Each one defines how the workspace works, with actions of its own.
 So each engine has a config file of its own for its options and its binds, loaded only while that engine runs:
 
-- `engines/bento.kdl` and `engines/niri.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
+- `engines/bento.kdl`, `engines/niri.kdl` and `engines/windows11.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
 - the engine file's path with `.kdl` instead of `.js` for an engine file, so `~/.config/bento/layouts/spiral.kdl` for the one above.
 
 The first time a built-in engine runs without its file, bento writes its defaults there, with binds for moving around and resizing windows; from then on the file is yours.
 Switching engines switches which file is loaded, so nothing breaks.
-A key bound in both the config and the engine's file is an error.
+A key bound in both the config and the engine's file runs the engine's bind while that engine runs, and the config's under the others; `bento validate` lists the keys an engine takes over, and bento Settings shows the config's shortcut as not in use.
 
 When the engine file changes, bento reloads it, just like the config.
 Engines can keep their state across reloads, so your windows stay where they are while you work on an engine.
@@ -609,6 +757,32 @@ It differs in these ways:
   The engine exposes its columns for each workspace, with their windows, widths, display and active window, for the shell and scripts to read through bento's socket.
 
 Everything outside the tiled windows, like workspaces, monitors, floating windows and the overview, is bento's, the same as with every engine.
+
+## The windows11 engine
+
+The `windows11` engine manages windows the way Windows 11 does, in behaviour only.
+Windows overlap and stay where you put them: each opens at the size it asks for, centred, a step down and to the right of a window already there, and dialogs open centred over their parent.
+Focusing a window raises it, and focus never follows the pointer: a window takes focus when you click it.
+Every window is the engine's, so bento's floating layer is off under it, and windows move with the pointer from the first pixel without the view ever scrolling.
+
+- **Snapping.**
+  Dragging a window to the left or right edge of the screen snaps it to that half, to a corner to that quarter, and to the top edge maximizes it, with a preview of where it will go.
+  Dragging it away gives it its own size back.
+  `Mod+Left` and `Mod+Right` snap to a half, and toward the other side give the window its own size back; `Mod+Up` and `Mod+Down` go between halves, quarters, maximized and minimized.
+- **Snap Assist.**
+  After a window snaps, the other windows show as thumbnails in the space left, to pick one to fill it, with the pointer or with the arrows and Enter.
+  `Mod+Z` shows the snap layouts (halves, two thirds and a third, three columns, quarters) to snap the focused window into a zone, and then fills the other zones the same way.
+- **Shared edges.**
+  Windows snapped side by side resize together: dragging the edge between them moves it for all of them.
+- **Switching and minimizing.**
+  `Alt+Tab` shows the workspace's windows, minimized ones included, most recently used first, and letting go of Alt picks one.
+  Apps' minimize buttons and taskbars minimize windows, and so does `Mod+Down`; `Mod+Comma` minimizes every window on the workspace, or brings them back.
+  GTK apps show a minimize button only under an engine that minimizes, like this one, and only with it turned on in bento Settings, under Appearance, Title Bar Buttons.
+- **Options.**
+  `snap-assist` and `edge-snap` in `engines/windows11.kdl` turn Snap Assist and snapping by dragging off.
+
+The switcher's thumbnails are live copies of the windows, which stay where they are behind it, and it shows the workspace's own windows, like Windows does by default.
+Snap Assist's thumbnails are the windows themselves, so the one you pick grows from its thumbnail into its place.
 
 ## Status
 

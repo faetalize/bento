@@ -495,7 +495,11 @@ impl State {
                 .layout
                 .set_keyboard_owner(KeyboardOwner::LockScreen);
         }
-        let engine_grabbed = self.niri.layout.keyboard_grabbed();
+        let engine_grabbed = self.niri.keyboard_held();
+        let (shell_holds, engine_holds) = (
+            self.niri.shell_holds_keyboard(),
+            self.niri.layout.keyboard_grabbed(),
+        );
         let mut engine_key = None;
         let mut search_key = None;
 
@@ -729,7 +733,8 @@ impl State {
                         pressed,
                         modifiers,
                         this.niri.config.borrow().input.disable_power_key_handling,
-                        is_inhibiting_shortcuts || engine_grabbed,
+                        is_inhibiting_shortcuts
+                            || holds_binds(shell_holds, engine_holds, modifiers, mod_key, modified),
                         is_locked,
                         is_in_screenshot,
                     )
@@ -1687,6 +1692,27 @@ impl State {
                     self.niri.a11y_announce_hotkey_overlay();
                 }
             }
+            Action::EditWorkspace | Action::ToggleClipboard | Action::SwitchAudioOutput => {
+                // These are the shell's to do.
+                if let Some(scene) = &self.niri.scene {
+                    let kind = match action {
+                        Action::EditWorkspace => "edit-workspace",
+                        Action::ToggleClipboard => "toggle-clipboard",
+                        _ => "switch-audio-output",
+                    };
+                    let output = self.niri.layout.active_output().map(|o| o.name());
+                    scene.event(kind, output);
+                    self.niri.queue_redraw_all();
+                }
+            }
+            Action::ToggleLauncher => match &self.niri.scene {
+                Some(scene) => {
+                    let output = self.niri.layout.active_output().map(|o| o.name());
+                    scene.toggle_launcher(output);
+                    self.niri.queue_redraw_all();
+                }
+                None => self.niri.bento_shell_state.toggle_launcher(),
+            },
             Action::MoveWorkspaceToMonitorLeft => {
                 if let Some(output) = self.niri.output_left() {
                     self.niri.layout.move_workspace_to_output(&output);
@@ -2267,6 +2293,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, true);
+        self.niri.update_shell_hover(&under, new_pos);
 
         pointer.motion(
             self,
@@ -2369,6 +2396,7 @@ impl State {
 
         self.niri.pointer_contents.clone_from(&under);
         self.niri.update_node_hover(&under, true);
+        self.niri.update_shell_hover(&under, pos);
 
         pointer.motion(
             self,
@@ -2527,6 +2555,29 @@ impl State {
 
         if self.niri.suppressed_buttons.remove(&button_code) {
             return;
+        }
+
+        // bento's own shell takes the buttons over it, and hears of presses elsewhere, to close
+        // what's open. A grab, like an app's menu or a drag, keeps its buttons.
+        if !pointer.is_grabbed() && self.niri.scene.is_some() {
+            let location = pointer.current_location();
+            let under = self.niri.contents_under(location);
+            let at_ref = under
+                .shell
+                .as_ref()
+                .map(|(name, point)| (name.as_str(), *point));
+            let number = node_button(button).unwrap_or(0);
+            let scene = self.niri.scene.as_mut().unwrap();
+            let taken = if ButtonState::Pressed == button_state {
+                // A press on what's above the shell isn't one elsewhere on the desktop.
+                !under.above_shell && scene.press(button_code, number, at_ref)
+            } else {
+                scene.release(button_code, number, at_ref)
+            };
+            if taken {
+                self.niri.queue_redraw_all();
+                return;
+            }
         }
 
         if ButtonState::Pressed == button_state {
@@ -3167,6 +3218,15 @@ impl State {
 
         self.update_pointer_contents();
 
+        // bento's own shell gets the scrolling over it.
+        if self.niri.pointer_contents.shell.is_some() {
+            if let Some(scene) = &mut self.niri.scene {
+                scene.scroll([horizontal_amount, vertical_amount]);
+            }
+            self.niri.queue_redraw_all();
+            return;
+        }
+
         // Nodes that the tiling layout draws are on top of windows, so they get the scrolling.
         if self
             .niri
@@ -3276,6 +3336,7 @@ impl State {
 
         let under = self.niri.contents_under(pos);
         self.niri.update_node_hover(&under, true);
+        self.niri.update_shell_hover(&under, pos);
 
         let tablet_seat = self.niri.seat.tablet_seat();
         let tool = tablet_seat.get_tool(&event.tool());
@@ -3421,6 +3482,12 @@ impl State {
                                 window,
                             );
                             tool.set_grab(self, grab, time, serial, Focus::Clear);
+                        } else if let Some((name, point)) = &under.shell {
+                            // bento's own shell is on top of windows, like nodes.
+                            if let Some(scene) = &mut self.niri.scene {
+                                scene.press(TABLET_KEY, 1, Some((name.as_str(), *point)));
+                            }
+                            self.niri.queue_redraw_all();
                         } else if let Some(hit) = &under.node {
                             // Nodes that the tiling layout draws are on top of windows, so a
                             // press on one is theirs and doesn't focus or move the windows below.
@@ -3469,6 +3536,17 @@ impl State {
                     if capture {
                         self.confirm_screenshot(true);
                     } else {
+                        self.niri.queue_redraw_all();
+                    }
+                }
+
+                let pos = self
+                    .compute_tablet_position(&event)
+                    .or(self.niri.tablet_cursor_location);
+                let at = pos.and_then(|pos| self.niri.contents_under(pos).shell);
+                if let Some(scene) = &mut self.niri.scene {
+                    let at = at.as_ref().map(|(name, point)| (name.as_str(), *point));
+                    if scene.release(TABLET_KEY, 1, at) {
                         self.niri.queue_redraw_all();
                     }
                 }
@@ -4007,6 +4085,20 @@ impl State {
 
         let under = self.niri.contents_under(pos);
 
+        // bento's own shell takes touches on it, and hears of touches elsewhere.
+        if !handle.is_grabbed() && !under.above_shell {
+            if let Some(scene) = &mut self.niri.scene {
+                let at = under
+                    .shell
+                    .as_ref()
+                    .map(|(name, point)| (name.as_str(), *point));
+                if scene.press(touch_key(slot), 1, at) {
+                    self.niri.queue_redraw_all();
+                    return;
+                }
+            }
+        }
+
         let mod_key = self.backend.mod_key(&self.niri.config.borrow());
         let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
         let mods = modifiers_from_state(mods);
@@ -4131,6 +4223,13 @@ impl State {
             return;
         };
         let slot = evt.slot();
+
+        if let Some(scene) = &mut self.niri.scene {
+            if scene.release_where_pressed(touch_key(slot), 1) {
+                self.niri.queue_redraw_all();
+                return;
+            }
+        }
 
         if let Some(capture) = self.niri.screenshot_ui.pointer_up(Some(slot)) {
             if capture {
@@ -4368,6 +4467,22 @@ fn should_intercept_key<'a>(
     bind_intercept_result(run_press_action.then_some(bind), forward)
 }
 
+/// Whether what holds the keyboard keeps binds from running, as an app inhibiting shortcuts
+/// does. The layout engine keeps them all. bento's own shell keeps only those without the mod
+/// key: it takes typing and editing keys, and Mod binds, like a screenshot, run over it. So do
+/// a device's own keys, like volume, brightness and media keys, which type nothing.
+fn holds_binds(
+    shell_holds: bool,
+    engine_holds: bool,
+    mods: Modifiers,
+    mod_key: ModKey,
+    key: Option<Keysym>,
+) -> bool {
+    // The XF86 keysyms are the ones vendors' extra keys send.
+    let devices_own = key.is_some_and(|key| (0x1008_0000..=0x1008_ffff).contains(&key.raw()));
+    engine_holds || (shell_holds && !mods.contains(mod_key.to_modifiers()) && !devices_own)
+}
+
 fn find_bind<'a, I: Iterator<Item = &'a Bind> + Clone>(
     bindings: I,
     mod_key: ModKey,
@@ -4552,6 +4667,14 @@ fn find_configured_switch_action(
 
 /// The number that the nodes of the tiling layout know a mouse button by: 1 for the left button, 2
 /// for the middle one and 3 for the right one. They don't get the other buttons.
+/// The tablet tool's press on bento's own shell, apart from buttons and touches.
+const TABLET_KEY: u32 = 1 << 31;
+
+/// A touch's press on bento's own shell, apart from buttons and the tablet tool.
+fn touch_key(slot: smithay::backend::input::TouchSlot) -> u32 {
+    (1 << 30) | (i32::from(slot) as u32 & 0xffff)
+}
+
 fn node_button(button: Option<MouseButton>) -> Option<u8> {
     match button? {
         MouseButton::Left => Some(1),
@@ -5245,6 +5368,62 @@ mod tests {
             allow_inhibiting: true,
             hotkey_overlay_title: None,
         }
+    }
+
+    #[test]
+    fn mod_binds_run_over_the_shell_but_not_over_the_layout_engine() {
+        let mod_key = ModKey::Super;
+        let a = Some(Keysym::a);
+        // Typing into the shell: its keys, not binds.
+        assert!(holds_binds(true, false, Modifiers::empty(), mod_key, a));
+        assert!(holds_binds(true, false, Modifiers::SHIFT, mod_key, a));
+        assert!(holds_binds(true, false, Modifiers::CTRL, mod_key, a));
+        // Mod+Shift+S over the shell: a bind, like a screenshot.
+        assert!(!holds_binds(
+            true,
+            false,
+            Modifiers::SUPER | Modifiers::SHIFT,
+            mod_key,
+            Some(Keysym::S),
+        ));
+        // The layout engine keeps them all.
+        assert!(holds_binds(false, true, Modifiers::SUPER, mod_key, a));
+        assert!(!holds_binds(false, false, Modifiers::empty(), mod_key, a));
+
+        // Mod+Q runs while the shell holds the keyboard.
+        let bindings = Binds(vec![close_bind(BoundAction::Press(Action::CloseWindow))]);
+        let mut state = create_test_state();
+        state.is_inhibiting = holds_binds(true, false, Modifiers::SUPER, mod_key, a);
+        assert!(matches!(
+            process_close_key(&mut state, &bindings, Modifiers::SUPER, KeyState::Pressed),
+            ShouldInterceptResult::InterceptAndHandle(_)
+        ));
+    }
+
+    #[test]
+    fn a_devices_own_keys_run_over_the_shell() {
+        let mod_key = ModKey::Super;
+        // A volume key or knob turns the volume while the control center is open, since the
+        // shell types nothing with it.
+        for key in [
+            Keysym::XF86_AudioRaiseVolume,
+            Keysym::XF86_AudioMute,
+            Keysym::XF86_MonBrightnessUp,
+        ] {
+            assert!(
+                !holds_binds(true, false, Modifiers::empty(), mod_key, Some(key)),
+                "{key:?}"
+            );
+        }
+        // The layout engine still keeps them.
+        let volume = Some(Keysym::XF86_AudioRaiseVolume);
+        assert!(holds_binds(
+            false,
+            true,
+            Modifiers::empty(),
+            mod_key,
+            volume
+        ));
     }
 
     /// Returns a `Mod+Q` bind with the given action and default flags.

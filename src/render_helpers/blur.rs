@@ -28,6 +28,14 @@ pub struct BlurOptions {
     pub offset: f64,
 }
 
+impl BlurOptions {
+    /// The options for blurring with `config`, or `None` when it reaches nowhere: even at an
+    /// offset of 0, blurring would still soften what's behind, by drawing it at half its size.
+    pub fn reaching(config: niri_config::Blur) -> Option<Self> {
+        (config.offset > 0.).then(|| Self::from(config))
+    }
+}
+
 impl From<niri_config::Blur> for BlurOptions {
     fn from(config: niri_config::Blur) -> Self {
         Self {

@@ -5,7 +5,7 @@ use knuffel::errors::DecodeError;
 use miette::{miette, IntoDiagnostic as _};
 use smithay::backend::renderer::Color32F;
 
-use crate::utils::MergeWith;
+use crate::utils::{Flag, MergeWith};
 use crate::FloatOrInt;
 
 pub const DEFAULT_BACKGROUND_COLOR: Color = Color::from_array_unpremul([0.25, 0.25, 0.25, 1.]);
@@ -854,21 +854,253 @@ pub struct Blur {
     pub offset: f64,
     pub noise: f64,
     pub saturation: f64,
+    /// How far what's blurred is taken towards the window colour, from 0 for not at all to 1
+    /// for the window colour, so what's on it reads over any wallpaper.
+    pub shade: f64,
+    /// The window colour in dark style and in light style, libadwaita's.
+    pub shade_dark: Color,
+    pub shade_light: Color,
+    pub material: Material,
+    pub glass: Glass,
 }
 
 impl Default for Blur {
     fn default() -> Self {
+        // Settings' Regular preset.
         Self {
             off: false,
-            passes: 3,
-            offset: 3.,
-            noise: 0.02,
-            saturation: 1.5,
+            passes: 2,
+            offset: 2.05,
+            noise: 0.01,
+            saturation: 1.15,
+            shade: 0.7,
+            shade_dark: Color::from_rgba8_unpremul(0x22, 0x22, 0x26, 0xff),
+            shade_light: Color::from_rgba8_unpremul(0xfa, 0xfa, 0xfb, 0xff),
+            material: Material::Glass,
+            glass: Glass::default(),
         }
     }
 }
 
+/// The most lights glass catches.
+pub const MAX_GLASS_LIGHTS: usize = 4;
+
+/// How glass bends and lights what's behind it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glass {
+    /// How far in from its edge the glass curves, in logical pixels.
+    pub bezel: f64,
+    /// How tall the glass is where it's flat, in logical pixels.
+    pub thickness: f64,
+    pub refractive_index: f64,
+    /// How much more red bends than blue, as a fraction of the bend.
+    pub dispersion: f64,
+    /// How much of its surroundings the bezel reflects where it's seen edge on, at its very edge,
+    /// from 0 for none to 1.
+    pub reflection: f64,
+    /// How shiny the surface is, from 0 for rough, which spreads the light it reflects into a
+    /// broad dim glow, to 1 for polished, which keeps it a tight bright spot: the reflection's
+    /// side of the roughness that blurs what's behind.
+    pub sheen: f64,
+    /// The colour of the glass itself: the colour light takes on through as much glass as it's
+    /// thick, deeper where it comes through more, as along inside the bezel. Its alpha is how
+    /// strong the colour is, from 0 for clear.
+    pub color: Color,
+    /// Whether the glass takes on the accent colour instead of `color`, faintly.
+    pub follow_accent: bool,
+    /// The pattern pressed into the glass's surface, which bends what's behind and catches the
+    /// light like its edge does.
+    pub pattern: GlassPattern,
+    /// How deep the pattern is pressed, from 0 for flat to 1.
+    pub pattern_depth: f64,
+    /// How bright the light the pointer carries is, from 0 for none: it glints on the glass near
+    /// the pointer.
+    pub pointer_light: f64,
+    /// The lights glass catches, in order.
+    pub lights: [Option<GlassLight>; MAX_GLASS_LIGHTS],
+}
+
+impl Default for Glass {
+    fn default() -> Self {
+        Self {
+            bezel: 20.,
+            thickness: 40.,
+            refractive_index: 1.5,
+            dispersion: 0.14,
+            reflection: 0.5,
+            sheen: 0.6,
+            // Soda-lime glass, like a window's: faintly green, most where light comes along
+            // inside it.
+            color: Color::from_rgba8_unpremul(0xf0, 0xf7, 0xf4, 0xff),
+            follow_accent: false,
+            pattern: GlassPattern::Smooth,
+            pattern_depth: 0.5,
+            pointer_light: 0.5,
+            lights: [Some(GlassLight::default()), None, None, None],
+        }
+    }
+}
+
+impl Blur {
+    /// The window colour in dark style or in light style.
+    pub fn shade_color(&self, dark: bool) -> Color {
+        if dark {
+            self.shade_dark
+        } else {
+            self.shade_light
+        }
+    }
+}
+
+/// How strongly glass that follows the accent colour takes it on, like a colour's alpha: a
+/// saturated accent at full strength would hide what's behind.
+pub const GLASS_ACCENT_STRENGTH: f32 = 0.2;
+
+impl Glass {
+    /// The glass's colour: the accent's, when it follows the accent and the accent is known.
+    pub fn tint(&self, accent: Option<Color>) -> Color {
+        match accent {
+            Some(accent) if self.follow_accent => Color {
+                a: accent.a * GLASS_ACCENT_STRENGTH,
+                ..accent
+            },
+            _ => self.color,
+        }
+    }
+
+    /// How much of each of red, green and blue glass as thick as it is takes out of the light
+    /// coming through: minus the log of its colour, made as clear as its alpha says.
+    pub fn absorbance(&self, accent: Option<Color>) -> [f64; 3] {
+        let [r, g, b, a] = self.tint(accent).to_array_unpremul().map(f64::from);
+        // Glass that lets nothing of a colour through would make what's behind black.
+        [r, g, b].map(|x| -(1. - a * (1. - x)).max(1. / 255.).ln())
+    }
+}
+
+/// A pattern pressed into glass's surface.
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum GlassPattern {
+    #[default]
+    Smooth,
+    /// Ribs running down the glass, each a rounded ridge.
+    Reeded,
+    /// Shallow dimples, like hammered metal.
+    Hammered,
+    /// A fine, uneven grain that glitters.
+    Frosted,
+}
+
+/// A light glass catches: far away, so it lights every window from the same direction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlassLight {
+    pub on: bool,
+    /// How bright the light's reflection on the bezel is, and how much it shades the bezel.
+    pub intensity: f64,
+    /// Where it comes from, in degrees clockwise from the top.
+    pub angle: f64,
+    /// How high it is over the screen, in degrees from flat along it to 90 straight above.
+    pub height: f64,
+    /// How big it looks from the glass, from 0 for a point to 1 for a broad window.
+    pub size: f64,
+}
+
+impl Default for GlassLight {
+    fn default() -> Self {
+        Self {
+            on: true,
+            intensity: 0.6,
+            angle: 315.,
+            height: 40.,
+            size: 0.35,
+        }
+    }
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
+pub struct GlassPart {
+    #[knuffel(child, unwrap(argument))]
+    pub bezel: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub thickness: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub refractive_index: Option<FloatOrInt<1, 10>>,
+    #[knuffel(child, unwrap(argument))]
+    pub dispersion: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub reflection: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub sheen: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub color: Option<Color>,
+    #[knuffel(child)]
+    pub follow_accent: Option<Flag>,
+    #[knuffel(child, unwrap(argument))]
+    pub pattern: Option<GlassPattern>,
+    #[knuffel(child, unwrap(argument))]
+    pub pattern_depth: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child, unwrap(argument))]
+    pub pointer_light: Option<FloatOrInt<0, 10>>,
+    /// The lights, replacing the default one when there are any.
+    #[knuffel(children(name = "light"))]
+    pub lights: Vec<GlassLightPart>,
+}
+
 #[derive(knuffel::Decode, Debug, Default, Clone, Copy, PartialEq)]
+pub struct GlassLightPart {
+    #[knuffel(child)]
+    pub off: bool,
+    #[knuffel(child, unwrap(argument))]
+    pub intensity: Option<FloatOrInt<0, 10>>,
+    #[knuffel(child, unwrap(argument))]
+    pub angle: Option<FloatOrInt<0, 360>>,
+    #[knuffel(child, unwrap(argument))]
+    pub height: Option<FloatOrInt<0, 90>>,
+    #[knuffel(child, unwrap(argument))]
+    pub size: Option<FloatOrInt<0, 1>>,
+}
+
+impl MergeWith<GlassPart> for Glass {
+    fn merge_with(&mut self, part: &GlassPart) {
+        merge!(
+            (self, part),
+            bezel,
+            thickness,
+            refractive_index,
+            dispersion,
+            reflection,
+            sheen,
+            follow_accent,
+            pattern_depth,
+            pointer_light
+        );
+        merge_clone!((self, part), color, pattern);
+        // A later `glass` with lights replaces the lights; parsing refuses more than fit.
+        if !part.lights.is_empty() {
+            self.lights = [None; MAX_GLASS_LIGHTS];
+            for (slot, light) in self.lights.iter_mut().zip(&part.lights) {
+                let mut merged = GlassLight {
+                    on: !light.off,
+                    ..GlassLight::default()
+                };
+                merge!((merged, light), intensity, angle, height, size);
+                *slot = Some(merged);
+            }
+        }
+    }
+}
+
+/// What a blurred background looks like.
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Material {
+    /// Glass: what's behind is blurred, bent like through a lens near the edges, and the edges
+    /// catch the light.
+    #[default]
+    Glass,
+    /// Plain: what's behind is blurred evenly, with no edge to bend or light it.
+    Plain,
+}
+
+#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq)]
 pub struct BlurPart {
     #[knuffel(child)]
     pub off: bool,
@@ -882,6 +1114,16 @@ pub struct BlurPart {
     pub noise: Option<FloatOrInt<0, 1000>>,
     #[knuffel(child, unwrap(argument))]
     pub saturation: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub shade: Option<FloatOrInt<0, 1>>,
+    #[knuffel(child)]
+    pub shade_dark: Option<Color>,
+    #[knuffel(child)]
+    pub shade_light: Option<Color>,
+    #[knuffel(child, unwrap(argument))]
+    pub material: Option<Material>,
+    #[knuffel(child)]
+    pub glass: Option<GlassPart>,
 }
 
 impl MergeWith<BlurPart> for Blur {
@@ -891,8 +1133,11 @@ impl MergeWith<BlurPart> for Blur {
             self.off = false;
         }
 
-        merge_clone!((self, part), passes);
-        merge!((self, part), offset, noise, saturation);
+        merge_clone!((self, part), passes, material, shade_dark, shade_light);
+        merge!((self, part), offset, noise, saturation, shade);
+        if let Some(glass) = &part.glass {
+            self.glass.merge_with(glass);
+        }
     }
 }
 
@@ -906,6 +1151,8 @@ pub struct BackgroundEffectRule {
     pub noise: Option<FloatOrInt<0, 1000>>,
     #[knuffel(child, unwrap(argument))]
     pub saturation: Option<FloatOrInt<0, 1000>>,
+    #[knuffel(child, unwrap(argument))]
+    pub material: Option<Material>,
 }
 
 /// Resolved background effect rule.
@@ -928,11 +1175,14 @@ pub struct BackgroundEffect {
 
     pub noise: Option<f64>,
     pub saturation: Option<f64>,
+
+    /// The material when blurred, or `None` for the `blur {}` section's.
+    pub material: Option<Material>,
 }
 
 impl MergeWith<BackgroundEffectRule> for BackgroundEffect {
     fn merge_with(&mut self, part: &BackgroundEffectRule) {
-        merge_clone_opt!((self, part), xray, blur);
+        merge_clone_opt!((self, part), xray, blur, material);
 
         if let Some(x) = part.noise {
             self.noise = Some(x.0);
@@ -950,6 +1200,68 @@ mod tests {
 
     use super::*;
     use crate::Config;
+
+    #[test]
+    fn glass_settings_left_out_keep_their_defaults() {
+        let config = Config::parse_mem(
+            "blur {
+                glass {
+                    thickness 30
+                }
+            }",
+        )
+        .unwrap();
+        assert_eq!(
+            config.blur.glass,
+            Glass {
+                thickness: 30.,
+                ..Glass::default()
+            }
+        );
+        assert_eq!(config.blur.material, Material::Glass);
+    }
+
+    #[test]
+    fn glass_lights_replace_the_default_one_and_keep_their_own_defaults() {
+        let config = Config::parse_mem(
+            "blur {
+                glass {
+                    light {
+                        angle 90
+                    }
+                    light {
+                        off
+                        height 10
+                    }
+                }
+            }",
+        )
+        .unwrap();
+        let light = GlassLight::default();
+        assert_eq!(
+            config.blur.glass.lights,
+            [
+                Some(GlassLight {
+                    angle: 90.,
+                    ..light
+                }),
+                Some(GlassLight {
+                    on: false,
+                    height: 10.,
+                    ..light
+                }),
+                None,
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn glass_refuses_more_lights_than_it_takes() {
+        let lights = "light {}\n".repeat(MAX_GLASS_LIGHTS + 1);
+        let text = format!("blur {{\n glass {{\n{lights}}}\n}}");
+        assert!(Config::parse_mem(&text).is_err());
+    }
 
     #[test]
     fn hex_colors_parse_in_all_three_spellings() {

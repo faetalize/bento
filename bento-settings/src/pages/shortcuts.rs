@@ -35,6 +35,9 @@ pub fn category() -> Category {
 struct Choice {
     action: LayoutEngineAction,
     engine: bool,
+    /// A bind's own action that isn't offered, like one of an engine that isn't running, which
+    /// is written back as it is.
+    kept: Option<ActionNode>,
 }
 
 impl Choice {
@@ -55,15 +58,44 @@ fn choices() -> Vec<Choice> {
         .map(|action| Choice {
             action,
             engine: false,
+            kept: None,
         })
         .collect();
     if let Ok(engine) = ipc::layout_engine() {
         choices.extend(engine.actions.into_iter().map(|action| Choice {
             action,
             engine: true,
+            kept: None,
         }));
     }
     choices
+}
+
+/// Which of `choices` a bind with `action` starts on. An action that isn't one of them gets a
+/// choice of its own that keeps it as it is, rather than the bind becoming the first action.
+fn picked_choice(choices: &mut Vec<Choice>, action: Option<&ActionNode>) -> usize {
+    let Some(action) = action else { return 0 };
+    if let Some(at) = choices.iter().position(|c| c.action.name == action.name) {
+        return at;
+    }
+    choices.push(Choice {
+        action: LayoutEngineAction {
+            name: action.name.clone(),
+            description: Some(format!("{} (as written)", action.text())),
+            args: Vec::new(),
+        },
+        engine: false,
+        kept: Some(action.clone()),
+    });
+    choices.len() - 1
+}
+
+/// The action `choice` writes, with its arguments from `fields`.
+fn chosen_action(choice: &Choice, fields: &[Field]) -> Result<ActionNode, String> {
+    match &choice.kept {
+        Some(kept) => Ok(kept.clone()),
+        None => action_node(&choice.action, fields),
+    }
 }
 
 /// A bind as the page shows it.
@@ -77,6 +109,8 @@ struct Entry {
     node: Option<BindNode>,
     /// The action's name, from the file or the parsed config.
     action: String,
+    /// Whether the engine's file binds its key too, and so takes it over while the engine runs.
+    taken_over: bool,
 }
 
 fn entries(store: &Store) -> Vec<Entry> {
@@ -87,8 +121,18 @@ fn entries(store: &Store) -> Vec<Entry> {
     let engine_binds = read_binds(&engine);
 
     let mut entries = Vec::new();
-    for bind in &config.binds.0 {
-        let path = config.bind_files.get(&bind.key).map(Path::to_owned);
+    let active = config
+        .binds
+        .0
+        .iter()
+        .map(|bind| (bind, &config.bind_files, false));
+    let taken = config
+        .taken_over
+        .0
+        .iter()
+        .map(|bind| (bind, &config.taken_over_files, true));
+    for (bind, files, taken_over) in active.chain(taken) {
+        let path = files.get(&bind.key).map(Path::to_owned);
         let (file, nodes) = match &path {
             Some(path) if *path == main => (Some(File::Main), &main_binds),
             Some(path) if *path == engine => (Some(File::Engine), &engine_binds),
@@ -107,6 +151,7 @@ fn entries(store: &Store) -> Vec<Entry> {
             include: if file.is_none() { path } else { None },
             node: node.cloned(),
             action,
+            taken_over,
         });
     }
     entries
@@ -241,11 +286,17 @@ fn refresh(view: &Rc<View>) {
     for entry in entries(&view.ctx.store) {
         let choice = choices.iter().find(|c| c.action.name == entry.action);
         let title = choice.map_or_else(|| entry.action.clone(), Choice::title);
-        let row = adw::ActionRow::builder().title(&title).build();
+        let row = adw::ActionRow::builder()
+            .use_markup(false)
+            .title(&title)
+            .build();
         let args = entry.node.as_ref().and_then(|node| node.action.as_ref());
         let args = args.map(ActionNode::arguments).unwrap_or_default();
         let subtitle = match (&entry.include, &entry.node) {
-            (Some(path), _) => format!("From {}", tilde(path)),
+            _ if entry.taken_over => {
+                String::from("Not in use: the engine's shortcut takes this key")
+            }
+            (Some(path), _) => format!("From {}", crate::store::tilde(path)),
             (None, Some(node)) if node.action.is_none() => {
                 String::from("Press and release actions, set in the config file")
             }
@@ -256,8 +307,10 @@ fn refresh(view: &Rc<View>) {
         }
         row.add_suffix(&shortcut_label(&entry.key, mod_key));
 
-        let editable =
-            entry.file.is_some() && entry.node.as_ref().is_some_and(|n| n.action.is_some());
+        // A shortcut the engine took over is changed through the engine's, which has its key.
+        let editable = !entry.taken_over
+            && entry.file.is_some()
+            && entry.node.as_ref().is_some_and(|n| n.action.is_some());
         if editable {
             row.set_activatable(true);
             row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -278,10 +331,6 @@ fn mod_key(store: &Store) -> Modifiers {
     config.input.mod_key.unwrap_or(ModKey::Super).to_modifiers()
 }
 
-fn tilde(path: &Path) -> String {
-    crate::store::tilde(path)
-}
-
 /// What the dialog changes.
 pub enum Edit {
     New,
@@ -291,12 +340,14 @@ pub enum Edit {
 
 /// Opens the dialog to add a shortcut or change one.
 pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
-    let choices = Rc::new(choices());
     let existing = match &edit {
         Edit::Existing(key) => entries(&ctx.store).into_iter().find(|e| e.key == *key),
         Edit::New => None,
     };
     let node = existing.as_ref().and_then(|e| e.node.clone());
+    let mut choices = choices();
+    let picked = picked_choice(&mut choices, node.as_ref().and_then(|n| n.action.as_ref()));
+    let choices = Rc::new(choices);
 
     let dialog = adw::Dialog::builder()
         .title(if existing.is_some() {
@@ -373,13 +424,7 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     action_group.add(&action_row);
     page.add(&action_group);
 
-    let picked = node
-        .as_ref()
-        .and_then(|n| n.action.as_ref())
-        .map(|a| a.name.clone());
-    if let Some(idx) = picked.and_then(|name| choices.iter().position(|c| c.action.name == name)) {
-        action_row.set_selected(idx as u32);
-    }
+    action_row.set_selected(picked as u32);
 
     // The action's arguments, rebuilt when the action changes.
     let args_group = adw::PreferencesGroup::builder().title("Arguments").build();
@@ -504,7 +549,7 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
             ctx.toast("Pick an action first");
             return;
         };
-        let action = match action_node(&choice.action, &fields.borrow()) {
+        let action = match chosen_action(choice, &fields.borrow()) {
             Ok(action) => action,
             Err(message) => {
                 ctx.toast(&message);
@@ -516,10 +561,15 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
             properties: advanced.properties(),
             action: Some(action),
         };
-        let file = if choice.engine {
-            File::Engine
-        } else {
-            File::Main
+        // A kept action stays in the file it's in.
+        let kept_in = choice
+            .kept
+            .as_ref()
+            .and(existing.as_ref().and_then(|e| e.file));
+        let file = match kept_in {
+            Some(file) => file,
+            None if choice.engine => File::Engine,
+            None => File::Main,
         };
         let from = existing
             .as_ref()
@@ -539,9 +589,10 @@ fn save_bind(
     file: File,
     from: Option<(Key, File)>,
 ) {
-    let taken = entries(&ctx.store)
-        .into_iter()
-        .find(|e| e.key.conflicts_with(&key) && from.is_none_or(|(old, _)| old != e.key));
+    // A shortcut the engine took over isn't in use, so it doesn't take the key.
+    let taken = entries(&ctx.store).into_iter().find(|e| {
+        !e.taken_over && e.key.conflicts_with(&key) && from.is_none_or(|(old, _)| old != e.key)
+    });
 
     let commit = {
         let (ctx, dialog) = (ctx.clone(), dialog.clone());
@@ -574,7 +625,11 @@ fn save_bind(
         .find(|c| c.action.name == taken.action)
         .map_or_else(|| taken.action.clone(), Choice::title);
     let Some(taken_file) = taken.file else {
-        let file = taken.include.as_deref().map(tilde).unwrap_or_default();
+        let file = taken
+            .include
+            .as_deref()
+            .map(crate::store::tilde)
+            .unwrap_or_default();
         let alert = adw::AlertDialog::new(
             Some("Shortcut Taken"),
             Some(&format!(
@@ -660,8 +715,9 @@ fn reset_all(ctx: &PageContext, parent: &gtk::Button) {
     let alert = adw::AlertDialog::new(
         Some("Reset All Shortcuts?"),
         Some(
-            "Every shortcut goes back to the one bento ships, in the config and in the layout \
-             engine's file. Shortcuts from included files stay as they are.",
+            "Every shortcut goes back to the one bento ships, in the config and in the file of \
+             a layout engine bento ships. Shortcuts from included files and from an engine of \
+             your own stay as they are.",
         ),
     );
     alert.add_response("cancel", "Cancel");
@@ -703,7 +759,7 @@ impl Field {
         index: usize,
     ) -> Self {
         let name = arg.name.clone();
-        let title = sentence_case(&name.replace(['-', '_'], " "));
+        let title = crate::page::title_from(&name);
         let subtitle = arg.description.clone().unwrap_or_default();
         // The value the bind has now, else the declared default.
         let current: Vec<Value> = match current {
@@ -724,6 +780,7 @@ impl Field {
         let (row, value): (gtk::Widget, Box<dyn Fn() -> _>) = match arg.r#type {
             Some(ArgType::Boolean) => {
                 let row = adw::SwitchRow::builder()
+                    .use_markup(false)
                     .title(&title)
                     .subtitle(&subtitle)
                     .active(matches!(first, Some(Value::Bool(true))))
@@ -761,6 +818,7 @@ impl Field {
             Some(ArgType::Choice) => {
                 let choices: Vec<&str> = arg.choices.iter().map(String::as_str).collect();
                 let row = adw::ComboRow::builder()
+                    .use_markup(false)
                     .title(&title)
                     .subtitle(&subtitle)
                     .model(&gtk::StringList::new(&choices))
@@ -800,7 +858,11 @@ impl Field {
                     }
                     _ => first.as_ref().map(text_of).unwrap_or_default(),
                 };
-                let row = adw::EntryRow::builder().title(&title).text(&text).build();
+                let row = adw::EntryRow::builder()
+                    .use_markup(false)
+                    .title(&title)
+                    .text(&text)
+                    .build();
                 if !subtitle.is_empty() {
                     row.set_tooltip_text(Some(&subtitle));
                 }
@@ -890,7 +952,7 @@ fn action_node(action: &LayoutEngineAction, fields: &[Field]) -> Result<ActionNo
             // A default left out before a given argument has to be written after all.
             None => match &arg.default {
                 Some(default) => node.args.extend(crate::store::option_value(default)),
-                None => return Err(format!("Fill in “{}”", sentence_case(&arg.name))),
+                None => return Err(format!("Fill in “{}”", crate::page::title_from(&arg.name))),
             },
         }
     }
@@ -1052,12 +1114,20 @@ impl Recording {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let finish_ = finish.clone();
-        keys.connect_key_pressed(move |_, keyval, _, state| {
+        keys.connect_key_pressed(move |controller, keyval, keycode, state| {
             if keyval == gdk::Key::Escape && modifiers(state).is_empty() {
                 finish_(None);
                 return glib::Propagation::Stop;
             }
-            let Some(name) = keyval
+            // The key's own symbol, without what Shift makes of it: Shift+/ is `Shift+Slash`, as
+            // bento's defaults write it, so a key taken by another bind is seen as taken.
+            let unshifted = gdk::Display::default()
+                .and_then(|display| {
+                    let group = controller.group() as i32;
+                    display.translate_key(keycode, gdk::ModifierType::empty(), group)
+                })
+                .map_or(keyval, |(key, ..)| key);
+            let Some(name) = unshifted
                 .to_lower()
                 .name()
                 .filter(|_| !is_modifier_key(keyval))
@@ -1229,14 +1299,6 @@ fn dim_label(text: &str) -> gtk::Label {
         .build()
 }
 
-fn sentence_case(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
 /// The modifiers a key shows, with the compositor's Mod key spelled out, and the same as GDK's.
 fn shown_modifiers(key: &Key, mod_key: Modifiers) -> (Modifiers, gdk::ModifierType) {
     let mut modifiers = key.modifiers;
@@ -1318,6 +1380,28 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::store::on_own_context;
+
+    #[test]
+    fn a_binds_action_that_isnt_offered_is_kept_as_it_is() {
+        // An engine's action, while that engine isn't the one running.
+        let action = ActionNode {
+            name: String::from("swap-halves"),
+            args: vec![Value::Str(String::from("left"))],
+            properties: Vec::new(),
+        };
+        let mut choices: Vec<Choice> = niri_config::actions::native_actions()
+            .into_iter()
+            .map(|action| Choice {
+                action,
+                engine: false,
+                kept: None,
+            })
+            .collect();
+        let picked = picked_choice(&mut choices, Some(&action));
+        assert_eq!(choices[picked].action.name, "swap-halves");
+        assert_eq!(chosen_action(&choices[picked], &[]), Ok(action));
+    }
 
     fn close_window() -> ActionNode {
         ActionNode {
@@ -1329,25 +1413,28 @@ mod tests {
 
     #[test]
     fn resetting_puts_the_action_back_on_its_default_key() {
-        let dir = std::env::temp_dir().join(format!("bento-settings-reset-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.kdl");
+        on_own_context(|| {
+            let dir =
+                std::env::temp_dir().join(format!("bento-settings-reset-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config.kdl");
 
-        let moved = "binds {\n    Mod+Ctrl+Y repeat=false { close-window; }\n}\n";
-        fs::write(&path, moved).unwrap();
-        let store = Store::load_from(path.clone());
-        let key = parse_key("Mod+Ctrl+Y").unwrap();
-        let (bind, file) = default_bind(&store, key, &close_window()).unwrap();
-        assert_eq!((bind.key.as_str(), file), ("Mod+Q", File::Main));
+            let moved = "binds {\n    Mod+Ctrl+Y repeat=false { close-window; }\n}\n";
+            fs::write(&path, moved).unwrap();
+            let store = Store::load_from(path.clone());
+            let key = parse_key("Mod+Ctrl+Y").unwrap();
+            let (bind, file) = default_bind(&store, key, &close_window()).unwrap();
+            assert_eq!((bind.key.as_str(), file), ("Mod+Q", File::Main));
 
-        // Already on its default key, as shipped: nothing to reset.
-        let shipped = "binds {\n    Mod+Q repeat=false { close-window; }\n}\n";
-        fs::write(&path, shipped).unwrap();
-        let store = Store::load_from(path);
-        let key = parse_key("Mod+Q").unwrap();
-        assert_eq!(default_bind(&store, key, &close_window()), None);
+            // Already on its default key, as shipped: nothing to reset.
+            let shipped = "binds {\n    Mod+Q repeat=false { close-window; }\n}\n";
+            fs::write(&path, shipped).unwrap();
+            let store = Store::load_from(path);
+            let key = parse_key("Mod+Q").unwrap();
+            assert_eq!(default_bind(&store, key, &close_window()), None);
 
-        fs::remove_dir_all(&dir).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        });
     }
 
     #[test]

@@ -16,6 +16,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, T
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::effect_buffer::EffectBuffer;
+use crate::render_helpers::glass::{self, GlassShapes};
 use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 use crate::render_helpers::{RenderCtx, RenderTarget};
@@ -79,8 +80,13 @@ pub struct XrayElement {
     blur: bool,
     noise: f32,
     saturation: f32,
+    shade: [f32; 4],
     bg_color: Color32F,
+    /// Draws glass filling the clip geometry instead of the plain effect.
+    glass: Option<GlassShapes>,
     program: Option<GlesTexProgram>,
+    /// How opaque it's drawn, as the window it's behind fades.
+    alpha: f32,
 }
 
 impl Xray {
@@ -102,9 +108,20 @@ impl Xray {
         blur: bool,
         noise: f32,
         saturation: f32,
+        shade: [f32; 4],
+        glass: Option<GlassShapes>,
         push: &mut dyn FnMut(XrayElement),
     ) {
-        let program = Shaders::get(ctx.renderer).postprocess_and_clip.clone();
+        let shaders = Shaders::get(ctx.renderer);
+        let program = if glass.is_some() {
+            // Without its shader, glass would be an unclipped rectangle.
+            let Some(program) = shaders.glass.borrow().clone() else {
+                return;
+            };
+            Some(program)
+        } else {
+            shaders.postprocess_and_clip.clone()
+        };
 
         let zoom = xray_pos.zoom;
         let pos_in_backdrop = xray_pos.pos_in_backdrop.upscale(zoom);
@@ -200,8 +217,11 @@ impl Xray {
                     blur,
                     noise,
                     saturation,
+                    shade,
                     bg_color: *bg_color,
+                    glass: glass.map(|shapes| shapes.lit(ctx.glass, clip_geo.loc, 1.)),
                     program: program.clone(),
+                    alpha: 1.,
                 };
                 push(elem);
             }
@@ -250,8 +270,15 @@ impl Xray {
                 blur,
                 noise,
                 saturation,
+                shade,
                 bg_color: self.backdrop_color,
+                glass: glass.map(|shapes| {
+                    shapes
+                        .scaled(zoom as f32)
+                        .lit(ctx.glass, clip_geo.loc, zoom)
+                }),
                 program: program.clone(),
+                alpha: 1.,
             };
             push(elem);
         }
@@ -259,14 +286,33 @@ impl Xray {
 }
 
 impl XrayElement {
-    fn compute_uniforms(&self) -> [Uniform<'static>; 7] {
-        [
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
+    fn compute_uniforms(&self) -> Vec<Uniform<'static>> {
+        if let Some(shapes) = &self.glass {
+            return glass::uniforms(
+                shapes,
+                self.scale,
+                self.clip_geo_size,
+                self.input_to_clip_geo,
+                self.noise,
+                self.saturation,
+                self.shade,
+                self.bg_color.components(),
+            );
+        }
+
+        vec![
             Uniform::new("niri_scale", self.scale),
             Uniform::new("geo_size", <[f32; 2]>::from(self.clip_geo_size)),
             Uniform::new("corner_radius", <[f32; 4]>::from(self.corner_radius)),
             mat3_uniform("input_to_geo", self.input_to_clip_geo),
             Uniform::new("noise", self.noise),
             Uniform::new("saturation", self.saturation),
+            Uniform::new("shade", self.shade),
             Uniform::new("bg_color", self.bg_color.components()),
         ]
     }
@@ -278,7 +324,11 @@ impl Element for XrayElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.buffer.borrow().commit()
+        glass::effect_commit(
+            self.buffer.borrow().commit(),
+            self.glass.as_ref(),
+            self.shade,
+        )
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
@@ -350,7 +400,7 @@ impl RenderElement<GlesRenderer> for XrayElement {
             // FIXME: opaque regions need to be filtered like damage.
             &[],
             Transform::Normal,
-            1.,
+            self.alpha,
             self.program.as_ref(),
             uniforms,
         )

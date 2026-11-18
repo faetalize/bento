@@ -292,6 +292,18 @@ pub struct Output {
     /// Whether the layout holds the keyboard, if it took it or gave it back.
     #[serde(default)]
     pub keyboard: Option<bool>,
+    /// Whether windows get focus when the pointer comes onto them, if the layout said.
+    #[serde(default, rename = "focusFollowsMouse")]
+    pub focus_follows_mouse: Option<FocusFollowsMouseRequest>,
+}
+
+/// What the layout says about focus following the pointer.
+#[derive(Debug, Deserialize)]
+pub struct FocusFollowsMouseRequest {
+    pub on: bool,
+    /// How far focusing a window may scroll the view, in working area widths.
+    #[serde(rename = "maxScroll")]
+    pub max_scroll: Option<f64>,
 }
 
 /// A timer that the layout asked for: the event `timer` with its `id` comes after `ms`.

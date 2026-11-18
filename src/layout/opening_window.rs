@@ -44,6 +44,17 @@ impl OpenAnimation {
         self.anim.is_done()
     }
 
+    /// How much the animation scales the tile about its middle, and how far it has faded it in,
+    /// for what's drawn apart from the tile, like its window's background effect. A custom
+    /// shader can draw the tile any way, so then only the fade is followed.
+    pub fn effect_transform(&self, renderer: &mut GlesRenderer) -> (f64, f32) {
+        let faded_in = self.anim.clamped_value().clamp(0., 1.) as f32;
+        if Shaders::get(renderer).program(ProgramType::Open).is_some() {
+            return (1., faded_in);
+        }
+        ((self.anim.value() / 2. + 0.5).max(0.), faded_in)
+    }
+
     // We can't depend on view_rect here, because the result of window opening can be snapshot and
     // then rendered elsewhere.
     pub fn render(

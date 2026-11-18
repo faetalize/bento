@@ -66,6 +66,18 @@ impl Field {
         (!selection.is_empty()).then(|| &self.text[selection])
     }
 
+    /// Puts the caret at byte `at`, or the grapheme boundary before it, keeping the selection's
+    /// other end where it is with `select`.
+    pub fn place(&mut self, at: usize, select: bool) {
+        let mut at = at.min(self.text.len());
+        while !self.text.is_char_boundary(at) {
+            at -= 1;
+        }
+        let boundary = at == self.text.len() || self.right_of(self.left_of(at)) == at;
+        let at = if boundary { at } else { self.left_of(at) };
+        self.move_to(at, select);
+    }
+
     pub fn apply(&mut self, edit: &Edit) {
         match edit {
             Edit::Insert(text) => self.insert(text),

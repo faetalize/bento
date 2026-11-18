@@ -11,7 +11,7 @@ use gtk::{gdk, gio, glib};
 use self::ratio::Ratio;
 use crate::kdl::Value;
 use crate::page::{open_file, PageContext};
-use crate::store::tilde;
+use crate::store::{tilde, Store};
 
 const KEY: &str = "layout.background-image";
 const PATH: &[&str] = &["layout", "background-image"];
@@ -31,7 +31,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     let group = adw::PreferencesGroup::builder().title("Wallpaper").build();
     ctx.anchor("appearance.wallpaper", &group);
 
-    let folder = folder(current(ctx).as_deref());
+    let folder = folder(current(&ctx.store).as_deref());
 
     let open_folder = gtk::Button::builder()
         .icon_name("ph-folder-open-symbolic")
@@ -92,7 +92,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             if ctx.store.is_pending(KEY) {
                 return;
             }
-            let current = current(&ctx);
+            let current = current(&ctx.store);
             preview.show(current.as_deref());
             mark(&tiles.borrow(), current.as_deref());
         }
@@ -104,8 +104,8 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
 }
 
 /// The current wallpaper, with `~` expanded.
-fn current(ctx: &PageContext) -> Option<PathBuf> {
-    let path = ctx.store.config().layout.background_image.clone()?;
+pub(super) fn current(store: &Store) -> Option<PathBuf> {
+    let path = store.config().layout.background_image.clone()?;
     Some(match path.strip_prefix("~/") {
         Some(rest) => glib::home_dir().join(rest),
         None => PathBuf::from(path),
@@ -179,7 +179,7 @@ fn tile(path: &Path) -> gtk::FlowBoxChild {
 
 fn add_tile() -> gtk::FlowBoxChild {
     let icon = gtk::Image::builder()
-        .icon_name("ph-plus-symbolic")
+        .icon_name("list-add-symbolic")
         .pixel_size(24)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -255,7 +255,7 @@ impl Preview {
             .css_classes(["wallpaper-name", "heading"])
             .build();
         let remove = gtk::Button::builder()
-            .icon_name("ph-x-symbolic")
+            .icon_name("window-close-symbolic")
             .tooltip_text("Remove Wallpaper")
             .halign(gtk::Align::End)
             .valign(gtk::Align::Start)

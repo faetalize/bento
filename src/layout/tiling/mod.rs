@@ -28,7 +28,7 @@ use self::protocol::{
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
 use super::monitor::{InsertPosition, TiledDrop};
 use super::surfaces::{
-    Drawn, Input, RenderItem, SurfaceRenderElement, Tree, WindowHit, WindowSlot,
+    CopyLook, Drawn, Input, RenderItem, SurfaceRenderElement, Tree, WindowHit, WindowSlot,
 };
 use super::tile::{Decorations, PendingMove, Tile, TileRenderElement, TileRenderSnapshot};
 use super::workspace::{resize_edges_in_tile, InteractiveResize};
@@ -45,7 +45,7 @@ use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::xray::XrayPos;
 use crate::render_helpers::RenderCtx;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
-use crate::utils::ResizeEdge;
+use crate::utils::{center_f64, ResizeEdge};
 use crate::window::ResolvedWindowRules;
 
 pub mod engine;
@@ -397,6 +397,11 @@ impl<W: LayoutElement> TilingSpace<W> {
 
     fn idx_of_layout_id(&self, id: u64) -> Option<usize> {
         self.data.iter().position(|data| data.id == id)
+    }
+
+    /// The window with the layout's id `id`, if it's here.
+    pub fn window_by_layout_id(&self, id: u64) -> Option<&W> {
+        Some(self.tiles[self.idx_of_layout_id(id)?].window())
     }
 
     fn active_idx(&self) -> Option<usize> {
@@ -1162,7 +1167,14 @@ impl<W: LayoutElement> TilingSpace<W> {
         // Closing windows live in view coordinates, so they stay put as the camera moves.
         let scale = Scale::from(self.scale);
         let res = ClosingWindow::new(
-            renderer, snapshot, scale, tile_size, tile_pos, blocker, anim,
+            renderer,
+            snapshot.contents,
+            snapshot.effect,
+            scale,
+            tile_size,
+            tile_pos,
+            blocker,
+            anim,
         );
         match res {
             Ok(closing) => self.closing_windows.push(closing),
@@ -1275,16 +1287,24 @@ impl<W: LayoutElement> TilingSpace<W> {
             return None;
         }
 
+        self.active_fullscreen_window()
+    }
+
+    /// The active window if it's fullscreen, whether or not the view has come to rest on it.
+    pub fn active_fullscreen_window(&self) -> Option<&W> {
         self.active_window()
             .filter(|win| win.sizing_mode().is_fullscreen())
     }
 
-    pub fn render<R: NiriRenderer>(
+    /// Draws the workspace's windows and what the layout draws. `elsewhere` finds a window that
+    /// isn't here by its layout id, for a copy of it.
+    pub fn render<'w, R: NiriRenderer>(
         &self,
         mut ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
         layer: RenderLayer,
+        elsewhere: &dyn Fn(u64) -> Option<&'w W>,
         push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
     ) {
         let scale = Scale::from(self.scale);
@@ -1294,14 +1314,16 @@ impl<W: LayoutElement> TilingSpace<W> {
         if layer.is_normal() {
             let view_rect = Rectangle::from_size(self.view_size);
             for closing in self.closing_windows.iter().rev() {
-                let elem = closing.render(ctx.as_gles(), view_rect, scale);
-                if zoom == 1. {
-                    push(elem.into());
-                } else {
-                    // They're in view coordinates, which the zoom scales around the view's origin.
-                    let origin = Point::<i32, Physical>::from((0, 0));
-                    push(RescaleRenderElement::from_element(elem, origin, zoom).into());
-                }
+                closing.render(ctx.as_gles(), view_rect, scale, xray_pos, &mut |elem| {
+                    if zoom == 1. {
+                        push(elem.into());
+                    } else {
+                        // They're in view coordinates, which the zoom scales around the view's
+                        // origin.
+                        let origin = Point::<i32, Physical>::from((0, 0));
+                        push(RescaleRenderElement::from_element(elem, origin, zoom).into());
+                    }
+                });
             }
         }
 
@@ -1329,9 +1351,20 @@ impl<W: LayoutElement> TilingSpace<W> {
                         push(RescaleRenderElement::from_element(elem, origin, zoom).into());
                     }
                 }
-                RenderItem::Window(slot) => {
-                    self.render_window(ctx.r(), &slot, xray_pos, focus_ring, layer, push);
-                }
+                RenderItem::Window(slot) => match slot.copy {
+                    // A copy is drawn only where the workspace is, not with windows moving
+                    // between workspaces.
+                    Some(_) if !layer.is_normal() => (),
+                    Some(look) => {
+                        let here = self.window_by_layout_id(slot.id);
+                        if let Some(win) = here.or_else(|| elsewhere(slot.id)) {
+                            self.render_copy(ctx.r(), &slot, look, win, push);
+                        }
+                    }
+                    None => {
+                        self.render_window(ctx.r(), &slot, xray_pos, focus_ring, layer, push);
+                    }
+                },
             }
         }
     }
@@ -1419,6 +1452,90 @@ impl<W: LayoutElement> TilingSpace<W> {
                 }
             },
         );
+    }
+
+    /// Draws a copy of `win`'s contents fitted into the copy node, centred, with the node's
+    /// transform, opacity and clip, and its own corner radius on the contents. It draws what the
+    /// window draws itself: no border, focus ring, shadow or popups.
+    fn render_copy<R: NiriRenderer>(
+        &self,
+        mut ctx: RenderCtx<R>,
+        slot: &WindowSlot,
+        look: CopyLook,
+        win: &W,
+        push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
+    ) {
+        let drawn = &slot.drawn;
+        let size = win.size().to_f64();
+        let node = drawn.rect;
+        if drawn.opacity <= 0. || size.w <= 0. || size.h <= 0. || node.is_empty() {
+            return;
+        }
+
+        // The window fitted into the node, on the canvas.
+        let fit = f64::min(node.size.w / size.w, node.size.h / size.h);
+        let fitted = size.upscale(fit);
+        let fitted_loc = node.loc + (node.size - fitted).downscale(2.).to_point();
+
+        // The window is drawn at its own size where the fitted copy starts on the view, then
+        // scaled by `fit` around there, then by the node's transform: a scale `s` around the node's
+        // centre `c` and a move `m`. Together a point `p` goes to
+        // `c + s * (pos + fit * (p - pos) - c) + m`, a scale by `s * fit` around `pos` and a move.
+        let camera = self.camera.current();
+        let zoom = self.camera.zoom.current();
+        let pos = (fitted_loc - camera)
+            .to_physical_precise_round(self.scale)
+            .to_logical(self.scale);
+        let t = drawn.transform;
+        let centre = center_f64(node) - camera;
+        let moved = centre + (pos - centre).upscale(t.scale) + Point::from((t.x, t.y)) - pos;
+
+        // The copy's own rounded corners, where the fitted window ends up, inside any clip of the
+        // node's ancestors.
+        let own = Rectangle::new(
+            centre + (pos - centre).upscale(t.scale) + Point::from((t.x, t.y)),
+            fitted.upscale(t.scale),
+        );
+        let ancestors = drawn.clip.map(|clip| {
+            (
+                Rectangle::new(clip.rect.loc - camera, clip.rect.size),
+                clip.radius,
+            )
+        });
+        let clip = match ancestors {
+            Some((area, radius)) => own.intersection(area).map(|area| {
+                let radius = if look.corner_radius > 0. {
+                    look.corner_radius * t.scale
+                } else {
+                    radius
+                };
+                (area, radius)
+            }),
+            None => Some((own, look.corner_radius * t.scale)),
+        };
+        let Some((clip, radius)) = clip else { return };
+
+        let map = TileMap {
+            pivot: pos,
+            scale: t.scale * fit * zoom,
+            offset: pos.upscale(zoom - 1.) + moved.upscale(zoom),
+            clip: Some((
+                Rectangle::new(clip.loc.upscale(zoom), clip.size.upscale(zoom)),
+                radius * zoom,
+            )),
+        };
+        if map.scale <= 0. {
+            return;
+        }
+        let placement = Placement::new(&map, self.scale);
+        let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+        let scale = Scale::from(self.scale);
+        win.render_normal(ctx.r(), pos, scale, drawn.opacity as f32, &mut |elem| {
+            let elem = placement.round_corners(elem.into(), clip_shader.as_ref());
+            if let Some(elem) = placement.place(elem) {
+                push(elem);
+            }
+        });
     }
 
     /// What's under the pointer at `pos`, relative to the view, among the windows that the layout
@@ -1698,6 +1815,10 @@ impl<W: LayoutElement> TilingSpace<W> {
     }
 
     pub fn dnd_scroll_gesture_begin(&mut self) {
+        // Under an engine whose windows move freely, the view stays where the engine has it.
+        if engine::free_drag_enabled() {
+            return;
+        }
         if self
             .camera
             .gesture

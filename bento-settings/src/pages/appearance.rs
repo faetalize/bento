@@ -3,7 +3,7 @@ use crate::model::{BoolStyle, Category, Group, Setting};
 pub fn category() -> Category {
     Category::settings("appearance", "Appearance")
         .icon("ph-palette-symbolic")
-        .keywords(&["look", "theme", "colors"])
+        .keywords(&["look", "theme", "colors", "blur", "glass"])
         .group(
             Group::custom(super::theme::build)
                 .search_item(
@@ -17,11 +17,162 @@ pub fn category() -> Category {
                     &["highlight", "color", "theme"],
                 ),
         )
+        .group(
+            Group::custom(super::title_buttons::build)
+                .search_item(
+                    "appearance.title-buttons.maximize",
+                    "Maximize Button",
+                    &[
+                        "title bar",
+                        "titlebar",
+                        "window buttons",
+                        "decorations",
+                        "headerbar",
+                    ],
+                )
+                .search_item(
+                    "appearance.title-buttons.minimize",
+                    "Minimize Button",
+                    &[
+                        "title bar",
+                        "titlebar",
+                        "window buttons",
+                        "decorations",
+                        "headerbar",
+                    ],
+                )
+                .search_item(
+                    "appearance.title-buttons.placement",
+                    "Title Bar Button Placement",
+                    &[
+                        "left",
+                        "right",
+                        "window buttons",
+                        "decorations",
+                        "close button",
+                    ],
+                ),
+        )
         .group(Group::custom(super::wallpaper::build).search_item(
             "appearance.wallpaper",
             "Wallpaper",
             &["background", "picture", "image", "desktop"],
         ))
+        .group(
+            Group::custom(super::blur::build)
+                .search_item(
+                    "appearance.blur",
+                    "Blur",
+                    &[
+                        "glass",
+                        "plain",
+                        "frosted",
+                        "transparency",
+                        "translucency",
+                        "transparent",
+                        "translucent",
+                        "background effect",
+                    ],
+                )
+                .search_item(
+                    "blur.material",
+                    "Blur Material",
+                    &["glass", "plain", "transparency", "translucency"],
+                )
+                .search_item(
+                    "blur.glass.preset",
+                    "Glass Preset",
+                    &["clear", "regular", "hazy", "style"],
+                )
+                .search_item(
+                    "blur.roughness",
+                    "Blur Roughness",
+                    &[
+                        "intensity",
+                        "amount",
+                        "radius",
+                        "frost",
+                        "transparency",
+                        "translucency",
+                    ],
+                )
+                .search_item("blur.offset", "Blur Strength", &["radius", "offset"])
+                .search_item("blur.passes", "Blur Passes", &["quality"])
+                .search_item("blur.noise", "Blur Noise", &["grain", "dither"])
+                .search_item("blur.saturation", "Blur Saturation", &["vibrancy", "color"])
+                .search_item(
+                    "blur.shade",
+                    "Blur Shade",
+                    &["opacity", "dim", "legibility", "contrast", "window color"],
+                )
+                .search_item(
+                    "blur.glass.sheen",
+                    "Glass Sheen",
+                    &["gloss", "polish", "reflection"],
+                )
+                .search_item("blur.glass.bezel", "Glass Bezel", &["edge", "curve"])
+                .search_item(
+                    "blur.glass.thickness",
+                    "Glass Thickness",
+                    &["height", "depth"],
+                )
+                .search_item(
+                    "blur.glass.refractive-index",
+                    "Glass Refractive Index",
+                    &["refraction", "bend", "lens"],
+                )
+                .search_item(
+                    "blur.glass.dispersion",
+                    "Glass Dispersion",
+                    &["chromatic aberration", "rainbow", "prism"],
+                )
+                .search_item(
+                    "blur.glass.reflection",
+                    "Glass Reflection",
+                    &["fresnel", "rim", "edge", "glow"],
+                )
+                .search_item(
+                    "blur.glass.pattern",
+                    "Glass Pattern",
+                    &[
+                        "texture", "surface", "reeded", "fluted", "hammered", "frosted",
+                    ],
+                )
+                .search_item(
+                    "blur.glass.pattern-depth",
+                    "Glass Pattern Depth",
+                    &["texture", "relief"],
+                )
+                .search_item(
+                    "blur.glass.color",
+                    "Glass Color",
+                    &["tint", "hue", "stained", "absorption"],
+                )
+                .search_item(
+                    "blur.glass.follow-accent",
+                    "Glass Follows Accent Color",
+                    &["tint", "theme", "hue"],
+                )
+                .search_item(
+                    "blur.glass.pointer-light",
+                    "Glass Pointer Light",
+                    &["cursor", "mouse", "glint", "hover"],
+                )
+                .search_item(
+                    "blur.glass.lights",
+                    "Glass Lights",
+                    &[
+                        "light",
+                        "highlight",
+                        "glare",
+                        "shine",
+                        "light direction",
+                        "light angle",
+                        "light size",
+                        "sun",
+                    ],
+                ),
+        )
         .group(
             Group::untitled()
                 .setting(

@@ -2,7 +2,7 @@
 // file to ~/.config/bento/engines/niri.kdl the first time the engine runs without one; from then
 // on it's yours to edit.
 //
-// A key bound here can't also be bound in config.kdl.
+// A key bound here and in config.kdl runs the bind here while this engine runs.
 // https://github.com/faetalize/bento#layout-engines
 
 // Everything below is at its default.
@@ -85,6 +85,11 @@ options {
     insert-hint-color "#7fc8ff80"
     // A gradient replaces the color of the hint, written like the tab indicator's. None by default:
     // insert-hint-gradient from="#80c8ff80" to="#c7ff7f80" angle=45
+
+    // Focus a window when the pointer comes onto it, floating windows and panels that take the
+    // keyboard on demand included: "never", "in-view" for windows already fully in view, which
+    // focusing doesn't scroll to, or "always".
+    focus-follows-mouse "never"
 }
 
 // Window rules have the same match and exclude as the ones in config.kdl, and set what the

@@ -92,3 +92,41 @@ flowbox.wallpapers > flowboxchild.current {
   border-radius: 8px;
   border: 2px dashed alpha(currentColor, 0.25);
 }
+
+/* The blur preview: a piece of the screen with a pane of the material on it. */
+.blur-preview {
+  border-radius: 12px;
+  background-color: alpha(currentColor, 0.06);
+}
+
+/* The handle that moves the light in the blur preview. */
+.blur-light {
+  border-radius: 9999px;
+  color: white;
+  background-color: alpha(black, 0.55);
+  box-shadow: 0 1px 3px alpha(black, 0.3);
+  transition: background-color 150ms ease-out;
+}
+
+.blur-light:hover {
+  background-color: alpha(black, 0.7);
+}
+
+/* A slider whose settings don't match any of its positions: only its track shows. */
+scale.custom slider,
+scale.custom highlight {
+  opacity: 0;
+}
+
+/* Settings another slider sets, nested under it: indented, so they read as its parts. */
+row.part > box.header {
+  margin-left: 24px;
+}
+
+/* libadwaita turns the arrow of every expander inside an open one, since its rule matches any
+   arrow under an expander that's open; a nested expander's arrow follows its own state. */
+row.expander row.expander:not(:checked) image.expander-row-arrow {
+  -gtk-icon-transform: rotate(0.5turn);
+  opacity: var(--dim-opacity);
+  color: inherit;
+}

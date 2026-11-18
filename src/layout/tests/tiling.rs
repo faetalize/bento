@@ -135,6 +135,118 @@ fn bento_layout_runs_in_the_engine() {
 }
 
 #[test]
+fn windows11_layout_runs_in_the_engine() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::FocusWindow(2),
+        Op::LayoutAction("snap-left", vec![], None),
+        Op::FocusWindow(1),
+        Op::LayoutAction("snap-right", vec![], None),
+        add_window(3),
+    ];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for("windows11"), ops);
+    // The third window opens at the size it asks for, centred.
+    assert_snapshot!(format_tiles(&layout), @"
+      616 × 688 at x:  648 y: 16
+      616 × 688 at x:   16 y: 16
+      100 × 200 at x:  590 y:260 focused
+    ");
+}
+
+/// Starts dragging window 3 of a windows11 workspace by a point inside it, and moves the pointer
+/// `dx` to the right.
+fn drag_windows11(dx: f64) -> Layout<TestWindow> {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        add_window(3),
+    ];
+    ops.extend(settle());
+    ops.extend([
+        Op::InteractiveMoveBegin {
+            window: 3,
+            output_idx: 1,
+            px: 600.,
+            py: 300.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 3,
+            dx,
+            dy: 0.,
+            output_idx: 1,
+            px: 600. + dx,
+            py: 300.,
+        },
+    ]);
+    check_ops_with_options(options_for("windows11"), ops)
+}
+
+/// Ends the drag, so that no engine events stay queued for the next test on the thread.
+fn drop_windows11(layout: &mut Layout<TestWindow>) {
+    let mut ops = vec![Op::InteractiveMoveEnd { window: 3 }];
+    ops.extend(settle());
+    check_ops_on_layout(layout, ops);
+}
+
+#[test]
+fn a_windows11_window_follows_the_pointer_from_the_start() {
+    // A tiled window holds its place until the pointer is far from it; a free one comes along
+    // at once, as a floating window does.
+    let mut layout = drag_windows11(12.);
+    assert!(matches!(
+        layout.interactive_move,
+        Some(InteractiveMoveState::Moving(_))
+    ));
+    drop_windows11(&mut layout);
+}
+
+#[test]
+fn dragging_under_windows11_leaves_the_view_alone() {
+    // Near the screen's edge, bento scrolls the view under a tiling engine; the camera is the
+    // engine's, and windows11's never moves.
+    let mut layout = drag_windows11(12.);
+    for (_, _, ws) in layout.workspaces() {
+        assert!(!ws.scrolling().is_camera_gesture());
+    }
+    drop_windows11(&mut layout);
+}
+
+/// An engine that has focus follow the pointer, up to a quarter of the view's width away.
+const FOLLOWING: &str = r#"
+export const meta = { api: 2, name: "following" };
+export default function create(bento) {
+    bento.setFocusFollowsMouse(true, { maxScroll: 0.25 });
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 0, y: 0, w: 100, h: 100 });
+        e.window.focus();
+    });
+}
+"#;
+
+#[test]
+fn the_engine_says_whether_focus_follows_the_pointer() {
+    use crate::layout::tiling::host::FocusFollowsMouse;
+
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for_source("following", FOLLOWING), ops.clone());
+    assert_eq!(
+        layout.focus_follows_mouse(),
+        Some(FocusFollowsMouse {
+            max_scroll: Some(0.25)
+        })
+    );
+
+    // windows11 never asks for it.
+    let layout = check_ops_with_options(options_for("windows11"), ops);
+    assert_eq!(layout.focus_follows_mouse(), None);
+}
+
+#[test]
 fn layout_action_binds_are_checked_against_declared_args() {
     use crate::layout::tiling::engine;
 
@@ -482,7 +594,12 @@ fn native_action_table_lists_every_bindable_action() {
 
 /// Options for an API 2 layout engine from `source`, which runs from a file.
 fn options_for_source(name: &str, source: &str) -> Options {
-    let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{}", std::process::id()));
+    // Each call gets a file of its own: tests that run at the same time and load the same engine
+    // would otherwise write it over while another reads it, and that one would get an empty file.
+    static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{pid}-{call}"));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.js"));
     std::fs::write(&path, source).unwrap();

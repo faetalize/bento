@@ -124,7 +124,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
     ctx.anchor("keyboard.layouts", &group);
 
     let add = gtk::Button::builder()
-        .icon_name("ph-plus-symbolic")
+        .icon_name("list-add-symbolic")
         .tooltip_text("Add Layout")
         .valign(gtk::Align::Center)
         .css_classes(["flat"])
@@ -163,10 +163,11 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
             }
             for (idx, (code, variant)) in layouts.iter().enumerate() {
                 let row = adw::ActionRow::builder()
+                    .use_markup(false)
                     .title(name_of(&catalog, code, variant))
                     .build();
                 let remove = gtk::Button::builder()
-                    .icon_name("ph-x-symbolic")
+                    .icon_name("user-trash-symbolic")
                     .tooltip_text("Remove")
                     .valign(gtk::Align::Center)
                     .css_classes(["flat", "circular"])
@@ -208,7 +209,10 @@ fn picker(
         .activate_on_single_click(true)
         .build();
     for layout in catalog.iter() {
-        let row = adw::ActionRow::builder().title(&layout.name).build();
+        let row = adw::ActionRow::builder()
+            .use_markup(false)
+            .title(&layout.name)
+            .build();
         list.append(&row);
     }
 

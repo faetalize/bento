@@ -1,4 +1,5 @@
 use niri::layout::{LayoutElement, SizingMode};
+use niri::render_helpers::glass::GlassFrame;
 use niri::render_helpers::{RenderCtx, RenderTarget};
 use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -57,6 +58,7 @@ impl TestCase for Window {
             renderer,
             target: RenderTarget::Output,
             xray: None,
+            glass: GlassFrame::default(),
         };
         self.window
             .render_normal(ctx, location, Scale::from(1.), 1., &mut |elem| {

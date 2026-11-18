@@ -28,11 +28,11 @@ use crate::render_helpers::renderer::NiriRenderer;
 use crate::utils::center_f64;
 
 mod animated;
-mod icons;
+pub(crate) mod icons;
 mod props;
 mod render;
 mod search_field;
-mod svg;
+pub(crate) mod svg;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum NodeKind {
@@ -44,6 +44,8 @@ enum NodeKind {
     Search,
     /// A window, by its id.
     Window(u64),
+    /// A live copy of a window's contents, which bento draws fitted into the node.
+    Copy,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -53,6 +55,7 @@ enum CreateKind {
     Text,
     Image,
     Search,
+    Copy,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,6 +102,8 @@ struct Node {
     interactive: bool,
     /// Where pointer input goes, for a window's node.
     input: Input,
+    /// The window a copy node draws.
+    copy_of: Option<u64>,
     transitions: Transitions,
     /// What it starts from when it enters a tree, until it does.
     enter: Option<Enter>,
@@ -149,6 +154,16 @@ pub enum WindowHit {
 pub struct WindowSlot {
     pub id: u64,
     pub drawn: Drawn,
+    /// For a copy node: the window's contents go fitted into `drawn`, without the window's
+    /// border, focus ring, shadow or popups, and the window stays drawn where it is too.
+    pub copy: Option<CopyLook>,
+}
+
+/// How a copy node draws its window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CopyLook {
+    /// The copy's corner radius, before its transform.
+    pub corner_radius: f64,
 }
 
 /// A node with everything under it, taken out of a tree to put in another workspace's.
@@ -329,6 +344,7 @@ impl Node {
             placeholder: String::new(),
             interactive: false,
             input: Input::default(),
+            copy_of: None,
             transitions: Transitions::default(),
             enter: None,
             entered: matches!(kind, NodeKind::Root | NodeKind::Window(_)),
@@ -406,6 +422,9 @@ impl Node {
         }
         if let Some(input) = update.input {
             self.input = input;
+        }
+        if let Some(window) = update.window {
+            self.copy_of = Some(window);
         }
         if let Some(enter) = update.enter {
             self.enter = Some(enter);
@@ -495,6 +514,13 @@ fn check_props(kind: NodeKind, update: &Update) -> Result<(), String> {
     }
     if update.placeholder.is_some() && kind != NodeKind::Search {
         return only("placeholder", "search");
+    }
+    if update.window.is_some() && kind != NodeKind::Copy {
+        return only("window", "copy");
+    }
+    // A border would sit under the copied window, which bento draws after the node.
+    if update.border.is_some() && kind == NodeKind::Copy {
+        return Err("copy nodes draw no border".into());
     }
     if (update.background.is_some() || update.border.is_some())
         && matches!(kind, NodeKind::Root | NodeKind::Window(_))
@@ -618,6 +644,7 @@ impl Tree {
             CreateKind::Text => NodeKind::Text,
             CreateKind::Image => NodeKind::Image,
             CreateKind::Search => NodeKind::Search,
+            CreateKind::Copy => NodeKind::Copy,
         };
         check_props(kind, &props)?;
 
@@ -1062,9 +1089,23 @@ impl Tree {
         out: &mut Vec<RenderItem>,
     ) {
         if let NodeKind::Window(id) = node.kind {
-            out.push(RenderItem::Window(WindowSlot { id, drawn: *drawn }));
+            out.push(RenderItem::Window(WindowSlot {
+                id,
+                drawn: *drawn,
+                copy: None,
+            }));
         } else {
             render::draw(renderer, node, drawn, target, &mut |item| out.push(item));
+            // A copy goes over its own background, drawn by the caller like a window.
+            if let (NodeKind::Copy, Some(id)) = (node.kind, node.copy_of) {
+                out.push(RenderItem::Window(WindowSlot {
+                    id,
+                    drawn: *drawn,
+                    copy: Some(CopyLook {
+                        corner_radius: node.corner_radius.current().max(0.),
+                    }),
+                }));
+            }
         }
 
         let rounded = node

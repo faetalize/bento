@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::FromRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::{env, mem};
@@ -111,6 +111,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     return Err(
                         anyhow::anyhow!("the layout engine doesn't match the config").into(),
+                    );
+                }
+                let mod_key = config.input.mod_key.unwrap_or(niri_config::ModKey::Super);
+                for bind in &config.taken_over.0 {
+                    let key = niri::ui::hotkey_overlay::key_name(false, mod_key, &bind.key);
+                    let file = config.bind_files.get(&bind.key).unwrap_or(Path::new("?"));
+                    info!(
+                        "{key} is bound in {} too, which takes it over",
+                        file.display()
                     );
                 }
                 info!("config is valid");
@@ -283,6 +292,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for elem in spawn_sh_at_startup {
         spawn_sh(elem.command, None);
     }
+    state.niri.update_shell();
 
     // Show the config error notification right away if needed.
     if config_errored {

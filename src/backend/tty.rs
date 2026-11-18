@@ -66,6 +66,7 @@ use crate::backend::OutputId;
 use crate::frame_clock::FrameClock;
 use crate::niri::{Niri, RedrawState, State};
 use crate::render_helpers::debug::draw_damage;
+use crate::render_helpers::glass::GlassFrame;
 use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderCtx, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output, PanelOrientation};
@@ -1925,6 +1926,7 @@ impl Tty {
             renderer: &mut renderer,
             target: RenderTarget::Output,
             xray: None,
+            glass: GlassFrame::default(),
         };
         let mut elements = niri.render_to_vec(ctx, output, true);
 

@@ -205,6 +205,14 @@ however its paradigm wants: `niri.js` keeps a fullscreen window as a column in t
 can be scrolled away from, and `bento.js` keeps its cells so it goes back to its place. bento
 draws a fullscreen window above panels.
 
+### Engines that minimize say so
+
+Minimizing is the engine's too, but only an engine that has somewhere for minimized windows to
+go declares it, like a desktop-style `windows11.js`. Under one that does, apps are told they can
+ask to minimize, so GTK shows its minimize button, and an app's or a taskbar's asking reaches the
+engine as `minimizerequest`. Under one that doesn't, apps are told they can't, and no minimize
+button shows.
+
 ### bento's native config works under every engine
 
 bento only ships what makes sense under every engine: spawning, screenshots, workspaces,
@@ -282,7 +290,10 @@ transforming a workspace would fight bento's animations.
 
 bento draws the tree with its own renderer, on smithay's, and borrows little else from a
 browser. Nodes come in a few kinds: boxes (a fill, a border and a corner radius, where fills and
-borders are colours or gradients), text, images, and windows. Any node can have a transform,
+borders are colours or gradients), text, images, windows, and copies of windows. A copy draws a
+window's live contents again, fitted into the node, while the window stays where it is, like a
+thumbnail in a window switcher; it can show a window from another of the monitor's workspaces,
+and takes the pointer as the engine's. Any node can have a transform,
 opacity, clipping and transitions. Pointer events hit the topmost node under the pointer and
 bubble up to its parents, like the DOM's. There's no layout system, since engines do their own
 layout, and no browser engine underneath.
@@ -313,8 +324,21 @@ Moving and resizing a window with the pointer are bento's mechanics, and the eng
 they do. Besides bento's own ways to start them, like dragging with the modifier held, an engine
 can start them itself, like when the title bar it draws is dragged.
 
+An engine whose windows move freely, like `windows11.js`, says so, and bento then drags its
+windows the way it drags floating ones: from the first pixel, opaque, and by the title bar in
+any direction. bento's own view scrolling during a drag is for tiling engines, so it never
+happens under such an engine: the camera stays where the engine puts it.
+
 An engine can turn off, per window, the border, focus ring and shadow that bento draws around
 it, to draw its own decorations instead.
+
+### Engines decide whether focus follows the pointer
+
+Whether a window gets focus when the pointer comes onto it is part of an engine's paradigm, so
+it's the engine's to say, not bento's config: `niri.js` and `bento.js` have it as an option, and
+`windows11.js` never has it. bento does the focusing as the engine asks, for the engine's
+windows, floating ones and panels that take the keyboard on demand, and the engine can limit it
+to windows that focusing doesn't scroll the view to.
 
 ### Engines can zoom the camera
 
@@ -442,6 +466,11 @@ An engine's options are booleans, numbers, strings, choices, sizes, colours or g
 engine declares, and all but gradients can be lists. They can differ per monitor and per named workspace, like bento's
 own `layout {}` settings: the engine's file can set options for an `output` or a `workspace`, and
 the engine reads each workspace's options from the workspace.
+
+A key can be bound in both files. The engine's file only loads while its engine runs, so it's
+the narrower layer, and its bind takes the key over meanwhile, the way a workspace's options
+override its output's. Switching engines never fails on a key; `bento validate` and bento
+Settings say which keys the running engine takes over.
 
 The main config picks the engine with `tiling { layout "…" }`. A built-in engine's file is
 `~/.config/bento/engines/<name>.kdl`, like `engines/niri.kdl`. An engine from a file has its

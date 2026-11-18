@@ -87,6 +87,8 @@ pub struct Config {
     pub outputs: Outputs,
     pub spawn_at_startup: Vec<SpawnAtStartup>,
     pub spawn_sh_at_startup: Vec<SpawnShAtStartup>,
+    pub shell: Option<Shell>,
+    pub location: Location,
     pub layout: Layout,
     pub tiling: Tiling,
     pub prefer_no_csd: bool,
@@ -105,6 +107,11 @@ pub struct Config {
     pub layer_rules: Vec<LayerRule>,
     pub binds: Binds,
     pub bind_files: BindFiles,
+    /// The main config's binds whose keys the running engine's file binds too, which its binds
+    /// take over while it runs.
+    pub taken_over: Binds,
+    /// The files `taken_over`'s binds are written in.
+    pub taken_over_files: BindFiles,
     pub switch_events: SwitchBinds,
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
@@ -239,7 +246,18 @@ where
                 "hotkey-overlay" => m_merge!(hotkey_overlay),
                 "config-notification" => m_merge!(config_notification),
                 "animations" => m_merge!(animations),
-                "blur" => m_merge!(blur),
+                "blur" => {
+                    let part = BlurPart::decode_node(node, ctx)?;
+                    let lights = part.glass.as_ref().map_or(0, |glass| glass.lights.len());
+                    if lights > MAX_GLASS_LIGHTS {
+                        ctx.emit_error(DecodeError::unexpected(
+                            &node.node_name,
+                            "node",
+                            format!("glass takes at most {MAX_GLASS_LIGHTS} lights, not {lights}"),
+                        ));
+                    }
+                    config.borrow_mut().blur.merge_with(&part);
+                }
                 "gestures" => m_merge!(gestures),
                 "overview" => m_merge!(overview),
                 "xwayland-satellite" => m_merge!(xwayland_satellite),
@@ -288,6 +306,16 @@ where
 
                 "prefer-no-csd" => {
                     config.borrow_mut().prefer_no_csd = Flag::decode_node(node, ctx)?.0
+                }
+
+                "shell" => {
+                    let part = knuffel::Decode::decode_node(node, ctx)?;
+                    config.borrow_mut().shell = Some(part);
+                }
+
+                "location" => {
+                    let part = knuffel::Decode::decode_node(node, ctx)?;
+                    config.borrow_mut().location = part;
                 }
 
                 "screenshot-path" => {
@@ -1376,7 +1404,6 @@ mod tests {
                 disable-power-key-handling
 
                 warp-mouse-to-focus
-                focus-follows-mouse
                 workspace-auto-back-and-forth
 
                 mod-key "Mod5"
@@ -1754,11 +1781,6 @@ mod tests {
                         mode: None,
                     },
                 ),
-                focus_follows_mouse: Some(
-                    FocusFollowsMouse {
-                        max_scroll_amount: None,
-                    },
-                ),
                 workspace_auto_back_and_forth: true,
                 mod_key: Some(
                     IsoLevel3Shift,
@@ -1901,6 +1923,12 @@ mod tests {
                     command: "qs -c ~/source/qs/MyAwesomeShell",
                 },
             ],
+            shell: None,
+            location: Location {
+                name: None,
+                latitude: None,
+                longitude: None,
+            },
             layout: Layout {
                 focus_ring: FocusRing {
                     off: false,
@@ -2199,10 +2227,56 @@ mod tests {
             },
             blur: Blur {
                 off: false,
-                passes: 3,
-                offset: 3.0,
-                noise: 0.02,
-                saturation: 1.5,
+                passes: 2,
+                offset: 2.05,
+                noise: 0.01,
+                saturation: 1.15,
+                shade: 0.7,
+                shade_dark: Color {
+                    r: 0.13333334,
+                    g: 0.13333334,
+                    b: 0.14901961,
+                    a: 1.0,
+                },
+                shade_light: Color {
+                    r: 0.98039216,
+                    g: 0.98039216,
+                    b: 0.9843137,
+                    a: 1.0,
+                },
+                material: Glass,
+                glass: Glass {
+                    bezel: 20.0,
+                    thickness: 40.0,
+                    refractive_index: 1.5,
+                    dispersion: 0.14,
+                    reflection: 0.5,
+                    sheen: 0.6,
+                    color: Color {
+                        r: 0.9411765,
+                        g: 0.96862745,
+                        b: 0.95686275,
+                        a: 1.0,
+                    },
+                    follow_accent: false,
+                    pattern: Smooth,
+                    pattern_depth: 0.5,
+                    pointer_light: 0.5,
+                    lights: [
+                        Some(
+                            GlassLight {
+                                on: true,
+                                intensity: 0.6,
+                                angle: 315.0,
+                                height: 40.0,
+                                size: 0.35,
+                            },
+                        ),
+                        None,
+                        None,
+                        None,
+                    ],
+                },
             },
             gestures: Gestures {
                 dnd_edge_view_scroll: DndEdgeViewScroll {
@@ -2414,6 +2488,7 @@ mod tests {
                         blur: None,
                         noise: None,
                         saturation: None,
+                        material: None,
                     },
                     popups: PopupsRule {
                         opacity: None,
@@ -2423,6 +2498,7 @@ mod tests {
                             blur: None,
                             noise: None,
                             saturation: None,
+                            material: None,
                         },
                     },
                 },
@@ -2465,6 +2541,7 @@ mod tests {
                         blur: None,
                         noise: None,
                         saturation: None,
+                        material: None,
                     },
                     popups: PopupsRule {
                         opacity: None,
@@ -2474,6 +2551,7 @@ mod tests {
                             blur: None,
                             noise: None,
                             saturation: None,
+                            material: None,
                         },
                     },
                 },
@@ -2809,6 +2887,10 @@ mod tests {
                 ],
             ),
             bind_files: BindFiles(16),
+            taken_over: Binds(
+                [],
+            ),
+            taken_over_files: BindFiles(0),
             switch_events: SwitchBinds {
                 lid_open: None,
                 lid_close: None,
@@ -2860,6 +2942,8 @@ mod tests {
                 skip_cursor_only_updates_during_vrr: false,
                 disable_10bit_output: false,
                 nested_show_host_cursor: false,
+                glass_shader: None,
+                shell_scripts: None,
             },
             workspaces: [
                 Workspace {
@@ -3029,6 +3113,54 @@ mod tests {
     }
 
     #[test]
+    fn the_shells_settings_and_where_the_user_is() {
+        let config = do_parse(
+            r#"
+            location {
+                name "Reykjavik, Iceland"
+                latitude 64.15
+                longitude -21.94
+            }
+            shell {
+                built-in
+                fahrenheit
+                screenshot {
+                    command "grim -g \"$(slurp)\" - | swappy -f -"
+                    notification "Screenshot taken"
+                    notification-body "It's in Pictures."
+                }
+                screen-record {
+                    command "wf-recorder"
+                }
+            }
+            "#,
+        );
+        assert_eq!(config.location.name.as_deref(), Some("Reykjavik, Iceland"));
+        assert_eq!(config.location.latitude.map(|v| v.0), Some(64.15));
+        assert_eq!(config.location.longitude.map(|v| v.0), Some(-21.94));
+        let shell = config.shell.unwrap();
+        // Settings alone name no program to run as the shell.
+        assert!(shell.command.is_empty());
+        assert!(shell.built_in());
+        let off = do_parse("shell \"bento-shell\" {\n    built-in false\n}\n");
+        assert!(!off.shell.unwrap().built_in());
+        assert!(shell.fahrenheit);
+        let screenshot = shell.screenshot.unwrap();
+        assert_eq!(
+            screenshot.command.as_deref(),
+            Some(r#"grim -g "$(slurp)" - | swappy -f -"#)
+        );
+        assert_eq!(screenshot.notification.as_deref(), Some("Screenshot taken"));
+        assert_eq!(
+            screenshot.notification_body.as_deref(),
+            Some("It's in Pictures.")
+        );
+        let record = shell.screen_record.unwrap();
+        assert_eq!(record.command.as_deref(), Some("wf-recorder"));
+        assert_eq!(record.notification, None);
+    }
+
+    #[test]
     fn diff_empty_to_default() {
         // We try to write the config defaults in such a way that empty sections (and an empty
         // config) give the same outcome as the default config bundled with niri. This test
@@ -3056,14 +3188,18 @@ mod tests {
         -            natural_scroll: false,
         +            natural_scroll: true,
 
-        -    spawn_at_startup: [],
-        +    spawn_at_startup: [
-        +        SpawnAtStartup {
+        -    shell: None,
+        +    shell: Some(
+        +        Shell {
         +            command: [
-        +                "waybar",
+        +                "bento-shell",
         +            ],
+        +            built_in: None,
+        +            fahrenheit: false,
+        +            screenshot: None,
+        +            screen_record: None,
         +        },
-        +    ],
+        +    ),
 
         -    bind_files: BindFiles(0),
         +    bind_files: BindFiles(107),

@@ -52,8 +52,8 @@ struct Inner {
     status: RefCell<Status>,
     /// What the app last wrote to each file, to tell its own writes from someone else's.
     last_written: RefCell<HashMap<PathBuf, String>>,
-    pending_save: RefCell<Option<glib::SourceId>>,
-    pending_reload: RefCell<Option<glib::SourceId>>,
+    pending_save: RefCell<Option<glib::JoinHandle<()>>>,
+    pending_reload: RefCell<Option<glib::JoinHandle<()>>>,
     listeners: RefCell<Vec<Rc<dyn Fn()>>>,
     /// The config and the running engine's file, with their monitors.
     monitors: RefCell<Vec<(PathBuf, gio::FileMonitor)>>,
@@ -168,11 +168,11 @@ impl Store {
     }
 
     fn schedule_save(&self) {
-        if let Some(source) = self.0.pending_save.take() {
-            source.remove();
+        if let Some(pending) = self.0.pending_save.take() {
+            pending.abort();
         }
         let store = self.clone();
-        let source = glib::timeout_add_local_once(SAVE_DELAY, move || {
+        let source = after(SAVE_DELAY, move || {
             store.0.pending_save.take();
             store.save();
         });
@@ -220,8 +220,8 @@ impl Store {
 
     /// Saves queued changes right away, on this thread. For closing the window and for tests.
     pub fn flush(&self) {
-        if let Some(source) = self.0.pending_save.take() {
-            source.remove();
+        if let Some(pending) = self.0.pending_save.take() {
+            pending.abort();
         }
         let edits = self.0.queued.take();
         if !edits.is_empty() {
@@ -298,11 +298,11 @@ impl Store {
     }
 
     fn schedule_reload(&self) {
-        if let Some(source) = self.0.pending_reload.take() {
-            source.remove();
+        if let Some(pending) = self.0.pending_reload.take() {
+            pending.abort();
         }
         let store = self.clone();
-        let source = glib::timeout_add_local_once(Duration::from_millis(150), move || {
+        let source = after(Duration::from_millis(150), move || {
             store.0.pending_reload.take();
             let last_written = store.0.last_written.borrow();
             let changed = store.0.monitors.borrow().iter().any(|(path, _)| {
@@ -401,6 +401,24 @@ fn config_path() -> PathBuf {
 }
 
 /// Renders a config error the way bento's own messages read, without colors.
+/// Runs `f` once after `delay` on this thread's main context, which a store's timers belong to,
+/// so stores on different threads never share one.
+fn after(delay: Duration, f: impl FnOnce() + 'static) -> glib::JoinHandle<()> {
+    glib::spawn_future_local(async move {
+        glib::timeout_future(delay).await;
+        f();
+    })
+}
+
+/// Runs a test on a main context of its own: tests run on threads side by side, and a store's
+/// timers belong to its thread's context.
+#[cfg(test)]
+pub fn on_own_context(test: impl FnOnce()) {
+    glib::MainContext::new()
+        .with_thread_default(test)
+        .expect("a new main context is free to use");
+}
+
 pub fn describe(err: &dyn miette::Diagnostic) -> String {
     let handler =
         miette::GraphicalReportHandler::new_themed(miette::GraphicalTheme::unicode_nocolor());
@@ -489,188 +507,198 @@ mod tests {
 
     #[test]
     fn edits_land_in_the_config() {
-        let dir = std::env::temp_dir().join(format!("bento-settings-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("config.kdl");
-        let text = "// Touchpad.\ninput {\n    touchpad {\n        tap\n        natural-scroll // yes\n    }\n}\n\nlayout {\n    gaps 16\n}\n";
-        fs::write(&config_path, text).unwrap();
+        on_own_context(|| {
+            let dir =
+                std::env::temp_dir().join(format!("bento-settings-test-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let config_path = dir.join("config.kdl");
+            let text = "// Touchpad.\ninput {\n    touchpad {\n        tap\n        natural-scroll // yes\n    }\n}\n\nlayout {\n    gaps 16\n}\n";
+            fs::write(&config_path, text).unwrap();
 
-        let store = Store::load_from(config_path.clone());
-        assert!(store.config().input.touchpad.natural_scroll);
+            let store = Store::load_from(config_path.clone());
+            assert!(store.config().input.touchpad.natural_scroll);
 
-        let natural_scroll = leak(
-            Setting::switch("", "input.touchpad.natural-scroll", |c| {
-                c.input.touchpad.natural_scroll
-            })
-            .style(BoolStyle::Presence),
-        );
-        let focus_ring = leak(
-            Setting::switch("", "layout.focus-ring", |c| !c.layout.focus_ring.off)
-                .style(BoolStyle::OnOff),
-        );
-        let numlock = leak(Setting::switch("", "input.keyboard.numlock", |c| {
-            c.input.keyboard.numlock
-        }));
-        store.edit(natural_scroll.path, move |doc| {
-            natural_scroll.write(doc, Input::Bool(false))
+            let natural_scroll = leak(
+                Setting::switch("", "input.touchpad.natural-scroll", |c| {
+                    c.input.touchpad.natural_scroll
+                })
+                .style(BoolStyle::Presence),
+            );
+            let focus_ring = leak(
+                Setting::switch("", "layout.focus-ring", |c| !c.layout.focus_ring.off)
+                    .style(BoolStyle::OnOff),
+            );
+            let numlock = leak(Setting::switch("", "input.keyboard.numlock", |c| {
+                c.input.keyboard.numlock
+            }));
+            store.edit(natural_scroll.path, move |doc| {
+                natural_scroll.write(doc, Input::Bool(false))
+            });
+            store.edit(focus_ring.path, move |doc| {
+                focus_ring.write(doc, Input::Bool(false))
+            });
+            store.edit(numlock.path, move |doc| {
+                numlock.write(doc, Input::Bool(false))
+            });
+            store.flush();
+
+            assert_eq!(
+                fs::read_to_string(&config_path).unwrap(),
+                "// Touchpad.\ninput {\n    touchpad {\n        tap\n    }\n    keyboard {\n        numlock false\n    }\n}\n\nlayout {\n    gaps 16\n    focus-ring {\n        off\n    }\n}\n"
+            );
+            let config = store.config();
+            assert!(config.input.touchpad.tap);
+            assert!(!config.input.touchpad.natural_scroll);
+            assert!(config.layout.focus_ring.off);
+            drop(config);
+
+            // Turning it back on swaps `off` for `on`.
+            store.edit(focus_ring.path, move |doc| {
+                focus_ring.write(doc, Input::Bool(true))
+            });
+            store.flush();
+            assert!(!store.config().layout.focus_ring.off);
+            assert!(fs::read_to_string(&config_path)
+                .unwrap()
+                .contains("    focus-ring {\n        on\n    }\n"));
+
+            // A value bento rejects isn't written.
+            let gaps = leak(Setting::number("", "layout.gaps", |c| c.layout.gaps));
+            let before = fs::read_to_string(&config_path).unwrap();
+            store.edit(gaps.path, move |doc| gaps.write(doc, Input::Number(-5.)));
+            store.flush();
+            assert_eq!(fs::read_to_string(&config_path).unwrap(), before);
+            assert!(store.status().write_error.is_some());
+
+            fs::remove_dir_all(&dir).unwrap();
         });
-        store.edit(focus_ring.path, move |doc| {
-            focus_ring.write(doc, Input::Bool(false))
-        });
-        store.edit(numlock.path, move |doc| {
-            numlock.write(doc, Input::Bool(false))
-        });
-        store.flush();
-
-        assert_eq!(
-            fs::read_to_string(&config_path).unwrap(),
-            "// Touchpad.\ninput {\n    touchpad {\n        tap\n    }\n    keyboard {\n        numlock false\n    }\n}\n\nlayout {\n    gaps 16\n    focus-ring {\n        off\n    }\n}\n"
-        );
-        let config = store.config();
-        assert!(config.input.touchpad.tap);
-        assert!(!config.input.touchpad.natural_scroll);
-        assert!(config.layout.focus_ring.off);
-        drop(config);
-
-        // Turning it back on swaps `off` for `on`.
-        store.edit(focus_ring.path, move |doc| {
-            focus_ring.write(doc, Input::Bool(true))
-        });
-        store.flush();
-        assert!(!store.config().layout.focus_ring.off);
-        assert!(fs::read_to_string(&config_path)
-            .unwrap()
-            .contains("    focus-ring {\n        on\n    }\n"));
-
-        // A value bento rejects isn't written.
-        let gaps = leak(Setting::number("", "layout.gaps", |c| c.layout.gaps));
-        let before = fs::read_to_string(&config_path).unwrap();
-        store.edit(gaps.path, move |doc| gaps.write(doc, Input::Number(-5.)));
-        store.flush();
-        assert_eq!(fs::read_to_string(&config_path).unwrap(), before);
-        assert!(store.status().write_error.is_some());
-
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn engine_edits_land_in_the_engine_file() {
-        let dir =
-            std::env::temp_dir().join(format!("bento-settings-engine-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let config_path = dir.join("config.kdl");
-        let text = "tiling {\n    layout \"niri\"\n}\n";
-        fs::write(&config_path, text).unwrap();
-        let engine_path = dir.join("engines").join("niri.kdl");
+        on_own_context(|| {
+            let dir =
+                std::env::temp_dir().join(format!("bento-settings-engine-{}", std::process::id()));
+            fs::create_dir_all(&dir).unwrap();
+            let config_path = dir.join("config.kdl");
+            let text = "tiling {\n    layout \"niri\"\n}\n";
+            fs::write(&config_path, text).unwrap();
+            let engine_path = dir.join("engines").join("niri.kdl");
 
-        let store = Store::load_from(config_path.clone());
-        assert_eq!(store.engine_path(), engine_path);
+            let store = Store::load_from(config_path.clone());
+            assert_eq!(store.engine_path(), engine_path);
 
-        // Editing the main config leaves the engine's file alone.
-        store.edit("layout.gaps", |doc| {
-            doc.set(&["layout", "gaps"], vec![Value::Int(8)])
+            // Editing the main config leaves the engine's file alone.
+            store.edit("layout.gaps", |doc| {
+                doc.set(&["layout", "gaps"], vec![Value::Int(8)])
+            });
+            store.flush();
+            assert!(!engine_path.exists());
+
+            store.edit_in(File::Engine, "options.gravity", |doc| {
+                doc.set(&["options", "gravity"], vec![Value::Bool(true)])
+            });
+            store.flush();
+            assert_eq!(
+                fs::read_to_string(&engine_path).unwrap(),
+                "options {\n    gravity true\n}\n"
+            );
+            assert!(!fs::read_to_string(&config_path)
+                .unwrap()
+                .contains("gravity"));
+            assert_eq!(
+                store.config().tiling.options,
+                [(
+                    String::from("gravity"),
+                    vec![niri_config::TilingOption::Bool(true)]
+                )]
+            );
+
+            fs::remove_dir_all(&dir).unwrap();
         });
-        store.flush();
-        assert!(!engine_path.exists());
-
-        store.edit_in(File::Engine, "options.gravity", |doc| {
-            doc.set(&["options", "gravity"], vec![Value::Bool(true)])
-        });
-        store.flush();
-        assert_eq!(
-            fs::read_to_string(&engine_path).unwrap(),
-            "options {\n    gravity true\n}\n"
-        );
-        assert!(!fs::read_to_string(&config_path)
-            .unwrap()
-            .contains("gravity"));
-        assert_eq!(
-            store.config().tiling.options,
-            [(
-                String::from("gravity"),
-                vec![niri_config::TilingOption::Bool(true)]
-            )]
-        );
-
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn gradients_are_written_as_properties_and_colors_as_strings() {
-        use niri_ipc::{LayoutEngineGradient, LayoutEngineOptionValue as OptionValue};
+        on_own_context(|| {
+            use niri_ipc::{LayoutEngineGradient, LayoutEngineOptionValue as OptionValue};
 
-        let dir = std::env::temp_dir().join(format!("bento-settings-paint-{}", std::process::id()));
-        fs::create_dir_all(dir.join("engines")).unwrap();
-        let config_path = dir.join("config.kdl");
-        fs::write(&config_path, "tiling {\n    layout \"niri\"\n}\n").unwrap();
-        let engine_path = dir.join("engines").join("niri.kdl");
-        fs::write(
-            &engine_path,
-            "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n",
-        )
-        .unwrap();
+            let dir =
+                std::env::temp_dir().join(format!("bento-settings-paint-{}", std::process::id()));
+            fs::create_dir_all(dir.join("engines")).unwrap();
+            let config_path = dir.join("config.kdl");
+            fs::write(&config_path, "tiling {\n    layout \"niri\"\n}\n").unwrap();
+            let engine_path = dir.join("engines").join("niri.kdl");
+            fs::write(
+                &engine_path,
+                "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n",
+            )
+            .unwrap();
 
-        let store = Store::load_from(config_path);
-        let gradient = Some(OptionValue::Gradient(LayoutEngineGradient {
-            from: String::from("#80c8ff"),
-            to: String::from("#c7ff7f80"),
-            angle: Some(45.),
-            relative_to: Some(String::from("view")),
-            color_space: None,
-        }));
-        let color = Some(OptionValue::String(String::from("#112233")));
-        let (gradient_, color_) = (gradient.clone(), color.clone());
-        store.edit_in(
-            File::Engine,
-            "options.tab-indicator-active-gradient",
-            move |doc| {
-                doc.set_node(
-                    &["options", "tab-indicator-active-gradient"],
-                    option_values(&gradient_),
-                    option_properties(&gradient_),
-                )
-            },
-        );
-        store.edit_in(
-            File::Engine,
-            "options.tab-indicator-active-color",
-            move |doc| {
-                doc.set(
-                    &["options", "tab-indicator-active-color"],
-                    option_values(&color_),
-                )
-            },
-        );
-        store.flush();
+            let store = Store::load_from(config_path);
+            let gradient = Some(OptionValue::Gradient(LayoutEngineGradient {
+                from: String::from("#80c8ff"),
+                to: String::from("#c7ff7f80"),
+                angle: Some(45.),
+                relative_to: Some(String::from("view")),
+                color_space: None,
+            }));
+            let color = Some(OptionValue::String(String::from("#112233")));
+            let (gradient_, color_) = (gradient.clone(), color.clone());
+            store.edit_in(
+                File::Engine,
+                "options.tab-indicator-active-gradient",
+                move |doc| {
+                    doc.set_node(
+                        &["options", "tab-indicator-active-gradient"],
+                        option_values(&gradient_),
+                        option_properties(&gradient_),
+                    )
+                },
+            );
+            store.edit_in(
+                File::Engine,
+                "options.tab-indicator-active-color",
+                move |doc| {
+                    doc.set(
+                        &["options", "tab-indicator-active-color"],
+                        option_values(&color_),
+                    )
+                },
+            );
+            store.flush();
 
-        let text = fs::read_to_string(&engine_path).unwrap();
-        assert_eq!(
-            text,
-            "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n\noptions {\n    tab-indicator-active-gradient from=\"#80c8ff\" to=\"#c7ff7f80\" angle=45 relative-to=\"view\"\n    tab-indicator-active-color \"#112233\"\n}\n"
-        );
+            let text = fs::read_to_string(&engine_path).unwrap();
+            assert_eq!(
+                text,
+                "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n\noptions {\n    tab-indicator-active-gradient from=\"#80c8ff\" to=\"#c7ff7f80\" angle=45 relative-to=\"view\"\n    tab-indicator-active-color \"#112233\"\n}\n"
+            );
 
-        // The file is what bento reads, and the output's options stay.
-        let config = store.config();
-        assert_eq!(config.tiling.options.len(), 2);
-        assert_eq!(config.tiling.output_options.len(), 1);
-        drop(config);
-        assert!(option_properties(&color).is_empty());
-        assert!(option_values(&gradient).is_empty());
-        assert!(option_properties(&None).is_empty());
+            // The file is what bento reads, and the output's options stay.
+            let config = store.config();
+            assert_eq!(config.tiling.options.len(), 2);
+            assert_eq!(config.tiling.output_options.len(), 1);
+            drop(config);
+            assert!(option_properties(&color).is_empty());
+            assert!(option_values(&gradient).is_empty());
+            assert!(option_properties(&None).is_empty());
 
-        fs::remove_dir_all(&dir).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+        });
     }
 
     #[test]
     fn engine_edits_keep_window_rules_and_typed_options() {
-        use niri_ipc::LayoutEngineOptionValue as OptionValue;
+        on_own_context(|| {
+            use niri_ipc::LayoutEngineOptionValue as OptionValue;
 
-        let dir = std::env::temp_dir().join(format!("bento-settings-rules-{}", std::process::id()));
-        fs::create_dir_all(dir.join("engines")).unwrap();
-        let config_path = dir.join("config.kdl");
-        fs::write(&config_path, "tiling {\n    layout \"niri\"\n}\n").unwrap();
-        let engine_path = dir.join("engines").join("niri.kdl");
-        let engine = "\
+            let dir =
+                std::env::temp_dir().join(format!("bento-settings-rules-{}", std::process::id()));
+            fs::create_dir_all(dir.join("engines")).unwrap();
+            let config_path = dir.join("config.kdl");
+            fs::write(&config_path, "tiling {\n    layout \"niri\"\n}\n").unwrap();
+            let engine_path = dir.join("engines").join("niri.kdl");
+            let engine = "\
 // Mine.
 options {
     default-column-width
@@ -687,39 +715,40 @@ binds {
     Mod+L { focus-column-right; }
 }
 ";
-        fs::write(&engine_path, engine).unwrap();
+            fs::write(&engine_path, engine).unwrap();
 
-        let store = Store::load_from(config_path);
-        assert_eq!(store.config().tiling.window_rules.len(), 1);
-        assert!(store.config().tiling.options[0].1.is_empty());
+            let store = Store::load_from(config_path);
+            assert_eq!(store.config().tiling.window_rules.len(), 1);
+            assert!(store.config().tiling.options[0].1.is_empty());
 
-        // A list is written as several values, and a size with no value as a bare name.
-        let widths = Some(OptionValue::List(vec![
-            OptionValue::String(String::from("33%")),
-            OptionValue::String(String::from("800")),
-        ]));
-        store.edit_in(File::Engine, "options.preset-column-widths", move |doc| {
-            doc.set(&["options", "preset-column-widths"], option_values(&widths))
+            // A list is written as several values, and a size with no value as a bare name.
+            let widths = Some(OptionValue::List(vec![
+                OptionValue::String(String::from("33%")),
+                OptionValue::String(String::from("800")),
+            ]));
+            store.edit_in(File::Engine, "options.preset-column-widths", move |doc| {
+                doc.set(&["options", "preset-column-widths"], option_values(&widths))
+            });
+            store.edit_in(File::Engine, "options.default-column-width", |doc| {
+                doc.set(&["options", "default-column-width"], option_values(&None))
+            });
+            store.flush();
+
+            let text = fs::read_to_string(&engine_path).unwrap();
+            assert_eq!(
+                text,
+                engine.replace(
+                    "    center-focused-column \"always\"\n",
+                    "    center-focused-column \"always\"\n    preset-column-widths \"33%\" \"800\"\n"
+                )
+            );
+            let config = store.config();
+            assert_eq!(config.tiling.window_rules.len(), 1);
+            assert_eq!(config.tiling.options.len(), 3);
+            assert_eq!(config.tiling.options[2].1.len(), 2);
+            drop(config);
+
+            fs::remove_dir_all(&dir).unwrap();
         });
-        store.edit_in(File::Engine, "options.default-column-width", |doc| {
-            doc.set(&["options", "default-column-width"], option_values(&None))
-        });
-        store.flush();
-
-        let text = fs::read_to_string(&engine_path).unwrap();
-        assert_eq!(
-            text,
-            engine.replace(
-                "    center-focused-column \"always\"\n",
-                "    center-focused-column \"always\"\n    preset-column-widths \"33%\" \"800\"\n"
-            )
-        );
-        let config = store.config();
-        assert_eq!(config.tiling.window_rules.len(), 1);
-        assert_eq!(config.tiling.options.len(), 3);
-        assert_eq!(config.tiling.options[2].1.len(), 2);
-        drop(config);
-
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1411,6 +1411,13 @@ impl<W: LayoutElement> Monitor<W> {
             )
         };
 
+        // A copy that an engine draws can be of a window on another of the monitor's workspaces.
+        let elsewhere = &|id| {
+            self.workspaces
+                .iter()
+                .find_map(|ws| ws.scrolling().window_by_layout_id(id))
+        };
+
         // Draw in passes for correct Z ordering during window movement between workspaces:
         // - floating windows moving between workspaces
         // - normal floating windows
@@ -1490,6 +1497,7 @@ impl<W: LayoutElement> Monitor<W> {
                             xray_pos,
                             focus_ring,
                             RenderLayer::MovingBetweenWorkspaces,
+                            elsewhere,
                             push!(),
                         );
                     }
@@ -1499,6 +1507,7 @@ impl<W: LayoutElement> Monitor<W> {
                             xray_pos,
                             focus_ring,
                             RenderLayer::Normal,
+                            elsewhere,
                             push!(),
                         );
                     }

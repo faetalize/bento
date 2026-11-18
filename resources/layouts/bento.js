@@ -245,6 +245,13 @@ export const meta = {
             default: "#7fc8ff80",
             description: "The color of the hints that show a picked window and where a dragged one would land.",
         },
+        "focus-follows-mouse": {
+            type: "choice",
+            choices: ["never", "in-view", "always"],
+            default: "never",
+            description:
+                "Focus a window when the pointer comes onto it: never, only a window already in view, or always.",
+        },
     },
     windowRules: {
         "default-width": {
@@ -4713,6 +4720,15 @@ function createSpace(bento, ws) {
 // The engine: one space for each workspace, and what crosses from one to another.
 
 export default function create(bento) {
+    // Focus follows the pointer as the options say; bento does the focusing. "in-view" is only
+    // windows that focusing doesn't scroll the view to.
+    const followMouse = () => {
+        const mode = bento.options["focus-follows-mouse"];
+        bento.setFocusFollowsMouse(mode !== "never", { maxScroll: mode === "in-view" ? 0 : null });
+    };
+    followMouse();
+    bento.addEventListener("configchange", followMouse);
+
     /** Spaces by workspace id. */
     const spaces = new Map();
     /** Windows and groups whose events are followed. */

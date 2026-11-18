@@ -50,6 +50,26 @@ pub fn native_actions() -> Vec<Declaration> {
             vec![],
         ),
         action(
+            "toggle-launcher",
+            "Show or hide the shell's launcher.",
+            vec![],
+        ),
+        action(
+            "edit-workspace",
+            "Show or hide the shell's editor for the focused workspace, to name it or take its name away.",
+            vec![],
+        ),
+        action(
+            "toggle-clipboard",
+            "Show or hide the shell's clipboard history.",
+            vec![],
+        ),
+        action(
+            "switch-audio-output",
+            "Switch the sound to the next of the outputs pinned in the shell.",
+            vec![],
+        ),
+        action(
             "switch-layout",
             "Switch the keyboard layout.",
             vec![required(

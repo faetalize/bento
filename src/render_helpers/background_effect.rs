@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use niri_config::CornerRadius;
+use niri_config::{CornerRadius, Material};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Logical, Point, Rectangle, Scale};
 use smithay::wayland::compositor::{with_states, SurfaceData};
@@ -12,12 +12,13 @@ use crate::render_helpers::blur::BlurOptions;
 use crate::render_helpers::clipped_surface::rounded_overlap;
 use crate::render_helpers::damage::ExtraDamage;
 use crate::render_helpers::framebuffer_effect::{FramebufferEffect, FramebufferEffectElement};
+use crate::render_helpers::glass::{self, GlassShapes};
 use crate::render_helpers::xray::{XrayElement, XrayPos};
 use crate::render_helpers::RenderCtx;
 use crate::utils::region::TransformedRegion;
 use crate::utils::surface_geo;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BackgroundEffect {
     nonxray: FramebufferEffect,
     /// Damage when options change.
@@ -37,6 +38,8 @@ pub struct Options {
     pub xray: bool,
     pub noise: Option<f64>,
     pub saturation: Option<f64>,
+    /// The material when blurred, or `None` for the `blur {}` section's.
+    pub material: Option<Material>,
 }
 
 impl Options {
@@ -49,7 +52,7 @@ impl Options {
 }
 
 /// Render-time parameters.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RenderParams {
     /// Geometry of the background effect.
     pub geometry: Rectangle<f64, Logical>,
@@ -79,6 +82,17 @@ niri_render_elements! {
         FramebufferEffect = FramebufferEffectElement,
         Xray = XrayElement,
         ExtraDamage = ExtraDamage,
+    }
+}
+
+impl BackgroundEffectElement {
+    /// The effect as opaque as `alpha`, for one that fades with the window it's behind.
+    pub fn with_alpha(self, alpha: f32) -> Self {
+        match self {
+            Self::FramebufferEffect(elem) => Self::FramebufferEffect(elem.with_alpha(alpha)),
+            Self::Xray(elem) => Self::Xray(elem.with_alpha(alpha)),
+            Self::ExtraDamage(elem) => Self::ExtraDamage(elem),
+        }
     }
 }
 
@@ -127,6 +141,7 @@ impl BackgroundEffect {
             xray: effect.xray == Some(true),
             noise: effect.noise,
             saturation: effect.saturation,
+            material: effect.material,
         };
 
         // If we have some background effect but xray wasn't explicitly set, default it to true
@@ -184,7 +199,9 @@ impl BackgroundEffect {
         // Use noise/saturation from options, falling back to blur defaults if blurred, and
         // to no effect if not blurred.
         let blur = self.options.blur && !self.blur_config.off;
-        let blur_options = blur.then_some(BlurOptions::from(self.blur_config));
+        let blur_options = blur
+            .then(|| BlurOptions::reaching(self.blur_config))
+            .flatten();
         let noise = if blur { self.blur_config.noise } else { 0. };
         let noise = self.options.noise.unwrap_or(noise) as f32;
         let saturation = if blur {
@@ -193,6 +210,17 @@ impl BackgroundEffect {
             1.
         };
         let saturation = self.options.saturation.unwrap_or(saturation) as f32;
+        // Only what's blurred is shaded: what shows through as it is reads as it is.
+        let shade = if blur {
+            glass::shade(&self.blur_config)
+        } else {
+            [0.; 4]
+        };
+
+        // Glass is a material for blur; without blur, what's behind shows as it is.
+        let material = self.options.material.unwrap_or(self.blur_config.material);
+        let glass = (blur && material == Material::Glass)
+            .then(|| glass_shapes(&params, self.blur_config.glass));
 
         if self.options.xray {
             let Some(xray) = ctx.xray else {
@@ -204,19 +232,55 @@ impl BackgroundEffect {
                 ctx,
                 params,
                 xray_pos,
-                blur,
+                blur_options.is_some(),
                 noise,
                 saturation,
+                shade,
+                glass,
                 &mut |elem| push(elem.into()),
             );
+        } else if let Some(shapes) = glass {
+            let origin = params.clip.map_or(params.geometry.loc, |(geo, _)| geo.loc);
+            let shapes = shapes.lit(ctx.glass, origin, 1.);
+            let elem = self.nonxray.render_glass(
+                ns,
+                params,
+                blur_options,
+                noise,
+                saturation,
+                shade,
+                shapes,
+            );
+            if let Some(look) = elem.look() {
+                push(look.into());
+            }
+            push(elem.into());
         } else {
             // Render non-xray effect.
             let elem = self
                 .nonxray
-                .render(ns, params, blur_options, noise, saturation);
+                .render(ns, params, blur_options, noise, saturation, shade);
+            if let Some(look) = elem.look() {
+                push(look.into());
+            }
             push(elem.into());
         }
     }
+}
+
+/// The glass for an effect drawn with `params`, in the coordinates of its clip geometry, or of its
+/// geometry without one.
+fn glass_shapes(params: &RenderParams, glass: niri_config::Glass) -> GlassShapes {
+    // An app's own region, unclipped, is the glass's shape: the surface around it can hold more,
+    // like the shadow GTK draws, where an edge would never show.
+    if let (None, Some(region)) = (&params.clip, &params.subregion) {
+        return GlassShapes::following(region, params.geometry.loc, glass);
+    }
+
+    let (geo, radius) = params
+        .clip
+        .unwrap_or((params.geometry, CornerRadius::default()));
+    GlassShapes::filling(geo.size.w as f32, geo.size.h as f32, radius, glass)
 }
 
 fn render_params_for_tile(
@@ -292,8 +356,120 @@ pub fn damage_surface(states: &SurfaceData) {
     }
 }
 
-// Silence, Clippy
-// A Smithay user is talking
+/// A window's background effect, ready to draw: the effect with its settings, and where it
+/// goes. It's taken from the window's surface each frame, and kept when the window closes, so its
+/// closing animation goes on drawing it after the surface is gone.
+#[derive(Debug, Clone)]
+pub struct CapturedEffect {
+    effect: BackgroundEffect,
+    params: RenderParams,
+    outer_clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+    /// Where the window's geometry starts, which `xray_pos` is for.
+    origin: Point<f64, Logical>,
+}
+
+impl CapturedEffect {
+    /// Where the window's geometry starts.
+    pub fn origin(&self) -> Point<f64, Logical> {
+        self.origin
+    }
+
+    /// The effect moved by `offset`, then scaled by `zoom` about `middle`, for a window drawn
+    /// moved and scaled so.
+    pub fn transformed(
+        &self,
+        offset: Point<f64, Logical>,
+        middle: Point<f64, Logical>,
+        zoom: f64,
+    ) -> Self {
+        let point = |p: Point<f64, Logical>| middle + (p + offset - middle).upscale(zoom);
+        let rect = |r: Rectangle<f64, Logical>| Rectangle::new(point(r.loc), r.size.upscale(zoom));
+        let clip = |(r, radius): (Rectangle<f64, Logical>, CornerRadius)| {
+            (rect(r), radius.scaled_by(zoom as f32))
+        };
+        let mut captured = self.clone();
+        captured.params.geometry = rect(self.params.geometry);
+        captured.params.clip = self.params.clip.map(clip);
+        if let Some(region) = &mut captured.params.subregion {
+            region.offset = point(region.offset);
+            region.scale = Scale::from((region.scale.x * zoom, region.scale.y * zoom));
+        }
+        captured.outer_clip = self.outer_clip.map(clip);
+        captured.origin = point(self.origin);
+        captured
+    }
+
+    /// Draws the effect, with `xray_pos` where the window's geometry starts in the backdrop.
+    pub fn render(
+        &self,
+        ctx: RenderCtx<GlesRenderer>,
+        ns: Option<usize>,
+        xray_pos: XrayPos,
+        push: &mut dyn FnMut(BackgroundEffectElement),
+    ) {
+        let xray_pos = xray_pos.offset(self.params.geometry.loc - self.origin);
+        self.effect.render(
+            ctx,
+            ns,
+            self.params.clone(),
+            self.outer_clip,
+            xray_pos,
+            push,
+        );
+    }
+}
+
+/// A window's background effect as it is now, if it shows.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_for_tile(
+    geometry: Rectangle<f64, Logical>,
+    scale: f64,
+    clip_to_geometry: bool,
+    surface: &WlSurface,
+    surface_off: Point<f64, Logical>,
+    surface_anim_scale: Scale<f64>,
+    blur_config: niri_config::Blur,
+    radius: CornerRadius,
+    effect: niri_config::BackgroundEffect,
+    should_block_out: bool,
+    outer_clip: Option<(Rectangle<f64, Logical>, CornerRadius)>,
+) -> Option<CapturedEffect> {
+    with_states(surface, |states| {
+        let background_effect = SurfaceBackgroundEffect::get(states);
+        let mut background_effect = background_effect.0.lock().unwrap();
+
+        let blur_region = get_cached_blur_region(states);
+        let has_blur_region = blur_region.as_ref().is_some_and(|r| !r.is_empty());
+
+        background_effect.update_config(blur_config);
+        background_effect.update_render_elements(radius, effect, has_blur_region);
+
+        if !background_effect.is_visible() {
+            return None;
+        }
+
+        let mut surface_geo = surface_geo(states).unwrap_or_default().to_f64();
+        surface_geo.loc += surface_off;
+
+        let params = render_params_for_tile(
+            geometry,
+            scale,
+            clip_to_geometry,
+            should_block_out,
+            blur_region,
+            surface_geo,
+            surface_anim_scale,
+        )?;
+
+        Some(CapturedEffect {
+            effect: background_effect.clone(),
+            params,
+            outer_clip,
+            origin: geometry.loc,
+        })
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_for_tile(
     ctx: RenderCtx<GlesRenderer>,
@@ -312,36 +488,80 @@ pub fn render_for_tile(
     xray_pos: XrayPos,
     push: &mut dyn FnMut(BackgroundEffectElement),
 ) {
-    with_states(surface, |states| {
-        let background_effect = SurfaceBackgroundEffect::get(states);
-        let mut background_effect = background_effect.0.lock().unwrap();
+    let captured = capture_for_tile(
+        geometry,
+        scale,
+        clip_to_geometry,
+        surface,
+        surface_off,
+        surface_anim_scale,
+        blur_config,
+        radius,
+        effect,
+        should_block_out,
+        outer_clip,
+    );
+    if let Some(captured) = captured {
+        captured.render(ctx, ns, xray_pos, push);
+    }
+}
 
-        let blur_region = get_cached_blur_region(states);
-        let has_blur_region = blur_region.as_ref().is_some_and(|r| !r.is_empty());
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        background_effect.update_config(blur_config);
-        background_effect.update_render_elements(radius, effect, has_blur_region);
-
-        if !background_effect.is_visible() {
-            return;
+    /// A rounded rectangle's region as GTK gives it, from the rounded rectangle drawn in whole
+    /// pixels: a row for each pixel row of the corners, and one rectangle between.
+    fn rounded_region(rect: Rectangle<i32, Logical>, radius: i32) -> Vec<Rectangle<i32, Logical>> {
+        let (x, y, w, h) = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+        let r = f64::from(radius);
+        let inset = |row: i32| {
+            let dy = r - f64::from(row) - 0.5;
+            (r - (r * r - dy * dy).sqrt()).round() as i32
+        };
+        let mut rects = Vec::new();
+        for row in 0..radius {
+            let i = inset(row);
+            rects.push(Rectangle::new(
+                (x + i, y + row).into(),
+                (w - 2 * i, 1).into(),
+            ));
         }
+        rects.push(Rectangle::new(
+            (x, y + radius).into(),
+            (w, h - 2 * radius).into(),
+        ));
+        for row in (0..radius).rev() {
+            let i = inset(row);
+            rects.push(Rectangle::new(
+                (x + i, y + h - 1 - row).into(),
+                (w - 2 * i, 1).into(),
+            ));
+        }
+        rects
+    }
 
-        let mut surface_geo = surface_geo(states).unwrap_or_default().to_f64();
-        surface_geo.loc += surface_off;
-
-        let Some(params) = render_params_for_tile(
+    #[test]
+    fn glass_an_app_asks_for_takes_its_regions_shape() {
+        // A GTK window with rounded corners, in a surface with room for its shadow around it.
+        let geometry = Rectangle::new((100., 50.).into(), (440., 340.).into());
+        let rects = rounded_region(Rectangle::new((20, 20).into(), (400, 300).into()), 12);
+        let params = RenderParams {
             geometry,
-            scale,
-            clip_to_geometry,
-            should_block_out,
-            blur_region,
-            surface_geo,
-            surface_anim_scale,
-        ) else {
-            return;
+            subregion: Some(TransformedRegion {
+                rects: Arc::new(rects),
+                scale: Scale::from(1.),
+                offset: geometry.loc,
+            }),
+            clip: None,
+            scale: 1.,
         };
 
-        let xray_pos = xray_pos.offset(params.geometry.loc - geometry.loc);
-        background_effect.render(ctx, ns, params, outer_clip, xray_pos, push);
-    });
+        let shapes = glass_shapes(&params, niri_config::Glass::default());
+        assert_eq!(shapes.count, 1);
+        assert_eq!(shapes.rects[0], [20., 20., 400., 300.]);
+        for radius in shapes.radii[0] {
+            assert!((radius - 12.).abs() < 0.75, "{:?}", shapes.radii[0]);
+        }
+    }
 }

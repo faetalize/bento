@@ -63,6 +63,12 @@ export function load(module) {
     if (given.floating !== undefined && typeof given.floating !== "boolean") {
         throw new Error("`meta.floating` must be a boolean");
     }
+    if (given.minimize !== undefined && typeof given.minimize !== "boolean") {
+        throw new Error("`meta.minimize` must be a boolean");
+    }
+    if (given.freeDrag !== undefined && typeof given.freeDrag !== "boolean") {
+        throw new Error("`meta.freeDrag` must be a boolean");
+    }
 
     layoutModule = module;
     meta = { ...given, actions, options, windowRules };
@@ -92,6 +98,8 @@ export function load(module) {
         options: Object.entries(options).map(specJson),
         windowRules: Object.entries(windowRules).map(specJson),
         floating: given.floating !== false,
+        minimize: given.minimize === true,
+        freeDrag: given.freeDrag === true,
     });
 }
 
@@ -440,6 +448,11 @@ function deliver(event) {
                     size: event.size ?? null,
                 }),
             );
+            return null;
+        }
+        case "minimizerequest": {
+            const win = mustWindow(event.id);
+            dispatch(win, new BentoEvent("minimizerequest", win));
             return null;
         }
         case "resizebegin": {

@@ -5,7 +5,7 @@
 // workspace and window. It's a single ES module that bento loads from the main config:
 //
 //     tiling {
-//         layout "bento"              // built in; also "niri", or a path to a .js file
+//         layout "bento"              // built in; also "niri" and "windows11", or a .js file
 //     }
 //
 // The engine's options, binds and window rules live in its own .kdl file, see
@@ -149,6 +149,19 @@ export interface Meta {
      * windows that ask to float stay with the engine, which gets `floatrequest`.
      */
     floating?: boolean;
+    /**
+     * Whether the engine minimizes windows; false by default. With it on, apps are told they can
+     * ask to minimize, so GTK shows a minimize button where the title bar has one, and asking
+     * comes as `minimizerequest`, as does a taskbar's minimize.
+     */
+    minimize?: boolean;
+    /**
+     * Whether windows move freely, the way floating windows do; false by default. With it on, a
+     * drag takes a window from the first pixel and keeps it opaque, a title bar dragged sideways
+     * moves its window instead of scrolling the view, and bento never scrolls the view during a
+     * drag: the camera stays where the engine puts it.
+     */
+    freeDrag?: boolean;
 }
 
 // Events.
@@ -382,6 +395,11 @@ export interface WindowEvents {
     moderequest: ModeRequestEvent;
     activaterequest: ActivateRequestEvent;
     floatrequest: FloatRequestEvent;
+    /**
+     * With `meta.minimize`, the app or a taskbar asks to minimize the window. What minimizing is,
+     * like hiding it with `setVisible(false)`, is the engine's.
+     */
+    minimizerequest: BentoEvent;
     resizebegin: ResizeEvent;
     resizeupdate: ResizeEvent;
     resizeend: BentoEvent;
@@ -465,7 +483,7 @@ export interface Bento extends EventTarget<BentoEvents> {
     stateChanged(): void;
 
     /** Creates a node to draw, see `Node`. It shows once it's added to a workspace's tree. */
-    createNode(kind: "box" | "text" | "image", props?: NodeProps): Node;
+    createNode(kind: "box" | "text" | "image" | "copy", props?: NodeProps): Node;
 
     /**
      * Calls `callback` once, after `ms` milliseconds, between events like an event of its own.
@@ -476,6 +494,14 @@ export interface Bento extends EventTarget<BentoEvents> {
     setTimeout(callback: () => void, ms: number): number;
     clearTimeout(id: number): void;
 
+    /**
+     * Whether a window gets keyboard focus when the pointer comes onto it, and off by default:
+     * the engine's windows, bento's floating ones, and panels that take focus on demand. With
+     * `maxScroll`, only a window that focusing would scroll the view to by at most that share of
+     * the working area's width, so `0` is only windows already in view. bento keeps it until the
+     * engine says otherwise, and an engine that's replaced takes it with it.
+     */
+    setFocusFollowsMouse(on: boolean, opts?: { maxScroll?: number | null }): void;
     /**
      * Takes the keyboard for a short interaction the person started, like picking a window by a
      * letter shown on it. While the engine holds it, keys go to `keydown`/`keyup` and apps get
@@ -790,6 +816,14 @@ export interface NodeProps {
      * to what's below.
      */
     input?: "app" | "engine" | "none";
+    /**
+     * `"copy"`: the window it shows, live, fitted into its rect and centred, without bento's
+     * border, focus ring and shadow, with its `cornerRadius` on the window. The window stays where
+     * it is too, and the copy takes the pointer as the node's events, never for the app. It can be
+     * a window on another of the monitor's workspaces. A copy draws its `background` around the
+     * window, and no border. It reads as `Node.props.window`, the window's id.
+     */
+    window?: Window;
     /** `"search"`: what the field shows while the query is empty. */
     placeholder?: string;
     /**

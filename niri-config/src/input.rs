@@ -11,7 +11,7 @@ use smithay::input::keyboard::{keysyms, Keysym, XkbConfig};
 use smithay::reexports::input;
 
 use crate::binds::Modifiers;
-use crate::utils::{expand_home_path, Flag, MergeWith, Percent};
+use crate::utils::{expand_home_path, Flag, MergeWith};
 use crate::{FloatOrInt, Includes};
 
 #[derive(Debug, Default, PartialEq)]
@@ -25,7 +25,6 @@ pub struct Input {
     pub touch: Touch,
     pub disable_power_key_handling: bool,
     pub warp_mouse_to_focus: Option<WarpMouseToFocus>,
-    pub focus_follows_mouse: Option<FocusFollowsMouse>,
     pub workspace_auto_back_and_forth: bool,
     pub mod_key: Option<ModKey>,
     pub mod_key_nested: Option<ModKey>,
@@ -51,8 +50,6 @@ pub struct InputPart {
     pub disable_power_key_handling: Option<Flag>,
     #[knuffel(child)]
     pub warp_mouse_to_focus: Option<WarpMouseToFocus>,
-    #[knuffel(child)]
-    pub focus_follows_mouse: Option<FocusFollowsMouse>,
     #[knuffel(child)]
     pub workspace_auto_back_and_forth: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
@@ -80,13 +77,7 @@ impl MergeWith<InputPart> for Input {
             touch,
         );
 
-        merge_clone_opt!(
-            (self, part),
-            warp_mouse_to_focus,
-            focus_follows_mouse,
-            mod_key,
-            mod_key_nested,
-        );
+        merge_clone_opt!((self, part), warp_mouse_to_focus, mod_key, mod_key_nested,);
     }
 }
 
@@ -390,12 +381,6 @@ pub struct Touch {
     pub calibration_matrix: Option<Vec<f32>>,
     #[knuffel(child, unwrap(argument))]
     pub map_to_output: Option<String>,
-}
-
-#[derive(knuffel::Decode, Debug, Clone, Copy, PartialEq)]
-pub struct FocusFollowsMouse {
-    #[knuffel(property, str)]
-    pub max_scroll_amount: Option<Percent>,
 }
 
 #[derive(knuffel::Decode, Debug, PartialEq, Eq, Clone, Copy)]

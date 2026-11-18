@@ -200,6 +200,7 @@ impl<'a> Converter<'a> {
                         self.layout(layout, Some((kind, name.clone())));
                     }
                 }
+                "input" => self.input(node),
                 "window-rule" => self.window_rule(node),
                 "binds" => self.binds(node),
                 "tiling" => self.has_tiling = true,
@@ -218,6 +219,37 @@ impl<'a> Converter<'a> {
                  window rules and binds in them need moving to engines/niri.kdl by hand.",
                 files.join(", ")
             ));
+        }
+    }
+
+    /// Moves `focus-follows-mouse` out of `input`: whether focus follows the pointer is the
+    /// engine's to say, as its options.
+    fn input(&mut self, node: &Node) {
+        for child in node.children() {
+            if &**child.node_name != "focus-follows-mouse" {
+                continue;
+            }
+            // niri's max-scroll-amount="0%", windows already in view, is the engine's "in-view";
+            // without it, focus always follows.
+            let mut mode = "always";
+            for (key, value) in &child.properties {
+                let percent = match &*value.literal {
+                    Literal::String(text) => text.trim().strip_suffix('%').map(str::trim),
+                    _ => None,
+                };
+                let percent = percent.and_then(|p| p.parse::<f64>().ok());
+                match (name_of(key), percent) {
+                    ("max-scroll-amount", Some(0.)) => mode = "in-view",
+                    (name, _) => self.notes.push(format!(
+                        "focus-follows-mouse's {name} became \"always\": the engine's \
+                         focus-follows-mouse is \"never\", \"in-view\" or \"always\"."
+                    )),
+                }
+            }
+            let lines = vec![option("focus-follows-mouse", &[quote(mode)])];
+            let comments = self.comments(child);
+            self.remove(child);
+            self.options.push(Moved { comments, lines });
         }
     }
 
@@ -968,6 +1000,8 @@ input {
     touchpad {
         tap
     }
+    // Only windows already on screen.
+    focus-follows-mouse max-scroll-amount="0%"
 }
 
 // Settings that influence how windows are positioned and sized.
@@ -1133,6 +1167,20 @@ workspace "web" {
             .contains("// Open the Firefox picture-in-picture player"));
         assert!(config.prefer_no_csd);
         assert_eq!(config.spawn_at_startup.len(), 1);
+    }
+
+    #[test]
+    fn focus_follows_mouse_becomes_the_engines() {
+        let (converted, config) = convert_niri();
+        let option = |name: &str| {
+            let option = config.tiling.options.iter().find(|(n, _)| n == name);
+            option.map(|(_, values)| values.clone())
+        };
+        assert_eq!(option("focus-follows-mouse"), Some(strings(&["in-view"])));
+        assert!(converted
+            .engine
+            .contains("// Only windows already on screen."));
+        assert!(!converted.config.contains("focus-follows-mouse"));
     }
 
     #[test]

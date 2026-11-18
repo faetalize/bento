@@ -359,6 +359,13 @@ export const meta = {
             default: null,
             description: "A gradient for the insert hint, which wins over its color.",
         },
+        "focus-follows-mouse": {
+            type: "choice",
+            choices: ["never", "in-view", "always"],
+            default: "never",
+            description:
+                "Focus a window when the pointer comes onto it: never, only a window already in view, or always.",
+        },
     },
     windowRules: {
         "default-column-width": {
@@ -3146,6 +3153,15 @@ function createStrip(bento, ws) {
 // The engine: one strip for each workspace, and what crosses from one to another.
 
 export default function create(bento) {
+    // Focus follows the pointer as the options say; bento does the focusing. "in-view" is only
+    // windows that focusing doesn't scroll the view to.
+    const followMouse = () => {
+        const mode = bento.options["focus-follows-mouse"];
+        bento.setFocusFollowsMouse(mode !== "never", { maxScroll: mode === "in-view" ? 0 : null });
+    };
+    followMouse();
+    bento.addEventListener("configchange", followMouse);
+
     /** Strips by workspace id. */
     const strips = new Map();
     /** Windows and groups whose events are followed. */

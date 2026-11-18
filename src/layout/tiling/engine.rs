@@ -62,6 +62,10 @@ const PRELUDE_MODULES: &[(&str, &str)] = &[
 const BUILT_IN: &[(&str, &str)] = &[
     ("bento", include_str!("../../../resources/layouts/bento.js")),
     ("niri", include_str!("../../../resources/layouts/niri.js")),
+    (
+        "windows11",
+        include_str!("../../../resources/layouts/windows11.js"),
+    ),
     ("fallback", FALLBACK),
 ];
 
@@ -136,6 +140,14 @@ pub struct LayoutMeta {
     pub window_rules: Vec<OptionMeta>,
     /// Whether bento's floating layer exists under this layout.
     pub floating: bool,
+    /// Whether the layout minimizes windows: apps are told they can ask, and their asking reaches
+    /// the layout.
+    #[serde(default)]
+    pub minimize: bool,
+    /// Whether windows move freely under the layout, the way floating windows do: a drag takes a
+    /// window at once, a title bar drag always moves it, and bento never scrolls the view.
+    #[serde(default, rename = "freeDrag")]
+    pub free_drag: bool,
 }
 
 impl LayoutMeta {
@@ -696,6 +708,16 @@ pub fn name() -> String {
 /// Whether bento's floating layer exists under the current layout.
 pub fn floating_enabled() -> bool {
     ENGINE.with_borrow(|engine| engine.as_ref().is_none_or(|engine| engine.meta.floating))
+}
+
+/// Whether windows move freely under the current layout, see [`LayoutMeta::free_drag`].
+pub fn free_drag_enabled() -> bool {
+    ENGINE.with_borrow(|engine| engine.as_ref().is_some_and(|engine| engine.meta.free_drag))
+}
+
+/// Whether the current layout minimizes windows.
+pub fn minimize_enabled() -> bool {
+    ENGINE.with_borrow(|engine| engine.as_ref().is_some_and(|engine| engine.meta.minimize))
 }
 
 /// Metadata of the current layout.

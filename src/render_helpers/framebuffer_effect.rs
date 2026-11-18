@@ -17,20 +17,26 @@ use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::render_helpers::background_effect::RenderParams;
 use crate::render_helpers::blur::{Blur, BlurOptions};
+use crate::render_helpers::damage::ExtraDamage;
+use crate::render_helpers::glass::{self, GlassShapes};
 use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::shaders::{mat3_uniform, Shaders};
 use crate::utils::region::TransformedRegion;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FramebufferEffect {
     id: Id,
+    /// Changes when what's behind has to be captured again.
     commit: CommitCounter,
+    /// The id of the damage for a change of only how it looks.
+    look: Id,
 }
 
 #[derive(Debug)]
 pub struct FramebufferEffectElement {
     id: Id,
     commit: CommitCounter,
+    look: Id,
     geometry: Rectangle<f64, Logical>,
     clip_geo: Rectangle<f64, Logical>,
     corner_radius: CornerRadius,
@@ -39,6 +45,11 @@ pub struct FramebufferEffectElement {
     blur_options: Option<BlurOptions>,
     noise: f32,
     saturation: f32,
+    shade: [f32; 4],
+    /// Draws glass in these shapes instead of the plain effect.
+    glass: Option<GlassShapes>,
+    /// How opaque it's drawn, as the window it's behind fades.
+    alpha: f32,
 }
 
 #[derive(Debug)]
@@ -55,6 +66,7 @@ impl FramebufferEffect {
         Self {
             id: Id::new(),
             commit: CommitCounter::default(),
+            look: Id::new(),
         }
     }
 
@@ -69,19 +81,23 @@ impl FramebufferEffect {
         blur_options: Option<BlurOptions>,
         noise: f32,
         saturation: f32,
+        shade: [f32; 4],
     ) -> FramebufferEffectElement {
         let (clip_geo, corner_radius) = params
             .clip
             .unwrap_or((params.geometry, CornerRadius::default()));
 
         let mut id = self.id.clone();
+        let mut look = self.look.clone();
         if let Some(ns) = ns {
             id = id.namespaced(ns);
+            look = look.namespaced(ns);
         }
 
         FramebufferEffectElement {
             id,
             commit: self.commit,
+            look,
             geometry: params.geometry,
             clip_geo,
             corner_radius,
@@ -90,16 +106,55 @@ impl FramebufferEffect {
             blur_options,
             noise,
             saturation,
+            shade,
+            glass: None,
+            alpha: 1.,
         }
+    }
+
+    /// Renders glass in the shapes, which are in the coordinates of the clip geometry, or of
+    /// `params.geometry` without a clip.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_glass(
+        &self,
+        ns: Option<usize>,
+        params: RenderParams,
+        blur_options: Option<BlurOptions>,
+        noise: f32,
+        saturation: f32,
+        shade: [f32; 4],
+        shapes: GlassShapes,
+    ) -> FramebufferEffectElement {
+        let mut elem = self.render(ns, params, blur_options, noise, saturation, shade);
+        elem.glass = Some(shapes);
+        elem
     }
 }
 
 impl FramebufferEffectElement {
+    /// The damage for a change of only how it looks, like its glass's shapes or the pointer's
+    /// light on it, to go in front of it.
+    ///
+    /// smithay captures what's behind an effect again whenever the effect itself is damaged, as
+    /// if what's behind had changed, and blurs it again. A change of its look damages this
+    /// instead, in front of it: what's there is drawn again, the effect from what it captured.
+    /// Without it, the pointer moving over glass blurred what's behind on every frame.
+    pub fn look(&self) -> Option<ExtraDamage> {
+        let commit = glass::effect_commit(self.commit, self.glass.as_ref(), self.shade);
+        (commit != self.commit)
+            .then(|| ExtraDamage::with_commit(self.look.clone(), commit, self.geometry))
+    }
+
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
     fn compute_uniforms(
         &self,
         crop: Rectangle<f64, Logical>,
         transform: Transform,
-    ) -> [Uniform<'static>; 7] {
+    ) -> Vec<Uniform<'static>> {
         let offset = crop.loc - (self.clip_geo.loc - self.geometry.loc);
         let offset = Vec2::new(offset.x as f32, offset.y as f32);
         let crop_size = Vec2::new(crop.size.w as f32, crop.size.h as f32);
@@ -117,13 +172,27 @@ impl FramebufferEffectElement {
 
         let clip_geo_size = (self.clip_geo.size.w as f32, self.clip_geo.size.h as f32);
 
-        [
+        if let Some(shapes) = &self.glass {
+            return glass::uniforms(
+                shapes,
+                self.scale,
+                Vec2::from(clip_geo_size),
+                input_to_clip_geo,
+                self.noise,
+                self.saturation,
+                self.shade,
+                [0., 0., 0., 0.],
+            );
+        }
+
+        vec![
             Uniform::new("niri_scale", self.scale),
             Uniform::new("geo_size", clip_geo_size),
             Uniform::new("corner_radius", <[f32; 4]>::from(self.corner_radius)),
             mat3_uniform("input_to_geo", input_to_clip_geo),
             Uniform::new("noise", self.noise),
             Uniform::new("saturation", self.saturation),
+            Uniform::new("shade", self.shade),
             Uniform::new("bg_color", [0f32, 0., 0., 0.]),
         ]
     }
@@ -135,6 +204,7 @@ impl Element for FramebufferEffectElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
+        // How it looks is in `look`'s.
         self.commit
     }
 
@@ -398,7 +468,16 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             clamped_dst.size.to_f64().upscale(dst_to_src).to_logical(1.),
         );
 
-        let program = Shaders::get_from_frame(frame).postprocess_and_clip.clone();
+        let shaders = Shaders::get_from_frame(frame);
+        let program = if self.glass.is_some() {
+            // Without its shader, glass would be a blurred rectangle.
+            if shaders.glass.borrow().is_none() {
+                return Ok(());
+            }
+            shaders.glass.borrow().clone()
+        } else {
+            shaders.postprocess_and_clip.clone()
+        };
         let uniforms = program
             .is_some()
             .then(|| self.compute_uniforms(crop, frame.transformation()));
@@ -412,7 +491,7 @@ impl RenderElement<GlesRenderer> for FramebufferEffectElement {
             &[],
             // The intermediate texture has the same transform as the frame.
             frame.transformation().invert(),
-            1.,
+            self.alpha,
             program.as_ref(),
             uniforms,
         )
