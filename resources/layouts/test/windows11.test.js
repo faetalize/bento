@@ -22,6 +22,12 @@ const CENTRED = rect(320, 160, 640, 400);
 const showing = (h) => h.exposedState().showing;
 const stateOf = (h, id) => h.exposedState().windows.find((win) => win.id === id);
 const parentOf = (h, id) => h.tree().node(`w${id}`).parent;
+/** The copy node that shows window `id`, if there's one. */
+const copyOf = (h, id) =>
+    h.tree().order().find((node) => {
+        const { kind, props } = h.tree().node(node);
+        return kind === "copy" && props.window === id;
+    });
 
 /**
  * Drags window `id` over the active workspace through `positions`, without dropping it. It leaves
@@ -389,9 +395,12 @@ test("Alt+Tab goes through the windows, most recently used first, and letting go
     h.action("switch-windows");
     assert.deepEqual(showing(h), { kind: "switcher", workspace: 1, windows: [a, c, b], selected: 1 });
     assert.equal(h.keyboard.grabbed, true);
-    // The windows show as thumbnails that take the pointer, with their titles.
-    assert.notEqual(parentOf(h, c), h.tree().rootId);
-    assert.equal(h.tree().node(`w${c}`).props.input, "engine");
+    // The windows show as copies, with their titles, and stay where they are.
+    for (const id of [a, b, c]) {
+        assert.notEqual(copyOf(h, id), undefined);
+        assert.equal(parentOf(h, id), h.tree().rootId);
+        assert.equal(h.tree().node(`w${id}`).props.input ?? "app", "app");
+    }
     assert.ok(h.tree().order().some((id) => h.tree().node(id).props.text === "C"));
 
     assert.equal(h.key("Tab"), "engine");
@@ -406,9 +415,14 @@ test("Alt+Tab goes through the windows, most recently used first, and letting go
     assert.equal(showing(h), null);
     assert.equal(h.focused(), c);
     assert.equal(h.keyboard.grabbed, false);
+    // The switcher left the windows as they were.
     assert.equal(parentOf(h, c), h.tree().rootId);
-    assert.equal(h.tree().node(`w${c}`).props.input, "app");
-    assert.deepEqual(h.tree().node(`w${c}`).props.transform, { scale: 1, x: 0, y: 0 });
+    assert.equal(h.tree().node(`w${c}`).props.input ?? "app", "app");
+    assert.deepEqual(h.tree().node(`w${c}`).props.transform ?? { scale: 1, x: 0, y: 0 }, {
+        scale: 1,
+        x: 0,
+        y: 0,
+    });
     assert.deepEqual(h.stacking(), [b, a, c]);
     assert.deepEqual(h.exposedState().recent, [c, a, b]);
 });
@@ -433,8 +447,9 @@ test("Alt+Tab shows minimized windows, and picking one brings it back", async ()
     h.keyDown("Alt_L");
     h.action("switch-windows");
     assert.deepEqual(showing(h).windows, [a, b]);
-    // It shows while it's a thumbnail.
-    assert.equal(h.isVisible(b), true);
+    // A copy shows it, and it stays minimized until it's picked.
+    assert.notEqual(copyOf(h, b), undefined);
+    assert.equal(h.isVisible(b), false);
     h.keyUp("Alt_L");
     assert.equal(h.focused(), b);
     assert.equal(h.isVisible(b), true);
@@ -472,7 +487,7 @@ test("clicking a thumbnail in the switcher picks it, and clicking elsewhere clos
     assert.equal(h.focused(), b);
 
     h.action("switch-windows");
-    h.pointer(`w${a}`, "click");
+    h.pointer(copyOf(h, a), "click");
     assert.equal(h.focused(), a);
     assert.equal(showing(h), null);
     h.keyUp("Alt_L");

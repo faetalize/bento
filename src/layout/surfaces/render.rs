@@ -408,8 +408,9 @@ fn draw_run<R: NiriRenderer>(
     emit(elem, target.crop, target.scale, &mut |item| out.push(item));
 }
 
-/// Draws a box, text, image or search node, with the opacity it has in its group. Window nodes
-/// only get a slot, from the caller.
+/// Draws a box, text, image or search node, or a copy node's background, with the opacity it
+/// has in its group. Window nodes, and the window in a copy node, only get a slot, from the
+/// caller.
 pub(super) fn draw<R: NiriRenderer>(
     renderer: &mut R,
     node: &Node,
@@ -419,7 +420,7 @@ pub(super) fn draw<R: NiriRenderer>(
 ) {
     if !matches!(
         node.kind,
-        NodeKind::Box | NodeKind::Text | NodeKind::Image | NodeKind::Search
+        NodeKind::Box | NodeKind::Text | NodeKind::Image | NodeKind::Search | NodeKind::Copy
     ) {
         return;
     }

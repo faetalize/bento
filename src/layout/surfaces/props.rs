@@ -145,6 +145,8 @@ pub struct Update {
     pub placeholder: Option<String>,
     pub interactive: Option<bool>,
     pub input: Option<Input>,
+    /// The window a copy node draws, by its id.
+    pub window: Option<u64>,
     pub transitions: Option<Transitions>,
     pub enter: Option<Enter>,
 }
@@ -168,6 +170,7 @@ impl TryFrom<Update> for Enter {
             image,
             interactive,
             input,
+            window,
             placeholder,
             transitions,
             enter,
@@ -181,6 +184,7 @@ impl TryFrom<Update> for Enter {
             || image.is_some()
             || interactive.is_some()
             || input.is_some()
+            || window.is_some()
             || placeholder.is_some()
             || transitions.is_some()
             || enter.is_some();
@@ -290,6 +294,7 @@ struct RawProps {
     placeholder: Option<String>,
     interactive: Option<bool>,
     input: Option<Input>,
+    window: Option<u64>,
     transitions: Option<HashMap<String, RawTransition>>,
     enter: Option<Box<RawProps>>,
 }
@@ -475,6 +480,7 @@ impl TryFrom<RawProps> for Update {
             image: raw.image,
             placeholder: raw.placeholder,
             interactive: raw.interactive,
+            window: raw.window,
             input: raw.input,
             transitions: raw.transitions.map(Transitions::from_raw).transpose()?,
             enter: raw

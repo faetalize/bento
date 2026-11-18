@@ -290,7 +290,10 @@ transforming a workspace would fight bento's animations.
 
 bento draws the tree with its own renderer, on smithay's, and borrows little else from a
 browser. Nodes come in a few kinds: boxes (a fill, a border and a corner radius, where fills and
-borders are colours or gradients), text, images, and windows. Any node can have a transform,
+borders are colours or gradients), text, images, windows, and copies of windows. A copy draws a
+window's live contents again, fitted into the node, while the window stays where it is, like a
+thumbnail in a window switcher; it can show a window from another of the monitor's workspaces,
+and takes the pointer as the engine's. Any node can have a transform,
 opacity, clipping and transitions. Pointer events hit the topmost node under the pointer and
 bubble up to its parents, like the DOM's. There's no layout system, since engines do their own
 layout, and no browser engine underneath.

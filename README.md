@@ -779,7 +779,8 @@ Every window is the engine's, so bento's floating layer is off under it, and win
 - **Options.**
   `snap-assist` and `edge-snap` in `engines/windows11.kdl` turn Snap Assist and snapping by dragging off.
 
-A window is drawn in one place at a time, so the switcher and Snap Assist show only the workspace's own windows, and a window shown as a thumbnail leaves its place on the screen while it is one.
+The switcher's thumbnails are live copies of the windows, which stay where they are behind it, and it shows the workspace's own windows, like Windows does by default.
+Snap Assist's thumbnails are the windows themselves, so the one you pick grows from its thumbnail into its place.
 
 ## Status
 

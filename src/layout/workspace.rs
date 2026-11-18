@@ -1207,19 +1207,26 @@ impl<W: LayoutElement> Workspace<W> {
         }
     }
 
-    pub fn render_scrolling<R: NiriRenderer>(
+    /// Draws the tiled windows and what the layout draws. `elsewhere` finds a window that isn't on
+    /// this workspace by its layout id, for a copy of it.
+    pub fn render_scrolling<'w, R: NiriRenderer>(
         &self,
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
         layer: RenderLayer,
+        elsewhere: &dyn Fn(u64) -> Option<&'w W>,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         let scrolling_focus_ring = focus_ring && !self.floating_is_active();
-        self.scrolling
-            .render(ctx, xray_pos, scrolling_focus_ring, layer, &mut |elem| {
-                push(elem.into())
-            });
+        self.scrolling.render(
+            ctx,
+            xray_pos,
+            scrolling_focus_ring,
+            layer,
+            elsewhere,
+            &mut |elem| push(elem.into()),
+        );
     }
 
     pub fn render_floating<R: NiriRenderer>(

@@ -65,6 +65,17 @@ function checkProps(props, kind) {
             throw new Error(`invalid input: ${JSON.stringify(props.input)}`);
         }
     }
+    if (props.window !== undefined) {
+        if (kind !== "copy") {
+            throw new Error("`window` is only for copy nodes");
+        }
+        if (!Number.isInteger(props.window)) {
+            throw new Error("a copy's `window` must be a window");
+        }
+    }
+    if (props.border !== undefined && kind === "copy") {
+        throw new Error("copy nodes draw no border");
+    }
     if (props.rect !== undefined && !isRect(props.rect)) {
         throw new Error(`invalid rect: ${JSON.stringify(props.rect)}`);
     }
@@ -90,6 +101,15 @@ function checkProps(props, kind) {
     if (props.placeholder !== undefined && typeof props.placeholder !== "string") {
         throw new Error(`invalid placeholder: ${JSON.stringify(props.placeholder)}`);
     }
+}
+
+/** The props with a copy's `window` as the window's id, which is how bento knows it. */
+function windowsById(props) {
+    const window = props?.window;
+    if (window === null || typeof window !== "object") {
+        return props;
+    }
+    return { ...props, window: window.id };
 }
 
 /** The properties that `enter` can start from, which are the ones that can have a transition. */
@@ -153,6 +173,7 @@ export class Node extends EventTarget {
 
     /** Changes some properties. Those with a transition animate to their new value. */
     set(props) {
+        props = windowsById(props);
         checkProps(props, this.#kind);
         if (props.enter !== undefined && this.#sent && !sameValue(this.#props.enter, props.enter)) {
             throw new Error("`enter` is for before a node is added to a tree, and this one was");
@@ -332,9 +353,10 @@ export class Node extends EventTarget {
 
 /** A node that engines draw. It's in no tree until it's added to one. */
 export function createNode(log, kind, props = {}) {
-    if (!["box", "text", "image"].includes(kind)) {
+    if (!["box", "text", "image", "copy"].includes(kind)) {
         throw new Error(`unknown node kind: ${kind}`);
     }
+    props = windowsById(props);
     checkProps(props, kind);
     return new Node(log, `n${log.nextId++}`, kind, props, false);
 }

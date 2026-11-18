@@ -280,6 +280,35 @@ fn props_are_checked_against_the_kind_of_node() {
 }
 
 #[test]
+fn a_copy_names_its_window_and_draws_no_border() {
+    let (mut tree, _) = tree();
+    tree.add_window(7);
+    add(&mut tree, "n1", "r1", json!({}));
+    apply(
+        &mut tree,
+        json!([
+            { "op": "create", "id": "n2", "kind": "copy",
+              "props": { "window": 7, "rect": props_rect(0., 0., 40., 30.), "cornerRadius": 4,
+                         "background": "#000", "interactive": true } },
+            { "op": "append", "parent": "r1", "child": "n2" },
+        ]),
+    );
+    // It can show another window later, and takes the pointer like a box.
+    set(&mut tree, "n2", json!({ "window": 8 }));
+    assert_eq!(tree.hit(point(10., 10.)).as_deref(), Some("n2"));
+
+    for (id, props) in [
+        ("n1", json!({ "window": 7 })),
+        ("w7", json!({ "window": 7 })),
+        ("n2", json!({ "border": { "width": 1, "color": "#fff" } })),
+        ("n2", json!({ "text": "x" })),
+    ] {
+        let err = error(&mut tree, json!({ "op": "set", "id": id, "props": props }));
+        assert!(err.contains("op 0"), "{id} {props}: {err}");
+    }
+}
+
+#[test]
 fn invalid_ops_are_errors_and_earlier_ops_stay_applied() {
     let (mut tree, _) = tree();
 

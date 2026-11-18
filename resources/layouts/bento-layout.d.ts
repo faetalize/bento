@@ -483,7 +483,7 @@ export interface Bento extends EventTarget<BentoEvents> {
     stateChanged(): void;
 
     /** Creates a node to draw, see `Node`. It shows once it's added to a workspace's tree. */
-    createNode(kind: "box" | "text" | "image", props?: NodeProps): Node;
+    createNode(kind: "box" | "text" | "image" | "copy", props?: NodeProps): Node;
 
     /**
      * Calls `callback` once, after `ms` milliseconds, between events like an event of its own.
@@ -816,6 +816,14 @@ export interface NodeProps {
      * to what's below.
      */
     input?: "app" | "engine" | "none";
+    /**
+     * `"copy"`: the window it shows, live, fitted into its rect and centred, without bento's
+     * border, focus ring and shadow, with its `cornerRadius` on the window. The window stays where
+     * it is too, and the copy takes the pointer as the node's events, never for the app. It can be
+     * a window on another of the monitor's workspaces. A copy draws its `background` around the
+     * window, and no border. It reads as `Node.props.window`, the window's id.
+     */
+    window?: Window;
     /** `"search"`: what the field shows while the query is empty. */
     placeholder?: string;
     /**

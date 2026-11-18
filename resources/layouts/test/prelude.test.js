@@ -332,6 +332,27 @@ test("setFocusFollowsMouse tells bento, and checks what it's given", () => {
     assert.deepEqual(h.focusFollowsMouse, { on: true, maxScroll: 0 });
 });
 
+test("a copy node shows a window, sent to bento by its id", () => {
+    let copy;
+    const h = host((bento) => {
+        bento.addEventListener("windowadd", (e) => {
+            e.window.place({ x: 0, y: 0, w: 10, h: 10 });
+            assert.throws(() => bento.createNode("box", { window: e.window }), /only for copy/);
+            assert.throws(
+                () => bento.createNode("copy", { window: e.window, border: { width: 1, color: "#fff" } }),
+                /no border/,
+            );
+            copy = bento.createNode("copy", { window: e.window, rect: { x: 0, y: 0, w: 4, h: 3 } });
+            e.window.workspace.tree.append(copy);
+        });
+    });
+    const id = h.open();
+    assert.equal(copy.props.window, id);
+    const sent = [...h.trees.values()].map((tree) => tree.nodes.get(copy.id)).find(Boolean);
+    assert.equal(sent.kind, "copy");
+    assert.equal(sent.props.window, id);
+});
+
 test("minimizerequest reaches the window", () => {
     const seen = [];
     const h = host(

@@ -24,9 +24,10 @@
 // coordinates.
 //
 // What's drawn (the snap preview, Snap Assist, the window switcher and the layouts picker) goes
-// in one layer per workspace, kept above the windows. Thumbnails are the windows themselves:
-// their nodes move into what's drawn, scaled down, and back to their places after. A window's node
-// is only drawn once, so a window shown as a thumbnail leaves its place meanwhile.
+// in one layer per workspace, kept above the windows. The switcher's thumbnails are live copies of
+// the windows, which stay where they are behind it. Snap Assist's are the windows themselves:
+// their nodes move into what's drawn, scaled down, and the one picked grows from its thumbnail
+// into its zone, while the others go back to their places.
 
 export const meta = {
     api: 2,
@@ -151,6 +152,8 @@ const OUTER = 16;
 const PAD = 10;
 const CARD_GAP = 12;
 const TITLE = 22;
+/** The corners of a copied window in the switcher, smaller than its card's, which it sits in. */
+const THUMB_RADIUS = 6;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const near = (a, b) => Math.abs(a - b) < EPSILON;
@@ -877,8 +880,12 @@ export default function create(bento) {
      * Shows windows as thumbnails, each in a card with its title, over a panel, with a highlight
      * on the selected one. `cards` has `{ card, title, thumb }` rects for each window. Clicking a
      * card picks it, and pointing at one selects it; clicking elsewhere calls `cancel`.
+     *
+     * With `copies`, a thumbnail is a live copy of its window, and the windows stay where they
+     * are. Without, it's the window itself, which leaves its place meanwhile and can then grow
+     * from its thumbnail into where it goes.
      */
-    function showThumbnails(ws, windows, cards, panel, selected, { kind, pick }) {
+    function showThumbnails(ws, windows, cards, panel, selected, { kind, pick, copies = false }) {
         const order = ws.windows.slice();
         const temporary = new Set();
         const root = bento.createNode("box", {
@@ -921,6 +928,10 @@ export default function create(bento) {
             },
             pick,
             teardown(picked) {
+                if (copies) {
+                    fadeAway(root);
+                    return;
+                }
                 for (const win of windows) {
                     if (!ws.windows.includes(win)) continue;
                     win.node.set({ transform: IDENTITY, input: "app" });
@@ -953,6 +964,17 @@ export default function create(bento) {
                     color: TEXT,
                 }),
             );
+            if (copies) {
+                // A copy shows a minimized window too, from what it last drew.
+                card.append(
+                    bento.createNode("copy", {
+                        window: win,
+                        rect: c.thumb,
+                        cornerRadius: THUMB_RADIUS,
+                    }),
+                );
+                return;
+            }
             // A minimized window shows while it's a thumbnail.
             if (!win.visible) {
                 temporary.add(win.id);
@@ -1079,6 +1101,8 @@ export default function create(bento) {
         const first = step > 0 ? Math.min(1, windows.length - 1) : windows.length - 1;
         ui = showThumbnails(ws, windows, cards, panel, first, {
             kind: "switcher",
+            // The windows stay in their places behind the switcher.
+            copies: true,
             pick: (i) => {
                 const win = windows[i];
                 closeUi(win);
