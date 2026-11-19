@@ -643,7 +643,8 @@ declare module "bento" {
     default?: unknown;
     /** What it is, which bento's settings show. */
     description?: string;
-    /** The page of bento's settings it shows on, rather than the Shell page. */
+    /** The page of bento's settings it shows on. One that names none doesn't show there: it's
+     * the module's to change where it shows, like pinned apps, and the file's. */
     page?: keyof SettingsPages;
     /** The group on that page it shows in, by its title, rather than one with the module's
      * name. */

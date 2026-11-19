@@ -136,11 +136,12 @@ one changing the other. A module can change its own settings, as when an app is 
 
 bento's settings show the running shell's settings and actions, as bento hands it their
 declarations, the way they show the running engine's: the actions with bento's own on the
-Shortcuts page, and each setting on the page it names, in the group it names, like
-`page: "sound", group: "Output Switcher"`. The pages are bento Settings' own; a declaration
-picks one of them and never makes one. One that names no page, or a page there isn't, shows on
-the Shell page, or the Engine page for an engine's. What pages there are is in the types an
-editor gets, so naming one that isn't there is an error there. Settings that nothing declares
+Shortcuts page, and a setting only on the page it names, in the group it names, like
+`page: "shell", group: "Taskbar"`. Nothing shows there unless it says so: what's changed where
+it shows, like pinned apps and their order, is kept as a setting all the same, and doesn't
+crowd bento Settings. The pages are bento Settings' own; a declaration picks one of them and
+never makes one. What pages there are is in the types an editor gets, so naming one that isn't
+there is an error there. Settings that nothing declares
 stay in the file, and bento says so rather than failing, so that switching shells loses nothing.
 
 ## Materials

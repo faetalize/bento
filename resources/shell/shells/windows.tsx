@@ -22,7 +22,13 @@ import { WorkspaceEditor } from "bento:modules/workspace-editor";
 
 export const meta = {
   settings: {
-    height: { type: "number", default: 48, description: "How tall the taskbar is, in pixels." },
+    height: {
+      type: "number",
+      default: 48,
+      description: "How tall the taskbar is, in pixels.",
+      page: "shell",
+      group: "Taskbar",
+    },
   },
 } satisfies Meta;
 

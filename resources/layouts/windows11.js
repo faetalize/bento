@@ -79,11 +79,13 @@ export const meta = {
     settings: {
         "snap-assist": {
             type: "boolean",
+            page: "engine",
             default: true,
             description: "After a window snaps, offer the other windows to fill the space left.",
         },
         "edge-snap": {
             type: "boolean",
+            page: "engine",
             default: true,
             description: "Snap windows dragged to the edges and corners of the screen.",
         },

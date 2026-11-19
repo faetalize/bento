@@ -97,7 +97,8 @@ export interface SettingSpec {
     /** The values a `"choice"` accepts. */
     choices?: string[];
     description?: string;
-    /** The page of bento Settings it shows on, by its id, rather than the Engine page. */
+    /** The page of bento Settings it shows on, by its id, like `"engine"`. One that names none
+     * doesn't show there: it's the engine's to change where it shows, and the file's. */
     page?: string;
     /** The group on that page it shows in. */
     group?: string;

@@ -31,18 +31,12 @@ pub fn category() -> Category {
             "command",
         ])
         .group(
-            Group::untitled()
-                .setting(
-                    Setting::switch("Built-in Shell", "shell.built-in", |c| {
-                        c.shell.as_ref().is_some_and(|shell| shell.built_in())
-                    })
-                    .keywords(&[
-                        "bar",
-                        "panel",
-                        "experimental",
-                        "desktop shell",
-                    ]),
-                ),
+            Group::untitled().setting(
+                Setting::switch("Built-in Shell", "shell.built-in", |c| {
+                    c.shell.as_ref().is_some_and(|shell| shell.built_in())
+                })
+                .keywords(&["bar", "panel", "experimental", "desktop shell"]),
+            ),
         )
         .group(
             Group::custom(super::shell::build)

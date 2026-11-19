@@ -1,10 +1,11 @@
 //! Settings that the running engine and shell declare, on the pages they name.
 //!
-//! An engine's or a shell's setting can name a page of the app and a group on it, like
-//! `page: "sound", group: "Output Switcher"`. The pages are the app's own, listed in
-//! [`niri_config::SETTINGS_PAGES`]; a setting that names none of them shows on the Engine page
-//! for an engine's, or the Shell page for a shell's. Settings with the same group show together,
-//! and the rest under their module's name, or "Settings" on the Engine page.
+//! A setting, an engine's or a shell's, shows in the app only on the page it names, in the group
+//! it names there, like `page: "shell", group: "Taskbar"`. The pages are the app's own, listed in
+//! [`niri_config::SETTINGS_PAGES`]. One that names no page, or one the app doesn't have, is the
+//! engine's or the module's to change where it shows, like pinned apps, and stays out of the app.
+//! Settings with the same group show together, and the rest under their module's name, or
+//! "Settings" on the Engine page.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -37,15 +38,10 @@ struct Item {
 }
 
 impl Item {
-    /// The page it shows on.
-    fn page(&self) -> &str {
-        match self.setting.page.as_deref() {
-            Some(page) if SETTINGS_PAGES.contains(&page) => page,
-            _ => match self.owner {
-                Owner::Engine => "engine",
-                Owner::Shell(_) => "shell",
-            },
-        }
+    /// The page it shows on, if it shows.
+    fn page(&self) -> Option<&str> {
+        let page = self.setting.page.as_deref()?;
+        SETTINGS_PAGES.contains(&page).then_some(page)
     }
 
     /// The title of the group it shows in on `page`.
@@ -89,7 +85,7 @@ type Group = (String, Vec<Item>);
 /// The groups on `page`, in the order they first come.
 fn groups_on(page: &str, items: Vec<Item>) -> Vec<Group> {
     let mut groups: Vec<Group> = Vec::new();
-    for item in items.into_iter().filter(|item| item.page() == page) {
+    for item in items.into_iter().filter(|item| item.page() == Some(page)) {
         let title = item.group(page);
         match groups.iter_mut().find(|(t, _)| *t == title) {
             Some((_, list)) => list.push(item),
@@ -228,19 +224,22 @@ mod tests {
     }
 
     #[test]
-    fn settings_go_on_the_page_and_in_the_group_they_name() {
+    fn settings_show_only_on_the_page_they_name_in_the_group_they_name() {
         let sound = || Owner::Shell(String::from("sound"));
+        let taskbar = || Owner::Shell(String::from("taskbar"));
         let items = vec![
-            item(Owner::Engine, "gravity", None, None),
+            item(Owner::Engine, "gravity", Some("engine"), None),
             item(
                 sound(),
                 "pinned",
                 Some("appearance"),
                 Some("Output Switcher"),
             ),
-            item(Owner::Shell(String::from("taskbar")), "pinned", None, None),
-            // A page the app doesn't have is the Shell page.
+            item(taskbar(), "height", Some("shell"), None),
+            // What names no page, or one the app doesn't have, isn't in the app.
+            item(taskbar(), "pinned", None, None),
             item(sound(), "volume", Some("nowhere"), None),
+            item(Owner::Engine, "order", None, None),
             item(Owner::Engine, "tint", Some("appearance"), None),
         ];
         let titles = |page| -> Vec<(String, Vec<String>)> {
@@ -263,9 +262,12 @@ mod tests {
                 pair("Engine", &["tint"])
             ]
         );
-        assert_eq!(
-            titles("shell"),
-            [pair("Taskbar", &["pinned"]), pair("Sound", &["volume"])]
-        );
+        assert_eq!(titles("shell"), [pair("Taskbar", &["height"])]);
+        let shown: usize = SETTINGS_PAGES
+            .iter()
+            .flat_map(|page| titles(page))
+            .map(|(_, names)| names.len())
+            .sum();
+        assert_eq!(shown, 4);
     }
 }

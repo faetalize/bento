@@ -209,44 +209,52 @@ export const meta = {
     settings: {
         gravity: {
             type: "boolean",
+            page: "engine",
             default: true,
             description: "Windows fall to the left.",
         },
         "center-focused-window": {
             type: "choice",
+            page: "engine",
             choices: ["never", "always", "on-overflow"],
             default: "never",
             description: "When to center a window that gets focus.",
         },
         "always-center-single-window": {
             type: "boolean",
+            page: "engine",
             default: false,
             description: "Center a window when no two windows are side by side.",
         },
         "default-width": {
             type: "size",
+            page: "engine",
             default: "50%",
             description: "The width new windows open with. Left empty, the window picks.",
         },
         "preset-widths": {
             type: "size",
+            page: "engine",
             list: true,
             default: ["33.333%", "50%", "66.667%"],
             description: "The widths that cycling widths goes through.",
         },
         "preset-heights": {
             type: "size",
+            page: "engine",
             list: true,
             default: ["33.333%", "50%", "66.667%"],
             description: "The heights that cycling heights goes through.",
         },
         "hint-color": {
             type: "color",
+            page: "engine",
             default: "#7fc8ff80",
             description: "The color of the hints that show a picked window and where a dragged one would land.",
         },
         "focus-follows-mouse": {
             type: "choice",
+            page: "engine",
             choices: ["never", "in-view", "always"],
             default: "never",
             description:

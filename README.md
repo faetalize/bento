@@ -251,7 +251,7 @@ shell {
 
 bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one to start a shell of your own from; bento's own aren't edited in place. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
 
-Modules and shells declare their settings and actions in their `meta`, the way engines do. Settings, like the apps pinned to the taskbar, are in bento Settings, on the Shell page or the page a setting names, and `~/.config/bento/shell/settings.kdl` keeps them, a block for each module and shell by its name:
+Modules and shells declare their settings and actions in their `meta`, the way engines do. Settings, like the apps pinned to the taskbar, are kept in `~/.config/bento/shell/settings.kdl`, a block for each module and shell by its name, and show in bento Settings only when they name its page, like the taskbar's height on the Shell page; pins are changed where they are:
 
 ```kdl
 taskbar {
@@ -441,7 +441,7 @@ A size written with no value, like `default-column-width` alone on its line, lea
 So does a gradient: written alone, it takes the gradient away.
 `bento validate` checks the settings against what the engine declares, and so does bento when it loads the config.
 `bento msg engine` lists the running engine's settings with their types and current values, and its actions and window rules, and `bento msg -j engine` gives the same as JSON for tools like settings screens.
-bento Settings shows the running engine's settings on its Engine page, with a field for each type.
+bento Settings shows the running engine's settings that name a page of it, like `page: "engine"`, with a field for each type; one that names none is the engine's to change where it shows.
 
 Settings can differ per output and per named workspace, like the settings of `layout {}`.
 An `output` or `workspace` block in the engine's file holds the settings that change there:

@@ -464,8 +464,8 @@ engine.
 
 An engine's settings are booleans, numbers, strings, choices, sizes, colours or gradients, as the
 engine declares, and all but gradients can be lists. Engines and shells declare settings and
-actions the same way, in `meta.settings` and `meta.actions`, and a setting can name the page of
-bento Settings it shows on, as a shell's can. They can differ per monitor and per named
+actions the same way, in `meta.settings` and `meta.actions`, and a setting shows in bento
+Settings only on the page it names, as a shell's does. They can differ per monitor and per named
 workspace, like bento's own `layout {}` settings: the engine's file can set them for an `output`
 or a `workspace`, and the engine reads each workspace's settings from the workspace.
 

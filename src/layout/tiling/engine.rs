@@ -386,13 +386,13 @@ fn ipc_scalar(value: &TilingOption) -> Option<LayoutEngineOptionValue> {
 }
 
 /// Says in the log when `setting`, which `owner` declares, names a page that bento Settings
-/// doesn't have, where it shows on the Engine or Shell page instead.
+/// doesn't have, so it doesn't show there.
 pub fn warn_unknown_page(owner: &str, setting: &SettingMeta) {
     if let Some(page) = &setting.page {
         if !niri_config::SETTINGS_PAGES.contains(&page.as_str()) {
             warn!(
                 "{owner}'s setting {:?} names the page {page:?}, which bento Settings doesn't \
-                 have, so it shows with {owner}'s other settings",
+                 have, so it doesn't show there",
                 setting.name
             );
         }

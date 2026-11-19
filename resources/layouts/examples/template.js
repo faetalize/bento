@@ -34,6 +34,8 @@ export const meta = {
     settings: {
         "main-width": {
             type: "number",
+            // Shown on bento Settings' Engine page; a setting that names no page isn't shown.
+            page: "engine",
             default: 0.55,
             description: "Width of the main window, as a proportion of the view.",
         },
