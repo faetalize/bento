@@ -338,7 +338,7 @@ function PanelHolder(props: {
       <Show when={made()} keyed>
         <box
           style={{ flexShrink: 0, flexDirection: "column" }}
-          onClick={() => {}}
+          onPress={() => {}}
           onLayout={(rect) => props.onSize(rect.width, rect.height)}
         >
           {props.children}

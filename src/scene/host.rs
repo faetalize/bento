@@ -1064,6 +1064,45 @@ mod tests {
     }
 
     #[test]
+    fn a_row_lit_under_the_pointer_goes_back_when_it_leaves_and_shows_a_hand() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        open_control_center(&mut host, &mut now);
+        let power = middle_of(&host, "DP-1", "system-shutdown-symbolic");
+        click(&mut host, "DP-1", power);
+        settle(&mut host, &mut now);
+        // The small shapes filled where the Restart row is: its hover.
+        let restart = middle_of(&host, "DP-1", "Restart");
+        let lit = |host: &SceneHost| {
+            host.shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .draw_all("DP-1")
+                .into_iter()
+                .filter(|item| match item {
+                    Item::Shape {
+                        rect,
+                        material: Material::None,
+                        fill,
+                        ..
+                    } => fill[3] > 0. && super::super::inside_rounded(restart, *rect, [0.; 4]) && rect[2] < 400.,
+                    _ => false,
+                })
+                .count()
+        };
+        assert_eq!(lit(&host), 0);
+        host.covers_any("DP-1", restart);
+        let cursor = host.pointer_moved(SceneHost::at("DP-1", restart));
+        assert_eq!(cursor.as_deref(), Some("pointer"), "a row that does something shows a hand");
+        settle(&mut host, &mut now);
+        assert_eq!(lit(&host), 1, "lit under the pointer");
+        host.pointer_moved(None);
+        settle(&mut host, &mut now);
+        assert_eq!(lit(&host), 0, "not once it's left");
+    }
+
+    #[test]
     fn the_launcher_shows_its_field_every_time_it_opens() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         let field = |host: &SceneHost| {
@@ -1446,8 +1485,17 @@ mod tests {
         assert_eq!(ran[0]["name"], "focus-window");
         assert_eq!(ran[0]["window"], 2);
 
-        // The start button opens the start menu, which takes the keys.
+        // What can be clicked shows a hand.
         let start = middle_of(&host, "DP-1", "start-here-symbolic");
+        host.covers_any("DP-1", start);
+        let cursor = host.pointer_moved(SceneHost::at("DP-1", start));
+        assert_eq!(cursor.as_deref(), Some("pointer"));
+        host.covers_any("DP-1", button);
+        let cursor = host.pointer_moved(SceneHost::at("DP-1", button));
+        assert_eq!(cursor.as_deref(), Some("pointer"));
+        host.pointer_moved(None);
+
+        // The start button opens the start menu, which takes the keys.
         click(&mut host, "DP-1", start);
         settle(&mut host, &mut now);
         assert!(host.wants_keyboard());

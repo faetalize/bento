@@ -333,6 +333,8 @@ function flatten(style: any, into: Record<string, any> = {}): Record<string, any
     return into;
   }
   for (const [key, value] of Object.entries(style)) {
+    // Left undefined, a property isn't set, and doesn't take an earlier style's place.
+    if (value === undefined) continue;
     if (STATES.includes(key as any)) {
       into[key] = flatten(value, { ...(into[key] ?? {}) });
     } else {
@@ -429,6 +431,11 @@ class Node {
     if (this.style[":active"]) events.add("click");
     if (this.leaving || this.hiding || this.exit) events.add("settle");
     const next: Record<string, any> = { ...style, ...this.own, events: [...events].sort() };
+    // What a click does something on shows a hand, unless its style says how the pointer looks.
+    const clicks = this.handlers.onClick || this.handlers.onMiddleClick || this.handlers.onRightClick;
+    if (clicks && next.cursor === undefined) next.cursor = "pointer";
+    // What's undefined isn't set: it goes back to its default, as it would left out.
+    for (const key of Object.keys(next)) if (next[key] === undefined) delete next[key];
     const wasShown = this.sent.display !== "none";
     const shown = next.display !== "none";
     if (

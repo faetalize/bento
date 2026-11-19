@@ -149,6 +149,7 @@ declare module "bento" {
     /** `"hidden"` cuts what it holds to its shape, rounded corners and all; `"scroll"` too, and
      * what it holds scrolls in it with a wheel or a touchpad, as far as it reaches. */
     overflow?: "visible" | "hidden" | "scroll";
+    /** How the pointer looks over it: a hand over what has a click handler, unless it says. */
     cursor?: "default" | "pointer" | "text" | "grab";
   }
 
