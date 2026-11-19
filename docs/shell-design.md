@@ -51,11 +51,11 @@ bento gives the shell primitives, in Rust:
 
 - shapes, with any radius on each corner, continuous corners, borders, and a material;
 - lines and paths, filled or stroked;
-- text, icons and images;
+- text, icons, the icon theme's and the shell's own, and images;
 - live copies of windows, as engines have them, for previews and switchers;
 - masks: clipping to a shape, gradient fades, and masking by another node's shape or text;
 - shadows, opacity, blend modes and 3D transforms;
-- layout boxes, input events, text editing, and springs.
+- layout boxes, input events, text editing, scrolling, and springs.
 
 They're drawn from distance fields where they can be, so they stay sharp at any size and every
 number in them can be animated.
@@ -75,10 +75,19 @@ code they share. Some are building blocks, like buttons, flyouts and menus; othe
 shell shows of one thing, like sound, with its volume, devices and the views of them: a status
 icon, sliders, a page, a switcher and an on-screen indicator. Those views and what they share live
 in one place, and every shell that has them shares them. A component's modes are its props, and
-what it holds are its children. bento ships its modules and two shells built from them, so that a module of one's own, or a change to
-one of bento's, is one file. Context menus are one of bento's modules, which any module opens, so
-every menu looks and works alike: one is open at a time, among everything that opens over the
-desktop, and a submenu opens in its place, with a way back, as libadwaita's do.
+what it holds are its children. bento ships its modules and two shells built from them, so that a
+module of one's own, or a change to one of bento's, is one file.
+
+Context menus are one of bento's modules, which any module opens, so every menu looks and works
+alike. One thing is open over the desktop at a time, menus among them, but for a menu opened
+from something that's open, like the rest of the tray: that stays under it until a press outside
+both. A submenu opens in the menu's place, with a way back, as libadwaita's do. Menus go over the
+shell, apart from its glass, in the overlay layer under other programs' overlays, like a
+screenshot tool's, and the lock screen.
+
+What scrolls says how far it's scrolled and how far it goes, and scripts draw its scrollbar, as
+libadwaita's overlay scrollbars: thin, showing while the pointer is near or it scrolls, wider
+under the pointer, and dragged.
 
 Which shell runs is chosen the way the engine is: in bento's config, and in bento's settings,
 among bento's shells and a file of one's own. bento's own shells aren't edited in place; one is
@@ -238,11 +247,12 @@ indicators. It's keyboard first: typing finds apps.
 ## The windows shell is a taskbar
 
 Along the bottom of each output runs a taskbar, in the top layer, so fullscreen windows cover it.
-In its middle are the start button, a button for the overview, and a button for each app pinned
-to it and each app with open windows, lit while one of them has the focus. Resting on an app's
-button shows live previews of its windows over it, and a click goes to them. A right click opens
-the app's menu, which pins it and closes its windows, and a button dragged among the others
-stays where it's left; the pinned keep their order. At its end, in three parts with a faint line
+In its middle, or on its left as its settings say, are the start button, a button for the
+overview, and a button for each app pinned to it and each app with open windows, lit while one
+of them has the focus. Resting on an app's button shows live previews of its windows over it,
+and a click goes to them. A right click opens the app's menu, which pins it and closes its
+windows, and a button dragged among the others stays where it's left; the pinned keep their
+order. At its end, in three parts with a faint line
 between each, are the tray; quick things, like the sound output switcher and the clipboard's
 button; and quick settings, with the clock that opens the notification center and the month.
 Then a sliver shows the desktop.
