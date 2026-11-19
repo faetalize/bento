@@ -17,9 +17,15 @@ their glass, text and icons, and their motion. There's one clock, so a morph, it
 content never get out of step, and nothing the shell does between frames can make it skip one.
 bento runs the shell's animations itself; the shell says where things go, bento moves them there.
 
-The shell is one layer: above the windows, fullscreen ones too, and under other programs' overlay
-surfaces, like a screenshot tool's. What's above the shell gets the keyboard and the pointer before
-it, so the launcher stays as it is under such a surface and has the keys back when it goes.
+The shell's surfaces go in as many layers below and above the windows as it wants. Other programs'
+surfaces keep the layers Wayland's layer-shell gives them, background, bottom, top and overlay,
+with the windows between bottom and top and fullscreen windows over the top layer, as their
+toolkits expect, and the shell's layers go anywhere around those. The wallpaper can be a layer of
+the shell's too. What's higher gets the keyboard and the pointer first.
+
+bento's own shell sits above the windows, fullscreen ones too, and under other programs' overlay
+surfaces, like a screenshot tool's, so the launcher stays as it is under such a surface and has the
+keys back when it goes.
 
 The shell's data, sound, network, battery, notifications and the tray, comes from a program of its
 own next to bento, which hands it to bento. A stuck call there never freezes the compositor.
