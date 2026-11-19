@@ -16,7 +16,10 @@ import {
   useOutput, type JSX, type Meta,
 } from "bento";
 import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
-import { ACTIVE, Button, Heading, ICON_ROOM, Island, Note, Toggle, popup } from "bento:modules/ui";
+import {
+  ACTIVE, Button, Divider, Heading, ICON_ROOM, Island, Note, Toggle, popup,
+} from "bento:modules/ui";
+import { Tray } from "bento:modules/tray";
 import { ClipboardHistory } from "bento:modules/clipboard";
 import { NotificationCard, notifications } from "bento:modules/notifications";
 import {
@@ -371,8 +374,8 @@ onAction("toggle-clipboard", ({ output }) => {
   popup.toggle(`clipboard:${output ?? focusedOutput() ?? outputs()[0]}`);
 });
 
-/** The status island of the output it's on: the sound output switcher, the clipboard's button,
- * and the status icons, which open the control center. `onOpen` hears whether it's open into
+/** The status island of the output it's on: the tray, the sound output switcher and the
+ * clipboard's button, and the status icons, which open the control center. `onOpen` hears whether it's open into
  * anything. */
 export function StatusIsland(props: { ref?: (node: any) => void }) {
   const output = useOutput();
@@ -398,11 +401,14 @@ export function StatusIsland(props: { ref?: (node: any) => void }) {
         clipboard: () => <ClipboardHistory onPicked={() => popup.close()} />,
       }}
     >
+      {/* Three areas, a line between each: the tray, quick things like the sound output switcher
+          and the clipboard, and the status, which opens the control center. */}
       <box style={[{ flexDirection: "row", alignItems: "center", gap: 8 }, fade()]}>
+        <Tray output={output} side="bottom" />
+        <Divider style={{ margin: [0, -4] }} />
         <OutputSwitcher onMore={() => popup.open(control)} />
         <Button icon="edit-paste-symbolic" onClick={() => popup.toggle(clipboard)} />
-        {/* A faint line sets the status off from the buttons. */}
-        <box style={{ width: 1, height: 16, background: "fg/0.15", margin: [0, -4] }} />
+        <Divider style={{ margin: [0, -4] }} />
         <box style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: [0, ICON_ROOM] }}>
           <Show when={notifications.doNotDisturb()}>
             <image icon="notifications-disabled-symbolic" />

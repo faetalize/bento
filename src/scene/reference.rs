@@ -177,7 +177,7 @@ mod tests {
         // bento's runtime and its bundle of Solid are what runs, not what's used.
         assert!(!names.iter().any(|name| name.starts_with("runtime/")));
         assert!(!names.iter().any(|name| name.starts_with("vendor/")));
-        assert!(!names.iter().any(|name| *name == "runtime/declare.js"));
+        assert!(!names.contains(&"runtime/declare.js"));
     }
 
     #[test]

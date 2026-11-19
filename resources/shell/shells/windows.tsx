@@ -1,12 +1,14 @@
 // A shell laid out like Windows 11's: a taskbar along the bottom of each output, its apps in the
-// middle after the start button and the overview's, and at its end the tray, the sound output
-// switcher, quick settings, the clock with the notifications, and a sliver that shows the desktop.
+// middle after the start button and the overview's, and at its end, in three areas, the tray, the
+// sound output switcher and the clipboard, and quick settings with the clock and the
+// notifications, then a sliver that shows the desktop.
 // Notifications come up over the taskbar's end. The taskbar is in the top layer, so fullscreen
 // windows cover it.
 
 import { Surface, action, focusedOutput, onAction, outputs, useModule, type Meta } from "bento";
 import { createSignal, For, Show } from "solid-js";
-import { Flyout, popup } from "bento:modules/ui";
+import { Divider, Flyout, popup } from "bento:modules/ui";
+import { ClipboardHistory } from "bento:modules/clipboard";
 import { Clock, Month } from "bento:modules/clock";
 import { Toasts, notifications } from "bento:modules/notifications";
 import { NotificationCenter, QuickSettings } from "bento:modules/control-center";
@@ -75,9 +77,12 @@ function Taskbar(props: { output: string }) {
   const start = `start:${output}`;
   const quick = `quick:${output}`;
   const calendar = `calendar:${output}`;
+  // The clipboard's shortcut opens this too, by its name.
+  const clipboard = `clipboard:${output}`;
   const [bar, setBar] = createSignal<any>(null);
   const [quickButton, setQuickButton] = createSignal<any>(null);
   const [clockButton, setClockButton] = createSignal<any>(null);
+  const [clipboardButton, setClipboardButton] = createSignal<any>(null);
   const out = () => activeDevice("outputs");
   return (
     <>
@@ -112,14 +117,24 @@ function Taskbar(props: { output: string }) {
               justifyContent: "end", gap: 4,
             }}
           >
-            <Tray />
+            {/* Three areas, a line between each: the tray, quick things like the sound output
+                switcher and the clipboard, and quick settings with the clock. */}
+            <Tray output={output} side="top" />
+            <Divider length={24} style={{ margin: [0, 4] }} />
             {/* While sound outputs are pinned, a click goes to the next, and a right click opens
                 quick settings, where they're pinned. */}
             <OutputSwitcher
-              size={20}
               style={{ height: 40, minWidth: 40, borderRadius: 8, ":hover": { background: "fg/0.14" } }}
               onMore={() => popup.open(quick)}
             />
+            <BarButton
+              ref={setClipboardButton}
+              open={popup.is(clipboard)}
+              onClick={() => popup.toggle(clipboard)}
+            >
+              <image icon="edit-paste-symbolic" />
+            </BarButton>
+            <Divider length={24} style={{ margin: [0, 4] }} />
             <BarButton
               ref={setQuickButton}
               open={popup.is(quick)}
@@ -166,6 +181,9 @@ function Taskbar(props: { output: string }) {
       <StartMenu output={output} bottom={height() + 12} />
       <Flyout output={output} popup={quick} from={quickButton()} side="top" align="end" keyboard>
         <QuickSettings output={output} onClose={() => popup.close(quick)} />
+      </Flyout>
+      <Flyout output={output} popup={clipboard} from={clipboardButton()} side="top" align="end" keyboard>
+        <ClipboardHistory onPicked={() => popup.close(clipboard)} />
       </Flyout>
       <Flyout output={output} popup={calendar} from={clockButton()} side="top" align="end" keyboard>
         <box style={{ flexDirection: "column", gap: 16, width: 360 }}>

@@ -74,6 +74,9 @@ pub enum TrayIcon {
 pub struct TrayItem {
     /// Where the item is on the bus, which [`Tray`]'s methods take.
     pub id: String,
+    /// The item's own name for itself, like `nm-applet`, which stays the same from one run of
+    /// the app to the next.
+    pub name: String,
     pub title: String,
     pub status: Status,
     /// The attention icon while the item needs attention, when it has one.
@@ -181,6 +184,43 @@ impl Tray {
         id: &str,
         ready: impl FnOnce(Option<(gio::MenuModel, gio::SimpleActionGroup)>) + 'static,
     ) {
+        self.layout(id, move |found| {
+            ready(
+                found.map(|(root, bus, bus_name, path)| build_menu(&root, &bus, &bus_name, &path)),
+            )
+        });
+    }
+
+    /// An item's menu as JSON, for a shell that draws it itself, handed to `ready`: a list of
+    /// items, each `{ id, label, enabled, toggle, on, separator, children }`, with `toggle`
+    /// `"check"`, `"radio"` or `null`. It's `None` when the item has no menu or the menu can't be
+    /// read.
+    pub fn menu_json(&self, id: &str, ready: impl FnOnce(Option<serde_json::Value>) + 'static) {
+        self.layout(id, move |found| {
+            ready(found.map(|(root, ..)| serde_json::Value::Array(root.children_json())))
+        });
+    }
+
+    /// Tells an item's app that item `item` of its menu was picked.
+    pub fn menu_clicked(&self, id: &str, item: i32) {
+        let bus = self.bus.borrow().clone();
+        let target = self.items.borrow().iter().find_map(|found| {
+            let menu = found.menu.clone()?;
+            (item_id(found) == id).then(|| (found.bus_name.clone(), menu))
+        });
+        if let (Some(bus), Some((bus_name, path))) = (bus, target) {
+            clicked(&(bus, bus_name, path), item);
+        }
+    }
+
+    /// Reads an item's menu, after asking the app to fill it in, and hands it to `ready` with
+    /// where it's on the bus. It's `None` when the item has no menu or the menu can't be read.
+    #[allow(clippy::type_complexity)]
+    fn layout(
+        &self,
+        id: &str,
+        ready: impl FnOnce(Option<(MenuNode, DBusConnection, String, String)>) + 'static,
+    ) {
         let bus = self.bus.borrow().clone();
         let target = self.items.borrow().iter().find_map(|item| {
             let menu = item.menu.clone()?;
@@ -224,7 +264,7 @@ impl Tray {
                     None
                 }
             };
-            ready(root.map(|root| build_menu(&root, &bus, &bus_name, &path)));
+            ready(root.map(|root| (root, bus, bus_name, path)));
         });
     }
 
@@ -559,6 +599,7 @@ impl Properties {
         };
         TrayItem {
             id,
+            name: self.id.clone(),
             title: if self.title.is_empty() {
                 self.id
             } else {
@@ -660,6 +701,31 @@ impl MenuNode {
             },
             children,
         })
+    }
+}
+
+impl MenuNode {
+    /// The visible items under this one, as [`Tray::menu_json`] gives them.
+    fn children_json(&self) -> Vec<serde_json::Value> {
+        let visible = self.children.iter().filter(|node| node.visible);
+        visible
+            .map(|node| {
+                let (toggle, on) = match node.toggle {
+                    Toggle::None => (None, false),
+                    Toggle::Check(on) => (Some("check"), on),
+                    Toggle::Radio(on) => (Some("radio"), on),
+                };
+                serde_json::json!({
+                    "id": node.id,
+                    "label": node.label,
+                    "enabled": node.enabled,
+                    "toggle": toggle,
+                    "on": on,
+                    "separator": node.separator,
+                    "children": node.children_json(),
+                })
+            })
+            .collect()
     }
 }
 
@@ -1075,6 +1141,45 @@ mod tests {
         assert_eq!(children[3].children[0].label, "Fast");
         assert_eq!(children[3].children[0].toggle, Toggle::Radio(false));
         assert!(!children[4].visible);
+    }
+
+    #[test]
+    fn a_menu_goes_to_the_shell_as_json_without_what_is_hidden() {
+        let layout = node(
+            0,
+            &[],
+            vec![
+                node(1, &[("label", "_Open".to_variant())], vec![]),
+                node(2, &[("type", "separator".to_variant())], vec![]),
+                node(3, &[("visible", false.to_variant())], vec![]),
+                node(
+                    4,
+                    &[
+                        ("label", "Sync".to_variant()),
+                        ("toggle-type", "checkmark".to_variant()),
+                        ("toggle-state", 1i32.to_variant()),
+                        ("enabled", false.to_variant()),
+                    ],
+                    vec![node(5, &[("label", "Now".to_variant())], vec![])],
+                ),
+            ],
+        );
+        let root = MenuNode::parse(&layout).unwrap();
+        let json = serde_json::Value::Array(root.children_json());
+        assert_eq!(
+            json,
+            serde_json::json!([
+                { "id": 1, "label": "Open", "enabled": true, "toggle": null, "on": false,
+                  "separator": false, "children": [] },
+                { "id": 2, "label": "", "enabled": true, "toggle": null, "on": false,
+                  "separator": true, "children": [] },
+                { "id": 4, "label": "Sync", "enabled": false, "toggle": "check", "on": true,
+                  "separator": false, "children": [
+                    { "id": 5, "label": "Now", "enabled": true, "toggle": null, "on": false,
+                      "separator": false, "children": [] },
+                  ] },
+            ])
+        );
     }
 
     #[test]

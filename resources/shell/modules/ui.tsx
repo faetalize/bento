@@ -356,6 +356,18 @@ function PanelHolder(props: {
 // Lists.
 // ------------------------------------------------------------------------------------------------
 
+/** A faint line between groups of things in a row, `length` long, 16 unless it says. */
+export function Divider(props: { length?: number; style?: any }) {
+  return (
+    <box
+      style={[
+        { width: 1, height: props.length ?? 16, background: "fg/0.15", flexShrink: 0 },
+        props.style,
+      ]}
+    />
+  );
+}
+
 /** A section's title. */
 export function Heading(props: { children: TextProps["children"] }) {
   return <text style={{ fontSize: 12, fontWeight: 700, color: "fg/0.6" }}>{props.children}</text>;

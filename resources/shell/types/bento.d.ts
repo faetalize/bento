@@ -755,7 +755,19 @@ declare module "bento" {
     network: { connected: boolean; name: string | null; wifiStrength: number | null; icon: string };
     battery: { present: boolean; percentage: number; charging: boolean; icon: string };
     /** Each item's `icon` is an icon's name or a picture's path. */
-    tray: { items: { id: string; title: string; icon: string | null; menu: boolean; attention: boolean }[] };
+    /** Apps' status icons. `id` is where one is on the bus, which commands take; `name` is the
+     * app's own name for it, like `nm-applet`, which stays the same from one run to the next. */
+    tray: {
+      items: {
+        id: string;
+        name: string;
+        title: string;
+        icon: string | null;
+        /** Whether it only has a menu, which a click opens. */
+        menu: boolean;
+        attention: boolean;
+      }[];
+    };
     wifi: {
       available: boolean;
       enabled: boolean;
@@ -842,6 +854,19 @@ declare module "bento" {
     "wifi-error": { ssid: string; message: string };
     "bluetooth-error": { message: string };
     ready: {};
+    /** An app's menu for its status icon, as `tray-menu` asks for it: empty when it has none. */
+    "tray-menu": { id: string; menu: TrayMenuItem[] };
+  }
+
+  /** An item of an app's menu for its status icon, which `tray-menu-click` picks by its `id`. */
+  export interface TrayMenuItem {
+    id: number;
+    label: string;
+    enabled: boolean;
+    toggle: "check" | "radio" | null;
+    on: boolean;
+    separator: boolean;
+    children: TrayMenuItem[];
   }
   /** Listens to the data program's events. Listening inside a component, it stops when the
    * component goes. */
@@ -863,7 +888,10 @@ declare module "bento" {
     invoke: { id: number; key: string; token?: boolean };
     activate: { id: string };
     secondary: { id: string };
-    context: { id: string };
+    /** Asks for an app's menu for its status icon, which comes as the `tray-menu` event. */
+    "tray-menu": { id: string };
+    /** Picks an item of an app's menu. */
+    "tray-menu-click": { id: string; item: number };
     suspend: {};
     reboot: {};
     "power-off": {};

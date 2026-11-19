@@ -1730,6 +1730,94 @@ mod tests {
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
+    /// An app's status icon, as the data program tells the shell of it.
+    const TRAY: &str = r#"{"type":"tray","items":[{"id":":1.5/StatusNotifierItem","name":"thing","title":"Thing","icon":"thing-tray-symbolic","menu":false,"attention":false}]}"#;
+
+    #[test]
+    fn a_right_click_on_a_tray_icon_opens_the_apps_menu_in_the_shell() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        // Pinned, so it's on the taskbar.
+        let settings = host.settings.clone().unwrap();
+        settings
+            .borrow_mut()
+            .write_file("tray {\n    pinned \"thing\"\n}\n");
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.data_line(TRAY);
+        settle(&mut host, &mut now);
+        let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
+        commands(&host);
+
+        // bento asks the data program for the app's menu, rather than the app to show its own.
+        assert!(host.covers_any("DP-1", icon));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        settle(&mut host, &mut now);
+        let asked = commands(&host);
+        assert!(
+            asked
+                .iter()
+                .any(|c| c["cmd"] == "tray-menu" && c["id"] == ":1.5/StatusNotifierItem"),
+            "{asked:?}"
+        );
+
+        // The menu shows in the shell's menu, with the tray's own items, and a pick tells the app.
+        host.data_line(
+            r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[{"id":7,"label":"Open Thing","enabled":true,"toggle":null,"on":false,"separator":false,"children":[]}]}"#,
+        );
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Open Thing"));
+        assert!(shows(&host, "DP-1", "Unpin from Tray"));
+        let open = middle_of(&host, "DP-1", "Open Thing");
+        click(&mut host, "DP-1", open);
+        settle(&mut host, &mut now);
+        let picked = commands(&host);
+        assert!(
+            picked
+                .iter()
+                .any(|c| c["cmd"] == "tray-menu-click" && c["item"] == 7),
+            "{picked:?}"
+        );
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn tray_icons_not_pinned_are_behind_the_arrow_and_pinning_brings_one_out() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(TRAY);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "thing-tray-symbolic"));
+
+        // The arrow opens the rest of the tray over it.
+        let arrow = middle_of(&host, "DP-1", "go-up-symbolic");
+        click(&mut host, "DP-1", arrow);
+        settle(&mut host, &mut now);
+        let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
+        assert!(icon[1] < arrow[1], "the rest of the tray is over the arrow");
+
+        // Its menu pins it.
+        assert!(host.covers_any("DP-1", icon));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        host.data_line(r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[]}"#);
+        settle(&mut host, &mut now);
+        let pin = middle_of(&host, "DP-1", "Pin to Tray");
+        click(&mut host, "DP-1", pin);
+        settle(&mut host, &mut now);
+        let settings = host.settings.clone().unwrap();
+        let pinned = settings.borrow().values("tray")["pinned"].clone();
+        assert_eq!(pinned, serde_json::json!(["thing"]));
+        // On the taskbar now, and the arrow goes, with nothing behind it.
+        assert!(!shows(&host, "DP-1", "go-up-symbolic"));
+        let on_bar = middle_of(&host, "DP-1", "thing-tray-symbolic");
+        assert!((on_bar[1] - arrow[1]).abs() < 1.);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
     fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
