@@ -12,7 +12,7 @@ them.
 
 ## bento draws the shell
 
-The shell is drawn by bento, in the same frame as the windows, as part of one scene: the islands,
+The shell is drawn by bento, in the same frame as the windows, as part of one scene: its surfaces,
 their glass, text and icons, and their motion. There's one clock, so a morph, its glass and its
 content never get out of step, and nothing the shell does between frames can make it skip one.
 bento runs the shell's animations itself; the shell says where things go, bento moves them there.
@@ -23,9 +23,10 @@ with the windows between bottom and top and fullscreen windows over the top laye
 toolkits expect, and the shell's layers go anywhere around those. The wallpaper can be a layer of
 the shell's too. What's higher gets the keyboard and the pointer first.
 
-bento's own shell sits above the windows, fullscreen ones too, and under other programs' overlay
-surfaces, like a screenshot tool's, so the launcher stays as it is under such a surface and has the
-keys back when it goes.
+A shell places its surfaces the way layer-shell places other programs': held to edges at margins
+from them, in the middle of the output when held to none, or beside a node of its own, as a flyout
+over its button. A surface held to an edge can keep room along it that the windows stay out of,
+and bento gives the engines what's left as each monitor's working area.
 
 The shell's data, sound, network, battery, notifications and the tray, comes from a program of its
 own next to bento, which hands it to bento. A stuck call there never freezes the compositor.
@@ -50,6 +51,7 @@ bento gives the shell primitives, in Rust:
 - shapes, with any radius on each corner, continuous corners, borders, and a material;
 - lines and paths, filled or stroked;
 - text, icons and images;
+- live copies of windows, as engines have them, for previews and switchers;
 - masks: clipping to a shape, gradient fades, and masking by another node's shape or text;
 - shadows, opacity, blend modes and 3D transforms;
 - layout boxes, input events, text editing, and springs.
@@ -67,12 +69,16 @@ and checks like the rest. libadwaita's colours are variables: the window colours
 and dark.
 
 A file can hold a whole shell with its interactions, or a single module, and imports others. A
-module is a component: its modes are its props, and what it holds are its children. bento ships
-its modules and one or two shells built from them, so that a module of one's own, or a change to
+module is a component: its modes are its props, and what it holds are its children. A module is a
+feature with the views it has, like sound with its status icon, sliders, page, switcher and
+on-screen indicator, so a feature lives in one place and every shell that has it shares it. bento
+ships its modules and two shells built from them, so that a module of one's own, or a change to
 one of bento's, is one file.
 
-The shell's files live in `~/.config/bento/shell/`, next to the ones bento ships, and bento
-reloads them when they change, without building anything or logging out. Scripts react to events
+The shell's files live in `~/.config/bento/shell/`. Its `main.tsx` is the shell that runs, which
+can be one of bento's, and without one bento runs its unix shell. A module there takes the place of
+bento's module of its name everywhere, and bento's own stays there to build on. bento reloads them
+when they change, without building anything or logging out. Scripts react to events
 and say where things go; they never run in the per-frame loop. A script that fails leaves the last
 working shell on screen and reports the error.
 
@@ -81,8 +87,31 @@ they ask for, and says when a motion settles; how things come and go, grow out o
 into each other and fade is built from that in the scripts. bento holds no choreography of its
 own.
 
-Only a new kind of primitive, or a bug in bento itself, needs bento built again. Shaders for materials of one's own are
-files bento loads, like the glass shader.
+Only a new kind of primitive, or a bug in bento itself, needs bento built again. Shaders for
+materials of one's own are files bento loads, like the glass shader.
+
+## Shells keep settings and state
+
+A setting is a typed value that a module or a shell declares: a module for its feature, like a
+clock's font or the folders pinned in a start menu, which every shell with that module shares; a
+shell for itself, like the height of its taskbar. They're declared in their `meta` with the same
+types as engines' options.
+
+What the user chooses is a setting, and what a shell notes for itself as it's used, like Do Not
+Disturb or what's been seen, is state. Something the shell writes as it's used and the user chose,
+like pinned apps, is a setting.
+
+Settings are kept in `~/.config/bento/shell/settings.kdl`, a block for each module and each shell
+by its name. A module of one's own in place of bento's has the settings of its name. State is kept
+apart, in bento's state folder.
+
+A module reads its settings as they are, and gets them again as the file changes, without a
+reload. What a module is placed with comes first, then its setting, then its default. A module can
+change its own settings, as when an app is pinned.
+
+bento's settings show the running shell's settings, as bento hands it their declarations, the way
+they show the running engine's options. Settings that nothing declares stay in the file, and
+bento says so rather than failing, so that switching shells loses nothing.
 
 ## Materials
 
@@ -93,7 +122,12 @@ Each shape has a material, as on Windows:
 - acrylic: what's behind, blurred and tinted;
 - glass: what's behind, blurred and refracted through a bezel.
 
-## Islands float along the top
+## bento's shells
+
+bento ships two shells: its unix shell, islands of glass along the top, and its windows shell, a
+taskbar along the bottom laid out like Windows 11's.
+
+## The unix shell's islands float along the top
 
 Along the top of each output float three islands of glass instead of one bar. They're inset from
 the screen's edges by bento's gaps and rounded like the windows, and the wallpaper shows between
@@ -135,13 +169,13 @@ The bar has a button for the clipboard manager.
 A shortcut opens an editor for the focused workspace: its name changes as it's typed, and the
 editor takes the name away and puts it back.
 
-## The shell is made of glass
+## The unix shell is made of glass
 
-The shell, the islands, their panels, the launcher and notifications, is glass: it blurs and
+The unix shell, the islands, their panels, the launcher and notifications, is glass: it blurs and
 refracts what's behind it, and has a light edge highlight.
 
-The glass is bento's material, the same behind the shell as behind apps, and bento's settings set
-it. bento shades it towards libadwaita's window colour, light or dark with the system style, so
+The glass, like every material, is bento's, the same behind the shell as behind apps, and bento's
+settings set it. bento shades it towards libadwaita's window colour, light or dark with the system style, so
 text and icons read on any wallpaper or window; the shell adds no tint of its own. The shell's
 highlights use libadwaita's accent colour, so the shell matches the settings app and GTK apps.
 
@@ -154,7 +188,8 @@ restrained, with no overshoot.
 
 ## Notifications drip out of the right island
 
-Notifications and toasts show at the top right of the screen, out of the right island: each one
+In the unix shell, notifications and toasts show at the top right of the screen, out of the right
+island: each one
 melts down out of it like a drop of liquid, pulls away and settles into its toast, and goes back
 up into it the same way when it's dismissed. It has to feel like one liquid, never like a second
 panel sliding out of the first.
@@ -166,14 +201,27 @@ screen, as on Windows 11. Each grows out of nothing and shrinks back into nothin
 
 ## The launcher is a centred palette
 
-The launcher is a glass search field with its results, in the middle of the screen, apart from
-the islands. It grows out of nothing and shrinks back into nothing, like the on-screen
+The unix shell's launcher is a glass search field with its results, in the middle of the screen,
+apart from the islands. It grows out of nothing and shrinks back into nothing, like the on-screen
 indicators. It's keyboard first: typing finds apps.
+
+## The windows shell is a taskbar
+
+Along the bottom of each output runs a taskbar, in the top layer, so fullscreen windows cover it.
+In its middle are the start button, a button for the overview, and a button for each app with
+open windows, lit while one of them has the focus. Resting on an app's button shows live
+previews of its windows over it, and a click goes to them. At its end are the tray, quick
+settings, the clock with the notification center and the month, and a sliver that shows the
+desktop.
+
+The start menu finds apps the way the launcher does, shows all of them otherwise, and has the
+power menu. Quick settings and the notification center are the control center's parts, each
+coming out of its button. Notifications come up over the taskbar's end.
 
 ## bento starts the shell's data program
 
 bento starts the shell's data program, and hands it a private connection: only it feeds the
-shell, and gets the shell's commands and events. bento's own shell can be turned off in the
+shell, and gets the shell's commands and events. The shell bento draws can be turned off in the
 config for another one, Noctalia or any other, which bento starts the same way, as the program
 with that private connection. Other programs keep bento's public socket.
 
