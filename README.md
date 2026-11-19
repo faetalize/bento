@@ -240,7 +240,7 @@ debug {
 }
 ```
 
-bento draws its own shell too, while it's being built: islands of glass along the top of each output, scripted in JavaScript. `~/.config/bento/shell/main.js`, if it's there, replaces bento's own (`resources/shell/main.js`), and bento loads it again whenever it changes. It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
+bento draws its own shell too, while it's being built: islands of glass along the top of each output. Shells are written in TSX with [Solid](https://www.solidjs.com), with styles as CSS written in objects; bento compiles them itself as it loads them, so there's nothing to install or build. `~/.config/bento/shell/main.tsx`, if it's there, is the shell, and its default export is its root component; otherwise it's bento's own, `bento:shells/unix` (`resources/shell/shells/unix.tsx`). A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes. What a shell is written against is in [`resources/shell/types/bento.d.ts`](resources/shell/types/bento.d.ts). It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
 
 ```kdl
 shell {
@@ -250,7 +250,7 @@ shell {
 
 A shell program named with `shell "…"` keeps running alongside it.
 
-To work on bento's own shell and its widgets, point bento at their folder; it reads `main.js` from there instead of the copy built in, and every other script there as the module `bento:` and its name, like `bento:ui`, and loads them again whenever they change:
+To work on bento's own shell and its modules, point bento at their folder; each file there is read in place of the one built in with its path, like `modules/ui.tsx`, and they're loaded again whenever they change:
 
 ```kdl
 debug {
@@ -296,9 +296,17 @@ shell {
 
 A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and `switch-audio-output` does the same from a shortcut.
 
-When the volume changes elsewhere, by a volume key or a headset's knob, the right island widens into the volume's level for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
+When the volume changes elsewhere, by a volume key or a headset's knob, its level grows out of nothing at the bottom middle of the screen for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
 
 The clipboard's button opens its history, and so does `toggle-clipboard`: what was copied, newest first, found by typing, and copied again with a click or Enter (Shift+Delete forgets one). It's kept for the session only, text in memory and pictures in the runtime directory, and what a password manager marks as secret isn't kept. When the app that copied something closes, its copy stays on the clipboard.
+
+A shell's module can have actions of its own, which a bind runs by name with `shell-action`, with what the action takes after its name:
+
+```kdl
+binds {
+    Mod+N { shell-action "toggle-notes"; }
+}
+```
 
 Notifications show their actions as buttons, and a click on one does its default action. The app gets an activation token with it, so it can bring its window forward.
 

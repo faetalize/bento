@@ -70,6 +70,11 @@ pub fn native_actions() -> Vec<Declaration> {
             vec![],
         ),
         action(
+            "shell-action",
+            "Run one of the shell's own actions, by the name its module gives it, with what it takes after the name.",
+            vec![required("name", Type::String, "The action's name.")],
+        ),
+        action(
             "switch-layout",
             "Switch the keyboard layout.",
             vec![required(

@@ -123,6 +123,7 @@ use wayland_server::protocol::wl_output::WlOutput;
 
 #[cfg(feature = "dbus")]
 use crate::a11y::A11y;
+use crate::scene::Band;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
@@ -670,8 +671,9 @@ pub struct PointContents {
     // If the point is over a node that the tiling layout draws, which takes the pointer from the
     // windows below it, this is that node.
     pub node: Option<NodeHit>,
-    // If the point is over bento's own shell, the output's name and the point on it.
-    pub shell: Option<(String, [f32; 2])>,
+    // If the point is over bento's own shell, the output's name, the point on it, and the band
+    // of the surface it's over.
+    pub shell: Option<(String, [f32; 2], crate::scene::Band)>,
     // Point is over something above bento's own shell: an overlay surface, or one of bento's own
     // screens. A press there isn't one on the desktop around what the shell shows.
     pub above_shell: bool,
@@ -3947,41 +3949,61 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
-        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
-        let shell_under = || {
+        // bento's own shell's surfaces, in their bands among the layers. Those under the windows
+        // move with the workspaces, and take no input in the overview.
+        let shell_under = |band: Band| {
             let name = output.name();
-            let point = [pos_within_output.x as f32, pos_within_output.y as f32];
+            let mut point = [pos_within_output.x as f32, pos_within_output.y as f32];
+            if band < Band::TopBelow {
+                let (_, geo) = mon.workspace_under(pos_within_output)?;
+                point[0] -= geo.loc.x as f32;
+                point[1] -= geo.loc.y as f32;
+            }
             self.scene
                 .as_ref()
-                .filter(|scene| scene.covers(&name, point))
-                .map(|_| (name, point))
+                .filter(|scene| scene.covers(&name, point, band))
+                .map(|_| (name, point, band))
         };
+        let mut under = None;
+        macro_rules! shell {
+            ($band:expr) => {
+                if under.is_none() {
+                    if let Some(hit) = shell_under($band) {
+                        rv.shell = Some(hit);
+                        return rv;
+                    }
+                }
+            };
+        }
 
-        let mut under =
-            layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
+        shell!(Band::OverlayAbove);
+        under = layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
         rv.above_shell = under.is_some();
+        shell!(Band::OverlayBelow);
 
         let is_overview_open = self.layout.is_overview_open();
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
-            if under.is_none() {
-                if let Some(hit) = shell_under() {
-                    rv.shell = Some(hit);
-                    return rv;
-                }
-            }
             under = under
                 .or_else(interactive_moved_window_under)
                 .or_else(node_under)
-                .or_else(window_under)
+                .or_else(window_under);
+            shell!(Band::TopAbove);
+            under = under
                 .or_else(|| layer_popup_under(Layer::Top))
-                .or_else(|| layer_toplevel_under(Layer::Top))
+                .or_else(|| layer_toplevel_under(Layer::Top));
+            shell!(Band::TopBelow);
+            under = under
                 .or_else(|| layer_popup_under(Layer::Bottom))
-                .or_else(|| layer_popup_under(Layer::Background))
-                .or_else(|| layer_toplevel_under(Layer::Bottom))
-                .or_else(|| layer_toplevel_under(Layer::Background));
+                .or_else(|| layer_popup_under(Layer::Background));
+            shell!(Band::BottomAbove);
+            under = under.or_else(|| layer_toplevel_under(Layer::Bottom));
+            shell!(Band::BottomBelow);
+            shell!(Band::BackgroundAbove);
+            under = under.or_else(|| layer_toplevel_under(Layer::Background));
+            shell!(Band::BackgroundBelow);
         } else {
             if self.is_inside_hot_corner(output, pos_within_output) {
                 rv.overview = is_overview_open;
@@ -3989,16 +4011,11 @@ impl Niri {
                 return rv;
             }
 
-            if under.is_none() {
-                if let Some(hit) = shell_under() {
-                    rv.shell = Some(hit);
-                    return rv;
-                }
-            }
-
+            shell!(Band::TopAbove);
             under = under
                 .or_else(|| layer_popup_under(Layer::Top))
                 .or_else(|| layer_toplevel_under(Layer::Top));
+            shell!(Band::TopBelow);
 
             if is_overview_open && under.is_none() {
                 rv.overview = true;
@@ -4015,9 +4032,12 @@ impl Niri {
             under = under.or_else(node_under).or_else(window_under);
 
             if !is_overview_open {
-                under = under
-                    .or_else(|| layer_toplevel_under(Layer::Bottom))
-                    .or_else(|| layer_toplevel_under(Layer::Background));
+                shell!(Band::BottomAbove);
+                under = under.or_else(|| layer_toplevel_under(Layer::Bottom));
+                shell!(Band::BottomBelow);
+                shell!(Band::BackgroundAbove);
+                under = under.or_else(|| layer_toplevel_under(Layer::Background));
+                shell!(Band::BackgroundBelow);
             }
         }
 
@@ -4062,7 +4082,7 @@ impl Niri {
         let at = under
             .shell
             .as_ref()
-            .map(|(name, point)| (name.as_str(), *point));
+            .map(|(name, point, band)| (name.as_str(), *point, *band));
         let cursor = scene.pointer_moved(at);
         if let Some(cursor) = cursor {
             let icon = match cursor.as_str() {
@@ -5226,11 +5246,32 @@ impl Niri {
             "animations": style.animations,
             "slowdown": style.slowdown,
             "response": response,
+            "dark": crate::render_helpers::glass::style().0,
             "config": settings,
         });
+        // The windows, for a taskbar: what each is, and where.
+        let mut windows = Vec::new();
+        self.layout
+            .with_windows(|mapped, output, workspace, _layout| {
+                let (title, app_id) =
+                    crate::utils::with_toplevel_role(mapped.toplevel(), |role| {
+                        (role.title.clone(), role.app_id.clone())
+                    });
+                windows.push(serde_json::json!({
+                    "id": mapped.id().get(),
+                    "appId": app_id,
+                    "title": title,
+                    "workspace": workspace.map(|id| id.get()),
+                    "output": output.map(|o| o.name()),
+                    "focused": mapped.is_focused(),
+                    "urgent": mapped.is_urgent(),
+                    "floating": mapped.is_floating(),
+                }));
+            });
         let scene = self.scene.get_or_insert_with(Default::default);
         scene.ensure_loaded(&outputs, dir.as_deref(), style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
+        scene.set_windows(serde_json::Value::Array(windows));
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));
         scene.set_minimap(serde_json::Value::Object(minimap));
         let moving = scene.advance_with(Instant::now(), slowdown, response);
@@ -5466,25 +5507,59 @@ impl Niri {
             }};
         }
 
-        // The overlay layer elements go next.
+        // bento's own shell's surfaces in a band: what they show over their glass. Bands with
+        // nothing in them push nothing, so a fullscreen window can still go straight to the
+        // display. Those under the windows go with each workspace, as the layers there do.
+        let output_name = output.name();
+        let scene_blur = self.config.borrow().blur;
+        macro_rules! push_shell {
+            ($band:expr) => {{
+                if let Some(scene) = &self.scene {
+                    scene.render_content(&output_name, $band, None, &mut |elem| {
+                        push(OutputRenderElements::Scene(elem))
+                    });
+                    scene.render_glass(
+                        &output_name,
+                        $band,
+                        None,
+                        output_scale.x,
+                        scene_blur,
+                        self.glass_frame(output),
+                        &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
+                    );
+                }
+            }};
+            ($band:expr, $ns:expr, $geo:expr) => {{
+                if let Some(scene) = &self.scene {
+                    scene.render_content(&output_name, $band, $ns, &mut |elem| {
+                        if let Some(elem) = scale_relocate_crop(elem, output_scale, zoom, $geo) {
+                            push(elem.into());
+                        }
+                    });
+                    scene.render_glass(
+                        &output_name,
+                        $band,
+                        $ns,
+                        output_scale.x,
+                        scene_blur,
+                        self.glass_frame(output),
+                        &mut |elem| {
+                            let elem = LayerSurfaceRenderElement::BackgroundEffect(elem);
+                            if let Some(elem) = scale_relocate_crop(elem, output_scale, zoom, $geo)
+                            {
+                                push(elem.into());
+                            }
+                        },
+                    );
+                }
+            }};
+        }
+
+        // The overlay layer elements go next, with the shell's surfaces above and below them.
+        push_shell!(Band::OverlayAbove);
         push_popups_from_layer!(Layer::Overlay);
         push_normal_from_layer!(Layer::Overlay);
-
-        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
-        // Showing nothing, it pushes nothing, so a fullscreen window can still go straight to the
-        // display.
-        if let Some(scene) = &self.scene {
-            let blur = self.config.borrow().blur;
-            let name = output.name();
-            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Scene(elem)));
-            scene.render_glass(
-                &name,
-                output_scale.x,
-                blur,
-                self.glass_frame(output),
-                &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
-            );
-        }
+        push_shell!(Band::OverlayBelow);
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
@@ -5494,13 +5569,19 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
+            push_shell!(Band::TopAbove);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
+            push_shell!(Band::TopBelow);
 
             push_popups_from_layer!(Layer::Bottom);
             push_popups_from_layer!(Layer::Background);
+            push_shell!(Band::BottomAbove);
             push_normal_from_layer!(Layer::Bottom);
+            push_shell!(Band::BottomBelow);
+            push_shell!(Band::BackgroundAbove);
             push_normal_from_layer!(Layer::Background);
+            push_shell!(Band::BackgroundBelow);
 
             // We don't expect more than one workspace when render_above_top_layer().
             if let Some((ws, _geo)) = mon.workspaces_with_render_geo().next() {
@@ -5513,8 +5594,10 @@ impl Niri {
                 }
             }
         } else {
+            push_shell!(Band::TopAbove);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
+            push_shell!(Band::TopBelow);
 
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
@@ -5550,8 +5633,12 @@ impl Niri {
                 // damage tracker.
                 let ns = Some(ws.id().get() as usize);
                 let xray_pos = XrayPos::new(geo.loc, zoom);
+                push_shell!(Band::BottomAbove, ns, geo);
                 push_normal_from_layer!(Layer::Bottom, ns, xray_pos, process!(geo));
+                push_shell!(Band::BottomBelow, ns, geo);
+                push_shell!(Band::BackgroundAbove, ns, geo);
                 push_normal_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
+                push_shell!(Band::BackgroundBelow, ns, geo);
 
                 let wallpaper = ws
                     .background_image()
@@ -8271,6 +8358,9 @@ niri_render_elements! {
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
         Scene = crate::scene::host::SceneElement,
+        RelocatedScene = CropRenderElement<RelocateRenderElement<RescaleRenderElement<
+            crate::scene::host::SceneElement
+        >>>,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }

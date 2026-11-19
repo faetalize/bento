@@ -356,6 +356,14 @@ pub enum Action {
     EditWorkspace {},
     /// Show or hide the shell's clipboard history.
     ToggleClipboard {},
+    /// Run one of the shell's own actions, by the name its module gives it.
+    ShellAction {
+        /// Name of the action.
+        name: String,
+        /// Arguments for the action.
+        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
+        args: Vec<String>,
+    },
     /// Switch the sound to the next of the outputs pinned in the shell.
     SwitchAudioOutput {},
     /// Move the focused workspace to the monitor to the left.

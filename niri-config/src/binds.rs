@@ -370,6 +370,11 @@ pub enum Action {
     EditWorkspace,
     ToggleClipboard,
     SwitchAudioOutput,
+    /// One of the shell's own actions, by the name its module gives it, with its arguments.
+    ShellAction(
+        #[knuffel(argument)] String,
+        #[knuffel(arguments)] Vec<String>,
+    ),
     MoveWorkspaceToMonitorLeft,
     MoveWorkspaceToMonitorRight,
     MoveWorkspaceToMonitorDown,
@@ -589,6 +594,7 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::EditWorkspace {} => Self::EditWorkspace,
             niri_ipc::Action::ToggleClipboard {} => Self::ToggleClipboard,
             niri_ipc::Action::SwitchAudioOutput {} => Self::SwitchAudioOutput,
+            niri_ipc::Action::ShellAction { name, args } => Self::ShellAction(name, args),
             niri_ipc::Action::MoveWorkspaceToMonitorLeft {} => Self::MoveWorkspaceToMonitorLeft,
             niri_ipc::Action::MoveWorkspaceToMonitorRight {} => Self::MoveWorkspaceToMonitorRight,
             niri_ipc::Action::MoveWorkspaceToMonitorDown {} => Self::MoveWorkspaceToMonitorDown,

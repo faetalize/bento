@@ -1936,7 +1936,7 @@ mod tests {
             let mut scene = shell.scene.borrow_mut();
             scene.lay_out();
             scene.advance(1., Some(1.));
-            scene.draw("DP-1")
+            scene.draw_all("DP-1")
         };
         let modifiers = [Modifier::Linear, Modifier::Invalid]
             .into_iter()

@@ -1,10 +1,10 @@
-//! The shell's scripts: JavaScript that builds and changes the scene, and reacts to its events.
+//! The shell's scripts: TSX with Solid that builds and changes the scene, and reacts to its
+//! events, compiled as they load (see [`super::modules`]).
 //!
-//! The shell is `~/.config/bento/shell/main.js` if it's there, or bento's own otherwise. Both
-//! import bento's widgets from `bento:ui`. bento's own shell and widgets are built in, or read from
-//! a folder that `debug { shell-scripts }` names, to work on them. A changed file is loaded again;
-//! a shell that fails to load or throws leaves the last working one on screen, and the error is
-//! logged.
+//! The shell is `~/.config/bento/shell/main.tsx` if it's there, or bento's own, `bento:shells/unix`,
+//! otherwise: the default export of either is the root component, which bento's renderer, in the
+//! `bento` module, mounts. A changed file is loaded again; a shell that fails to load or throws
+//! leaves the last working one on screen, and the error is logged.
 //!
 //! Scripts never run per frame: only when something happens, like a click, a timer or bento's
 //! state changing. A call that runs too long is stopped.
@@ -15,41 +15,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context as _};
-use rquickjs::loader::{BuiltinLoader, BuiltinResolver};
 use rquickjs::prelude::Opt;
 use rquickjs::{CatchResultExt as _, Context, Function, Module, Persistent, Runtime};
 
+use super::modules::{ScriptLoader, Sources};
 use super::{ImageSource, Scene};
-
-/// bento's own shell.
-const MAIN: &str = include_str!("../../resources/shell/main.js");
-/// Its modules, each imported as `bento:` and its name: the widgets, and the shell's parts.
-const MODULES: &[(&str, &str)] = &[
-    ("ui", include_str!("../../resources/shell/ui.js")),
-    (
-        "calendar",
-        include_str!("../../resources/shell/calendar.js"),
-    ),
-    (
-        "clipboard",
-        include_str!("../../resources/shell/clipboard.js"),
-    ),
-    ("control", include_str!("../../resources/shell/control.js")),
-    (
-        "launcher",
-        include_str!("../../resources/shell/launcher.js"),
-    ),
-    (
-        "notifications",
-        include_str!("../../resources/shell/notifications.js"),
-    ),
-    ("osd", include_str!("../../resources/shell/osd.js")),
-    ("toasts", include_str!("../../resources/shell/toasts.js")),
-    (
-        "workspace",
-        include_str!("../../resources/shell/workspace.js"),
-    ),
-];
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const CALL_TIME_LIMIT: Duration = Duration::from_millis(200);
@@ -77,62 +47,9 @@ impl std::fmt::Debug for Shell {
     }
 }
 
-/// The user's shell, if they have one.
-pub fn user_path() -> Option<PathBuf> {
-    let path = directories::BaseDirs::new()?
-        .config_dir()
-        .join("bento/shell/main.js");
-    path.is_file().then_some(path)
-}
-
-/// The scripts in `dir`, sorted by name.
-fn scripts_in(dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
-        .collect();
-    files.sort();
-    files
-}
-
 /// When the shell's files last changed, with bento's own read from `dir`, to load them again.
-pub fn mtimes(dir: Option<&Path>) -> Vec<Option<SystemTime>> {
-    let mtime = |path: PathBuf| path.metadata().ok()?.modified().ok();
-    let mut files: Vec<PathBuf> = user_path().into_iter().collect();
-    if let Some(dir) = dir {
-        files.extend(scripts_in(dir));
-    }
-    files.into_iter().map(mtime).collect()
-}
-
-/// The shell's source and its modules by name, with bento's own read from `dir` if it's given:
-/// `main.js` there, and every other script as the module of its name.
-fn sources(dir: Option<&Path>) -> anyhow::Result<(String, Vec<(String, String)>)> {
-    let read = |path: &Path| {
-        std::fs::read_to_string(path).with_context(|| format!("error reading {}", path.display()))
-    };
-    let main = match (user_path(), dir) {
-        (Some(path), _) => read(&path)?,
-        (None, Some(dir)) => read(&dir.join("main.js"))?,
-        (None, None) => String::from(MAIN),
-    };
-    let modules = match dir {
-        Some(dir) => scripts_in(dir)
-            .into_iter()
-            .filter(|path| path.file_name().is_some_and(|name| name != "main.js"))
-            .map(|path| {
-                let name = path.file_stem().unwrap_or_default().to_string_lossy();
-                Ok((name.into_owned(), read(&path)?))
-            })
-            .collect::<anyhow::Result<_>>()?,
-        None => MODULES
-            .iter()
-            .map(|(name, source)| (String::from(*name), String::from(*source)))
-            .collect(),
-    };
-    Ok((main, modules))
+pub fn mtimes(dir: Option<&Path>) -> Vec<(PathBuf, Option<SystemTime>)> {
+    Sources::new(dir).mtimes()
 }
 
 /// Where what scripts keep between runs is written, like which sound outputs are pinned. Tests
@@ -156,7 +73,8 @@ impl Shell {
         dir: Option<&Path>,
         style: serde_json::Value,
     ) -> anyhow::Result<Self> {
-        let (source, modules) = sources(dir)?;
+        let sources = Rc::new(Sources::new(dir));
+        let entry = sources.entry();
 
         let mut scene = Scene::new();
         for (name, size) in outputs {
@@ -168,14 +86,8 @@ impl Shell {
         let runtime = Runtime::new().context("error creating the JS runtime")?;
         runtime.set_memory_limit(MEMORY_LIMIT);
         runtime.set_max_stack_size(1024 * 1024);
-        let mut resolver = BuiltinResolver::default();
-        let mut loader = BuiltinLoader::default();
-        for (name, module) in modules {
-            let name = format!("bento:{name}");
-            resolver.add_module(&name);
-            loader.add_module(&name, module);
-        }
-        runtime.set_loader(resolver, loader);
+        let loader = ScriptLoader { sources };
+        runtime.set_loader(loader.clone(), loader);
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         let deadline_ = deadline.clone();
@@ -222,18 +134,6 @@ impl Shell {
                     move |parent: u32, child: u32, index: Opt<i32>| {
                         let index = index.0.and_then(|i| usize::try_from(i).ok());
                         s.borrow_mut().append(parent, child, index);
-                    },
-                )
-                .map_err(js)?,
-            )?;
-            let s = scene.clone();
-            native.set(
-                "reserve",
-                Function::new(
-                    ctx.clone(),
-                    move |output: String, top: f64, right: f64, bottom: f64, left: f64| {
-                        let edges = [top, right, bottom, left].map(|e| e.max(0.) as f32);
-                        s.borrow_mut().reserve(&output, edges);
                     },
                 )
                 .map_err(js)?,
@@ -331,6 +231,12 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
+                "detach",
+                Function::new(ctx.clone(), move |id: u32| s.borrow_mut().take_out(id))
+                    .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
                 "root",
                 Function::new(ctx.clone(), move |output: String| {
                     s.borrow().root(&output).map_or(-1, i64::from)
@@ -343,6 +249,16 @@ impl Shell {
                 Function::new(ctx.clone(), move || {
                     let scene = s.borrow();
                     serde_json::to_string(&scene.outputs().collect::<Vec<_>>()).unwrap_or_default()
+                })
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
+                "outputSize",
+                Function::new(ctx.clone(), move |output: String| {
+                    s.borrow()
+                        .output_size(&output)
+                        .map(|(w, h)| serde_json::json!({ "width": w, "height": h }).to_string())
                 })
                 .map_err(js)?,
             )?;
@@ -371,6 +287,9 @@ impl Shell {
             native.set(
                 "log",
                 Function::new(ctx.clone(), |message: String| {
+                    if cfg!(test) {
+                        eprintln!("shell: {message}");
+                    }
                     info!("shell: {message}");
                 })
                 .map_err(js)?,
@@ -406,6 +325,10 @@ impl Shell {
             )?;
             ctx.globals().set("__bento", native)?;
 
+            // The shell's root component, mounted by bento's renderer.
+            let source = format!(
+                "import {{ __mount }} from \"bento\";\nimport Shell from {entry:?};\n__mount(Shell);\n"
+            );
             let module = Module::declare(ctx.clone(), "main.js", source)
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))?;
@@ -415,7 +338,7 @@ impl Shell {
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))?;
 
-            let ui = Module::import(&ctx, "bento:ui")
+            let ui = Module::import(&ctx, "bento")
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))?
                 .finish::<rquickjs::Object>()

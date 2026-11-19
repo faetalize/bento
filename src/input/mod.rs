@@ -1705,6 +1705,13 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            Action::ShellAction(name, args) => {
+                if let Some(scene) = &self.niri.scene {
+                    let output = self.niri.layout.active_output().map(|o| o.name());
+                    scene.shell_action(&name, &args, output);
+                    self.niri.queue_redraw_all();
+                }
+            }
             Action::ToggleLauncher => match &self.niri.scene {
                 Some(scene) => {
                     let output = self.niri.layout.active_output().map(|o| o.name());
@@ -2565,7 +2572,7 @@ impl State {
             let at_ref = under
                 .shell
                 .as_ref()
-                .map(|(name, point)| (name.as_str(), *point));
+                .map(|(name, point, band)| (name.as_str(), *point, *band));
             let number = node_button(button).unwrap_or(0);
             let scene = self.niri.scene.as_mut().unwrap();
             let taken = if ButtonState::Pressed == button_state {
@@ -3482,10 +3489,10 @@ impl State {
                                 window,
                             );
                             tool.set_grab(self, grab, time, serial, Focus::Clear);
-                        } else if let Some((name, point)) = &under.shell {
+                        } else if let Some((name, point, band)) = &under.shell {
                             // bento's own shell is on top of windows, like nodes.
                             if let Some(scene) = &mut self.niri.scene {
-                                scene.press(TABLET_KEY, 1, Some((name.as_str(), *point)));
+                                scene.press(TABLET_KEY, 1, Some((name.as_str(), *point, *band)));
                             }
                             self.niri.queue_redraw_all();
                         } else if let Some(hit) = &under.node {
@@ -3545,7 +3552,7 @@ impl State {
                     .or(self.niri.tablet_cursor_location);
                 let at = pos.and_then(|pos| self.niri.contents_under(pos).shell);
                 if let Some(scene) = &mut self.niri.scene {
-                    let at = at.as_ref().map(|(name, point)| (name.as_str(), *point));
+                    let at = at.as_ref().map(|(name, point, band)| (name.as_str(), *point, *band));
                     if scene.release(TABLET_KEY, 1, at) {
                         self.niri.queue_redraw_all();
                     }
@@ -4091,7 +4098,7 @@ impl State {
                 let at = under
                     .shell
                     .as_ref()
-                    .map(|(name, point)| (name.as_str(), *point));
+                    .map(|(name, point, band)| (name.as_str(), *point, *band));
                 if scene.press(touch_key(slot), 1, at) {
                     self.niri.queue_redraw_all();
                     return;
