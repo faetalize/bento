@@ -171,8 +171,9 @@ shell sends them up off the screen, and the pointer coming near the top edge bri
   one, with the current one highlighted, and the minimap: a track of the active workspace with
   the part the view shows highlighted, from where bento says each tile sits.
 - The centre island shows the clock.
-- The right island shows the status icons (network, sound, battery and the like) and the tray
-  of apps' status icons.
+- The right island shows three parts, with a faint line between each: the tray of apps' status
+  icons; quick things, like the sound output switcher and the clipboard's button; and the status
+  icons (network, sound, battery and the like), which open the control center.
 
 They don't show the focused window or a taskbar. Where one grows near another they melt together, as one piece
 of glass.
@@ -193,9 +194,7 @@ give them, alone or with a notification of the user's wording once it's done, fo
 none of their own.
 
 A sound output can be pinned. While any are, the right island has a button that switches to the
-next pinned one, as a shortcut can too.
-
-The bar has a button for the clipboard manager.
+next pinned one, as a shortcut can too. Its clipboard button opens the clipboard's history.
 
 A shortcut opens an editor for the focused workspace: its name changes as it's typed, and the
 editor takes the name away and puts it back.
@@ -239,15 +238,25 @@ indicators. It's keyboard first: typing finds apps.
 ## The windows shell is a taskbar
 
 Along the bottom of each output runs a taskbar, in the top layer, so fullscreen windows cover it.
-In its middle are the start button, a button for the overview, and a button for each app with
-open windows, lit while one of them has the focus. Resting on an app's button shows live
-previews of its windows over it, and a click goes to them. At its end are the tray, quick
-settings, the clock with the notification center and the month, and a sliver that shows the
-desktop.
+In its middle are the start button, a button for the overview, and a button for each app pinned
+to it and each app with open windows, lit while one of them has the focus. Resting on an app's
+button shows live previews of its windows over it, and a click goes to them. A right click opens
+the app's menu, which pins it and closes its windows, and a button dragged among the others
+stays where it's left; the pinned keep their order. At its end, in three parts with a faint line
+between each, are the tray; quick things, like the sound output switcher and the clipboard's
+button; and quick settings, with the clock that opens the notification center and the month.
+Then a sliver shows the desktop.
 
 The start menu finds apps the way the launcher does, shows all of them otherwise, and has the
 power menu. Quick settings and the notification center are the control center's parts, each
 coming out of its button. Notifications come up over the taskbar's end.
+
+## The tray
+
+The tray holds apps' status icons. The ones pinned to it show; the rest are behind an arrow, in
+a flyout that opens on the tray's side. A click activates an icon, and a right click opens its
+app's menu, in bento's own menu, with a way to pin the icon or take it off. Which icons are
+pinned is kept, as pinned apps are, and isn't listed in bento's settings.
 
 ## bento starts the shell's data program
 

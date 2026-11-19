@@ -249,7 +249,7 @@ shell {
 }
 ```
 
-bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one to start a shell of your own from; bento's own aren't edited in place. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
+bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one to start a shell of your own from; bento's own aren't edited in place. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
 
 Modules and shells declare their settings and actions in their `meta`, the way engines do. Settings, like the apps pinned to the taskbar, are kept in `~/.config/bento/shell/settings.kdl`, a block for each module and shell by its name, and show in bento Settings only when they name its page, like the taskbar's height on the Shell page; pins are changed where they are:
 
@@ -299,7 +299,7 @@ The right island is the status, and opens into the control center, laid out like
 - What's playing, from any app that says so over MPRIS.
 - The notifications. A toast goes after a moment and its notification stays here until it's dismissed, unless the app marked it as transient. With Do Not Disturb on, only critical notifications come as toasts.
 
-The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Control Center sets them:
+The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Shell sets them:
 
 ```kdl
 shell {
@@ -314,6 +314,10 @@ shell {
     }
 }
 ```
+
+The right island has three parts, with a faint line between each: the tray, quick things like the sound output switcher and the clipboard's button, and the status that opens the control center.
+
+The tray shows the status icons pinned to it, and the rest behind an arrow. A right click on an icon opens its app's menu, which pins the icon to the tray or takes it off.
 
 A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and the shell's `switch-audio-output` does the same from a shortcut.
 
