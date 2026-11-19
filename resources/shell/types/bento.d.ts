@@ -589,8 +589,8 @@ declare module "bento" {
   // ---------------------------------------------------------------------------------------------
   // Settings
   //
-  // A setting is a typed value that a module declares for its feature, which every shell with the
-  // module shares, or a shell declares for itself. The user's are in
+  // A setting is a typed value that a module declares for what it shows, which every shell with
+  // the module shares, or a shell declares for itself. The user's are in
   // `~/.config/bento/shell/settings.kdl`, a block for each module and shell by its name, and
   // bento's settings show the running shell's:
   //

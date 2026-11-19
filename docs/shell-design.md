@@ -70,10 +70,12 @@ and checks like the rest. libadwaita's colours are variables: the window colours
 and dark.
 
 A file can hold a whole shell with its interactions, or a single module, and imports others. A
-module is a component: its modes are its props, and what it holds are its children. A module is a
-feature with the views it has, like sound with its status icon, sliders, page, switcher and
-on-screen indicator, so a feature lives in one place and every shell that has it shares it. bento
-ships its modules and two shells built from them, so that a module of one's own, or a change to
+module is one file that others import by its name: the components it exports, and the state and
+code they share. Some are building blocks, like buttons, flyouts and menus; others are what the
+shell shows of one thing, like sound, with its volume, devices and the views of them: a status
+icon, sliders, a page, a switcher and an on-screen indicator. Those views and what they share live
+in one place, and every shell that has them shares them. A component's modes are its props, and
+what it holds are its children. bento ships its modules and two shells built from them, so that a module of one's own, or a change to
 one of bento's, is one file. Context menus are one of bento's modules, which any module opens, so
 every menu looks and works alike: one is open at a time, among everything that opens over the
 desktop, and a submenu opens in its place, with a way back, as libadwaita's do.
@@ -104,7 +106,7 @@ materials of one's own are files bento loads, like the glass shader.
 
 ## Shells keep settings and state
 
-A setting is a typed value that a module or a shell declares: a module for its feature, like a
+A setting is a typed value that a module or a shell declares: a module for what it shows, like a
 clock's font or the folders pinned in a start menu, which every shell with that module shares; a
 shell for itself, like the height of its taskbar. They're declared in their `meta` with the same
 types as engines' options.
