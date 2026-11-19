@@ -11,6 +11,7 @@ fn main() {
     }
 
     shell_files();
+    shell_icons();
 }
 
 /// bento's own shell, built in: every script under `resources/shell`, by its path there, so that
@@ -70,6 +71,30 @@ fn shell_files() {
     }
     out.push_str("]\n");
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("shell_types.rs");
+    std::fs::write(dest, out).unwrap();
+}
+
+/// Icons bento's shell has of its own, which the icon theme doesn't need to: every SVG under
+/// `resources/shell/icons`, by its name without the extension.
+fn shell_icons() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell/icons");
+    println!("cargo:rerun-if-changed={}", root.display());
+    let mut icons: Vec<PathBuf> = std::fs::read_dir(&root)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    icons.retain(|path| path.extension().is_some_and(|ext| ext == "svg"));
+    icons.sort();
+    let mut out = String::from("&[\n");
+    for path in icons {
+        let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+        println!("cargo:rerun-if-changed={}", path.display());
+        out.push_str(&format!(
+            "    ({name:?}, include_bytes!({:?})),\n",
+            path.display().to_string()
+        ));
+    }
+    out.push_str("]\n");
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("shell_icons.rs");
     std::fs::write(dest, out).unwrap();
 }
 

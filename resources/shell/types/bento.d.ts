@@ -310,9 +310,10 @@ declare module "bento" {
 
   export interface ImageProps extends NodeProps {
     ref?: SceneNode | ((node: SceneNode) => void);
-    /** An icon from the icon theme, by its name, or an image file by its path, as tray icons and
-     * notifications give them. One whose name ends in `-symbolic` is drawn in the text colour it
-     * inherits. */
+    /** An icon by its name: one of bento's own, Phosphor's `ph-…-symbolic` that the shell has,
+     * like `ph-cards-three-symbolic`, or one from the icon theme; or an image file by its path,
+     * as tray icons and notifications give them. One whose name ends in `-symbolic` is drawn in
+     * the text colour it inherits. */
     icon?: string;
     /** An image file by its path: PNG, JPEG, WebP or SVG. */
     src?: string;

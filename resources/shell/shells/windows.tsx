@@ -128,11 +128,11 @@ function Taskbar(props: { output: string }) {
           </Show>
           <box style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
             <BarButton open={popup.is(start)} onClick={() => popup.toggle(start)}>
-              <image icon="view-grid-symbolic" size={20} style={{ color: "accent" }} />
+              <image icon="ph-squares-four-symbolic" size={20} style={{ color: "accent" }} />
             </BarButton>
             {/* The overview, of every workspace. */}
             <BarButton onClick={() => action("toggle-overview")}>
-              <image icon="workspace-switcher-symbolic" size={20} />
+              <image icon="ph-cards-three-symbolic" size={20} />
             </BarButton>
             <TaskbarApps output={output} size={40} />
           </box>

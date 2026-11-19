@@ -1530,14 +1530,14 @@ mod tests {
         assert_eq!(host.reserved("DP-1"), [0., 0., 60., 0.]);
 
         // The start button and the apps are in the middle, or on the left.
-        let start = middle_of(&host, "DP-1", "view-grid-symbolic");
+        let start = middle_of(&host, "DP-1", "ph-squares-four-symbolic");
         assert!(start[0] > 600., "{start:?}");
         settings
             .borrow_mut()
             .write_file("windows {\n    alignment \"left\"\n}\n");
         host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         settle(&mut host, &mut now);
-        let start = middle_of(&host, "DP-1", "view-grid-symbolic");
+        let start = middle_of(&host, "DP-1", "ph-squares-four-symbolic");
         assert!(start[0] < 60., "{start:?}");
 
         // What the running shell declares, for bento's settings.
@@ -1573,7 +1573,7 @@ mod tests {
         // Along the bottom, keeping its height from the windows.
         let reserved = host.reserved("DP-1");
         assert_eq!(reserved, [0., 0., 48., 0.]);
-        assert!(shows(&host, "DP-1", "view-grid-symbolic"));
+        assert!(shows(&host, "DP-1", "ph-squares-four-symbolic"));
 
         // Two windows of one app are one button, whose previews are live copies of both.
         host.pointer_at(Some(("DP-1", button)));
@@ -1614,7 +1614,7 @@ mod tests {
         assert!(!host.wants_keyboard());
 
         // What can be clicked shows a hand.
-        let start = middle_of(&host, "DP-1", "view-grid-symbolic");
+        let start = middle_of(&host, "DP-1", "ph-squares-four-symbolic");
         host.covers_any("DP-1", start);
         let cursor = host.pointer_moved(SceneHost::at("DP-1", start));
         assert_eq!(cursor.as_deref(), Some("pointer"));
@@ -1852,6 +1852,47 @@ mod tests {
         assert!(!shows(&host, "DP-1", "pan-down-symbolic"));
         let on_bar = middle_of(&host, "DP-1", "thing-tray-symbolic");
         assert!((on_bar[1] - arrow[1]).abs() < 1.);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn the_rest_of_the_tray_stays_out_while_an_icon_in_it_has_its_menu_open() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(TRAY);
+        settle(&mut host, &mut now);
+        let chevron = middle_of(&host, "DP-1", "pan-up-symbolic");
+        click(&mut host, "DP-1", chevron);
+        settle(&mut host, &mut now);
+        let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
+
+        assert!(host.covers_any("DP-1", icon));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        host.data_line(r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[]}"#);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Pin to Tray"));
+        assert!(
+            shows(&host, "DP-1", "thing-tray-symbolic"),
+            "the rest of the tray went"
+        );
+
+        // Escape closes the menu alone, and a press elsewhere closes the rest too.
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Pin to Tray"));
+        assert!(shows(&host, "DP-1", "thing-tray-symbolic"));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        host.data_line(r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[]}"#);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Pin to Tray"));
+        host.press(1, 1, None);
+        host.release(1, 1, None);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Pin to Tray"));
+        assert!(!shows(&host, "DP-1", "thing-tray-symbolic"));
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 

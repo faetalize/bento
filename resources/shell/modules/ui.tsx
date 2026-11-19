@@ -15,34 +15,61 @@ export const ISLAND = 36;
 export const ICON_ROOM = 6;
 
 // ------------------------------------------------------------------------------------------------
-// What's open over the desktop: one panel, launcher or editor at a time, by a key of its own.
+// What's open over the desktop: one panel, launcher or editor at a time, by a key of its own, and
+// what's open over it that came out of it, like a menu over the rest of the tray.
 // ------------------------------------------------------------------------------------------------
 
 const [current, setCurrent] = createSignal<string | null>(null);
+const [under, setUnder] = createSignal<string | null>(null);
+// What's open as it is now: Solid shows what's set once the event is done, and a press outside
+// two of them closes both in one event.
+let now: { current: string | null; under: string | null } = { current: null, under: null };
+const set = (top: string | null, below: string | null = null) => {
+  now = { current: top, under: below };
+  setCurrent(top);
+  setUnder(below);
+};
 // What a press outside it closed just now: the press on its own button that closed it doesn't
 // open it again as it ends.
 let dismissed: { key: string; at: number } | null = null;
 
 export const popup = {
-  /** What's open, by its key. */
+  /** What's open on top, by its key. */
   current,
-  is: (key: string) => current() === key,
-  open: (key: string) => setCurrent(key),
-  /** Closes `key`, or whatever's open. */
-  close: (key?: string) => {
-    if (key === undefined || current() === key) setCurrent(null);
+  /** Whether `key` is open, on top or under what came out of it. */
+  is: (key: string) => current() === key || under() === key,
+  /** Opens `key` in place of what's open, or with `over`, over it, as a menu opens over the
+   * flyout it's asked for in, which stays until it closes. */
+  open: (key: string, options?: { over?: boolean }) => {
+    const below = options?.over && now.current !== key ? now.current : null;
+    set(key, below);
   },
-  /** Closes `key` for a press outside it. */
+  /** Closes `key`, back to what it's over, or whatever's open. */
+  close: (key?: string) => {
+    if (key === undefined || now.under === key) set(null);
+    else if (now.current === key) set(now.under);
+  },
+  /** Closes `key` for a press outside it, back to what it's over. What's under something else
+   * closes too only when the press was outside that as well, which every surface hears of
+   * before it's settled. */
   dismiss: (key: string) => {
-    if (current() !== key) return;
-    dismissed = { key, at: Date.now() };
-    setCurrent(null);
+    if (now.current === key) {
+      dismissed = { key, at: Date.now() };
+      set(now.under);
+    } else if (now.under === key) {
+      queueMicrotask(() => {
+        // What was over it closed for the same press, so the press was outside both.
+        if (now.current !== key) return;
+        dismissed = { key, at: Date.now() };
+        set(null);
+      });
+    }
   },
   toggle: (key: string) => {
     const just = dismissed?.key === key && Date.now() - dismissed.at < 500;
     dismissed = null;
     if (just) return;
-    setCurrent(current() === key ? null : key);
+    set(now.current === key || now.under === key ? null : key);
   },
 };
 

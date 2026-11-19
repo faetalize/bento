@@ -48,7 +48,8 @@ export function openMenu(place: MenuPlace, items: MenuItem[]) {
   // Made afresh, at its new place, even when one is open.
   setShown(null);
   setShown({ place, items });
-  popup.open(KEY);
+  // Over whatever it's asked for in, which stays until it closes.
+  popup.open(KEY, { over: true });
 }
 
 /** Whether a menu is open, for what would come up over it to wait. */
