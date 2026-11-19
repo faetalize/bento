@@ -1,7 +1,8 @@
 // A shell laid out like Windows 11's: a taskbar along the bottom of each output, its apps in the
-// middle after the start button and the overview's, and at its end the tray, quick settings,
-// the clock with the notifications, and a sliver that shows the desktop. Notifications come up
-// over the taskbar's end. The taskbar is in the top layer, so fullscreen windows cover it.
+// middle after the start button and the overview's, and at its end the tray, the sound output
+// switcher, quick settings, the clock with the notifications, and a sliver that shows the desktop.
+// Notifications come up over the taskbar's end. The taskbar is in the top layer, so fullscreen
+// windows cover it.
 
 import { Surface, action, focusedOutput, onAction, outputs, useModule, type Meta } from "bento";
 import { createSignal, For, Show } from "solid-js";
@@ -10,7 +11,7 @@ import { Clock, Month } from "bento:modules/clock";
 import { Toasts, notifications } from "bento:modules/notifications";
 import { NotificationCenter, QuickSettings } from "bento:modules/control-center";
 import { networkIcon } from "bento:modules/network";
-import { activeDevice, VolumeIndicator, volumeIcon } from "bento:modules/sound";
+import { activeDevice, OutputSwitcher, VolumeIndicator, volumeIcon } from "bento:modules/sound";
 import { battery } from "bento:modules/power";
 import { TaskbarApps } from "bento:modules/taskbar";
 import { StartMenu } from "bento:modules/start-menu";
@@ -112,6 +113,13 @@ function Taskbar(props: { output: string }) {
             }}
           >
             <Tray />
+            {/* While sound outputs are pinned, a click goes to the next, and a right click opens
+                quick settings, where they're pinned. */}
+            <OutputSwitcher
+              size={20}
+              style={{ height: 40, minWidth: 40, borderRadius: 8, ":hover": { background: "fg/0.14" } }}
+              onMore={() => popup.open(quick)}
+            />
             <BarButton
               ref={setQuickButton}
               open={popup.is(quick)}

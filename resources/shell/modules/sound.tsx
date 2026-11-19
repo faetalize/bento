@@ -123,11 +123,13 @@ onAction("switch-audio-output", switchOutput);
 
 /** The switcher's button: the output that plays, which a click switches from, and a right click
  * opens `onMore`. It shows while outputs are pinned. */
-export function OutputSwitcher(props: { onMore?: () => void }) {
+export function OutputSwitcher(props: { onMore?: () => void; style?: any; size?: number }) {
   return (
     <Show when={pinned().length > 0}>
       <Button
         icon={activeDevice("outputs")?.icon ?? "audio-speakers-symbolic"}
+        size={props.size}
+        style={props.style}
         onClick={switchOutput}
         onRightClick={props.onMore}
       />
