@@ -2,7 +2,7 @@
 // Every other stock module builds from them, so a `modules/ui.tsx` of one's own restyles them all.
 
 import {
-  Surface, after, css, paced, settling, type Edge, type JSX, type TextProps,
+  Surface, after, css, paced, settling, type Edge, type JSX, type KeyEvent, type TextProps,
 } from "bento";
 import { createEffect, createSignal, For, Show } from "solid-js";
 
@@ -468,6 +468,10 @@ export interface FlyoutProps {
   padding?: number;
   /** Whether a press outside it closes it. */
   light?: boolean;
+  /** Without `from`, a point on the output it comes out of, as a menu at the pointer does. */
+  at?: { x: number; y: number };
+  /** The keys it has while it takes them, before Escape closes it: `true` when one was used. */
+  onKey?: (event: KeyEvent) => boolean | void;
   children?: JSX.Element;
 }
 
@@ -486,11 +490,13 @@ export function Flyout(props: FlyoutProps) {
       output={props.output}
       layer="top"
       z={2}
-      attach={props.from ? {
-        to: props.from, side: side(), align: props.align ?? "center", gap: props.gap ?? 12,
+      attach={props.from || props.at ? {
+        to: props.from ?? props.at!, side: side(), align: props.align ?? "center",
+        gap: props.gap ?? 12,
       } : undefined}
-      anchor={props.from ? undefined : props.anchor}
+      anchor={props.from || props.at ? undefined : props.anchor}
       keyboard={open() && props.keyboard ? "exclusive" : "none"}
+      onKey={(event) => props.onKey?.(event)}
       onEscape={close}
       onOutside={() => props.light !== false && props.popup !== undefined && popup.dismiss(props.popup)}
       style={{ margin: props.gap ?? 12 }}

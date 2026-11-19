@@ -884,10 +884,15 @@ function setProperty(node: Node, name: string, value: any, _prev?: any) {
   } else if (node.surface && (name === "onKey" || name === "onEscape" || name === "onOutside")) {
     (node.surface as any)[name] = value;
   } else if (node.surface && name === "attach") {
-    // Beside a node: by its id in bento's scene.
+    // Beside a node, by its id in bento's scene, or a point on the output.
     const to = value?.to;
-    node.own.attach = to instanceof Node && to.id >= 0
-      ? { node: to.id, side: value.side ?? "bottom", align: value.align ?? "start", gap: value.gap ?? 0 }
+    const where = to instanceof Node
+      ? (to.id >= 0 ? { node: to.id } : null)
+      : typeof to?.x === "number" && typeof to?.y === "number"
+        ? { point: [to.x, to.y] }
+        : null;
+    node.own.attach = where
+      ? { ...where, side: value.side ?? "bottom", align: value.align ?? "start", gap: value.gap ?? 0 }
       : null;
     node.update();
   } else if (node.surface && SURFACE_PROPS.includes(name)) {
@@ -1179,6 +1184,12 @@ const world = new Node("#world", "");
 export function __mount(Shell: any) {
   render(() => createComponent(Shell, {}), world);
   flush();
+}
+
+export function mountApart(component: () => any): () => void {
+  // A world of its own, whose surfaces go on the outputs like the shell's.
+  const apart = new Node("#world", "");
+  return render(component, apart);
 }
 
 function pointer(node: Node | undefined, name: string, event: any) {

@@ -621,6 +621,7 @@ impl SceneHost {
         if let Some(id) = hit {
             shell.send(&serde_json::json!({
                 "type": "press", "id": id, "button": button, "x": point[0], "y": point[1],
+                "output": name,
             }));
         }
         self.presses
@@ -655,6 +656,7 @@ impl SceneHost {
             if shell.scene.borrow().hit(name, point, CLICK, Some(band)) == Some(id) {
                 shell.send(&serde_json::json!({
                     "type": "click", "id": id, "button": button, "x": point[0], "y": point[1],
+                    "output": name,
                 }));
             }
         }
@@ -1604,6 +1606,26 @@ mod tests {
         let ran = host.take_actions();
         assert_eq!(ran[0]["name"], "focus-window");
         assert_eq!(ran[0]["window"], 2);
+
+        // A right click opens the shell's menu over the button, which takes the keys: Down
+        // lights its item, and Return runs it and closes the menu.
+        host.pointer_at(None);
+        settle(&mut host, &mut now);
+        host.press(3, 3, SceneHost::at("DP-1", button));
+        host.release(3, 3, SceneHost::at("DP-1", button));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        let item = middle_of(&host, "DP-1", "Close All Windows");
+        assert!(item[1] < button[1], "the menu is over the button");
+        assert!(host.wants_keyboard());
+        type_keys(&mut host, &["Down", "Return"]);
+        settle(&mut host, &mut now);
+        let ran = host.take_actions();
+        let closed: Vec<&serde_json::Value> = ran.iter().map(|a| &a["window"]).collect();
+        assert_eq!(closed, [1, 2]);
+        assert!(ran.iter().all(|a| a["name"] == "close-window"));
+        assert!(!shows(&host, "DP-1", "Close All Windows"));
+        assert!(!host.wants_keyboard());
 
         // What can be clicked shows a hand.
         let start = middle_of(&host, "DP-1", "start-here-symbolic");

@@ -25,8 +25,9 @@ the shell's too. What's higher gets the keyboard and the pointer first.
 
 A shell places its surfaces the way layer-shell places other programs': held to edges at margins
 from them, in the middle of the output when held to none, or beside a node of its own, as a flyout
-over its button. A surface held to an edge can keep room along it that the windows stay out of,
-and bento gives the engines what's left as each monitor's working area.
+over its button, or a point, as a menu at the pointer, on whichever side has room. A surface held
+to an edge can keep room along it that the windows stay out of, and bento gives the engines what's
+left as each monitor's working area.
 
 The shell's data, sound, network, battery, notifications and the tray, comes from a program of its
 own next to bento, which hands it to bento. A stuck call there never freezes the compositor.
@@ -73,7 +74,9 @@ module is a component: its modes are its props, and what it holds are its childr
 feature with the views it has, like sound with its status icon, sliders, page, switcher and
 on-screen indicator, so a feature lives in one place and every shell that has it shares it. bento
 ships its modules and two shells built from them, so that a module of one's own, or a change to
-one of bento's, is one file.
+one of bento's, is one file. Context menus are one of bento's modules, which any module opens, so
+every menu looks and works alike: one is open at a time, among everything that opens over the
+desktop, and a submenu opens in its place, with a way back, as libadwaita's do.
 
 Which shell runs is chosen the way the engine is: in bento's config, and in bento's settings,
 among bento's shells and a file of one's own. bento's own shells aren't edited in place; one is

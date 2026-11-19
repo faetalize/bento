@@ -215,8 +215,11 @@ declare module "bento" {
   /** What a press, a click or a drag says. `x` and `y` are on the output, `offsetX` and
    * `offsetY` on the node, as it's drawn now, `frame`. */
   export interface PointerEvent {
+    /** Where on the output, which a click and a press say. */
     x: number;
     y: number;
+    /** The output it's on, which a click and a press say. */
+    output?: OutputName;
     offsetX: number;
     offsetY: number;
     frame: Rect;
@@ -383,10 +386,13 @@ declare module "bento" {
      * stretches between them unless its style gives its size; else it's as big as what it
      * holds. Held to none, it's in the middle of the output. */
     anchor?: Edge[];
-    /** Put beside a node rather than held to edges, as a flyout is over its button: on `side`
-     * of it, `gap` away, lined up with its `align`, kept on the output by its margins. */
+    /** Put beside a node rather than held to edges, as a flyout is over its button, or beside a
+     * point on the output, as a menu is at the pointer: on `side` of it, `gap` away, lined up with
+     * its `align`. Where there's no room on its side it goes on the other, and where there's no
+     * room lined up with its start it lines up with its end, and the other way around; it's kept
+     * on the output by its margins. */
     attach?: {
-      to: SceneNode;
+      to: SceneNode | { x: number; y: number };
       side?: Edge;
       align?: "start" | "center" | "end";
       gap?: number;
@@ -684,6 +690,11 @@ declare module "bento" {
   ];
 
   export function log(...parts: unknown[]): void;
+
+  /** Shows `component` apart from the shell's tree, for what a module shows by itself whichever
+   * shell imports it, like a menu: its surfaces go on the outputs like the shell's. It stays until
+   * the shell loads again, or what this gives is called. */
+  export function mountApart(component: () => JSX.Element): () => void;
 
   // ---------------------------------------------------------------------------------------------
   // The data program

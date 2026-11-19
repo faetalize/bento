@@ -185,12 +185,22 @@ pub struct Placement {
 /// start, middle or end.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Attach {
-    node: NodeId,
+    /// What it's beside.
+    to: AttachTo,
     /// Top, right, bottom or left, as 0 to 3.
     side: usize,
     /// Its start, middle or end along that side, as 0, 0.5 or 1.
     align: f32,
     gap: f32,
+}
+
+/// What a surface is put beside.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AttachTo {
+    /// A node of the shell's.
+    Node(NodeId),
+    /// A point on the output, like where a menu was asked for.
+    Point([f32; 2]),
 }
 
 impl Default for Placement {
@@ -1094,8 +1104,13 @@ impl Scene {
             (size.1 - margin[0] - margin[2]).max(0.),
         );
         let attach = placement.attach.and_then(|attach| {
-            let node = self.node(attach.node)?;
-            let rect: [f32; 4] = std::array::from_fn(|i| node.springs[X + i].target as f32);
+            let rect: [f32; 4] = match attach.to {
+                AttachTo::Node(node) => {
+                    let node = self.node(node)?;
+                    std::array::from_fn(|i| node.springs[X + i].target as f32)
+                }
+                AttachTo::Point([x, y]) => [x, y, 0., 0.],
+            };
             Some((attach, rect))
         });
         // Put beside a node, it's as big as what it holds.
@@ -1180,12 +1195,34 @@ impl Scene {
         let (x, y) = match attach {
             Some((attach, [nx, ny, nw, nh])) => {
                 let (w, h) = (laid.width, laid.height);
-                let (x, y) = match attach.side {
-                    0 => (nx + (nw - w) * attach.align, ny - attach.gap - h),
-                    1 => (nx + nw + attach.gap, ny + (nh - h) * attach.align),
-                    3 => (nx - attach.gap - w, ny + (nh - h) * attach.align),
-                    _ => (nx + (nw - w) * attach.align, ny + nh + attach.gap),
+                let at = |side: usize, align: f32| match side {
+                    0 => (nx + (nw - w) * align, ny - attach.gap - h),
+                    1 => (nx + nw + attach.gap, ny + (nh - h) * align),
+                    3 => (nx - attach.gap - w, ny + (nh - h) * align),
+                    _ => (nx + (nw - w) * align, ny + nh + attach.gap),
                 };
+                let fits_x = |x: f32| x >= margin[3] && x + w <= size.0 - margin[1];
+                let fits_y = |y: f32| y >= margin[0] && y + h <= size.1 - margin[2];
+                // Where there's no room on its side, it goes on the other; where there's no room
+                // lined up with its start, it lines up with its end, and the other way around, as
+                // a menu at the pointer does near the output's edges.
+                let (mut side, mut align) = (attach.side, attach.align);
+                let (x, y) = at(side, align);
+                let across = side % 2 == 0;
+                if !(if across { fits_y(y) } else { fits_x(x) }) {
+                    let (x, y) = at((side + 2) % 4, align);
+                    if if across { fits_y(y) } else { fits_x(x) } {
+                        side = (side + 2) % 4;
+                    }
+                }
+                let (x, y) = at(side, align);
+                if !(if across { fits_x(x) } else { fits_y(y) }) && align != 0.5 {
+                    let (x, y) = at(side, 1. - align);
+                    if if across { fits_x(x) } else { fits_y(y) } {
+                        align = 1. - align;
+                    }
+                }
+                let (x, y) = at(side, align);
                 (
                     x.min(size.0 - margin[1] - w).max(margin[3]),
                     y.min(size.1 - margin[2] - h).max(margin[0]),
@@ -2327,24 +2364,28 @@ fn apply_placement(placement: &mut Placement, key: &str, value: &Value) -> bool 
             placement.anchor = ["top", "right", "bottom", "left"].map(|e| edges.contains(&e));
         }
         "attach" => {
-            placement.attach = value
-                .get("node")
-                .and_then(Value::as_u64)
-                .map(|node| Attach {
-                    node: node as NodeId,
-                    side: match value["side"].as_str() {
-                        Some("top") => 0,
-                        Some("right") => 1,
-                        Some("left") => 3,
-                        _ => 2,
-                    },
-                    align: match value["align"].as_str() {
-                        Some("center") => 0.5,
-                        Some("end") => 1.,
-                        _ => 0.,
-                    },
-                    gap: value["gap"].as_f64().unwrap_or(0.) as f32,
-                })
+            let to = match (value.get("node"), value.get("point")) {
+                (Some(node), _) => node.as_u64().map(|node| AttachTo::Node(node as NodeId)),
+                (_, Some(point)) => serde_json::from_value(point.clone())
+                    .ok()
+                    .map(AttachTo::Point),
+                _ => None,
+            };
+            placement.attach = to.map(|to| Attach {
+                to,
+                side: match value["side"].as_str() {
+                    Some("top") => 0,
+                    Some("right") => 1,
+                    Some("left") => 3,
+                    _ => 2,
+                },
+                align: match value["align"].as_str() {
+                    Some("center") => 0.5,
+                    Some("end") => 1.,
+                    _ => 0.,
+                },
+                gap: value["gap"].as_f64().unwrap_or(0.) as f32,
+            })
         }
         "reserve" => {
             placement.reserve = match value {
@@ -2952,6 +2993,30 @@ mod tests {
             scene.layout(flyout),
             Some([1920. - 8. - 300., 1032. - 10. - 100., 300., 100.])
         );
+    }
+
+    #[test]
+    fn a_surface_attached_to_a_point_goes_where_there_is_room_for_it() {
+        let mut scene = Scene::new();
+        let (menu, _) = surface(
+            &mut scene,
+            serde_json::json!({
+                "attach": { "point": [100, 200], "side": "bottom", "align": "start" },
+                "margin": 8,
+            }),
+            serde_json::json!({ "width": 200, "height": 300 }),
+        );
+        scene.lay_out();
+        // Below the point and to its right.
+        assert_eq!(scene.layout(menu), Some([100., 200., 200., 300.]));
+
+        // Near the bottom right corner, there's room only above it and to its left.
+        scene.set(
+            menu,
+            &serde_json::json!({ "attach": { "point": [1900, 1000], "side": "bottom", "align": "start" } }),
+        );
+        scene.lay_out();
+        assert_eq!(scene.layout(menu), Some([1700., 700., 200., 300.]));
     }
 
     #[test]

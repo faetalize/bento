@@ -4,7 +4,8 @@
 
 import { action, after, useSettings, windows, type App, type Meta, type Window } from "bento";
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { Flyout, popup } from "bento:modules/ui";
+import { Flyout } from "bento:modules/ui";
+import { openMenu, type MenuItem } from "bento:modules/menu";
 import { appById, appIcon, appId, appOf, start } from "bento:modules/apps";
 
 export const meta = {
@@ -81,9 +82,6 @@ const PREVIEW = { width: 220, height: 130 };
 /** The apps pinned and the apps with windows on `output`, as buttons `size` big. */
 export function TaskbarApps(props: { output: string; size?: number }) {
   const groups = createMemo(() => appGroups(props.output));
-  // The app whose menu is open, and its button.
-  const menuKey = `taskbar-menu:${props.output}`;
-  const [menu, setMenu] = createSignal<{ app: App; node: any } | null>(null);
   // The group whose previews show, and the button they come out of.
   const [shown, setShown] = createSignal<{ group: string; node: any } | null>(null);
   const [open, setOpen] = createSignal(false);
@@ -123,10 +121,8 @@ export function TaskbarApps(props: { output: string; size?: number }) {
               onClick={() => activate(group)}
               onMiddleClick={() => group.app && start(group.app)}
               onRightClick={() => {
-                if (!group.app) return;
                 setOpen(false);
-                setMenu({ app: group.app, node });
-                popup.open(menuKey);
+                openMenu({ output: props.output, node, side: "top" }, appMenu(group));
               }}
               onNear={({ inside }) => (inside && running() ? show(group.key, node) : hide())}
             >
@@ -147,11 +143,6 @@ export function TaskbarApps(props: { output: string; size?: number }) {
           );
         }}
       </For>
-      <Show when={menu()}>
-        <Flyout output={props.output} popup={menuKey} from={menu()!.node} side="top" padding={6} radius={12}>
-          <AppMenu app={menu()!.app} onDone={() => popup.close(menuKey)} />
-        </Flyout>
-      </Show>
       <Show when={shown()}>
         <Flyout
           output={props.output}
@@ -194,32 +185,29 @@ export function TaskbarApps(props: { output: string; size?: number }) {
   );
 }
 
-/** What a right click on an app's button offers: a new window, and pinning it. */
-function AppMenu(props: { app: App; onDone: () => void }) {
-  const item = (label: string, icon: string, run: () => void) => (
-    <box
-      style={{
-        flexDirection: "row", alignItems: "center", gap: 10, padding: [7, 10], borderRadius: 8,
-        minWidth: 200, ":hover": { background: "fg/0.1" },
-      }}
-      onClick={() => {
-        run();
-        props.onDone();
-      }}
-    >
-      <image icon={icon} />
-      <text>{label}</text>
-    </box>
-  );
-  return (
-    <box style={{ flexDirection: "column", gap: 2 }}>
-      {item(props.app.name, appIcon(props.app), () => start(props.app))}
-      <Show
-        when={isPinned(props.app)}
-        fallback={item("Pin to Taskbar", "view-pin-symbolic", () => pin(props.app, true))}
-      >
-        {item("Unpin from Taskbar", "view-pin-symbolic", () => pin(props.app, false))}
-      </Show>
-    </box>
-  );
+/** What a right click on an app's button offers: a new window, pinning it, and closing its
+ * windows. */
+function appMenu(group: AppGroup): MenuItem[] {
+  const app = group.app;
+  const windows = group.windows;
+  const items: MenuItem[] = [];
+  if (app) {
+    items.push({ label: app.name, icon: appIcon(app), run: () => start(app) });
+    items.push(
+      isPinned(app)
+        ? { label: "Unpin from Taskbar", icon: "view-pin-symbolic", run: () => pin(app, false) }
+        : { label: "Pin to Taskbar", icon: "view-pin-symbolic", run: () => pin(app, true) },
+    );
+  }
+  if (windows.length > 0) {
+    if (items.length > 0) items.push("separator");
+    items.push({
+      label: windows.length === 1 ? "Close Window" : "Close All Windows",
+      icon: "window-close-symbolic",
+      run: () => {
+        for (const win of windows) action("close-window", [], { window: win.id });
+      },
+    });
+  }
+  return items;
 }
