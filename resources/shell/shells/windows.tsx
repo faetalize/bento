@@ -29,10 +29,24 @@ export const meta = {
       page: "shell",
       group: "Taskbar",
     },
+    alignment: {
+      type: "choice",
+      choices: ["center", "left"],
+      default: "center",
+      description: "Where the start button and the apps are along the taskbar.",
+      page: "shell",
+      group: "Taskbar",
+    },
   },
 } satisfies Meta;
 
 const { settings } = useModule(import.meta, meta);
+
+/** The buttons of quick things, like the sound output switcher: the size of the tray's icons. */
+const SMALL = {
+  width: 28, height: 28, paddingLeft: 0, paddingRight: 0, borderRadius: 6,
+  ":hover": { background: "fg/0.08" },
+};
 
 /** How tall the taskbar is, with room for its buttons. */
 const height = () => Math.max(40, settings.height);
@@ -107,13 +121,16 @@ function Taskbar(props: { output: string }) {
           }}
         >
           {/* Room on the left, as much as on the right, so the apps are in the middle. */}
-          <box style={{ flexGrow: 1, flexBasis: 0 }} />
+          <Show when={settings.alignment === "center"}>
+            <box style={{ flexGrow: 1, flexBasis: 0 }} />
+          </Show>
           <box style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
             <BarButton open={popup.is(start)} onClick={() => popup.toggle(start)}>
-              <image icon="start-here-symbolic" size={22} style={{ color: "accent" }} />
+              <image icon="view-grid-symbolic" size={20} style={{ color: "accent" }} />
             </BarButton>
+            {/* The overview, of every workspace. */}
             <BarButton onClick={() => action("toggle-overview")}>
-              <image icon="view-grid-symbolic" size={20} />
+              <image icon="workspace-switcher-symbolic" size={20} />
             </BarButton>
             <TaskbarApps output={output} size={40} />
           </box>
@@ -129,17 +146,14 @@ function Taskbar(props: { output: string }) {
             <Divider length={24} style={{ margin: [0, 4] }} />
             {/* While sound outputs are pinned, a click goes to the next, and a right click opens
                 quick settings, where they're pinned. */}
-            <OutputSwitcher
-              style={{ height: 40, minWidth: 40, borderRadius: 8, ":hover": { background: "fg/0.14" } }}
-              onMore={() => popup.open(quick)}
-            />
-            <BarButton
+            <OutputSwitcher style={SMALL} onMore={() => popup.open(quick)} />
+            <box
               ref={setClipboardButton}
-              open={popup.is(clipboard)}
+              style={[SMALL, { alignItems: "center", justifyContent: "center" }, popup.is(clipboard) && { background: "fg/0.1" }]}
               onClick={() => popup.toggle(clipboard)}
             >
               <image icon="edit-paste-symbolic" />
-            </BarButton>
+            </box>
             <Divider length={24} style={{ margin: [0, 4] }} />
             <BarButton
               ref={setQuickButton}

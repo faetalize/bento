@@ -1529,6 +1529,17 @@ mod tests {
         host.advance(now, None);
         assert_eq!(host.reserved("DP-1"), [0., 0., 60., 0.]);
 
+        // The start button and the apps are in the middle, or on the left.
+        let start = middle_of(&host, "DP-1", "view-grid-symbolic");
+        assert!(start[0] > 600., "{start:?}");
+        settings
+            .borrow_mut()
+            .write_file("windows {\n    alignment \"left\"\n}\n");
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        let start = middle_of(&host, "DP-1", "view-grid-symbolic");
+        assert!(start[0] < 60., "{start:?}");
+
         // What the running shell declares, for bento's settings.
         let info = host.ipc_info(bento_ipc::ShellSource::BuiltIn {
             name: String::from("windows"),
@@ -1562,7 +1573,7 @@ mod tests {
         // Along the bottom, keeping its height from the windows.
         let reserved = host.reserved("DP-1");
         assert_eq!(reserved, [0., 0., 48., 0.]);
-        assert!(shows(&host, "DP-1", "start-here-symbolic"));
+        assert!(shows(&host, "DP-1", "view-grid-symbolic"));
 
         // Two windows of one app are one button, whose previews are live copies of both.
         host.pointer_at(Some(("DP-1", button)));
@@ -1603,7 +1614,7 @@ mod tests {
         assert!(!host.wants_keyboard());
 
         // What can be clicked shows a hand.
-        let start = middle_of(&host, "DP-1", "start-here-symbolic");
+        let start = middle_of(&host, "DP-1", "view-grid-symbolic");
         host.covers_any("DP-1", start);
         let cursor = host.pointer_moved(SceneHost::at("DP-1", start));
         assert_eq!(cursor.as_deref(), Some("pointer"));
@@ -1657,6 +1668,27 @@ mod tests {
             .flat_map(|band| host.copies("DP-1", band))
             .map(|copy| copy.window)
             .collect()
+    }
+
+    #[test]
+    fn a_menu_is_over_the_shell_rather_than_in_its_layer() {
+        let (mut host, mut now, button) = windows_shell_with_an_app();
+        assert!(host.covers_any("DP-1", button));
+        host.press(3, 3, SceneHost::at("DP-1", button));
+        host.release(3, 3, SceneHost::at("DP-1", button));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        // The taskbar is in the top layer; the menu is in the overlay layer, below other
+        // programs' overlays, like a screenshot tool's.
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let menu = scene.find_in("DP-1", "Close All Windows", Band::OverlayBelow);
+        assert!(
+            !menu.is_empty(),
+            "the menu isn't in the overlay layer: {:?}",
+            scene.bands("DP-1")
+        );
+        drop(scene);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
     #[test]
@@ -1784,7 +1816,7 @@ mod tests {
     }
 
     #[test]
-    fn tray_icons_not_pinned_are_behind_the_arrow_and_pinning_brings_one_out() {
+    fn tray_icons_not_pinned_are_behind_the_chevron_and_pinning_brings_one_out() {
         super::super::modules::TEST_ENTRY
             .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
@@ -1792,12 +1824,16 @@ mod tests {
         settle(&mut host, &mut now);
         assert!(!shows(&host, "DP-1", "thing-tray-symbolic"));
 
-        // The arrow opens the rest of the tray over it.
-        let arrow = middle_of(&host, "DP-1", "go-up-symbolic");
+        // The chevron opens the rest of the tray over it, and turns back while it's out.
+        let arrow = middle_of(&host, "DP-1", "pan-up-symbolic");
         click(&mut host, "DP-1", arrow);
         settle(&mut host, &mut now);
         let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
-        assert!(icon[1] < arrow[1], "the rest of the tray is over the arrow");
+        assert!(
+            icon[1] < arrow[1],
+            "the rest of the tray is over the chevron"
+        );
+        assert!(shows(&host, "DP-1", "pan-down-symbolic"));
 
         // Its menu pins it.
         assert!(host.covers_any("DP-1", icon));
@@ -1811,8 +1847,9 @@ mod tests {
         let settings = host.settings.clone().unwrap();
         let pinned = settings.borrow().values("tray")["pinned"].clone();
         assert_eq!(pinned, serde_json::json!(["thing"]));
-        // On the taskbar now, and the arrow goes, with nothing behind it.
-        assert!(!shows(&host, "DP-1", "go-up-symbolic"));
+        // On the taskbar now, and the chevron goes, with nothing behind it.
+        assert!(!shows(&host, "DP-1", "pan-up-symbolic"));
+        assert!(!shows(&host, "DP-1", "pan-down-symbolic"));
         let on_bar = middle_of(&host, "DP-1", "thing-tray-symbolic");
         assert!((on_bar[1] - arrow[1]).abs() < 1.);
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);

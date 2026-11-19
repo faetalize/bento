@@ -317,7 +317,7 @@ shell {
 
 The right island has three parts, with a faint line between each: the tray, quick things like the sound output switcher and the clipboard's button, and the status that opens the control center.
 
-The tray shows the status icons pinned to it, and the rest behind an arrow. A right click on an icon opens its app's menu, which pins the icon to the tray or takes it off.
+The tray shows the status icons pinned to it, and the rest behind a chevron. A right click on an icon opens its app's menu, which pins the icon to the tray or takes it off.
 
 A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and the shell's `switch-audio-output` does the same from a shortcut.
 

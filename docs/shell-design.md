@@ -253,7 +253,7 @@ coming out of its button. Notifications come up over the taskbar's end.
 
 ## The tray
 
-The tray holds apps' status icons. The ones pinned to it show; the rest are behind an arrow, in
+The tray holds apps' status icons. The ones pinned to it show; the rest are behind a chevron, in
 a flyout that opens on the tray's side. A click activates an icon, and a right click opens its
 app's menu, in bento's own menu, with a way to pin the icon or take it off. Which icons are
 pinned is kept, as pinned apps are, and isn't listed in bento's settings.

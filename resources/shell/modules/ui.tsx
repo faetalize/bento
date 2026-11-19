@@ -484,6 +484,10 @@ export interface FlyoutProps {
   at?: { x: number; y: number };
   /** The keys it has while it takes them, before Escape closes it: `true` when one was used. */
   onKey?: (event: KeyEvent) => boolean | void;
+  /** The layer it's in, and its place there, the top layer over the shell's bars unless it
+   * says, as a menu goes over the shell in the overlay layer. */
+  layer?: "background" | "bottom" | "top" | "overlay";
+  z?: number;
   children?: JSX.Element;
 }
 
@@ -500,8 +504,8 @@ export function Flyout(props: FlyoutProps) {
   return (
     <Surface
       output={props.output}
-      layer="top"
-      z={2}
+      layer={props.layer ?? "top"}
+      z={props.z ?? 2}
       attach={props.from || props.at ? {
         to: props.from ?? props.at!, side: side(), align: props.align ?? "center",
         gap: props.gap ?? 12,

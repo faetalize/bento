@@ -77,6 +77,10 @@ function Menus() {
             padding={6}
             radius={12}
             keyboard
+            // Over the shell, apart from its glass, but under other programs' overlays, like a
+            // screenshot tool's, and the lock screen.
+            layer="overlay"
+            z={-1}
             onKey={(event) => keys.current?.(event)}
           >
             <Pages items={menu.items} />

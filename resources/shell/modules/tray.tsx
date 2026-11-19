@@ -1,5 +1,5 @@
 // The tray: apps' status icons, as they give them over StatusNotifierItem. The pinned ones show in
-// a row, and the rest behind an arrow, in a flyout. A click activates an icon, a middle click does
+// a row, and the rest behind a chevron, in a flyout. A click activates an icon, a middle click does
 // its other thing, and a right click opens its app's menu, in bento's own menu, with a way to pin
 // it to the tray or take it off.
 
@@ -19,7 +19,7 @@ export const meta = {
       default: [] as string[],
       description:
         "The status icons that show in the tray, by their app's name for them, like nm-applet. " +
-        "The rest are behind its arrow.",
+        "The rest are behind its chevron.",
     },
   },
 } satisfies Meta;
@@ -32,7 +32,7 @@ export const trayItems = (): TrayIcon[] => data("tray")?.items ?? [];
 
 export const isPinned = (item: TrayIcon) => settings.pinned.includes(item.name);
 
-/** Pins `item` to the tray, at its end, or takes it off, behind the arrow. */
+/** Pins `item` to the tray, at its end, or takes it off, behind the chevron. */
 export function pin(item: TrayIcon, pinned: boolean) {
   const list = settings.pinned.filter((name) => name !== item.name);
   if (pinned) list.push(item.name);
@@ -100,7 +100,7 @@ function Icon(props: { item: TrayIcon; output: string; size: number }) {
   );
 }
 
-/** The tray on `output`: the pinned icons in a row, and an arrow to the rest, which come out
+/** The tray on `output`: the pinned icons in a row, and a chevron to the rest, which come out
  * on its `side`, `"top"` for a tray along the bottom of the output. */
 export function Tray(props: { output: string; side?: Edge; size?: number; style?: any }) {
   const key = () => `tray:${props.output}`;
@@ -108,21 +108,25 @@ export function Tray(props: { output: string; side?: Edge; size?: number; style?
   const size = () => props.size ?? 16;
   const shown = () => trayItems().filter(isPinned);
   const hidden = () => trayItems().filter((item) => !isPinned(item));
-  let arrow: any;
+  let chevron: any;
   return (
     <box style={[{ flexDirection: "row", alignItems: "center", gap: 2 }, props.style]}>
       <Show when={hidden().length > 0}>
         <box
-          ref={arrow}
+          ref={chevron}
           style={{
             width: 28, height: 28, borderRadius: 6, alignItems: "center", justifyContent: "center",
             background: popup.is(key()) ? "fg/0.1" : undefined, ":hover": { background: "fg/0.08" },
           }}
           onClick={() => popup.toggle(key())}
         >
-          <image icon={side() === "top" ? "go-up-symbolic" : "go-down-symbolic"} size={size()} />
+          {/* A chevron towards where the rest comes out, which turns back while it's out. */}
+          <image
+            icon={(side() === "top") !== popup.is(key()) ? "pan-up-symbolic" : "pan-down-symbolic"}
+            size={size()}
+          />
         </box>
-        <Flyout output={props.output} popup={key()} from={arrow} side={side()} padding={6} radius={12}>
+        <Flyout output={props.output} popup={key()} from={chevron} side={side()} padding={6} radius={12}>
           <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 2, maxWidth: 5 * 30 }}>
             <For each={hidden()} keyed={(item: TrayIcon) => item.id}>
               {(item: () => TrayIcon) => <Icon item={item()} output={props.output} size={size()} />}

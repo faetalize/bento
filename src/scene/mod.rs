@@ -1889,6 +1889,34 @@ impl Scene {
         found
     }
 
+    /// Where the texts that say `wanted`, and the icons called it, show on output `output`, on
+    /// surfaces in `band` alone.
+    #[cfg(test)]
+    pub fn find_in(&self, output: &str, wanted: &str, band: Band) -> Vec<[f32; 4]> {
+        let Some(root) = self.root(output).and_then(|root| self.node(root)) else {
+            return Vec::new();
+        };
+        let surfaces = root.children.iter().filter(|id| {
+            self.node(**id)
+                .and_then(|node| node.placement)
+                .is_some_and(|placement| placement.band() == band)
+        });
+        let found = surfaces.flat_map(|surface| {
+            let all = self.find(output, wanted);
+            let frame = self.frame(*surface);
+            // What's on this surface is within its frame.
+            all.into_iter().filter(move |f| {
+                frame.is_some_and(|s| {
+                    f[0] >= s[0]
+                        && f[1] >= s[1]
+                        && f[0] + f[2] <= s[0] + s[2] + 0.5
+                        && f[1] + f[3] <= s[1] + s[3] + 0.5
+                })
+            })
+        });
+        found.collect()
+    }
+
     /// Whether `node` has a place in the layout: with `display: "none"` it has none, and
     /// neither it nor what it holds is drawn or hit.
     fn displayed(&self, node: &Node) -> bool {
