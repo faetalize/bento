@@ -1055,6 +1055,46 @@ mod tests {
     }
 
     #[test]
+    fn the_launcher_shows_its_field_every_time_it_opens() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let field = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            scene.seen("DP-1", "Search apps").first().map(|(_, opacity, _)| *opacity)
+        };
+        for time in 0..3 {
+            host.toggle_launcher(Some(String::from("DP-1")));
+            settle(&mut host, &mut now);
+            let shown = field(&host);
+            assert!(shown.is_some_and(|o| o > 0.99), "opening {time}: {shown:?}");
+            type_keys(&mut host, &["Escape"]);
+            settle(&mut host, &mut now);
+        }
+    }
+
+    #[test]
+    fn an_island_open_on_one_output_stays_open_as_whats_in_it_is_pressed() {
+        let mut host = SceneHost::default();
+        let outputs = [
+            (String::from("DP-1"), (1920., 1080.)),
+            (String::from("DP-2"), (2560., 1440.)),
+        ];
+        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        host.data_line(&DEVICES.replace('\n', " "));
+        open_control_center(&mut host, &mut now);
+        // On its sound page, which it'd leave if it closed or opened again.
+        open_page(&mut host, &mut now, 0);
+        assert!(shows(&host, "DP-1", "Output"));
+        // A press in it that nothing takes.
+        let words = middle_of(&host, "DP-1", "Output");
+        click(&mut host, "DP-1", words);
+        settle(&mut host, &mut now);
+        assert!(host.wants_keyboard(), "a press in it keeps it open");
+        assert!(shows(&host, "DP-1", "Output"), "it stays on its page");
+    }
+
+    #[test]
     fn the_launcher_opens_where_the_focus_is_takes_typing_and_closes_on_escape() {
         let mut host = SceneHost::default();
         let outputs = [

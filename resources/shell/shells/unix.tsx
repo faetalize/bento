@@ -6,9 +6,9 @@
 // and go on the focused output.
 
 import {
-  Surface, after, bentoStyle, focusedOutput, fullscreen, useOutput,
+  Surface, after, bentoStyle, focusedOutput, fullscreen, outputs, useOutput,
 } from "bento";
-import { createSignal } from "solid-js";
+import { createSignal, For } from "solid-js";
 import { ISLAND, Island, popup } from "bento:modules/ui";
 import { Minimap, Workspaces } from "bento:modules/workspaces";
 import { ClockIsland } from "bento:modules/clock";
@@ -26,18 +26,25 @@ const LINGER = 400;
 export default function Unix() {
   return (
     <>
-      <Surface
-        anchor={["top", "left", "right"]}
-        layer="overlay"
-        z={-1}
-        reserve={bentoStyle().gaps + ISLAND}
-        keyboard={busy(null) ? "exclusive" : "none"}
-        onEscape={() => popup.close()}
-        onOutside={() => busy(null) && popup.close()}
-        style={{ flexDirection: "column" }}
-      >
-        <Bar />
-      </Surface>
+      {/* Each output's own, so that what's open in its islands is its own to close: a press in
+          one output's islands is outside the other's. */}
+      <For each={outputs()}>
+        {(output) => (
+          <Surface
+            output={output}
+            anchor={["top", "left", "right"]}
+            layer="overlay"
+            z={-1}
+            reserve={bentoStyle().gaps + ISLAND}
+            keyboard={busy(output) ? "exclusive" : "none"}
+            onEscape={() => popup.close()}
+            onOutside={() => busy(output) && popup.close()}
+            style={{ flexDirection: "column" }}
+          >
+            <Bar />
+          </Surface>
+        )}
+      </For>
       <Launcher />
       <VolumeIndicator />
       <WorkspaceEditor />
@@ -45,12 +52,12 @@ export default function Unix() {
   );
 }
 
-/** Whether an island of `output`, or of any output, is open into something. */
-function busy(output: string | null) {
+/** Whether an island of `output` is open into something. */
+function busy(output: string) {
   const open = popup.current();
   if (!open) return false;
   const [kind, on] = open.split(":");
-  return ["calendar", "control", "clipboard"].includes(kind) && (output === null || on === output);
+  return ["calendar", "control", "clipboard"].includes(kind) && on === output;
 }
 
 function Bar() {

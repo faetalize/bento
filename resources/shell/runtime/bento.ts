@@ -390,6 +390,9 @@ class Node {
   disposed = false;
   /** Whether it's in bento's scene, in something. */
   attached = false;
+  /** Whether it was sent to a pose: its looks go back to its style, or to their defaults where
+   * its style doesn't say, the next time it's updated. */
+  posed = false;
   /** Whether it's gone from bento's scene for good. */
   dead = false;
   /** Whether it's on its way to its exit pose to be hidden. */
@@ -444,7 +447,7 @@ class Node {
             if (!one.exit || one.sent.display === "none") return;
             const inner = looks(flatten(one.exit));
             native.set(one.id, JSON.stringify(inner));
-            for (const key of [...LOOKS, "transition"]) delete one.sent[key];
+            one.posed = true;
           });
         }
         const timer = startTimer(settling() * 3, () => this.hidden());
@@ -457,7 +460,7 @@ class Node {
       // Shown again on its way out, it turns around from where it is.
       this.hiding = false;
       this.stopHiding?.();
-      for (const key of [...LOOKS, "transition"]) delete this.sent[key];
+      this.posed = true;
       for (const child of this.children) {
         walk(child, (one) => {
           if (one.exit) one.update();
@@ -481,6 +484,13 @@ class Node {
       }
     }
     const changes: Record<string, any> = {};
+    if (this.posed && !exiting(this)) {
+      this.posed = false;
+      for (const key of [...LOOKS, "transition"]) {
+        changes[key] = next[key] ?? null;
+        delete this.sent[key];
+      }
+    }
     for (const key of Object.keys(this.sent)) {
       if (!(key in next) && this.sent[key] !== null) changes[key] = null;
     }
@@ -536,6 +546,12 @@ class Node {
   setText(text: string) {
     this.input?.setText(text);
   }
+}
+
+/** Whether `node`, or what holds it, is on its way to its exit pose, which it stays at. */
+function exiting(node: Node | null): boolean {
+  for (let at = node; at; at = at.parent) if (at.leaving || at.hiding) return true;
+  return false;
 }
 
 /** The surface `node` is in, if any. */
@@ -710,7 +726,7 @@ function leave(node: Node) {
       walk(child, (one) => {
         if (one.exit && one.attached && one.sent.display !== "none") {
           native.set(one.id, JSON.stringify(looks(flatten(one.exit))));
-          for (const key of [...LOOKS, "transition"]) delete one.sent[key];
+          one.posed = true;
           inner = true;
         }
       });
@@ -741,7 +757,7 @@ function leave(node: Node) {
   node.update();
   if (exit && Object.keys(exit).length > 0) {
     native.set(node.id, JSON.stringify(exit));
-    for (const key of [...LOOKS, "transition"]) delete node.sent[key];
+    node.posed = true;
   }
   // It goes when its motion settles, or once it should have; with only what it holds going
   // somewhere, once that has.
@@ -754,9 +770,8 @@ function comeBack(node: Node) {
   if (!node.leaving) return;
   node.leaving = null;
   for (const key of ["position", "left", "top", "width", "height"]) delete node.own[key];
-  const sent = node.sent;
   // Its looks go back to its style from wherever they are.
-  for (const key of LOOKS) delete sent[key];
+  node.posed = true;
   node.update();
 }
 
