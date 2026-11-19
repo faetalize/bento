@@ -383,6 +383,92 @@ function PanelHolder(props: {
 // Lists.
 // ------------------------------------------------------------------------------------------------
 
+// ------------------------------------------------------------------------------------------------
+// Scrolling.
+// ------------------------------------------------------------------------------------------------
+
+/** The scrollbar's thumb at its smallest, and how long it stays after scrolling, in ms. */
+const THUMB_LEAST = 24;
+const THUMB_LINGER = 1000;
+
+/** A box whose content scrolls, `style` its size and `inner` how it lays its content out, with a
+ * thin bar along its right side that shows where it is and how much there is, as libadwaita's
+ * overlay scrollbars do: it shows while the pointer is near or it scrolls, widens under the
+ * pointer, drags, and a press in its track goes a page up or down. */
+export function Scroller(props: { style?: any; inner?: any; children?: JSX.Element }) {
+  const [scroll, setScroll] = createSignal({ top: 0, reach: 0, height: 0 });
+  const [near, setNear] = createSignal(false);
+  const [moving, setMoving] = createSignal(false);
+  const [over, setOver] = createSignal(false);
+  const [held, setHeld] = createSignal(false);
+  let box: any;
+  let stop: (() => void) | null = null;
+  // Where a drag of the thumb started: the pointer and how far it was scrolled.
+  let grab: { y: number; top: number } | null = null;
+  const thumb = () => {
+    const { top, reach, height } = scroll();
+    if (reach <= 0 || height <= 0) return null;
+    const size = Math.min(height, Math.max(THUMB_LEAST, (height * height) / (height + reach)));
+    return { size, at: ((height - size) * top) / reach };
+  };
+  const shown = () => near() || moving() || over() || held();
+  const wide = () => over() || held();
+  return (
+    <box style={[{ flexDirection: "column" }, props.style]} onNear={({ inside }) => setNear(inside)}>
+      <box
+        ref={box}
+        style={[{ overflow: "scroll", flexGrow: 1, flexBasis: 0, minHeight: 0 }, props.inner]}
+        onScrolled={(event) => {
+          setScroll(event);
+          setMoving(true);
+          stop?.();
+          stop = after(THUMB_LINGER, () => setMoving(false));
+        }}
+      >
+        {props.children}
+      </box>
+      <Show when={thumb()}>
+        {/* The track, which pages towards where it's pressed. */}
+        <box
+          style={{
+            position: "absolute", top: 0, bottom: 0, right: 0, width: 12,
+            opacity: shown() ? 1 : 0, transition: { opacity: 0.2 },
+          }}
+          onHover={({ inside }) => setOver(inside)}
+          onClick={(event) => {
+            const { top, height } = scroll();
+            box?.scrollTo(event.offsetY < thumb()!.at ? top - height : top + height);
+          }}
+        >
+          <box
+            style={{
+              position: "absolute", top: thumb()!.at, right: 2, width: wide() ? 8 : 4,
+              height: thumb()!.size, borderRadius: 4,
+              background: wide() ? "fg/0.5" : "fg/0.3",
+              // It keeps up with what scrolls.
+              animate: false, cursor: "default",
+            }}
+            onPress={(event) => {
+              grab = { y: event.y, top: scroll().top };
+              setHeld(true);
+            }}
+            onDrag={(event) => {
+              const now = thumb();
+              if (!grab || !now) return;
+              const { reach, height } = scroll();
+              box?.scrollTo(grab.top + ((event.y - grab.y) * reach) / Math.max(1, height - now.size));
+            }}
+            onRelease={() => {
+              grab = null;
+              setHeld(false);
+            }}
+          />
+        </box>
+      </Show>
+    </box>
+  );
+}
+
 /** A faint line between groups of things in a row, `length` long, 16 unless it says. */
 export function Divider(props: { length?: number; style?: any }) {
   return (

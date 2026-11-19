@@ -3,7 +3,7 @@
 
 import { apps, type App } from "bento";
 import { createSignal, For, Show } from "solid-js";
-import { Button, Flyout, popup } from "bento:modules/ui";
+import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
 import { AppRow, appIcon, appSearch, preloadIcons, start } from "bento:modules/apps";
 import { PowerPage } from "bento:modules/power";
 
@@ -82,14 +82,12 @@ function Menu(props: { onClose: () => void }) {
             fallback={<PowerPage onDone={props.onClose} />}
           >
             <text style={{ fontWeight: 700, paddingLeft: 8 }}>All apps</text>
-            <box
-              style={{
-                height: LIST, overflow: "scroll", flexDirection: "row", flexWrap: "wrap",
-                alignContent: "start",
-              }}
+            <Scroller
+              style={{ height: LIST }}
+              inner={{ flexDirection: "row", flexWrap: "wrap", alignContent: "start" }}
             >
               <For each={all}>{(app) => <AppTile app={app} onClick={() => pick(app)} />}</For>
-            </box>
+            </Scroller>
           </Show>
         }
       >

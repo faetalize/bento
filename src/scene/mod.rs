@@ -355,6 +355,8 @@ pub const NEAR: u32 = 16;
 pub const DRAG: u32 = 32;
 /// Where its layout puts it changing.
 pub const LAYOUT: u32 = 64;
+/// How far what it holds is scrolled, how far it can be, or how tall it is, changing.
+pub const SCROLLED: u32 = 128;
 
 // A node's springs: its place on its output, as the layout has it, opacity, corners, scale,
 // blur, an offset from its place, and the size it's drawn at.
@@ -417,6 +419,9 @@ pub struct Node {
     scrolled: f32,
     /// How far what it holds reaches past its bottom, as far as it scrolls.
     reach: f32,
+    /// How far it was scrolled, how far it could be and how tall it was when its script last
+    /// heard, for those that hear it.
+    told_scroll: Option<[f32; 3]>,
 }
 
 /// What the renderer draws, in order, back to front, in the output's logical coordinates.
@@ -623,6 +628,8 @@ pub struct Scene {
     settled: Vec<NodeId>,
     /// Nodes whose layout put them somewhere else, and where, for their scripts.
     laid_out: Vec<(NodeId, [f32; 4])>,
+    /// What hears how far it's scrolled and was scrolled, or reached, otherwise since last asked.
+    scrolled_out: Vec<(NodeId, [f32; 3])>,
     /// How long a spring takes to settle, in seconds, where a node doesn't say: bento's own,
     /// as its windows move.
     pub base_response: f64,
@@ -666,6 +673,7 @@ impl Scene {
             styles_dirty: true,
             settled: Vec::new(),
             laid_out: Vec::new(),
+            scrolled_out: Vec::new(),
             base_response: spring::RESPONSE,
             reserved: std::collections::HashMap::new(),
             style: Value::Null,
@@ -790,6 +798,7 @@ impl Scene {
             text_own: TextOwn::default(),
             placement,
             told: None,
+            told_scroll: None,
             scrolled: 0.,
             reach: 0.,
         });
@@ -1357,6 +1366,13 @@ impl Scene {
         node.reach = reach;
         node.scrolled = node.scrolled.clamp(0., reach);
         let scrolled = node.scrolled;
+        // Those that hear how far they're scrolled are told when it, or how far it goes, changes.
+        let scroll = [scrolled, reach, target[3]];
+        if scrolls && node.events & SCROLLED != 0 && node.told_scroll != Some(scroll) {
+            node.told_scroll = Some(scroll);
+            self.scrolled_out.push((id, scroll));
+        }
+        let node = self.node_mut(id).unwrap();
         // Drawn at its place's size, unless it says another.
         let size = node.draw_size.unwrap_or([target[2], target[3]]);
         if !node.placed {
@@ -1462,6 +1478,21 @@ impl Scene {
     /// was last asked, with where.
     pub fn take_laid_out(&mut self) -> Vec<(NodeId, [f32; 4])> {
         std::mem::take(&mut self.laid_out)
+    }
+
+    /// What hears how far it's scrolled, with how far it is, how far it can be and how tall it
+    /// is, since this was last asked.
+    pub fn take_scrolled(&mut self) -> Vec<(NodeId, [f32; 3])> {
+        std::mem::take(&mut self.scrolled_out)
+    }
+
+    /// Scrolls what `id` holds to `top` logical pixels from its top, as far as it goes, and says
+    /// whether it scrolls at all.
+    pub fn scroll_to(&mut self, id: NodeId, top: f32) -> bool {
+        let Some(scrolled) = self.node(id).map(|node| node.scrolled) else {
+            return false;
+        };
+        self.scroll(id, top - scrolled)
     }
 
     /// Scrolls what `id` holds by `by` logical pixels, as far as it goes, and says whether it
@@ -2525,6 +2556,7 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                             Some("near") => NEAR,
                             Some("drag") => DRAG,
                             Some("layout") => LAYOUT,
+                            Some("scrolled") => SCROLLED,
                             _ => 0,
                         }
                 })
@@ -3152,6 +3184,38 @@ mod tests {
         scene.lay_out();
         settle(&mut scene);
         assert_eq!(scene.frame(rows[4]).unwrap()[1], top + 50.);
+    }
+
+    #[test]
+    fn what_scrolls_tells_how_far_it_is_and_goes_and_is_scrolled_to_a_place() {
+        let mut scene = Scene::new();
+        let (_, list) = surface(
+            &mut scene,
+            serde_json::json!({}),
+            serde_json::json!({
+                "height": 100, "width": 50, "overflow": "scroll", "flexDirection": "column",
+                "events": ["scrolled"],
+            }),
+        );
+        for _ in 0..4 {
+            let row = scene.create("box", &serde_json::json!({ "height": 50, "flexShrink": 0 }));
+            scene.append(list, row, None);
+        }
+        scene.lay_out();
+        // Scrolled to its top, reaching a hundred past its bottom, and a hundred tall.
+        assert_eq!(scene.take_scrolled(), [(list, [0., 100., 100.])]);
+        scene.lay_out();
+        assert!(
+            scene.take_scrolled().is_empty(),
+            "told again with nothing new"
+        );
+
+        assert!(scene.scroll_to(list, 60.));
+        scene.lay_out();
+        assert_eq!(scene.take_scrolled(), [(list, [60., 100., 100.])]);
+        scene.scroll_to(list, 400.);
+        scene.lay_out();
+        assert_eq!(scene.take_scrolled(), [(list, [100., 100., 100.])]);
     }
 
     #[test]

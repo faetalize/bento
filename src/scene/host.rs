@@ -809,6 +809,7 @@ impl SceneHost {
         self.moving = moving;
         let settled = scene.take_settled();
         let laid_out = scene.take_laid_out();
+        let scrolled = scene.take_scrolled();
         drop(scene);
         for id in settled {
             shell.send(&serde_json::json!({ "type": "settled", "id": id }));
@@ -816,6 +817,11 @@ impl SceneHost {
         for (id, [x, y, width, height]) in laid_out {
             shell.send(&serde_json::json!({
                 "type": "layout", "id": id, "x": x, "y": y, "width": width, "height": height,
+            }));
+        }
+        for (id, [top, reach, height]) in scrolled {
+            shell.send(&serde_json::json!({
+                "type": "scrolled", "id": id, "top": top, "reach": reach, "height": height,
             }));
         }
         // What hears the pointer near may have moved under it, and what it does then is drawn.
@@ -1894,6 +1900,56 @@ mod tests {
         assert!(!shows(&host, "DP-1", "Pin to Tray"));
         assert!(!shows(&host, "DP-1", "thing-tray-symbolic"));
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_scroller_has_a_bar_that_drags_and_pages_what_it_holds() {
+        // A shell of a scroller with ten rows of fifty in a hundred.
+        let dir = std::env::temp_dir().join(format!("bento-scroller-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("scroller.tsx");
+        std::fs::write(
+            &file,
+            r#"
+            import { Surface } from "bento";
+            import { For } from "solid-js";
+            import { Scroller } from "bento:modules/ui";
+            export default () => (
+              <Surface output="DP-1" anchor={["top", "left"]}>
+                <Scroller style={{ width: 200, height: 100 }}>
+                  <For each={[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}>
+                    {(i) => <box style={{ height: 50, flexShrink: 0 }}><text>{`Row ${i}`}</text></box>}
+                  </For>
+                </Scroller>
+              </Surface>
+            );
+            "#,
+        )
+        .unwrap();
+        let entry = file.to_string_lossy().into_owned();
+        super::super::modules::TEST_ENTRY.with(|e| *e.borrow_mut() = Some(entry));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let row = |host: &SceneHost, i: u32| middle_of(host, "DP-1", &format!("Row {i}"))[1];
+        assert_eq!(row(&host, 0), 25.);
+
+        // The thumb is a fifth of the track, on its right, at the top. Dragged down by forty, it
+        // goes forty of the eighty it can, so what it holds goes two hundred of its four.
+        host.pointer_at(Some(("DP-1", [100., 50.])));
+        settle(&mut host, &mut now);
+        let thumb = [196., 10.];
+        assert!(host.covers_any("DP-1", thumb));
+        host.press(1, 1, SceneHost::at("DP-1", thumb));
+        host.pointer_at(Some(("DP-1", [196., 50.])));
+        host.release(1, 1, SceneHost::at("DP-1", [196., 50.]));
+        settle(&mut host, &mut now);
+        assert_eq!(row(&host, 4), 25.);
+
+        // A press in the track under the thumb goes a page down.
+        click(&mut host, "DP-1", [196., 95.]);
+        settle(&mut host, &mut now);
+        assert_eq!(row(&host, 6), 25.);
+        std::fs::remove_dir_all(&dir).unwrap();
+        super::super::modules::TEST_ENTRY.with(|e| *e.borrow_mut() = None);
     }
 
     fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {

@@ -247,6 +247,14 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
+                "scrollTo",
+                Function::new(ctx.clone(), move |id: u32, top: f64| {
+                    s.borrow_mut().scroll_to(id, top as f32)
+                })
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
                 "remove",
                 Function::new(ctx.clone(), move |id: u32| s.borrow_mut().remove(id)).map_err(js)?,
             )?;

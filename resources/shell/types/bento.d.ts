@@ -249,6 +249,9 @@ declare module "bento" {
     frame(): Rect | null;
     /** Puts it at `pose` at once, to move from there to where its style says. */
     jump(pose: Pose): void;
+    /** Scrolls what it holds to `top` pixels from its top, as far as it goes, for one with
+     * `overflow: "scroll"`. */
+    scrollTo(top: number): void;
   }
 
   export interface InputNode extends SceneNode {
@@ -275,6 +278,9 @@ declare module "bento" {
     onRest?: () => void;
     /** Where its layout puts it changed, from the next frame: to size or place things by it. */
     onLayout?: (rect: Rect) => void;
+    /** For one with `overflow: "scroll"`: how far what it holds is scrolled from its top, how
+     * far it can be, and how tall it is, when any of them changed, as for a scrollbar. */
+    onScrolled?: (event: { top: number; reach: number; height: number }) => void;
     /** Pressed and let go on it, with the left button, a touch or a pen. Having a press handler,
      * `onHover` or `onScroll`, it takes the pointer from what's below it; so does any shape,
      * with a `background`, `material` or border. The rest lets it through. */

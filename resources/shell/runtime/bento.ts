@@ -384,7 +384,7 @@ const same = (a: unknown, b: unknown) =>
 const HANDLERS: Record<string, string> = {
   onClick: "click", onMiddleClick: "click", onRightClick: "click", onPress: "click",
   onRelease: "click", onDrag: "drag", onHover: "hover", onScroll: "scroll", onNear: "near",
-  onRest: "settle", onLayout: "layout",
+  onRest: "settle", onLayout: "layout", onScrolled: "scrolled",
 };
 const CLICKS: Record<number, string> = { 1: "onClick", 2: "onMiddleClick", 3: "onRightClick" };
 
@@ -558,6 +558,11 @@ class Node {
   jump(from: any) {
     if (this.dead) return;
     native.set(this.id, JSON.stringify({ jump: looks(flatten(from)) }));
+  }
+
+  // One whose style scrolls it.
+  scrollTo(top: number) {
+    if (!this.dead) native.scrollTo(this.id, top);
   }
 
   // An input's.
@@ -1262,6 +1267,9 @@ function handle(event: any) {
       if (node?.leaving) node.leaving();
       else if (node?.hiding) node.hidden();
       pointer(node, "onRest", event);
+      return;
+    case "scrolled":
+      pointer(node, "onScrolled", { top: event.top, reach: event.reach, height: event.height });
       return;
     case "layout":
       pointer(node, "onLayout", {
