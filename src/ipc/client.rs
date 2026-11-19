@@ -873,6 +873,8 @@ fn print_shell(shell: &bento_ipc::Shell) {
         println!();
         println!("No settings.");
     }
+    println!();
+    print_actions(&shell.actions);
     if !shell.unused.is_empty() {
         println!();
         println!(

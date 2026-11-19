@@ -1692,19 +1692,6 @@ impl State {
                     self.niri.a11y_announce_hotkey_overlay();
                 }
             }
-            Action::EditWorkspace | Action::ToggleClipboard | Action::SwitchAudioOutput => {
-                // These are the shell's to do.
-                if let Some(scene) = &self.niri.scene {
-                    let kind = match action {
-                        Action::EditWorkspace => "edit-workspace",
-                        Action::ToggleClipboard => "toggle-clipboard",
-                        _ => "switch-audio-output",
-                    };
-                    let output = self.niri.layout.active_output().map(|o| o.name());
-                    scene.event(kind, output);
-                    self.niri.queue_redraw_all();
-                }
-            }
             Action::ShellAction(name, args) => {
                 if let Some(scene) = &self.niri.scene {
                     let output = self.niri.layout.active_output().map(|o| o.name());

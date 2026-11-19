@@ -32,11 +32,31 @@ pub fn write() {
 }
 
 /// The files of the copy, by their path in it.
-fn files() -> impl Iterator<Item = (&'static str, &'static str)> {
+fn files() -> impl Iterator<Item = (&'static str, String)> {
     let scripts = STOCK
         .iter()
         .filter(|(name, _)| name.starts_with("modules/") || name.starts_with("shells/"));
-    scripts.chain(TYPES).copied()
+    let written = scripts
+        .chain(TYPES)
+        .map(|(name, text)| (*name, String::from(*text)));
+    written.chain([(PAGES, pages())])
+}
+
+/// Where the pages of bento Settings are, as a type.
+const PAGES: &str = "types/pages.d.ts";
+
+/// The pages of bento Settings that a setting can name, as the type `page` takes, from the list
+/// bento Settings has them in.
+fn pages() -> String {
+    let mut text = String::from(
+        "// Written by bento: the pages of its settings that a setting can name to show on.\n\n\
+         declare module \"bento\" {\n  interface SettingsPages {\n",
+    );
+    for page in niri_config::SETTINGS_PAGES {
+        text.push_str(&format!("    {page:?}: true;\n"));
+    }
+    text.push_str("  }\n}\n");
+    text
 }
 
 /// What tells this copy from another bento's.
@@ -109,7 +129,7 @@ fn tsconfig(copy: &Path) -> String {
       "bento:stock/shells/*": [{shells}]
     }}
   }},
-  "include": ["**/*", {bento}]
+  "include": ["**/*", {bento}, {pages}]
 }}
 "#,
         solid = at("types/solid-js/index.d.ts"),
@@ -119,6 +139,7 @@ fn tsconfig(copy: &Path) -> String {
         modules = at("modules/*"),
         shells = at("shells/*"),
         bento = at("types/bento.d.ts"),
+        pages = at(PAGES),
     )
 }
 
@@ -149,12 +170,26 @@ mod tests {
             "types/bento.d.ts",
             "types/solid-js/index.d.ts",
             "types/@solidjs/signals/index.d.ts",
+            "types/pages.d.ts",
         ] {
             assert!(names.contains(&name), "{name} isn't in the copy");
         }
         // bento's runtime and its bundle of Solid are what runs, not what's used.
         assert!(!names.iter().any(|name| name.starts_with("runtime/")));
         assert!(!names.iter().any(|name| name.starts_with("vendor/")));
+        assert!(!names.iter().any(|name| *name == "runtime/declare.js"));
+    }
+
+    #[test]
+    fn the_pages_a_setting_can_name_are_a_type() {
+        let text = pages();
+        assert!(text.contains("interface SettingsPages"));
+        for page in niri_config::SETTINGS_PAGES {
+            assert!(
+                text.contains(&format!("{page:?}: true;")),
+                "{page} is missing"
+            );
+        }
     }
 
     #[test]

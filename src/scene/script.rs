@@ -344,14 +344,18 @@ impl Shell {
                 })
                 .map_err(js)?,
             )?;
-            // The settings that modules and shells declare in their `meta`, and write.
+            // The settings and actions that modules and shells declare in their `meta`, and the
+            // settings they write.
             let s = settings.clone();
             native.set(
                 "declare",
                 Function::new(
                     ctx.clone(),
-                    move |ctx: rquickjs::Ctx<'_>, name: String, declared: String| {
-                        let values = s.borrow_mut().declare(&name, &declared);
+                    move |ctx: rquickjs::Ctx<'_>,
+                          name: String,
+                          settings: String,
+                          actions: String| {
+                        let values = s.borrow_mut().declare(&name, &settings, &actions);
                         values.map(|values| values.to_string()).map_err(|err| {
                             rquickjs::Exception::throw_message(&ctx, &format!("{err:#}"))
                         })

@@ -533,11 +533,10 @@ declare module "bento" {
     options?: { properties?: Record<string, unknown>; window?: number; workspace?: number },
   ): void;
 
-  /** Listens to one of the shell's actions, which binds run with the focused output: any module
-   * takes a name, which a bind runs as `shell-action "name" args…`. bento's own modules listen
-   * to `toggle-launcher`, `edit-workspace`, `toggle-clipboard` and `switch-audio-output`, which
-   * have binds of their own too. Listening inside a component, it stops when the component
-   * goes. */
+  /** Listens to an action, which binds run with the focused output: one a module declares in
+   * its `meta`, which a bind runs as `shell-action "name" args…`, or bento's own
+   * `toggle-launcher`, which bento hands to whichever shell runs. Listening inside a component,
+   * it stops when the component goes. */
   export function onAction(
     name: string,
     fn: (event: { output: OutputName | null; args: string[] }) => void,
@@ -583,37 +582,46 @@ declare module "bento" {
   /** What the shell notes for itself as it's used, its state, kept between runs by key, as a
    * signal and its setter: `const [quiet, setQuiet] = stored("doNotDisturb", false)`. Keys are
    * shared by every module, so a module of one's own puts its name in front of its keys. What
-   * the user chooses is a setting instead, see `useSettings`. */
+   * the user chooses is a setting instead, see `useModule`. */
   export function stored<T>(key: string, fallback: T): [Accessor<T>, (value: T) => void];
 
   // ---------------------------------------------------------------------------------------------
-  // Settings
+  // Settings and actions
   //
-  // A setting is a typed value that a module declares for what it shows, which every shell with
-  // the module shares, or a shell declares for itself. The user's are in
-  // `~/.config/bento/shell/settings.kdl`, a block for each module and shell by its name, and
-  // bento's settings show the running shell's:
+  // A module, or a shell, declares its settings and actions in its `meta`, the same way engines
+  // do, and `useModule` hands them to bento. A setting is a typed value that a module declares
+  // for what it shows, which every shell with the module shares, or a shell declares for itself.
+  // The user's are in `~/.config/bento/shell/settings.kdl`, a block for each module and shell by
+  // its name, and bento's settings show them:
   //
   //   taskbar {
   //       pinned "firefox" "org.gnome.Nautilus"
   //   }
   //
-  // A module declares them in its `meta`, typed like engines' options, and reads them with
-  // `useSettings`, which gets them again as the file changes:
+  // An action is something a shortcut does, which a bind runs with `shell-action "name"`, and
+  // which bento's settings list with bento's own:
   //
   //   export const meta = {
   //     settings: {
   //       pinned: { type: "string", list: true, default: [], description: "Apps pinned to it." },
   //     },
+  //     actions: {
+  //       "switch-audio-output": { description: "Switch to the next pinned output." },
+  //     },
   //   } satisfies Meta;
-  //   const [settings, setSetting] = useSettings(import.meta, meta);
+  //   const { settings, setSetting } = useModule(import.meta, meta);
   //   settings.pinned; // string[]
+  //   onAction("switch-audio-output", next);
   //
   // What a shell places a module with, its props, is the shell's own and not a setting; how a
   // module's props and settings go together is the module's to say.
   // ---------------------------------------------------------------------------------------------
 
-  /** The types a setting can have, as engines' options have them. */
+  /** The pages of bento's settings a setting can show on, by their id. bento fills this in for
+   * editors, from the pages its settings have. */
+  export interface SettingsPages {}
+
+  /** The types a setting can have, as engines' have them. */
   export type SettingType =
     | "boolean"
     | "number"
@@ -635,12 +643,37 @@ declare module "bento" {
     default?: unknown;
     /** What it is, which bento's settings show. */
     description?: string;
+    /** The page of bento's settings it shows on, rather than the Shell page. */
+    page?: keyof SettingsPages;
+    /** The group on that page it shows in, by its title, rather than one with the module's
+     * name. */
+    group?: string;
+  }
+
+  /** An argument of an action, which binds write after its name. */
+  export interface ActionArg {
+    name: string;
+    /** Unset, it's any value, and may be left out. */
+    type?: "boolean" | "number" | "string" | "choice" | "size" | "workspace" | "monitor";
+    /** Its value when it's left out. Arguments without one must be given. */
+    default?: boolean | number | string;
+    choices?: readonly string[];
+    description?: string;
+  }
+
+  /** An action as a module or shell declares it. */
+  export interface Action {
+    description?: string;
+    /** Its arguments, in order. */
+    args?: readonly ActionArg[];
   }
 
   /** What a module or shell says about itself. */
   export interface Meta {
     /** Its settings, by name. */
     settings?: Record<string, Setting>;
+    /** Its actions, by name, which no other module and none of bento's own has. */
+    actions?: Record<string, Action>;
   }
 
   /** A size, as a setting of type `size` reads: a proportion of the working area, or pixels. */
@@ -677,17 +710,18 @@ declare module "bento" {
       : never;
   };
 
-  /** The settings that `meta` declares for the module `module` is, which is `import.meta`: a
-   * store of their values, which changes as the file does, and what writes one to the file, as
-   * it's written there, like `"50%"` for a size. A setting written as its default leaves the file.
-   * A module in place of bento's module of its name has its settings. */
-  export function useSettings<M extends Meta>(
+  /** Hands bento what `meta` declares for the module `module` is, which is `import.meta`: its
+   * settings and actions. Gives a store of the settings' values, which changes as the file does,
+   * and what writes one to the file, as it's written there, like `"50%"` for a size; a setting
+   * written as its default leaves the file. A module in place of bento's module of its name has
+   * its settings. */
+  export function useModule<M extends Meta>(
     module: ImportMeta,
     meta: M,
-  ): readonly [
-    Settings<M>,
-    <K extends keyof M["settings"] & string>(setting: K, value: unknown) => void,
-  ];
+  ): {
+    settings: Settings<M>;
+    setSetting<K extends keyof M["settings"] & string>(setting: K, value: unknown): void;
+  };
 
   export function log(...parts: unknown[]): void;
 

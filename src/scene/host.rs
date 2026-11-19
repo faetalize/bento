@@ -419,6 +419,7 @@ impl SceneHost {
                 .into_iter()
                 .map(|(name, settings)| bento_ipc::ShellSettings { name, settings })
                 .collect(),
+            actions: settings.as_ref().map(|s| s.actions()).unwrap_or_default(),
             unused,
         }
     }
@@ -770,14 +771,6 @@ impl SceneHost {
             shell.send(&serde_json::json!({ "type": "windows", "windows": windows }));
         }
         self.sent_windows = Some(windows);
-    }
-
-    /// Tells the shell of something bento was asked for that's the shell's to do, like a
-    /// shortcut for one of its panels, with the output that has the focus.
-    pub fn event(&self, kind: &str, output: Option<String>) {
-        if let Some(shell) = &self.shell {
-            shell.send(&serde_json::json!({ "type": kind, "output": output }));
-        }
     }
 
     /// When the shell next needs to run, for its timers.
@@ -1812,7 +1805,7 @@ mod tests {
     #[test]
     fn the_workspace_editor_renames_as_its_typed_and_takes_the_name_away() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         assert!(host.wants_keyboard());
         assert!(shows(&host, "DP-1", "Workspace 1"));
@@ -1861,7 +1854,7 @@ mod tests {
         host.set_workspaces(serde_json::json!({
             "DP-1": [{ "index": 0, "name": "mail", "active": true, "focused": true, "id": 9 }],
         }));
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         // Opening it changes nothing.
         assert!(host.take_actions().is_empty());
@@ -1881,7 +1874,7 @@ mod tests {
         assert_eq!(actions[0]["args"], serde_json::json!(["mail"]));
 
         // The shortcut again closes it.
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
     }
@@ -2419,7 +2412,7 @@ mod tests {
         // Without pinned outputs there's no switcher, and its shortcut says what to do.
         assert!(!shows(&host, "DP-1", "audio-speakers-symbolic"));
         commands(&host);
-        host.event("switch-audio-output", None);
+        host.shell_action("switch-audio-output", &[], None);
         let sent = commands(&host);
         assert_eq!(sent[0]["cmd"], "notify");
         assert!(sent[0]["body"]
@@ -2468,7 +2461,7 @@ mod tests {
                     r#""active":true,"volume":0.8"#,
                 ),
         );
-        host.event("switch-audio-output", None);
+        host.shell_action("switch-audio-output", &[], None);
         assert_eq!(commands(&host)[0]["name"], "a");
     }
 
@@ -2509,7 +2502,7 @@ mod tests {
         assert_eq!(actions[0]["name"], "spawn");
         assert_eq!(
             actions[0]["args"],
-            serde_json::json!(["bento-settings", "control-center"])
+            serde_json::json!(["bento-settings", "shell"])
         );
     }
 
@@ -2627,7 +2620,7 @@ mod tests {
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
 
-        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         one_line(&host, "Search the clipboard", 15.);
     }
@@ -2713,7 +2706,7 @@ mod tests {
         assert!(!shows(&host, "DP-1", "first copy"));
 
         // The shortcut opens it on the focused output; a click on one copies it.
-        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         let at = middle_of(&host, "DP-1", "second copy with two lines");
         click(&mut host, "DP-1", at);
@@ -3051,7 +3044,7 @@ mod tests {
         }
         settle(&mut host, &mut now);
 
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         type_keys(&mut host, &["d", "e", "v"]);
         settle(&mut host, &mut now);
@@ -3084,7 +3077,7 @@ mod tests {
             ] })
             .to_string(),
         );
-        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         shot(&host, "clipboard", [1460, 0, 460, 420]);
         type_keys(&mut host, &["Escape"]);

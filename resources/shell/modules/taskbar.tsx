@@ -3,7 +3,7 @@
 // opens the app's menu, which pins and unpins it, and dragging a button moves it among the others;
 // the pinned keep their order among themselves in the settings.
 
-import { action, after, useSettings, windows, type App, type Meta, type Window } from "bento";
+import { action, after, useModule, windows, type App, type Meta, type Window } from "bento";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { Flyout } from "bento:modules/ui";
 import { menuOpen, openMenu, type MenuItem } from "bento:modules/menu";
@@ -20,7 +20,7 @@ export const meta = {
   },
 } satisfies Meta;
 
-export const [settings, setSetting] = useSettings(import.meta, meta);
+export const { settings, setSetting } = useModule(import.meta, meta);
 
 /** Whether `app` is pinned. */
 export const isPinned = (app: App) => settings.pinned.some((id) => appById(id) === app);

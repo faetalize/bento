@@ -12,8 +12,8 @@
 // island holds the status icons and opens into it, and into the clipboard's history.
 
 import {
-  action, after, command, config, data, focusedOutput, notify, onAction, outputs, run, useOutput,
-  type JSX,
+  action, after, command, config, data, focusedOutput, notify, onAction, outputs, run, useModule,
+  useOutput, type JSX, type Meta,
 } from "bento";
 import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
 import { ACTIVE, Button, Heading, ICON_ROOM, Island, Note, Toggle, popup } from "bento:modules/ui";
@@ -45,7 +45,7 @@ function capture(which: "screenshot" | "screenRecord") {
   popup.close();
   if (!set && which === "screenRecord") {
     // Nothing records the screen until a command is set.
-    action("spawn", ["bento-settings", "control-center"]);
+    action("spawn", ["bento-settings", "shell"]);
     return;
   }
   after(350, async () => {
@@ -355,6 +355,16 @@ export function ControlCenter(props: { output: string; onClose: () => void }) {
     </QuickSettings>
   );
 }
+
+export const meta = {
+  actions: {
+    "toggle-clipboard": {
+      description: "Show or hide the clipboard's history.",
+    },
+  },
+} satisfies Meta;
+
+useModule(import.meta, meta);
 
 // The clipboard's shortcut opens the history in the focused output's status island.
 onAction("toggle-clipboard", ({ output }) => {

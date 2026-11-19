@@ -358,10 +358,24 @@ impl Ui {
         let category = self.categories[idx];
         if self.built.borrow_mut().insert(idx) {
             let content = match &category.content {
-                Content::Settings(groups) => page::frame(&page::settings_page(groups, &self.ctx)),
-                Content::Custom { build, .. } => page::frame(&build(&self.ctx)),
+                Content::Settings(groups) => page::settings_page(groups, &self.ctx),
+                Content::Custom { build, .. } => build(&self.ctx),
                 Content::Planned => unreachable!("planned pages stay out of the sidebar"),
             };
+            // What the engine and the shell declare for the page goes after its own, but on the
+            // Engine and Shell pages, which place it themselves.
+            let content = match category.id {
+                id if niri_config::SETTINGS_PAGES.contains(&id)
+                    && !matches!(id, "engine" | "shell") =>
+                {
+                    let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
+                    column.append(&content);
+                    column.append(&crate::pages::placed(&self.ctx, id));
+                    column.upcast()
+                }
+                _ => content,
+            };
+            let content = page::frame(&content);
             self.pages.add_named(&content, Some(category.id));
         }
         self.pages.set_visible_child_name(category.id);

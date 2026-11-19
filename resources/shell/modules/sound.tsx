@@ -3,7 +3,7 @@
 
 import {
   Surface, after, bentoStyle, command, data, focusedOutput, notify, onAction, outputs, stored,
-  useSettings, type Meta,
+  useModule, type Meta,
 } from "bento";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { Button, Heading, Note, Row, Slider, grows, growsWith } from "bento:modules/ui";
@@ -66,12 +66,19 @@ export const meta = {
       type: "string",
       list: true,
       default: [] as string[],
-      description: "The sound outputs pinned for the switcher, by their name in the sound server.",
+      description:
+        "The sound outputs that the output switcher and the Switch Sound Output shortcut go " +
+        "through, by their name in the sound server.",
+    },
+  },
+  actions: {
+    "switch-audio-output": {
+      description: "Switch the sound to the next pinned output.",
     },
   },
 } satisfies Meta;
 
-export const [settings, setSetting] = useSettings(import.meta, meta);
+export const { settings, setSetting } = useModule(import.meta, meta);
 
 /** The sound outputs pinned for the switcher, by name, in the order they were pinned. */
 export const pinned = () => settings.pinned;

@@ -8,6 +8,7 @@ mod blur;
 mod blur_live;
 mod blur_preview;
 mod control_center;
+mod declared;
 mod engine;
 mod input;
 mod layout;
@@ -22,6 +23,8 @@ mod system;
 mod theme;
 mod title_buttons;
 mod wallpaper;
+
+pub use declared::placed;
 
 use crate::model::{Content, Section};
 
@@ -72,4 +75,20 @@ pub fn sections() -> Vec<Section> {
         })
         .filter(|section| !section.categories.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_page_a_setting_can_name_is_a_page_of_the_app() {
+        let ids: Vec<&str> = sections()
+            .iter()
+            .flat_map(|section| section.categories.iter().map(|category| category.id))
+            .collect();
+        for page in niri_config::SETTINGS_PAGES {
+            assert!(ids.contains(page), "the app has no page {page:?}");
+        }
+    }
 }

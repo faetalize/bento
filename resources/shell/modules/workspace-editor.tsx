@@ -2,9 +2,21 @@
 // which is renamed as the name is typed. Its buttons take the name away, and put back the one it
 // had when the editor opened.
 
-import { Surface, action, focusedOutput, onAction, outputs, workspaces } from "bento";
+import {
+  Surface, action, focusedOutput, onAction, outputs, useModule, workspaces, type Meta,
+} from "bento";
 import { createSignal, Show } from "solid-js";
 import { Button, grows, growsWith, popup } from "bento:modules/ui";
+
+export const meta = {
+  actions: {
+    "edit-workspace": {
+      description: "Show or hide the editor for the focused workspace, to name it or take its name away.",
+    },
+  },
+} satisfies Meta;
+
+useModule(import.meta, meta);
 
 const RADIUS = 24;
 

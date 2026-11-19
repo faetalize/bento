@@ -251,7 +251,7 @@ shell {
 
 bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one to start a shell of your own from; bento's own aren't edited in place. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
 
-Modules and shells declare their settings, like the apps pinned to the taskbar, which bento Settings shows and `~/.config/bento/shell/settings.kdl` keeps, a block for each module and shell by its name:
+Modules and shells declare their settings and actions in their `meta`, the way engines do. Settings, like the apps pinned to the taskbar, are in bento Settings, on the Shell page or the page a setting names, and `~/.config/bento/shell/settings.kdl` keeps them, a block for each module and shell by its name:
 
 ```kdl
 taskbar {
@@ -259,7 +259,15 @@ taskbar {
 }
 ```
 
-What a shell can use, an editor shows: bento keeps a copy of its modules, its shells and their types in `~/.local/share/bento/shell/`, and a `tsconfig.json` in `~/.config/bento/shell/` that points an editor there. `bento msg shell` prints the running shell's settings.
+Actions are what a shortcut does, which a bind runs by name with `shell-action`, with what the action takes after its name. Settings → Shortcuts lists the running shell's with bento's own and the engine's:
+
+```kdl
+binds {
+    Mod+V { shell-action "toggle-clipboard"; }
+}
+```
+
+What a shell can use, an editor shows: bento keeps a copy of its modules, its shells and their types in `~/.local/share/bento/shell/`, and a `tsconfig.json` in `~/.config/bento/shell/` that points an editor there. `bento msg shell` prints the running shell's settings and actions.
 
 A shell program named with `shell "…"` keeps running alongside it.
 
@@ -307,23 +315,15 @@ shell {
 }
 ```
 
-A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and `switch-audio-output` does the same from a shortcut.
+A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and the shell's `switch-audio-output` does the same from a shortcut.
 
 When the volume changes elsewhere, by a volume key or a headset's knob, its level grows out of nothing at the bottom middle of the screen for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
 
-The clipboard's button opens its history, and so does `toggle-clipboard`: what was copied, newest first, found by typing, and copied again with a click or Enter (Shift+Delete forgets one). It's kept for the session only, text in memory and pictures in the runtime directory, and what a password manager marks as secret isn't kept. When the app that copied something closes, its copy stays on the clipboard.
-
-A shell's module can have actions of its own, which a bind runs by name with `shell-action`, with what the action takes after its name:
-
-```kdl
-binds {
-    Mod+N { shell-action "toggle-notes"; }
-}
-```
+The clipboard's button opens its history, and so does the shell's `toggle-clipboard`: what was copied, newest first, found by typing, and copied again with a click or Enter (Shift+Delete forgets one). It's kept for the session only, text in memory and pictures in the runtime directory, and what a password manager marks as secret isn't kept. When the app that copied something closes, its copy stays on the clipboard.
 
 Notifications show their actions as buttons, and a click on one does its default action. The app gets an activation token with it, so it can bring its window forward.
 
-`edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. None of these actions is bound by default; Settings → Shortcuts binds them.
+The shell's `edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. None of these actions is bound by default; Settings → Shortcuts binds them.
 
 A rule can pick the other material for some windows or surfaces:
 

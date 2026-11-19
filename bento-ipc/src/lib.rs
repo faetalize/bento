@@ -188,7 +188,7 @@ pub enum Get {
     EngineState,
     /// bento's own actions, with their arguments.
     Actions,
-    /// The shell bento draws, and the settings it and its modules declare.
+    /// The shell bento draws, and the settings and actions it and its modules declare.
     Shell,
 }
 
@@ -246,7 +246,7 @@ impl Response {
     }
 }
 
-/// The shell bento draws, and its settings.
+/// The shell bento draws, and its settings and actions.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Shell {
@@ -260,6 +260,8 @@ pub struct Shell {
     /// The settings of the shell and of each module it uses that declares any, in the order
     /// they're loaded: a module's are shared by every shell that has it.
     pub settings: Vec<ShellSettings>,
+    /// The actions the shell and its modules declare, which binds run with `shell-action`.
+    pub actions: Vec<LayoutEngineAction>,
     /// What the settings file sets that nothing running declares, as `name` for a whole block or
     /// `name.setting`. It stays in the file, for a shell that declares it.
     pub unused: Vec<String>,

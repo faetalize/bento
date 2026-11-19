@@ -1,5 +1,6 @@
-//! Shortcuts: every bind in one list, bento's actions and the running engine's together, and a
-//! dialog to add or change one.
+//! Shortcuts: every bind in one list, bento's actions, the running engine's and the running
+//! shell's together, and a dialog to add or change one. A shell's action is bound as
+//! `shell-action "name" args…`, and shows by its own name.
 //!
 //! Binds to an action the running engine declares go in the engine's own file, and every other
 //! bind in the main config; the page doesn't show which. Binds from included files are shown but
@@ -30,11 +31,13 @@ pub fn category() -> Category {
         .search_item("shortcuts.list", "Shortcuts", &["add shortcut", "reset"])
 }
 
-/// An action to bind: bento's own, or one the running engine declares.
+/// An action to bind: bento's own, or one the running engine or shell declares.
 #[derive(Clone)]
 struct Choice {
     action: LayoutEngineAction,
     engine: bool,
+    /// Whether the running shell declares it, so a bind writes it with `shell-action`.
+    shell: bool,
     /// A bind's own action that isn't offered, like one of an engine that isn't running, which
     /// is written back as it is.
     kept: Option<ActionNode>,
@@ -43,6 +46,46 @@ struct Choice {
 impl Choice {
     fn title(&self) -> String {
         title(&self.action)
+    }
+
+    /// What tells it apart from the others, as [`action_key`] gives it for a bind.
+    fn key(&self) -> String {
+        if self.shell {
+            format!("{SHELL_ACTION} {}", self.action.name)
+        } else {
+            self.action.name.clone()
+        }
+    }
+}
+
+/// How binds write the shell's actions: `shell-action "name" args…`.
+const SHELL_ACTION: &str = "shell-action";
+
+/// The name of the shell's action that `action` runs, if it runs one.
+fn shell_action_name(action: &ActionNode) -> Option<&str> {
+    match action.args.first() {
+        Some(Value::Str(name)) if action.name == SHELL_ACTION => Some(name),
+        _ => None,
+    }
+}
+
+/// What tells a bind's action apart from others, as [`Choice::key`] gives it.
+fn action_key(action: &ActionNode) -> String {
+    match shell_action_name(action) {
+        Some(name) => format!("{SHELL_ACTION} {name}"),
+        None => action.name.clone(),
+    }
+}
+
+/// A bind's shell action as the shell declares it, by its own name with its own arguments.
+fn unwrapped(action: &ActionNode) -> ActionNode {
+    match shell_action_name(action) {
+        Some(name) => ActionNode {
+            name: String::from(name),
+            args: action.args[1..].to_vec(),
+            properties: action.properties.clone(),
+        },
+        None => action.clone(),
     }
 }
 
@@ -58,6 +101,7 @@ fn choices() -> Vec<Choice> {
         .map(|action| Choice {
             action,
             engine: false,
+            shell: false,
             kept: None,
         })
         .collect();
@@ -65,6 +109,15 @@ fn choices() -> Vec<Choice> {
         choices.extend(engine.actions.into_iter().map(|action| Choice {
             action,
             engine: true,
+            shell: false,
+            kept: None,
+        }));
+    }
+    if let Ok(shell) = ipc::shell() {
+        choices.extend(shell.actions.into_iter().map(|action| Choice {
+            action,
+            engine: false,
+            shell: true,
             kept: None,
         }));
     }
@@ -75,7 +128,8 @@ fn choices() -> Vec<Choice> {
 /// choice of its own that keeps it as it is, rather than the bind becoming the first action.
 fn picked_choice(choices: &mut Vec<Choice>, action: Option<&ActionNode>) -> usize {
     let Some(action) = action else { return 0 };
-    if let Some(at) = choices.iter().position(|c| c.action.name == action.name) {
+    let key = action_key(action);
+    if let Some(at) = choices.iter().position(|c| c.key() == key) {
         return at;
     }
     choices.push(Choice {
@@ -85,6 +139,7 @@ fn picked_choice(choices: &mut Vec<Choice>, action: Option<&ActionNode>) -> usiz
             args: Vec::new(),
         },
         engine: false,
+        shell: false,
         kept: Some(action.clone()),
     });
     choices.len() - 1
@@ -94,6 +149,12 @@ fn picked_choice(choices: &mut Vec<Choice>, action: Option<&ActionNode>) -> usiz
 fn chosen_action(choice: &Choice, fields: &[Field]) -> Result<ActionNode, String> {
     match &choice.kept {
         Some(kept) => Ok(kept.clone()),
+        None if choice.shell => {
+            let mut action = action_node(&choice.action, fields)?;
+            action.args.insert(0, Value::Str(action.name));
+            action.name = String::from(SHELL_ACTION);
+            Ok(action)
+        }
         None => action_node(&choice.action, fields),
     }
 }
@@ -142,7 +203,7 @@ fn entries(store: &Store) -> Vec<Entry> {
             .iter()
             .find(|node| parse_key(&node.key) == Some(bind.key));
         let action = match node.and_then(|node| node.action.as_ref()) {
-            Some(action) => action.name.clone(),
+            Some(action) => action_key(action),
             None => bind.press_action().map_or_else(String::new, action_name),
         };
         entries.push(Entry {
@@ -168,10 +229,13 @@ fn parse_key(text: &str) -> Option<Key> {
     text.parse().ok()
 }
 
-/// Name of a parsed action as configs write it, like `FocusMonitorLeft` as `focus-monitor-left`.
+/// Name of a parsed action as configs write it, like `FocusMonitorLeft` as `focus-monitor-left`,
+/// and a shell's as [`action_key`] gives it.
 fn action_name(action: &Action) -> String {
-    if let Action::LayoutAction(name, ..) = action {
-        return name.clone();
+    match action {
+        Action::LayoutAction(name, ..) => return name.clone(),
+        Action::ShellAction(name, _) => return format!("{SHELL_ACTION} {name}"),
+        _ => (),
     }
     // `Debug` starts with the variant name.
     let debug = format!("{action:?}");
@@ -284,14 +348,15 @@ fn refresh(view: &Rc<View>) {
     let mod_key = mod_key(&view.ctx.store);
     let mut rows = Vec::new();
     for entry in entries(&view.ctx.store) {
-        let choice = choices.iter().find(|c| c.action.name == entry.action);
+        let choice = choices.iter().find(|c| c.key() == entry.action);
         let title = choice.map_or_else(|| entry.action.clone(), Choice::title);
         let row = adw::ActionRow::builder()
             .use_markup(false)
             .title(&title)
             .build();
         let args = entry.node.as_ref().and_then(|node| node.action.as_ref());
-        let args = args.map(ActionNode::arguments).unwrap_or_default();
+        // A shell's action shows by its own name, with its own arguments.
+        let args = args.map(|a| unwrapped(a).arguments()).unwrap_or_default();
         let subtitle = match (&entry.include, &entry.node) {
             _ if entry.taken_over => {
                 String::from("Not in use: the engine's shortcut takes this key")
@@ -430,7 +495,8 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     let args_group = adw::PreferencesGroup::builder().title("Arguments").build();
     page.add(&args_group);
     let fields: Rc<RefCell<Vec<Field>>> = Rc::default();
-    let existing_action = node.as_ref().and_then(|n| n.action.clone());
+    // A shell's action is filled in as the shell declares it.
+    let existing_action = node.as_ref().and_then(|n| n.action.as_ref()).map(unwrapped);
     let show_args = {
         let (choices, fields, args_group) = (choices.clone(), fields.clone(), args_group.clone());
         let action_row = action_row.clone();
@@ -1395,12 +1461,36 @@ mod tests {
             .map(|action| Choice {
                 action,
                 engine: false,
+                shell: false,
                 kept: None,
             })
             .collect();
         let picked = picked_choice(&mut choices, Some(&action));
         assert_eq!(choices[picked].action.name, "swap-halves");
         assert_eq!(chosen_action(&choices[picked], &[]), Ok(action));
+    }
+
+    #[test]
+    fn a_shells_action_is_bound_with_shell_action_and_shown_by_its_name() {
+        let switch = LayoutEngineAction {
+            name: String::from("switch-audio-output"),
+            description: Some(String::from("Switch the sound to the next pinned output.")),
+            args: Vec::new(),
+        };
+        let mut choices = vec![Choice {
+            action: switch,
+            engine: false,
+            shell: true,
+            kept: None,
+        }];
+        let bound = ActionNode {
+            name: String::from("shell-action"),
+            args: vec![Value::Str(String::from("switch-audio-output"))],
+            properties: Vec::new(),
+        };
+        assert_eq!(picked_choice(&mut choices, Some(&bound)), 0);
+        assert_eq!(chosen_action(&choices[0], &[]), Ok(bound.clone()));
+        assert_eq!(unwrapped(&bound).name, "switch-audio-output");
     }
 
     fn close_window() -> ActionNode {

@@ -3,7 +3,7 @@
 // the clock with the notifications, and a sliver that shows the desktop. Notifications come up
 // over the taskbar's end. The taskbar is in the top layer, so fullscreen windows cover it.
 
-import { Surface, action, focusedOutput, onAction, outputs, useSettings, type Meta } from "bento";
+import { Surface, action, focusedOutput, onAction, outputs, useModule, type Meta } from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Flyout, popup } from "bento:modules/ui";
 import { Clock, Month } from "bento:modules/clock";
@@ -23,7 +23,7 @@ export const meta = {
   },
 } satisfies Meta;
 
-const [settings] = useSettings(import.meta, meta);
+const { settings } = useModule(import.meta, meta);
 
 /** How tall the taskbar is, with room for its buttons. */
 const height = () => Math.max(40, settings.height);

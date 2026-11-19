@@ -55,23 +55,8 @@ pub fn native_actions() -> Vec<Declaration> {
             vec![],
         ),
         action(
-            "edit-workspace",
-            "Show or hide the shell's editor for the focused workspace, to name it or take its name away.",
-            vec![],
-        ),
-        action(
-            "toggle-clipboard",
-            "Show or hide the shell's clipboard history.",
-            vec![],
-        ),
-        action(
-            "switch-audio-output",
-            "Switch the sound to the next of the outputs pinned in the shell.",
-            vec![],
-        ),
-        action(
             "shell-action",
-            "Run one of the shell's own actions, by the name its module gives it, with what it takes after the name.",
+            "Run one of the shell's own actions, by the name the module that declares it gives it, with what it takes after the name.",
             vec![required("name", Type::String, "The action's name.")],
         ),
         action(

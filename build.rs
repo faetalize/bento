@@ -39,6 +39,14 @@ fn shell_files() {
             path.display().to_string()
         ));
     }
+    // What engines and shells declare is checked by the engines' prelude's code, for both.
+    let declare =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/layouts/prelude/declare.js");
+    println!("cargo:rerun-if-changed={}", declare.display());
+    out.push_str(&format!(
+        "    (\"runtime/declare.js\", include_str!({:?})),\n",
+        declare.display().to_string()
+    ));
     out.push_str("]\n");
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("shell_files.rs");
     std::fs::write(dest, out).unwrap();

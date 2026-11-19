@@ -23,6 +23,8 @@ import {
   untrack,
   useContext,
 } from "solid-js";
+// Shared with engines' prelude, so that engines and shells declare alike.
+import { checkActions, checkSettings } from "./declare.js";
 
 const native = (globalThis as any).__bento;
 
@@ -280,19 +282,21 @@ export function stored<T>(key: string, fallback: T): [() => T, (value: T) => voi
 // store that the settings file keeps up to date.
 const settingStores = new Map<string, (values: any) => void>();
 
-export function useSettings(module: { name: string }, meta: { settings?: Record<string, any> }) {
+export function useModule(
+  module: { name: string },
+  meta: { settings?: Record<string, any>; actions?: Record<string, any> },
+) {
   const name = module.name;
-  const declared = Object.entries(meta.settings ?? {}).map(([setting, declaration]) => ({
-    ...declaration,
-    name: setting,
-  }));
-  const [values, setValues] = keyed<any>(read(native.declare(name, JSON.stringify(declared)), {}));
+  const settings = checkSettings("setting", meta.settings);
+  const actions = checkActions(meta.actions);
+  const declared = native.declare(name, JSON.stringify(settings), JSON.stringify(actions));
+  const [values, setValues] = keyed<any>(read(declared, {}));
   settingStores.set(name, setValues);
-  const set = (setting: string, value: unknown) => {
+  const setSetting = (setting: string, value: unknown) => {
     // bento checks it, writes it to the file, and says what the settings are now.
     setValues(read(native.setSetting(name, setting, JSON.stringify(value ?? null)), {}));
   };
-  return [values, set] as const;
+  return { settings: values, setSetting };
 }
 
 // The shell's actions, by name, and what listens.
@@ -1332,10 +1336,7 @@ function handle(event: any) {
         fn({ output: event.output ?? null, args: event.args ?? [] });
       }
       return;
-    case "launcher":
-    case "edit-workspace":
-    case "toggle-clipboard":
-    case "switch-audio-output": {
+    case "launcher": {
       const name = ACTIONS[event.type] ?? event.type;
       for (const fn of [...(actionListeners.get(name) ?? [])]) {
         fn({ output: event.output ?? null, args: [] });

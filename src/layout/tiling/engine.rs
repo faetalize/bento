@@ -218,8 +218,13 @@ fn deserialize_actions<'de, D: Deserializer<'de>>(
     Ok(actions.collect())
 }
 
+/// Actions as the prelude's `checkActions` gives them, which engines and shells declare alike.
+pub fn parse_actions(json: &str) -> serde_json::Result<Vec<LayoutEngineAction>> {
+    deserialize_actions(&mut serde_json::Deserializer::from_str(json))
+}
+
 /// Whether `name` is one of bento's own actions, as binds and `bento msg action` write it.
-fn is_native_action(name: &str) -> bool {
+pub fn is_native_action(name: &str) -> bool {
     use clap::Subcommand as _;
 
     let actions = niri_ipc::Action::augment_subcommands(clap::Command::new("action"));
@@ -380,6 +385,20 @@ fn ipc_scalar(value: &TilingOption) -> Option<LayoutEngineOptionValue> {
     })
 }
 
+/// Says in the log when `setting`, which `owner` declares, names a page that bento Settings
+/// doesn't have, where it shows on the Engine or Shell page instead.
+pub fn warn_unknown_page(owner: &str, setting: &SettingMeta) {
+    if let Some(page) = &setting.page {
+        if !niri_config::SETTINGS_PAGES.contains(&page.as_str()) {
+            warn!(
+                "{owner}'s setting {:?} names the page {page:?}, which bento Settings doesn't \
+                 have, so it shows with {owner}'s other settings",
+                setting.name
+            );
+        }
+    }
+}
+
 /// Checks that the defaults a layout declares are values of the declared types, so that a layout
 /// that loads can always be given them.
 fn check_defaults(meta: &LayoutMeta) -> anyhow::Result<()> {
@@ -391,6 +410,9 @@ fn check_defaults(meta: &LayoutMeta) -> anyhow::Result<()> {
         .window_rules
         .iter()
         .map(|rule| (rule, "window rule", false));
+    for setting in &meta.settings {
+        warn_unknown_page(&meta.name, setting);
+    }
     for (option, kind, required) in settings.chain(rules) {
         // A window rule property that has no default is unset for windows no rule sets it for.
         if option.default.is_none() && !required {

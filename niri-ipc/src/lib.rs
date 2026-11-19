@@ -351,12 +351,7 @@ pub enum Action {
     ShowHotkeyOverlay {},
     /// Show or hide the shell's launcher.
     ToggleLauncher {},
-    /// Show or hide the shell's editor for the focused workspace, to name it or take its name
-    /// away.
-    EditWorkspace {},
-    /// Show or hide the shell's clipboard history.
-    ToggleClipboard {},
-    /// Run one of the shell's own actions, by the name its module gives it.
+    /// Run one of the shell's own actions, by the name the module that declares it gives it.
     ShellAction {
         /// Name of the action.
         name: String,
@@ -364,8 +359,6 @@ pub enum Action {
         #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
         args: Vec<String>,
     },
-    /// Switch the sound to the next of the outputs pinned in the shell.
-    SwitchAudioOutput {},
     /// Move the focused workspace to the monitor to the left.
     MoveWorkspaceToMonitorLeft {},
     /// Move the focused workspace to the monitor to the right.

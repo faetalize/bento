@@ -1,12 +1,12 @@
-//! The shell's settings: typed values that its modules and the shell itself declare in their
-//! `meta`, which the user sets in `~/.config/bento/shell/settings.kdl`, a block for each by its
-//! name.
+//! The shell's settings and actions: what its modules and the shell itself declare in their
+//! `meta`, as engines do. The user sets the settings in `~/.config/bento/shell/settings.kdl`, a
+//! block for each by its name, and binds the actions with `shell-action "name"`.
 //!
-//! Settings are declared with the same types as engines' options, and are checked and converted
-//! the same way. A module reads its settings as they are, and gets them again when the file
-//! changes, without the shell loading again. A module can write its own, as when an app is
-//! pinned. Settings that nothing declares stay in the file: bento says so rather than failing, so
-//! that switching shells loses nothing.
+//! Settings are declared as engines' are, and are checked and converted the same way. A module
+//! reads its settings as they are, and gets them again when the file changes, without the shell
+//! loading again. A module can write its own, as when an app is pinned. Settings that nothing
+//! declares stay in the file: bento says so rather than failing, so that switching shells loses
+//! nothing.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -14,9 +14,11 @@ use std::time::SystemTime;
 use anyhow::{anyhow, bail, Context as _};
 use niri_config::edit::{option_properties, option_values, Document};
 use niri_config::{EngineSettings, ShellSettings};
-use niri_ipc::{LayoutEngineOption, LayoutEngineOptionValue};
+use niri_ipc::{LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionValue};
 
-use crate::layout::tiling::engine::{ipc_settings, resolve_settings, SettingMeta};
+use crate::layout::tiling::engine::{
+    ipc_settings, is_native_action, parse_actions, resolve_settings, warn_unknown_page, SettingMeta,
+};
 
 /// The settings file, and what the running shell declares.
 #[derive(Debug, Default)]
@@ -33,6 +35,8 @@ pub struct Settings {
     error: Option<String>,
     /// The settings each module and the shell declares, by its name, in the order they did.
     declared: Vec<(String, Vec<SettingMeta>)>,
+    /// The actions each declares, with the name of the module or shell that does.
+    actions: Vec<(String, LayoutEngineAction)>,
     /// What a test writes to the file, which reads as a change.
     #[cfg(test)]
     written: Option<String>,
@@ -121,14 +125,21 @@ impl Settings {
     /// Forgets what the shell declared, for a shell loading again to declare it anew.
     pub fn forget_declarations(&mut self) {
         self.declared.clear();
+        self.actions.clear();
     }
 
-    /// Takes what module or shell `name` declares, as the JSON array of its settings, and
-    /// returns their values, by name.
-    pub fn declare(&mut self, name: &str, declared: &str) -> anyhow::Result<serde_json::Value> {
-        let declared: Vec<SettingMeta> = serde_json::from_str(declared)
+    /// Takes what module or shell `name` declares, its settings and actions as the JSON arrays
+    /// that `checkSettings` and `checkActions` give, and returns its settings' values, by name.
+    pub fn declare(
+        &mut self,
+        name: &str,
+        settings: &str,
+        actions: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let declared: Vec<SettingMeta> = serde_json::from_str(settings)
             .with_context(|| format!("{name}'s settings are declared wrong"))?;
         for setting in &declared {
+            warn_unknown_page(name, setting);
             if let Err(problem) = setting.convert(&setting.default_values()) {
                 bail!(
                     "{name}'s default for its setting {:?} is wrong: it {problem}",
@@ -136,11 +147,44 @@ impl Settings {
                 );
             }
         }
+        let actions = parse_actions(actions)
+            .with_context(|| format!("{name}'s actions are declared wrong"))?;
+        for action in &actions {
+            if is_native_action(&action.name) {
+                bail!(
+                    "{name} declares {:?}, which is one of bento's own actions",
+                    action.name
+                );
+            }
+            let theirs = self
+                .actions
+                .iter()
+                .find(|(owner, a)| a.name == action.name && owner != name);
+            if let Some((owner, _)) = theirs {
+                bail!(
+                    "{name} declares the action {:?}, which {owner} declares too",
+                    action.name
+                );
+            }
+        }
         match self.declared.iter_mut().find(|(n, _)| n == name) {
             Some((_, settings)) => *settings = declared,
             None => self.declared.push((String::from(name), declared)),
         }
+        self.actions.retain(|(owner, _)| owner != name);
+        let owned = actions
+            .into_iter()
+            .map(|action| (String::from(name), action));
+        self.actions.extend(owned);
         Ok(self.values(name))
+    }
+
+    /// The actions the running shell declares, in the order they're declared.
+    pub fn actions(&self) -> Vec<LayoutEngineAction> {
+        self.actions
+            .iter()
+            .map(|(_, action)| action.clone())
+            .collect()
     }
 
     /// The values of `name`'s settings, by name: what the file sets, if it fits, or the default.
@@ -280,7 +324,7 @@ mod tests {
     #[test]
     fn a_module_gets_what_the_file_sets_or_its_defaults() {
         let mut settings = Settings::from_text("taskbar {\n    pinned \"firefox\" \"foot\"\n}\n");
-        let values = settings.declare("taskbar", TASKBAR).unwrap();
+        let values = settings.declare("taskbar", TASKBAR, "[]").unwrap();
         assert_eq!(
             values,
             json!({ "pinned": ["firefox", "foot"], "size": 40.0 })
@@ -291,7 +335,7 @@ mod tests {
     fn a_setting_that_does_not_fit_is_its_default_and_said_so() {
         let mut settings =
             Settings::from_text("taskbar {\n    size \"big\"\n    gone 1\n}\nold {\n}\n");
-        let values = settings.declare("taskbar", TASKBAR).unwrap();
+        let values = settings.declare("taskbar", TASKBAR, "[]").unwrap();
         assert_eq!(values["size"], json!(40.0));
         let (unused, wrong) = settings.problems();
         assert_eq!(unused, ["taskbar.gone", "old"]);
@@ -302,7 +346,7 @@ mod tests {
     fn a_module_writes_its_settings_into_the_file_and_leaves_the_rest() {
         let text = "// Mine.\nclock {\n    seconds true\n}\n";
         let mut settings = Settings::from_text(text);
-        settings.declare("taskbar", TASKBAR).unwrap();
+        settings.declare("taskbar", TASKBAR, "[]").unwrap();
         settings.set("taskbar", "pinned", r#"["firefox"]"#).unwrap();
         assert_eq!(settings.values("taskbar")["pinned"], json!(["firefox"]));
         assert!(settings.text.starts_with(text));
@@ -317,9 +361,26 @@ mod tests {
     }
 
     #[test]
+    fn modules_declare_actions_that_no_other_module_or_bento_has() {
+        let mut settings = Settings::from_text("");
+        let switch = r#"[{ "name": "switch-audio-output", "description": "Switch.", "args": [] }]"#;
+        settings.declare("sound", "[]", switch).unwrap();
+        let names: Vec<String> = settings.actions().into_iter().map(|a| a.name).collect();
+        assert_eq!(names, ["switch-audio-output"]);
+        // Declaring again, as a shell loading again does, replaces its own.
+        settings.declare("sound", "[]", switch).unwrap();
+        assert_eq!(settings.actions().len(), 1);
+
+        let err = settings.declare("mixer", "[]", switch).unwrap_err();
+        assert!(format!("{err:#}").contains("sound declares too"), "{err:#}");
+        let native = r#"[{ "name": "close-window", "args": [] }]"#;
+        assert!(settings.declare("mixer", "[]", native).is_err());
+    }
+
+    #[test]
     fn a_wrong_default_is_a_wrong_declaration() {
         let mut settings = Settings::from_text("");
         let declared = r#"[{ "name": "size", "type": "number", "default": "big" }]"#;
-        assert!(settings.declare("taskbar", declared).is_err());
+        assert!(settings.declare("taskbar", declared, "[]").is_err());
     }
 }

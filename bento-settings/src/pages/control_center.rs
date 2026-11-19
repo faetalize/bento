@@ -16,7 +16,7 @@ fn screen_record(config: &Config) -> ShellCommand {
 }
 
 pub fn category() -> Category {
-    Category::settings("control-center", "Shell")
+    Category::settings("shell", "Shell")
         .icon("ph-sliders-horizontal-symbolic")
         .keywords(&[
             "quick settings",

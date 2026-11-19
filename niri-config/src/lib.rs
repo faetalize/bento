@@ -79,6 +79,20 @@ const RECURSION_LIMIT: u8 = 10;
 /// The config bento writes on first start.
 pub const DEFAULT_CONFIG: &str = include_str!("../../resources/default-config.kdl");
 
+/// The pages of bento Settings that a setting an engine or a shell declares can name to show on,
+/// by their id. Editors get them as a type, and bento Settings has a page for each.
+pub const SETTINGS_PAGES: &[&str] = &[
+    "appearance",
+    "layout",
+    "engine",
+    "shell",
+    "keyboard",
+    "mouse",
+    "touchpad",
+    "location",
+    "system",
+];
+
 /// Reads the engine's file at a path, like `fs::read_to_string`.
 type ReadEngine<'a> = dyn FnOnce(&Path) -> std::io::Result<String> + 'a;
 

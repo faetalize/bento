@@ -19,10 +19,10 @@ use niri_ipc::{
 
 use super::migrate;
 use crate::ipc;
-use crate::kdl::{self, option_properties, option_values, Value};
+use crate::kdl::Value;
 use crate::model::Category;
 use crate::page::PageContext;
-use crate::store::{tilde, File};
+use crate::store::tilde;
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
@@ -71,13 +71,9 @@ pub fn category() -> Category {
 struct View {
     ctx: PageContext,
     column: gtk::Box,
-    /// The configured layout and the running engine with its option values left out. The page is
-    /// rebuilt only when this changes; new option values update the rows in place, so a row isn't
-    /// replaced while someone is using it.
+    /// The configured layout and the running engine with its setting values left out. The page
+    /// is rebuilt only when this changes; the settings' rows keep themselves up to date.
     shown: RefCell<Option<Shape>>,
-    options: RefCell<Vec<OptionRow>>,
-    /// Set while rows show new values, so their change signals don't write them back.
-    updating: Rc<Cell<bool>>,
 }
 
 type Shape = (TilingLayout, Result<LayoutEngine, String>);
@@ -87,10 +83,6 @@ pub(super) type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
 
 /// Saves a value someone set in a row.
 pub(super) type Change = Rc<dyn Fn(Option<OptionValue>)>;
-
-struct OptionRow {
-    show: ShowValue,
-}
 
 fn shape(layout: TilingLayout, engine: &Result<LayoutEngine, String>) -> Shape {
     let engine = engine.clone().map(|mut engine| {
@@ -107,8 +99,6 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         ctx: ctx.clone(),
         column: gtk::Box::new(gtk::Orientation::Vertical, 24),
         shown: RefCell::new(None),
-        options: RefCell::new(Vec::new()),
-        updating: Rc::new(Cell::new(false)),
     });
     refresh(&view);
 
@@ -134,16 +124,12 @@ fn refresh(view: &Rc<View>) {
     let engine = ipc::layout_engine();
     let shape = shape(view.ctx.store.config().tiling.layout.clone(), &engine);
     if view.shown.borrow().as_ref() == Some(&shape) {
-        if let Ok(engine) = &engine {
-            show_values(view, engine);
-        }
         return;
     }
 
     while let Some(child) = view.column.first_child() {
         view.column.remove(&child);
     }
-    view.options.borrow_mut().clear();
     view.column
         .append(&choice_group(view, engine.as_ref().ok()));
     match &engine {
@@ -151,22 +137,16 @@ fn refresh(view: &Rc<View>) {
             if let Some(error) = &engine.error {
                 view.column.append(&failed_group(error));
             }
-            view.column.append(&options_group(view, engine));
+            // The engine's settings, but those it puts on another page.
+            let settings = crate::pages::placed(&view.ctx, "engine");
+            view.ctx.anchor("engine.settings", &settings);
+            view.column.append(&settings);
             view.column.append(&shortcuts_group(view, engine));
-            show_values(view, engine);
         }
         Err(err) => view.column.append(&offline_group(view, err)),
     }
     view.column.append(&migrate::group(&view.ctx));
     view.shown.replace(Some(shape));
-}
-
-fn show_values(view: &View, engine: &LayoutEngine) {
-    view.updating.set(true);
-    for (row, option) in view.options.borrow().iter().zip(&engine.settings) {
-        (row.show)(&option.value);
-    }
-    view.updating.set(false);
 }
 
 fn set_layout(ctx: &PageContext, layout: String) {
@@ -273,50 +253,6 @@ fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
             }
         },
     );
-}
-
-fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder().title("Settings").build();
-    view.ctx.anchor("engine.settings", &group);
-
-    if engine.settings.is_empty() {
-        let row = adw::ActionRow::builder()
-            .title("No Settings")
-            .css_classes(["dim-label"])
-            .build();
-        group.add(&row);
-    }
-    for option in &engine.settings {
-        group.add(&option_row(view, option));
-    }
-    group
-}
-
-fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
-    let path = format!("settings.{}", option.name);
-
-    let change: Change = {
-        let ctx = view.ctx.clone();
-        let path = path.clone();
-        let default = option.default.clone();
-        Rc::new(move |value: Option<OptionValue>| {
-            let (key, path, default) = (path.clone(), path.clone(), default.clone());
-            ctx.store.edit_in(File::Engine, &key, move |doc| {
-                let parts = kdl::split(&path);
-                // A setting at its default stays out of the file.
-                if value == default {
-                    doc.remove(&parts);
-                } else {
-                    doc.set_node(&parts, option_values(&value), option_properties(&value));
-                }
-            });
-        })
-    };
-
-    let (row, show) = option_widget(option, view.updating.clone(), change);
-    view.ctx.anchor(&path, &row);
-    view.options.borrow_mut().push(OptionRow { show });
-    row
 }
 
 /// The row for an option of an engine, or a setting of a shell, which are typed alike: the field
