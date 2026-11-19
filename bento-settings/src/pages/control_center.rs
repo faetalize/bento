@@ -32,11 +32,6 @@ pub fn category() -> Category {
         ])
         .group(
             Group::untitled()
-                .description(
-                    "bento draws its own bar, control center, notifications and launcher. Still \
-                     experimental. A shell program named in the config keeps running alongside \
-                     it.",
-                )
                 .setting(
                     Setting::switch("Built-in Shell", "shell.built-in", |c| {
                         c.shell.as_ref().is_some_and(|shell| shell.built_in())

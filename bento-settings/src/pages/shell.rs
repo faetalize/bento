@@ -197,7 +197,6 @@ fn choice_group(view: &Rc<View>) -> adw::PreferencesGroup {
             let row = adw::ActionRow::builder()
                 .use_markup(false)
                 .title("Make a Copy")
-                .subtitle("bento's shells aren't edited in place. A copy is a shell of your own to change, and runs in its place.")
                 .activatable(true)
                 .build();
             row.add_suffix(&gtk::Image::from_icon_name("edit-copy-symbolic"));
