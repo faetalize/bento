@@ -104,12 +104,22 @@ own.
 Only a new kind of primitive, or a bug in bento itself, needs bento built again. Shaders for
 materials of one's own are files bento loads, like the glass shader.
 
-## Shells keep settings and state
+## Shells declare settings and actions, as engines do
+
+Modules and shells say what they have in their `meta`, the same way engines do: `settings` and
+`actions`, each by name, with the same types, written and checked by the same code. A module that
+declares neither has none.
 
 A setting is a typed value that a module or a shell declares: a module for what it shows, like a
 clock's font or the folders pinned in a start menu, which every shell with that module shares; a
-shell for itself, like the height of its taskbar. They're declared in their `meta` with the same
-types as engines' options.
+shell for itself, like the height of its taskbar. Every setting declared is the user's: what's
+only the shell's to choose is a prop, not a setting.
+
+An action is something a shortcut can do, like switching to the next pinned sound output, with
+its description and arguments, as an engine's are. A shortcut runs it with
+`shell-action "name" args…`. The module that declares an action handles it. bento's own list of
+actions has only what bento does itself; the launcher's is one of them, since bento hands it to
+whichever shell runs, its own or a program.
 
 What the user chooses is a setting, and what a shell notes for itself as it's used, like Do Not
 Disturb or what's been seen, is state. Something the shell writes as it's used and the user chose,
@@ -124,9 +134,14 @@ A module reads its settings as they are, and gets them again as the file changes
 reload. How its props and its settings go together is the module's to say, one over the other or
 one changing the other. A module can change its own settings, as when an app is pinned.
 
-bento's settings show the running shell's settings, as bento hands it their declarations, the way
-they show the running engine's options. Settings that nothing declares stay in the file, and
-bento says so rather than failing, so that switching shells loses nothing.
+bento's settings show the running shell's settings and actions, as bento hands it their
+declarations, the way they show the running engine's: the actions with bento's own on the
+Shortcuts page, and each setting on the page it names, in the group it names, like
+`page: "sound", group: "Output Switcher"`. The pages are bento Settings' own; a declaration
+picks one of them and never makes one. One that names no page, or a page there isn't, shows on
+the Shell page, or the Engine page for an engine's. What pages there are is in the types an
+editor gets, so naming one that isn't there is an error there. Settings that nothing declares
+stay in the file, and bento says so rather than failing, so that switching shells loses nothing.
 
 ## Materials
 

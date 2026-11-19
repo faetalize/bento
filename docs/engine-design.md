@@ -70,7 +70,7 @@ class Bento {                    // what create(bento) receives
     get monitors() {}            // Monitor[]
     get focused() {}             // the focused Window, or null
     get config() {}              // bento's native settings: gaps, borders...
-    get options() {}             // this engine's options, from its .kdl file
+    get settings() {}            // this engine's settings, from its .kdl file
 
     window(id) {}                // find a Window by id
     setTimeout(callback, ms) {}  // call back later, see "Engines can wait"
@@ -216,13 +216,13 @@ button shows.
 ### bento's native config works under every engine
 
 bento only ships what makes sense under every engine: spawning, screenshots, workspaces,
-monitors, floating, gaps, borders and the like. Native binds and options never fail validation
+monitors, floating, gaps, borders and the like. Native binds and settings never fail validation
 because of the engine. If something only works with some engines, it doesn't belong in bento.
 
 Everything that belongs to a paradigm comes from the engine that declares it. niri's column
 actions (`focus-column-left`, `move-column-left`, `consume-or-expel-window-left`...) and the
 column parts of `layout {}` (`preset-column-widths`, `default-column-width`,
-`center-focused-column`...) become `niri.js`'s own actions and options. `bento validate`
+`center-focused-column`...) become `niri.js`'s own actions and settings. `bento validate`
 complains only when the config uses something the running engine doesn't declare.
 
 ### Engines declare every action they have
@@ -255,7 +255,7 @@ engine loads.
 Window rules split like binds. Rules that make sense under every engine, like `open-floating`,
 `opacity` or `block-out-from`, are bento's. Rules that belong to a paradigm, like
 `default-column-width` or `is-active-in-column`, are declared by the engine, written in its
-`.kdl` file and checked by `bento validate`, the same as its actions and options.
+`.kdl` file and checked by `bento validate`, the same as its actions and settings.
 
 ### Engines own horizontal swipes
 
@@ -335,7 +335,7 @@ it, to draw its own decorations instead.
 ### Engines decide whether focus follows the pointer
 
 Whether a window gets focus when the pointer comes onto it is part of an engine's paradigm, so
-it's the engine's to say, not bento's config: `niri.js` and `bento.js` have it as an option, and
+it's the engine's to say, not bento's config: `niri.js` and `bento.js` have it as a setting, and
 `windows11.js` never has it. bento does the focusing as the engine asks, for the engine's
 windows, floating ones and panels that take the keyboard on demand, and the engine can limit it
 to windows that focusing doesn't scroll the view to.
@@ -406,7 +406,7 @@ The state an engine keeps, like `niri.js`'s columns, is accessible to the rest o
 the shell, bento Settings and scripts can read it directly. Nothing has to translate an engine's
 concepts into bento's for them to be seen.
 
-Engine state isn't declared. Unlike an option, which always maps to a control whatever it
+Engine state isn't declared. Unlike a setting, which always maps to a control whatever it
 means, state only makes sense to code that knows the engine, and that code learns its shape
 from the objects themselves. Engines expose their state as they like.
 
@@ -457,31 +457,33 @@ the engine to `niri.js`, asks for the user's `config.kdl`, and sets everything u
 
 ### Each engine has its own config file
 
-The main config holds bento's native settings. Each engine's binds and options live in a `.kdl`
+The main config holds bento's native settings. Each engine's binds and settings live in a `.kdl`
 file of their own, and bento loads the one for the running engine. Switching engines switches
 which file is loaded, so nothing breaks, while validation stays strict against the running
 engine.
 
-An engine's options are booleans, numbers, strings, choices, sizes, colours or gradients, as the
-engine declares, and all but gradients can be lists. They can differ per monitor and per named workspace, like bento's
-own `layout {}` settings: the engine's file can set options for an `output` or a `workspace`, and
-the engine reads each workspace's options from the workspace.
+An engine's settings are booleans, numbers, strings, choices, sizes, colours or gradients, as the
+engine declares, and all but gradients can be lists. Engines and shells declare settings and
+actions the same way, in `meta.settings` and `meta.actions`, and a setting can name the page of
+bento Settings it shows on, as a shell's can. They can differ per monitor and per named
+workspace, like bento's own `layout {}` settings: the engine's file can set them for an `output`
+or a `workspace`, and the engine reads each workspace's settings from the workspace.
 
 A key can be bound in both files. The engine's file only loads while its engine runs, so it's
-the narrower layer, and its bind takes the key over meanwhile, the way a workspace's options
+the narrower layer, and its bind takes the key over meanwhile, the way a workspace's settings
 override its output's. Switching engines never fails on a key; `bento validate` and bento
 Settings say which keys the running engine takes over.
 
 The main config picks the engine with `tiling { layout "…" }`. A built-in engine's file is
 `~/.config/bento/engines/<name>.kdl`, like `engines/niri.kdl`. An engine from a file has its
 `.kdl` next to the `.js`, with the same name: `layout "~/layouts/mine.js"` loads
-`~/layouts/mine.kdl`. The engine's file holds its `options {}` and its `binds {}`.
+`~/layouts/mine.kdl`. The engine's file holds its `settings {}` and its `binds {}`.
 
 Config files never use `layout-action`: the engine's file names its actions directly, and the
 main config can't bind them at all. `layout-action "name" args...` is only for running an action
 of the running engine from the command line, `bento msg action layout-action ...`.
 
-The built-in engines ship a default `.kdl` with their binds and options, and bento copies it to
+The built-in engines ship a default `.kdl` with their binds and settings, and bento copies it to
 `engines/<name>.kdl` the first time the engine runs without one, the way it writes the default
 main config on first start. From then on the file is the user's, with no fallback to the
 defaults. An engine loaded from a file ships its `.kdl` next to its `.js`.
