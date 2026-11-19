@@ -167,9 +167,9 @@ pub struct WorkspaceInfo {
     pub view: ViewInfo,
     pub camera: CameraInfo,
     pub config: ConfigInfo,
-    /// The engine's options for the workspace: the top-level ones with its output's and its own on
-    /// top.
-    pub options: serde_json::Value,
+    /// The engine's settings for the workspace: the top-level ones with its output's and its own
+    /// on top.
+    pub settings: serde_json::Value,
     /// Id of the window that has the workspace's focus.
     pub focused: Option<u64>,
 }
@@ -208,9 +208,9 @@ pub struct SyncInfo {
     pub search: Option<SearchInfo>,
     /// Name of the monitor with keyboard focus.
     pub focused_monitor: Option<String>,
-    /// The layout's options, when they changed.
+    /// The layout's settings, when they changed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<serde_json::Value>,
+    pub settings: Option<serde_json::Value>,
     /// Whether the focused monitor changed since the layout was last told.
     #[serde(skip)]
     pub focus_changed: bool,
@@ -229,7 +229,7 @@ impl SyncInfo {
             && self.windows.is_empty()
             && self.groups.is_none()
             && self.search.is_none()
-            && self.options.is_none()
+            && self.settings.is_none()
             && self.keyboard_available.is_none()
             && !self.focus_changed
     }

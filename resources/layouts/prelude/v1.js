@@ -287,7 +287,7 @@ class V1Instance {
                 return Object.freeze({ ...V1_CONFIG, gaps: ws.config.gaps, struts: ws.config.struts });
             },
             get options() {
-                return self.bento.options;
+                return self.bento.settings;
             },
             window(id) {
                 return self.byId.get(id) ?? null;

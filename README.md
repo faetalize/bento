@@ -363,7 +363,7 @@ Requests:
 
 - `get` reads one of `version`, `monitors`, `workspaces`, `windows`, `groups`, `layers`, `focused`, `keyboardLayouts`, `overview`, `casts`, `engine`, `engineState` and `actions`.
   Monitors, workspaces, windows and groups are bento's objects, with the same names layout engines see them by.
-  `engine` is the running engine's name, actions with their arguments, options and window rules.
+  `engine` is the running engine's name, actions with their arguments, settings and window rules.
   `engineState` is whatever the running engine exposes about itself, in a shape of its own.
   `actions` is bento's own actions with their arguments.
 - `action` runs an action by name with its arguments and properties, as written in a bind, and parses it the way the config does, so the same things are invalid.
@@ -403,7 +403,7 @@ tiling {
 
 Engines aren't interchangeable presets.
 Each one defines how the workspace works, with actions of its own.
-So each engine has a config file of its own for its options and its binds, loaded only while that engine runs:
+So each engine has a config file of its own for its settings and its binds, loaded only while that engine runs:
 
 - `engines/bento.kdl`, `engines/niri.kdl` and `engines/windows11.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
 - the engine file's path with `.kdl` instead of `.js` for an engine file, so `~/.config/bento/layouts/spiral.kdl` for the one above.
@@ -415,18 +415,18 @@ A key bound in both the config and the engine's file runs the engine's bind whil
 When the engine file changes, bento reloads it, just like the config.
 Engines can keep their state across reloads, so your windows stay where they are while you work on an engine.
 
-### Options
+### Engine settings
 
-Engines declare their own options, set in `options` in the engine's file:
+Engines declare their own settings, set in `settings` in the engine's file:
 
 ```kdl
 // ~/.config/bento/engines/bento.kdl
-options {
+settings {
     gravity false
 }
 ```
 
-An option is its name followed by its values, and the engine declares the type of each:
+A setting is its name followed by its values, and the engine declares the type of each:
 
 - a boolean, `true` or `false`;
 - a number;
@@ -439,46 +439,46 @@ An option is its name followed by its values, and the engine declares the type o
 
 A size written with no value, like `default-column-width` alone on its line, leaves it to the window.
 So does a gradient: written alone, it takes the gradient away.
-`bento validate` checks the options against what the engine declares, and so does bento when it loads the config.
-`bento msg engine` lists the running engine's options with their types and current values, and its actions and window rules, and `bento msg -j engine` gives the same as JSON for tools like settings screens.
-bento Settings shows the running engine's options on its Engine page, with a field for each type.
+`bento validate` checks the settings against what the engine declares, and so does bento when it loads the config.
+`bento msg engine` lists the running engine's settings with their types and current values, and its actions and window rules, and `bento msg -j engine` gives the same as JSON for tools like settings screens.
+bento Settings shows the running engine's settings on its Engine page, with a field for each type.
 
-Options can differ per output and per named workspace, like the settings of `layout {}`.
-An `output` or `workspace` block in the engine's file holds the options that change there:
+Settings can differ per output and per named workspace, like the settings of `layout {}`.
+An `output` or `workspace` block in the engine's file holds the settings that change there:
 
 ```kdl
 // ~/.config/bento/engines/niri.kdl
-options {
+settings {
     default-column-width "50%"
 }
 
 output "DP-2" {
-    options {
+    settings {
         default-column-width "33.333%"
     }
 }
 
 workspace "web" {
-    options {
+    settings {
         default-column-width "100%"
     }
 }
 ```
 
-A workspace has the options of `options {}`, then those of its output, then its own by name, and each replaces the one before it option by option.
+A workspace has the settings of `settings {}`, then those of its output, then its own by name, and each replaces the one before it setting by setting.
 Outputs are matched like they are in the main config, by connector, or by make, model and serial; workspaces by their name, ignoring case.
-Engines read a workspace's options from the workspace, and `bento.options` stays the top-level ones.
+Engines read a workspace's settings from the workspace, and `bento.settings` stays the top-level ones.
 
 What works under every engine is bento's and stays in the main config.
 Engines get its values, such as `gaps` and `struts`, and decide what they mean.
 Borders, focus rings and shadows look the way the `layout {}` section says, whatever the engine.
-Anything that belongs to one way of tiling, like column widths, is an option of the engine that has it.
+Anything that belongs to one way of tiling, like column widths, is a setting of the engine that has it.
 
 ### Window rules
 
 Window rules split the same way.
 Rules that make sense under every engine, like `open-floating`, `opacity` or `block-out-from`, are bento's, in the main config.
-Rules that belong to an engine's way of working are declared by the engine, and written in its file with the same `match` and `exclude`, and properties written like options:
+Rules that belong to an engine's way of working are declared by the engine, and written in its file with the same `match` and `exclude`, and properties written like settings:
 
 ```kdl
 // ~/.config/bento/engines/niri.kdl
@@ -545,7 +545,7 @@ export const meta = {
     actions: {
         "swap-with-first": { description: "Swap the focused window with the first one." },
     },
-    options: {
+    settings: {
         width: { type: "number", default: 0.5, description: "Window width, as a proportion." },
     },
 };
@@ -562,7 +562,7 @@ export default function create(bento) {
     function layout(ws) {
         const gaps = ws.config.gaps;
         const area = ws.tilingArea;
-        const w = ws.monitor.round(area.w * bento.options.width - gaps);
+        const w = ws.monitor.round(area.w * bento.settings.width - gaps);
         rowOf(ws).forEach((win, i) => {
             win.place({ x: area.x + gaps + i * (w + gaps), y: area.y + gaps, w, h: area.h - gaps * 2 });
         });
@@ -613,9 +613,9 @@ A workspace is written as an index on the focused monitor, counting from 1, or a
 Arguments with a `default` can be left out, and an action without `args` takes none.
 
 An engine can declare window rules too, in `meta.windowRules`, which are written in its file and reach the engine as each window's `rules`.
-Options and rules of type `size` reach it as `{ proportion }` or `{ fixed }`, those of type `color` as the `"#rrggbb"` string, and those of type `gradient` as `{ from, to, angle, relativeTo, in }` with what was written, or `null`.
+Settings and rules of type `size` reach it as `{ proportion }` or `{ fixed }`, those of type `color` as the `"#rrggbb"` string, and those of type `gradient` as `{ from, to, angle, relativeTo, in }` with what was written, or `null`.
 A color or a gradient goes straight into a node's `background`, or the `color` of its `border`.
-An engine reads its options from `bento.options`, or for a workspace from `workspace.options`, which has what the engine's file sets for the workspace's output and for the workspace by name on top.
+An engine reads its settings from `bento.settings`, or for a workspace from `workspace.settings`, which has what the engine's file sets for the workspace's output and for the workspace by name on top.
 
 For a complete engine to start from, copy [`examples/template.js`](resources/layouts/examples/template.js): under 250 lines, comments included, that put one main window on the left and stack the others on the right, with a line drawn between them, comments on every event, what bento does when an engine leaves one out, and tests next to it.
 
@@ -690,10 +690,10 @@ A window's stack is the windows covering the same column of cells: `stack-from-r
 Actions like `focus-index N` count the places where windows start, from left to right starting at 1.
 
 By default, windows slide left within their rows until they touch another window, and the grid has a fixed left edge.
-You can turn this off with the engine's `gravity` option, in `~/.config/bento/engines/bento.kdl`:
+You can turn this off with the engine's `gravity` setting, in `~/.config/bento/engines/bento.kdl`:
 
 ```kdl
-options {
+settings {
     gravity false
 }
 ```
@@ -701,7 +701,7 @@ options {
 Without gravity, windows stay where you put them, and only columns of cells that are completely empty between windows collapse.
 The grid also has no left edge then, so windows can be pushed or moved further left than the first one.
 
-The engine's other options are in its file too, written at their defaults.
+The engine's other settings are in its file too, written at their defaults.
 `center-focused-window` and `always-center-single-window` say when the view centers the focused window, `default-width` is the width new windows open with, and `preset-widths` and `preset-heights` are what `cycle-width` and `cycle-height` go through.
 `hint-color` is the color of the hints.
 Its window rules set `default-width`, `default-height` and `open-full-width`.
@@ -750,25 +750,25 @@ The engine's file binds the moves on `Mod+Ctrl+Shift`, which the main config lea
 The `niri` engine is niri's scrollable tiling as a bento layout engine, ported from niri's `src/layout/scrolling.rs` to JavaScript in [`resources/layouts/niri.js`](resources/layouts/niri.js).
 Its functions keep niri's names where they do the same thing, so the two are easy to compare.
 
-niri's layout actions, bound in `engines/niri.kdl`, the column options in its `options {}`, window rules that size and place new windows, and tabbed columns all work like in niri.
+niri's layout actions, bound in `engines/niri.kdl`, the column settings in its `settings {}`, window rules that size and place new windows, and tabbed columns all work like in niri.
 It differs in these ways:
 
 - **Its settings are in its file.**
-  `engines/niri.kdl` has `options {}` for `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights`, `default-column-display`, `tab-indicator` and its `tab-indicator-position`, `-width`, `-gap`, `-gaps-between-tabs`, `-length`, `-corner-radius`, `-place-within-column`, `-hide-when-single-tab`, the colors `-active-color`, `-inactive-color` and `-urgent-color`, and the gradients `-active-gradient`, `-inactive-gradient` and `-urgent-gradient`, and `insert-hint` with the color `insert-hint-color` and the gradient `insert-hint-gradient`.
+  `engines/niri.kdl` has `settings {}` for `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights`, `default-column-display`, `tab-indicator` and its `tab-indicator-position`, `-width`, `-gap`, `-gaps-between-tabs`, `-length`, `-corner-radius`, `-place-within-column`, `-hide-when-single-tab`, the colors `-active-color`, `-inactive-color` and `-urgent-color`, and the gradients `-active-gradient`, `-inactive-gradient` and `-urgent-gradient`, and `insert-hint` with the color `insert-hint-color` and the gradient `insert-hint-gradient`.
   A gradient wins over the color next to it, as in niri, and none is set by default.
   A gradient's `relative-to` is `"node"`, the tab or the hint, or `"view"`, where niri says `"window"` or `"workspace-view"`.
   Its window rules set `default-column-width`, `default-window-height`, `default-column-display` and `open-maximized`, and the colors and gradients of the window's tab, as niri's `tab-indicator` rule does: `tab-indicator-active-color`, `-inactive-color`, `-urgent-color`, `tab-indicator-active-gradient`, `-inactive-gradient` and `-urgent-gradient`.
-  A window's rule comes before the options, and in each a gradient before the color.
-- **Its options can differ per output and workspace.**
-  Like niri's `layout {}` in an `output` or a `workspace`, the file's `output "DP-2" { options { … } }` and `workspace "web" { options { … } }` set the options for one output or named workspace, see [Options](#options).
-  Every option of the engine can differ there, and each workspace has its own strip, so they apply where the workspace is.
+  A window's rule comes before the settings, and in each a gradient before the color.
+- **Its settings can differ per output and workspace.**
+  Like niri's `layout {}` in an `output` or a `workspace`, the file's `output "DP-2" { settings { … } }` and `workspace "web" { settings { … } }` set the settings for one output or named workspace, see [Engine settings](#engine-settings).
+  Every setting of the engine can differ there, and each workspace has its own strip, so they apply where the workspace is.
 - **Animations are bento's.**
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
 - **Actions that cross an edge take the whole column.**
   `focus-column-or-monitor-left`, `focus-window-or-workspace-down`, `move-column-to-workspace`, `move-column-to-monitor-left` and the rest of niri's go on to the monitor or workspace beside, and a trailing `false`, like `move-column-to-workspace 2 false`, keeps the focus where it is, as niri's `focus=false` does.
   The engine's file binds the moves to another workspace on `Mod+Ctrl+Shift`, and has the moves to another monitor as examples: bento's own binds for moving one window use the keys niri uses for them.
 - **Tabbed columns are groups.**
-  A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` options.
+  A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` settings.
   Stacked columns stay the engine's own.
 - **Gestures and edges.**
   Swiping sideways scrolls the view and snaps to a column with the swipe's speed, and double-clicking the left or right edge of a window toggles its column's full width, and the top or bottom edge the window's full height.

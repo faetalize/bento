@@ -1,4 +1,4 @@
-// Options and binds for the windows11 engine, loaded only while it runs. bento copies this file to
+// Settings and binds for the windows11 engine, loaded only while it runs. bento copies this file to
 // ~/.config/bento/engines/windows11.kdl the first time the engine runs without one; from then on
 // it's yours to edit.
 //
@@ -7,16 +7,16 @@
 
 // Everything below is at its default.
 //
-// Options can differ per output and per named workspace: an `output` or `workspace` block next to
-// `options` holds the options that change there. A workspace has the options above, then those
+// Settings can differ per output and per named workspace: an `output` or `workspace` block next to
+// `settings` holds the settings that change there. A workspace has the settings above, then those
 // of its output, then its own, each replacing the one before it:
 //
 // workspace "games" {
-//     options {
+//     settings {
 //         edge-snap false
 //     }
 // }
-options {
+settings {
     // After a window snaps to a half or a quarter, show the other windows in the space left, to
     // pick one to fill it. Arrows and Tab move between them, Enter picks, and Escape or a click
     // elsewhere dismisses.

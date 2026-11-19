@@ -1,8 +1,8 @@
-//! The layout engine: which one runs, its options and its actions.
+//! The layout engine: which one runs, its settings and its actions.
 //!
 //! Which engine to run comes from the config. What it offers comes from the running engine over
-//! IPC, since an engine declares its options and actions itself. Each option gets the field of its
-//! declared type: a switch, a number, text, a choice, a size, a color, a gradient, or a list of
+//! IPC, since an engine declares its settings and actions itself. Each setting gets the field of
+//! its declared type: a switch, a number, text, a choice, a size, a color, a gradient, or a list of
 //! those.
 
 use std::cell::{Cell, RefCell};
@@ -52,8 +52,8 @@ pub fn category() -> Category {
             ],
         )
         .search_item(
-            "engine.options",
-            "Engine Options",
+            "engine.settings",
+            "Engine Settings",
             &["gravity", "configure", "column width", "tab indicator"],
         )
         .search_item(
@@ -94,7 +94,7 @@ struct OptionRow {
 
 fn shape(layout: TilingLayout, engine: &Result<LayoutEngine, String>) -> Shape {
     let engine = engine.clone().map(|mut engine| {
-        for option in &mut engine.options {
+        for option in &mut engine.settings {
             option.value = option.default.clone();
         }
         engine
@@ -163,7 +163,7 @@ fn refresh(view: &Rc<View>) {
 
 fn show_values(view: &View, engine: &LayoutEngine) {
     view.updating.set(true);
-    for (row, option) in view.options.borrow().iter().zip(&engine.options) {
+    for (row, option) in view.options.borrow().iter().zip(&engine.settings) {
         (row.show)(&option.value);
     }
     view.updating.set(false);
@@ -276,24 +276,24 @@ fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
 }
 
 fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder().title("Options").build();
-    view.ctx.anchor("engine.options", &group);
+    let group = adw::PreferencesGroup::builder().title("Settings").build();
+    view.ctx.anchor("engine.settings", &group);
 
-    if engine.options.is_empty() {
+    if engine.settings.is_empty() {
         let row = adw::ActionRow::builder()
-            .title("No Options")
+            .title("No Settings")
             .css_classes(["dim-label"])
             .build();
         group.add(&row);
     }
-    for option in &engine.options {
+    for option in &engine.settings {
         group.add(&option_row(view, option));
     }
     group
 }
 
 fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
-    let path = format!("options.{}", option.name);
+    let path = format!("settings.{}", option.name);
 
     let change: Change = {
         let ctx = view.ctx.clone();
@@ -303,7 +303,7 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             let (key, path, default) = (path.clone(), path.clone(), default.clone());
             ctx.store.edit_in(File::Engine, &key, move |doc| {
                 let parts = kdl::split(&path);
-                // An option at its default stays out of the file.
+                // A setting at its default stays out of the file.
                 if value == default {
                     doc.remove(&parts);
                 } else {
@@ -875,7 +875,7 @@ fn failed_group(error: &str) -> adw::PreferencesGroup {
 
 fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    view.ctx.anchor("engine.options", &group);
+    view.ctx.anchor("engine.settings", &group);
     view.ctx.anchor("engine.actions", &group);
 
     let row = adw::ActionRow::builder()

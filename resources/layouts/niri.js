@@ -233,7 +233,7 @@ export const meta = {
             description: "Widen the focused column into the space other fully visible columns leave.",
         },
     },
-    options: {
+    settings: {
         "center-focused-column": {
             type: "choice",
             choices: ["never", "always", "on-overflow"],
@@ -514,7 +514,7 @@ function createStrip(bento, ws) {
     let interactiveResize = null;
     /** The column width of the window being dragged, to give back when it's dropped. */
     let dragged = null;
-    let lastOptions = ws.options;
+    let lastSettings = ws.settings;
     /** What `ws.focused` was at the end of the last call. */
     let lastFocused = null;
     let nextColumnId = 1;
@@ -536,8 +536,8 @@ function createStrip(bento, ws) {
 
     // Geometry.
 
-    // The workspace's options: the engine's, with what its monitor and its name set on top.
-    const options = (name) => ws.options[name];
+    // The workspace's settings: the engine's, with what its monitor and its name set on top.
+    const setting = (name) => ws.settings[name];
     const gaps = () => ws.config.gaps;
     const viewSize = () => ws.monitor.size;
     const round = (value) => ws.monitor.round(value);
@@ -554,16 +554,16 @@ function createStrip(bento, ws) {
     const windowWidthForTileWidth = (tile, w) => w - tile.win.borders.w;
     const windowHeightForTileHeight = (tile, h) => h - tile.win.borders.h;
 
-    // Window rules. A rule that no rule sets is left out of `rules`, so the option of the same name
+    // Window rules. A rule that no rule sets is left out of `rules`, so the setting of the same name
     // is the default, if there is one. `null` is a size left to the window.
 
     const rulesWidth = (rules) =>
         rules["default-column-width"] !== undefined
             ? rules["default-column-width"]
-            : options("default-column-width");
+            : setting("default-column-width");
     const rulesHeight = (rules) => rules["default-window-height"] ?? null;
     const rulesDisplay = (rules) =>
-        rules["default-column-display"] ?? options("default-column-display");
+        rules["default-column-display"] ?? setting("default-column-display");
 
     /** Smallest tile size, at least 1 px of window. */
     function minSize(tile) {
@@ -600,17 +600,17 @@ function createStrip(bento, ws) {
     function tabIndicatorSpace(count) {
         const none = { x: 0, y: 0, w: 0, h: 0 };
         if (
-            !options("tab-indicator") ||
-            !options("tab-indicator-place-within-column") ||
-            (options("tab-indicator-hide-when-single-tab") && count === 1)
+            !setting("tab-indicator") ||
+            !setting("tab-indicator-place-within-column") ||
+            (setting("tab-indicator-hide-when-single-tab") && count === 1)
         ) {
             return none;
         }
         const size = Math.max(
             0,
-            round(options("tab-indicator-width")) + round(options("tab-indicator-gap")),
+            round(setting("tab-indicator-width")) + round(setting("tab-indicator-gap")),
         );
-        switch (options("tab-indicator-position")) {
+        switch (setting("tab-indicator-position")) {
             case "left":
                 return { x: size, y: 0, w: size, h: 0 };
             case "right":
@@ -631,7 +631,7 @@ function createStrip(bento, ws) {
 
     /** Extra size for a new column with one window. */
     function newColumnExtraSize() {
-        return options("default-column-display") === "tabbed"
+        return setting("default-column-display") === "tabbed"
             ? tabIndicatorSpace(1)
             : { x: 0, y: 0, w: 0, h: 0 };
     }
@@ -679,7 +679,7 @@ function createStrip(bento, ws) {
      * to go back to.
      */
     function makeColumn(width, isFullWidth) {
-        const presetWidthIdx = options("preset-column-widths").findIndex((preset) =>
+        const presetWidthIdx = setting("preset-column-widths").findIndex((preset) =>
             sameWidth(columnWidthFromPreset(preset), width),
         );
         return {
@@ -695,7 +695,7 @@ function createStrip(bento, ws) {
             pendingFullscreen: false,
             // Can be set together with fullscreen: leaving fullscreen goes back to maximized.
             pendingMaximized: false,
-            display: options("default-column-display"),
+            display: setting("default-column-display"),
             // Sizing mode at the end of the last call, see `commit()`.
             committedMode: null,
         };
@@ -815,7 +815,7 @@ function createStrip(bento, ws) {
                     Math.round(windowHeightForTileHeight(tile, maxTileHeight));
                 windowHeight = Math.min(windowHeight, max);
             } else {
-                const preset = options("preset-window-heights")[height.idx];
+                const preset = setting("preset-window-heights")[height.idx];
                 const resolved = resolvePresetSize(preset, area.h, extra.h);
                 windowHeight =
                     resolved.tile !== undefined
@@ -961,7 +961,7 @@ function createStrip(bento, ws) {
 
     /** Offsets of the tiles from the column's x, and one past the last tile. */
     function tileOffsets(col) {
-        const center = options("center-focused-column") === "always";
+        const center = setting("center-focused-column") === "always";
         const isTabbed = col.display === "tabbed";
         const width = tilesWidth(col);
         const origin = tilesOrigin(col);
@@ -979,8 +979,8 @@ function createStrip(bento, ws) {
 
     function isCenteringFocusedColumn() {
         return (
-            options("center-focused-column") === "always" ||
-            (options("always-center-single-column") && columns.length <= 1)
+            setting("center-focused-column") === "always" ||
+            (setting("always-center-single-column") && columns.length <= 1)
         );
     }
 
@@ -1027,7 +1027,7 @@ function createStrip(bento, ws) {
             return computeNewViewOffsetForColumnCentered(targetX, idx);
         }
         if (
-            options("center-focused-column") !== "on-overflow" ||
+            setting("center-focused-column") !== "on-overflow" ||
             prevIdx === null ||
             prevIdx === idx
         ) {
@@ -1196,7 +1196,7 @@ function createStrip(bento, ws) {
         if (preset === null) {
             // Let the window pick, so use the size it has, unless it doesn't have one yet.
             if (win.size.w > 0) return { fixed: win.size.w };
-            return columnWidthFromPreset(options("default-column-width") ?? { proportion: 0.5 });
+            return columnWidthFromPreset(setting("default-column-width") ?? { proportion: 0.5 });
         }
         if ("proportion" in preset) return { proportion: preset.proportion };
         // niri's column widths include borders, fixed presets don't.
@@ -1211,7 +1211,7 @@ function createStrip(bento, ws) {
     function widthForSize(w, win) {
         if (w <= 0) return defaultWidth(win);
         const area = workingArea();
-        const presets = [...options("preset-column-widths"), { proportion: 1 }];
+        const presets = [...setting("preset-column-widths"), { proportion: 1 }];
         const extra = newColumnExtraSize().w;
         for (const preset of presets) {
             const resolved = resolvePresetSize(preset, area.w, extra);
@@ -1620,7 +1620,7 @@ function createStrip(bento, ws) {
 
     /** `switch-preset-column-width` and `switch-preset-window-width`. */
     function toggleWidth(col, tileIdx, forwards) {
-        const presets = options("preset-column-widths");
+        const presets = setting("preset-column-widths");
         if (presets.length === 0) return;
         const tile = col.tiles[tileIdx ?? col.activeTileIdx];
         const len = presets.length;
@@ -1725,7 +1725,7 @@ function createStrip(bento, ws) {
 
     /** `switch-preset-window-height`. */
     function toggleWindowHeight(col, tileIdx, forwards) {
-        const presets = options("preset-window-heights");
+        const presets = setting("preset-window-heights");
         if (presets.length === 0) return;
         tileIdx ??= col.activeTileIdx;
         // Like in `setWindowHeight`, only one window can have a non-auto height.
@@ -1913,7 +1913,7 @@ function createStrip(bento, ws) {
                 snaps.push({ viewPos, colIdx });
             });
         } else {
-            const centerOnOverflow = options("center-focused-column") === "on-overflow";
+            const centerOnOverflow = setting("center-focused-column") === "on-overflow";
             const snapPoints = (colIdx) => {
                 const col = columns[colIdx];
                 const colX = columnX(colIdx);
@@ -2145,7 +2145,7 @@ function createStrip(bento, ws) {
 
     function validHeight(height) {
         if (height?.kind === "preset") {
-            return height.idx < options("preset-window-heights").length
+            return height.idx < setting("preset-window-heights").length
                 ? height
                 : { kind: "auto", weight: 1 };
         }
@@ -2166,7 +2166,7 @@ function createStrip(bento, ws) {
         col.activeTileIdx = clamp(saved.activeTileIdx ?? 0, 0, tiles.length - 1);
         const presetIdx = saved.presetWidthIdx;
         col.presetWidthIdx =
-            Number.isInteger(presetIdx) && presetIdx < options("preset-column-widths").length
+            Number.isInteger(presetIdx) && presetIdx < setting("preset-column-widths").length
                 ? presetIdx
                 : null;
         col.pendingFullscreen =
@@ -2346,24 +2346,24 @@ function createStrip(bento, ws) {
     /** Whether a tabbed column in normal mode shows its tab indicator. */
     function showsIndicator(col) {
         return (
-            options("tab-indicator") &&
+            setting("tab-indicator") &&
             col.display === "tabbed" &&
             sizingMode(col) === "normal" &&
-            !(options("tab-indicator-hide-when-single-tab") && col.tiles.length === 1)
+            !(setting("tab-indicator-hide-when-single-tab") && col.tiles.length === 1)
         );
     }
 
     /** Rects of the tabs of an indicator along `area`, in order, on the canvas. */
     function tabRects(area, count) {
-        const position = options("tab-indicator-position");
-        const width = options("tab-indicator-width");
-        const gap = options("tab-indicator-gap");
-        const between = Math.max(0, round(options("tab-indicator-gaps-between-tabs")));
+        const position = setting("tab-indicator-position");
+        const width = setting("tab-indicator-width");
+        const gap = setting("tab-indicator-gap");
+        const between = Math.max(0, round(setting("tab-indicator-gaps-between-tabs")));
         const horizontal = position === "top" || position === "bottom";
         // The indicator spans a proportion of the side it's on, centered, with the tabs and the
         // space between them filling it.
         const side = horizontal ? area.w : area.h;
-        const total = side * clamp(options("tab-indicator-length"), 0, 1);
+        const total = side * clamp(setting("tab-indicator-length"), 0, 1);
         const start = (horizontal ? area.x : area.y) + (side - total) / 2;
         const step = (total + between) / count;
         const length = Math.max(0, step - between);
@@ -2383,15 +2383,15 @@ function createStrip(bento, ws) {
 
     /**
      * What a tab is painted with, for `state` "active", "inactive" or "urgent", like niri: the
-     * window's rules first, then the options, and in each a gradient wins over the color.
+     * window's rules first, then the settings, and in each a gradient wins over the color.
      */
     function tabPaint(win, state) {
         const rules = win.rules;
         return (
             rules[`tab-indicator-${state}-gradient`] ??
             rules[`tab-indicator-${state}-color`] ??
-            options(`tab-indicator-${state}-gradient`) ??
-            options(`tab-indicator-${state}-color`)
+            setting(`tab-indicator-${state}-gradient`) ??
+            setting(`tab-indicator-${state}-color`)
         );
     }
 
@@ -2424,7 +2424,7 @@ function createStrip(bento, ws) {
                 nodes[idx].set({
                     rect: rects[idx],
                     background: tabPaint(tile.win, state),
-                    cornerRadius: options("tab-indicator-corner-radius"),
+                    cornerRadius: setting("tab-indicator-corner-radius"),
                 });
             });
         }
@@ -2543,14 +2543,14 @@ function createStrip(bento, ws) {
     // The insert hint.
 
     function showHint(pointer) {
-        if (!options("insert-hint")) return;
+        if (!setting("insert-hint")) return;
         hintNode ??= bento.createNode("box", {
             cornerRadius: HINT_CORNER_RADIUS,
             transitions: { rect: "window-movement" },
         });
         hintNode.set({
             rect: insertHintArea(insertPosition(pointer)),
-            background: options("insert-hint-gradient") ?? options("insert-hint-color"),
+            background: setting("insert-hint-gradient") ?? setting("insert-hint-color"),
         });
         // Last, so it's above the windows.
         ws.tree.append(hintNode);
@@ -2982,14 +2982,14 @@ function createStrip(bento, ws) {
 
         configChanged() {
             mutate(() => {
-                const now = ws.options;
-                if (!samePresets(now["preset-column-widths"], lastOptions["preset-column-widths"])) {
+                const now = ws.settings;
+                if (!samePresets(now["preset-column-widths"], lastSettings["preset-column-widths"])) {
                     for (const col of columns) col.presetWidthIdx = null;
                 }
-                if (!samePresets(now["preset-window-heights"], lastOptions["preset-window-heights"])) {
+                if (!samePresets(now["preset-window-heights"], lastSettings["preset-window-heights"])) {
                     for (const col of columns) convertHeightsToAuto(col);
                 }
-                lastOptions = now;
+                lastSettings = now;
                 updateAllTileSizes();
                 // Apply always-center and such right away.
                 if (columns.length > 0) fitView();
@@ -3153,10 +3153,10 @@ function createStrip(bento, ws) {
 // The engine: one strip for each workspace, and what crosses from one to another.
 
 export default function create(bento) {
-    // Focus follows the pointer as the options say; bento does the focusing. "in-view" is only
+    // Focus follows the pointer as the settings say; bento does the focusing. "in-view" is only
     // windows that focusing doesn't scroll the view to.
     const followMouse = () => {
-        const mode = bento.options["focus-follows-mouse"];
+        const mode = bento.settings["focus-follows-mouse"];
         bento.setFocusFollowsMouse(mode !== "never", { maxScroll: mode === "in-view" ? 0 : null });
     };
     followMouse();

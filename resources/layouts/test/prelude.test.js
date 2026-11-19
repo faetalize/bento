@@ -48,7 +48,7 @@ test("load checks the module and describes the engine", () => {
                         ],
                     },
                 },
-                options: {
+                settings: {
                     widths: { type: "size", list: true, default: [{ proportion: 0.5 }] },
                     mode: { type: "choice", choices: ["a", "b"], default: "a" },
                 },
@@ -69,13 +69,13 @@ test("load checks the module and describes the engine", () => {
         ],
     );
     assert.deepEqual(
-        meta.options.map((o) => [o.name, o.type, o.list]),
+        meta.settings.map((o) => [o.name, o.type, o.list]),
         [
             ["widths", "size", true],
             ["mode", "choice", false],
         ],
     );
-    assert.deepEqual(meta.options[1].choices, ["a", "b"]);
+    assert.deepEqual(meta.settings[1].choices, ["a", "b"]);
     assert.equal(meta.windowRules[0].name, "width");
 });
 
@@ -85,13 +85,16 @@ test("load refuses engines that don't fit", () => {
     assert.throws(load({ api: 2 }), /must be a string/);
     assert.throws(load({ api: 2, name: "x" }, null), /default function/);
     assert.throws(load({ api: 2, name: "x", actions: { a: { args: [{ name: "n", type: "nope" }] } } }), /unknown type/);
-    assert.throws(load({ api: 2, name: "x", options: { o: { type: "colour", default: "1" } } }), /unknown type/);
-    // Colours and gradients are for options and window rules, not for binds' arguments.
+    assert.throws(load({ api: 2, name: "x", settings: { o: { type: "colour", default: "1" } } }), /unknown type/);
+    // Colours and gradients are for settings and window rules, not for binds' arguments.
     assert.throws(load({ api: 2, name: "x", actions: { a: { args: [{ name: "n", type: "color" }] } } }), /unknown type/);
     assert.throws(load({ api: 2, name: "x", windowRules: { r: { type: "colour" } } }), /unknown type/);
     // A gradient is written with the properties of one node.
-    assert.throws(load({ api: 2, name: "x", options: { g: { type: "gradient", list: true, default: null } } }), /can't be a list/);
-    assert.throws(load({ api: 2, name: "x", options: { o: { type: "choice", default: "a" } } }), /list of choices/);
+    assert.throws(load({ api: 2, name: "x", settings: { g: { type: "gradient", list: true, default: null } } }), /can't be a list/);
+    assert.throws(load({ api: 2, name: "x", settings: { o: { type: "choice", default: "a" } } }), /list of choices/);
+    // Engines and shells declare settings the same way.
+    assert.throws(load({ api: 2, name: "x", options: {} }), /meta\.settings/);
+    assert.throws(load({ api: 2, name: "x", settings: { o: { type: "number", page: 1 } } }), /`page` of setting o/);
     // Workspaces and monitors are API 2 types.
     assert.throws(
         load({ api: 1, name: "x", actions: { a: { args: [{ name: "n", type: "workspace" }] } } }),
@@ -424,16 +427,16 @@ test("state is saved on unload, and windows are adopted when the engine starts a
     ]);
 });
 
-test("options reach the engine as bento resolves them", () => {
+test("settings reach the engine as bento resolves them", () => {
     const seen = [];
     const h = host(
         (bento) => {
-            bento.addEventListener("configchange", () => seen.push({ ...bento.options }));
-            bento.exposeState(() => ({ ...bento.options }));
+            bento.addEventListener("configchange", () => seen.push({ ...bento.settings }));
+            bento.exposeState(() => ({ ...bento.settings }));
         },
-        { options: { a: 2, w: "25%" } },
+        { settings: { a: 2, w: "25%" } },
         {
-            options: {
+            settings: {
                 a: { type: "number", default: 1 },
                 b: { type: "boolean", default: true },
                 w: { type: "size", default: "50%" },
@@ -448,7 +451,7 @@ test("options reach the engine as bento resolves them", () => {
         p: [{ proportion: 0.5 }, { fixed: 800 }],
     });
 
-    h.setOptions({ a: 3 });
+    h.setSettings({ a: 3 });
     assert.equal(seen.length, 1);
     assert.deepEqual(seen[0].a, 3);
     assert.deepEqual(seen[0].w, { proportion: 0.5 });
@@ -460,7 +463,7 @@ test("colours and gradients are option types", () => {
             meta: {
                 api: 2,
                 name: "painted",
-                options: {
+                settings: {
                     tint: { type: "color", default: "#102030" },
                     glow: { type: "gradient", default: null },
                 },
@@ -470,7 +473,7 @@ test("colours and gradients are option types", () => {
         }),
     );
     assert.deepEqual(
-        meta.options.map((o) => [o.name, o.type, o.default]),
+        meta.settings.map((o) => [o.name, o.type, o.default]),
         [
             ["tint", "color", "#102030"],
             ["glow", "gradient", null],
@@ -487,11 +490,11 @@ test("colours and gradients are option types", () => {
     const glow = { from: "#000", to: "#fff", angle: 45, relativeTo: "view", in: "oklab" };
     const h = host(
         (bento) => {
-            bento.exposeState(() => ({ ...bento.options }));
+            bento.exposeState(() => ({ ...bento.settings }));
         },
-        { options: { glow } },
+        { settings: { glow } },
         {
-            options: {
+            settings: {
                 tint: { type: "color", default: "#102030" },
                 glow: { type: "gradient", default: null },
             },
@@ -500,24 +503,24 @@ test("colours and gradients are option types", () => {
     assert.deepEqual(h.exposedState(), { tint: "#102030", glow });
 });
 
-test("workspaces have the options of their monitor and their own on top of the engine's", () => {
+test("workspaces have the settings of their monitor and their own on top of the engine's", () => {
     const fired = [];
     const h = host(
         (bento) => {
             bento.addEventListener("configchange", () => fired.push("configchange"));
             bento.exposeState(() => ({
-                top: { ...bento.options },
-                workspaces: bento.monitors.map((m) => m.workspaces.map((ws) => ({ ...ws.options }))),
+                top: { ...bento.settings },
+                workspaces: bento.monitors.map((m) => m.workspaces.map((ws) => ({ ...ws.settings }))),
             }));
         },
         {
             monitors: TWO_MONITORS,
-            options: { a: 1, b: 1 },
-            outputOptions: { "dp-2": { a: 2, b: 2 } },
-            workspaceOptions: { Web: { b: 3 } },
+            settings: { a: 1, b: 1 },
+            outputSettings: { "dp-2": { a: 2, b: 2 } },
+            workspaceSettings: { Web: { b: 3 } },
         },
         {
-            options: {
+            settings: {
                 a: { type: "number", default: 0 },
                 b: { type: "number", default: 0 },
                 c: { type: "number", default: 0 },
@@ -530,7 +533,7 @@ test("workspaces have the options of their monitor and their own on top of the e
     fired.length = 0;
 
     const state = h.exposedState();
-    // `bento.options` stays the engine's.
+    // `bento.settings` stays the engine's.
     assert.deepEqual(state.top, { a: 1, b: 1, c: 0 });
     assert.deepEqual(state.workspaces, [
         [
@@ -544,19 +547,19 @@ test("workspaces have the options of their monitor and their own on top of the e
     ]);
 
     // A change to one scope tells the engine, and only that scope's workspaces change.
-    h.setOutputOptions("DP-2", { a: 5 });
+    h.setOutputSettings("DP-2", { a: 5 });
     assert.deepEqual(fired, ["configchange"]);
     assert.deepEqual(h.exposedState().workspaces[1], [
         { a: 5, b: 3, c: 0 },
         { a: 5, b: 1, c: 0 },
     ]);
-    h.setWorkspaceOptions("web", null);
+    h.setWorkspaceSettings("web", null);
     assert.deepEqual(h.exposedState().workspaces[0][1], { a: 1, b: 1, c: 0 });
     assert.equal(fired.length, 2);
 
-    // Renaming a workspace changes which options it has.
+    // Renaming a workspace changes which settings it has.
     h.workspaces.get(1).name = "web";
-    h.setWorkspaceOptions("web", { c: 9 });
+    h.setWorkspaceSettings("web", { c: 9 });
     assert.deepEqual(h.exposedState().workspaces[0][0], { a: 1, b: 1, c: 9 });
 });
 
@@ -761,7 +764,7 @@ test("the engine can focus a monitor", () => {
     assert.equal(h.focusedMonitor, "DP-2");
 });
 
-test("the camera moves with the options the engine gives", () => {
+test("the camera moves with the settings the engine gives", () => {
     const h = host(
         (bento) => {
             placing(bento);

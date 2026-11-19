@@ -13,10 +13,10 @@ use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context as _};
 use niri_config::edit::{option_properties, option_values, Document};
-use niri_config::{EngineOptions, ShellSettings};
+use niri_config::{EngineSettings, ShellSettings};
 use niri_ipc::{LayoutEngineOption, LayoutEngineOptionValue};
 
-use crate::layout::tiling::engine::{ipc_options, resolve_options, OptionMeta};
+use crate::layout::tiling::engine::{ipc_settings, resolve_settings, SettingMeta};
 
 /// The settings file, and what the running shell declares.
 #[derive(Debug, Default)]
@@ -32,7 +32,7 @@ pub struct Settings {
     /// Why the file can't be read, while it can't.
     error: Option<String>,
     /// The settings each module and the shell declares, by its name, in the order they did.
-    declared: Vec<(String, Vec<OptionMeta>)>,
+    declared: Vec<(String, Vec<SettingMeta>)>,
     /// What a test writes to the file, which reads as a change.
     #[cfg(test)]
     written: Option<String>,
@@ -126,7 +126,7 @@ impl Settings {
     /// Takes what module or shell `name` declares, as the JSON array of its settings, and
     /// returns their values, by name.
     pub fn declare(&mut self, name: &str, declared: &str) -> anyhow::Result<serde_json::Value> {
-        let declared: Vec<OptionMeta> = serde_json::from_str(declared)
+        let declared: Vec<SettingMeta> = serde_json::from_str(declared)
             .with_context(|| format!("{name}'s settings are declared wrong"))?;
         for setting in &declared {
             if let Err(problem) = setting.convert(&setting.default_values()) {
@@ -148,7 +148,7 @@ impl Settings {
         let Some((_, declared)) = self.declared.iter().find(|(n, _)| n == name) else {
             return serde_json::json!({});
         };
-        resolve_options(declared, &[&self.file.of(name)])
+        resolve_settings(declared, &[&self.file.of(name)])
     }
 
     /// The values of every module's and shell's settings, by its name.
@@ -254,8 +254,8 @@ impl Settings {
             .iter()
             .filter(|(_, declared)| !declared.is_empty());
         let blocks = blocks.map(|(name, declared)| {
-            let values: EngineOptions = self.file.of(name);
-            (name.clone(), ipc_options(declared, &values))
+            let values: EngineSettings = self.file.of(name);
+            (name.clone(), ipc_settings(declared, &values))
         });
         blocks.collect()
     }

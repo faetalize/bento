@@ -1051,8 +1051,8 @@ pub struct LayoutEngine {
     pub source: LayoutEngineSource,
     /// Whether bento's floating layer exists under this layout engine.
     pub floating: bool,
-    /// Options of the layout engine, in the order it declares them.
-    pub options: Vec<LayoutEngineOption>,
+    /// Settings of the layout engine, in the order it declares them.
+    pub settings: Vec<LayoutEngineOption>,
     /// Properties that the layout engine's window rules can set, in the order it declares them.
     pub window_rules: Vec<LayoutEngineWindowRule>,
     /// Actions that the layout engine has, in the order it declares them. They're bound by name
@@ -1077,7 +1077,8 @@ pub enum LayoutEngineSource {
     },
 }
 
-/// An option of a layout engine, set in the `options {}` section of its config file.
+/// A setting of a layout engine, set in the `settings {}` section of its config file, or of a
+/// shell, set in its block of the shell's settings file.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct LayoutEngineOption {
@@ -1097,6 +1098,12 @@ pub struct LayoutEngineOption {
     /// Current value of the option: the one from the config, or the default. A list option has a
     /// list.
     pub value: Option<LayoutEngineOptionValue>,
+    /// The page of bento Settings it shows on, by its id, if it names one.
+    #[serde(default)]
+    pub page: Option<String>,
+    /// The group on that page it shows in, if it names one.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// A property that a layout engine's window rules can set, written in the `window-rule` blocks of

@@ -317,7 +317,7 @@ fn engine_actions_cannot_take_native_names() {
     );
 }
 
-/// An engine file that declares an option and a window rule property of every type, in a
+/// An engine file that declares a setting and a window rule property of every type, in a
 /// directory of its own that the caller removes.
 fn typed_engine(name: &str) -> (std::path::PathBuf, niri_config::TilingLayout) {
     let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{}", std::process::id()));
@@ -329,7 +329,7 @@ fn typed_engine(name: &str) -> (std::path::PathBuf, niri_config::TilingLayout) {
         export const meta = {
             api: 2,
             name: "typed",
-            options: {
+            settings: {
                 "center": { type: "choice", choices: ["never", "always"], default: "never" },
                 "width": { type: "size", default: "50%" },
                 "presets": { type: "size", list: true, default: ["33%", "50%"] },
@@ -359,7 +359,7 @@ fn strings(values: &[&str]) -> Vec<niri_config::TilingOption> {
 }
 
 #[test]
-fn engine_options_and_rules_are_converted_by_their_declared_types() {
+fn engine_settings_and_rules_are_converted_by_their_declared_types() {
     use niri_config::{EngineRules, TilingOption};
     use serde_json::json;
 
@@ -368,7 +368,7 @@ fn engine_options_and_rules_are_converted_by_their_declared_types() {
     let (dir, layout) = typed_engine("convert");
     let tiling = niri_config::Tiling {
         layout,
-        options: vec![
+        settings: vec![
             (String::from("center"), strings(&["always"])),
             // A size with no value is left to the window.
             (String::from("width"), vec![]),
@@ -379,10 +379,10 @@ fn engine_options_and_rules_are_converted_by_their_declared_types() {
     };
     engine::ensure_loaded(&tiling);
 
-    // Options the config leaves out, or gets wrong, have their defaults.
-    let options = engine::options_json(&tiling);
+    // Settings the config leaves out, or gets wrong, have their defaults.
+    let settings = engine::settings_json(&tiling);
     assert_eq!(
-        options,
+        settings,
         json!({
             "center": "always",
             "width": null,
@@ -428,7 +428,7 @@ fn engine_options_and_rules_are_converted_by_their_declared_types() {
 }
 
 #[test]
-fn engine_options_and_rules_are_checked_against_the_running_engine() {
+fn engine_settings_and_rules_are_checked_against_the_running_engine() {
     use niri_config::{EngineRules, EngineWindowRule, TilingOption};
 
     use crate::layout::tiling::engine;
@@ -436,7 +436,7 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
     let (dir, layout) = typed_engine("check");
     let tiling = niri_config::Tiling {
         layout,
-        options: vec![
+        settings: vec![
             (String::from("nope"), vec![TilingOption::Bool(true)]),
             (String::from("center"), strings(&["sideways"])),
             (String::from("width"), strings(&["+10%"])),
@@ -446,13 +446,13 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
             (String::from("tint"), strings(&["blue"])),
             (String::from("glow"), strings(&["#fff"])),
         ],
-        output_options: vec![niri_config::ScopedOptions {
+        output_settings: vec![niri_config::ScopedSettings {
             name: String::from("DP-2"),
-            options: vec![(String::from("tint"), strings(&["#12"]))],
+            settings: vec![(String::from("tint"), strings(&["#12"]))],
         }],
-        workspace_options: vec![niri_config::ScopedOptions {
+        workspace_settings: vec![niri_config::ScopedSettings {
             name: String::from("web"),
-            options: vec![(String::from("nope"), vec![TilingOption::Bool(true)])],
+            settings: vec![(String::from("nope"), vec![TilingOption::Bool(true)])],
         }],
         window_rules: vec![EngineWindowRule {
             matches: Vec::new(),
@@ -475,15 +475,15 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
     assert_eq!(
         problems,
         [
-            r#"the typed layout engine has no option called "nope""#,
-            r#"layout engine option "center" must be one of ["never", "always"]"#,
-            r#"layout engine option "width" must be a size, like "50%" or "800""#,
-            r#"layout engine option "presets" must be a size, like "50%" or "800""#,
-            r#"layout engine option "gap" needs a value"#,
-            r##"layout engine option "tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
-            r##"layout engine option "glow" must be a gradient, like `from="#000" to="#fff"`"##,
-            r##"layout engine option "tint" of output "DP-2" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
-            r#"the typed layout engine has no option called "nope" of workspace "web""#,
+            r#"the typed layout engine has no setting called "nope""#,
+            r#"layout engine setting "center" must be one of ["never", "always"]"#,
+            r#"layout engine setting "width" must be a size, like "50%" or "800""#,
+            r#"layout engine setting "presets" must be a size, like "50%" or "800""#,
+            r#"layout engine setting "gap" needs a value"#,
+            r##"layout engine setting "tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
+            r##"layout engine setting "glow" must be a gradient, like `from="#000" to="#fff"`"##,
+            r##"layout engine setting "tint" of output "DP-2" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
+            r#"the typed layout engine has no setting called "nope" of workspace "web""#,
             r#"layout engine window rule "open-maximized" must be true or false"#,
             r##"layout engine window rule "tab-tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
             r#"the typed layout engine has no window rule called "zzz""#,
@@ -504,7 +504,7 @@ fn engine_defaults_must_fit_their_types() {
         export const meta = {
             api: 2,
             name: "wrong",
-            options: { "center": { type: "choice", choices: ["a"], default: "b" } },
+            settings: { "center": { type: "choice", choices: ["a"], default: "b" } },
         };
         export default function create(bento) {}
         "#,
@@ -517,13 +517,13 @@ fn engine_defaults_must_fit_their_types() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(problems.len(), 1);
     assert!(
-        problems[0].contains(r#"default for its option "center" is wrong"#),
+        problems[0].contains(r#"default for its setting "center" is wrong"#),
         "{problems:?}"
     );
 }
 
 #[test]
-fn layout_engine_ipc_info_has_options_and_actions() {
+fn layout_engine_ipc_info_has_settings_and_actions() {
     use niri_ipc::{
         LayoutEngineActionArgType, LayoutEngineOptionType, LayoutEngineOptionValue,
         LayoutEngineSource,
@@ -533,7 +533,7 @@ fn layout_engine_ipc_info_has_options_and_actions() {
 
     let tiling = niri_config::Tiling {
         layout: niri_config::TilingLayout::BuiltIn(String::from("bento")),
-        options: vec![(
+        settings: vec![(
             String::from("gravity"),
             vec![niri_config::TilingOption::Bool(false)],
         )],
@@ -545,7 +545,7 @@ fn layout_engine_ipc_info_has_options_and_actions() {
     assert_eq!(info.name, "bento");
     assert_eq!(info.source, LayoutEngineSource::BuiltIn {});
 
-    let gravity = &info.options[0];
+    let gravity = &info.settings[0];
     assert_eq!(gravity.name, "gravity");
     assert_eq!(gravity.r#type, LayoutEngineOptionType::Boolean);
     assert!(!gravity.list);
@@ -666,8 +666,8 @@ fn one_engine_sees_every_monitor_and_workspace() {
 }
 
 #[test]
-fn workspaces_have_the_options_of_their_output_and_their_own() {
-    use niri_config::{ScopedOptions, TilingOption};
+fn workspaces_have_the_settings_of_their_output_and_their_own() {
+    use niri_config::{ScopedSettings, TilingOption};
 
     use crate::layout::tiling::engine;
 
@@ -675,27 +675,27 @@ fn workspaces_have_the_options_of_their_output_and_their_own() {
         export const meta = {
             api: 2,
             name: "scoped",
-            options: { rows: { type: "number", default: 1 } },
+            settings: { rows: { type: "number", default: 1 } },
         };
         export default function create(bento) {
             bento.exposeState(() => ({
-                top: bento.options.rows,
+                top: bento.settings.rows,
                 workspaces: bento.monitors.flatMap((m) =>
-                    m.workspaces.map((ws) => [m.name, ws.name, ws.options.rows]),
+                    m.workspaces.map((ws) => [m.name, ws.name, ws.settings.rows]),
                 ),
             }));
         }
     "#;
     let rows = |rows: f64| vec![(String::from("rows"), vec![TilingOption::Number(rows)])];
     let mut options = options_for_source("scoped-options", source);
-    options.tiling.options = rows(4.);
-    options.tiling.output_options = vec![ScopedOptions {
+    options.tiling.settings = rows(4.);
+    options.tiling.output_settings = vec![ScopedSettings {
         name: String::from("output2"),
-        options: rows(6.),
+        settings: rows(6.),
     }];
-    options.tiling.workspace_options = vec![ScopedOptions {
+    options.tiling.workspace_settings = vec![ScopedSettings {
         name: String::from("ws1"),
-        options: rows(8.),
+        settings: rows(8.),
     }];
 
     let ops = [
@@ -710,7 +710,7 @@ fn workspaces_have_the_options_of_their_output_and_their_own() {
     drop(layout);
 
     let state = engine::exposed_state().unwrap();
-    // `Bento.options` stays the top-level ones.
+    // `Bento.settings` stays the top-level ones.
     assert_eq!(state["top"], serde_json::json!(4));
     let workspaces = state["workspaces"].as_array().unwrap();
     let rows_of = |monitor: &str, name: Option<&str>| {

@@ -10,7 +10,7 @@
 //         layout "~/path/to/my-engine.js"
 //     }
 //
-// bento reloads the file when it changes. The engine's options and binds go in `my-engine.kdl` next
+// bento reloads the file when it changes. The engine's settings and binds go in `my-engine.kdl` next
 // to it, loaded only while it runs, with its actions bound by name. The full API is in
 // `../bento-layout.d.ts`, and `template.test.js` next to this file shows how to test an engine
 // with node, without bento.
@@ -30,8 +30,8 @@ export const meta = {
     actions: {
         promote: { description: "Swap the focused window with the main one." },
     },
-    // Options for the `options {}` section of the engine's .kdl file.
-    options: {
+    // Settings for the `settings {}` section of the engine's .kdl file.
+    settings: {
         "main-width": {
             type: "number",
             default: 0.55,
@@ -63,7 +63,7 @@ export default function create(bento) {
         const gap = ws.config.gaps;
         const monitor = ws.monitor;
         const [main, ...stack] = orderOf(ws);
-        const mainWidth = clamp(bento.options["main-width"], 0.1, 0.9);
+        const mainWidth = clamp(bento.settings["main-width"], 0.1, 0.9);
 
         // The main window is as wide as the view when it's alone.
         const mainW =

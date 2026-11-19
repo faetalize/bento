@@ -5,9 +5,9 @@
 //! node, so what bento keeps stays the way the person wrote it, comments and spacing included.
 //! What moves to the engine's file takes the comments right above it along.
 //!
-//! - `layout {}` loses the settings that belong to the engine, which become `options {}` of the
+//! - `layout {}` loses the settings that belong to the engine, which become `settings {}` of the
 //!   engine's file. The `layout {}` of an `output` or a `workspace` does the same, and its settings
-//!   become the `options {}` of an `output` or `workspace` block of the engine's file.
+//!   become the `settings {}` of an `output` or `workspace` block of the engine's file.
 //! - Window rules lose the properties that belong to the engine, which become `window-rule {}`
 //!   blocks of the engine's file with the same matchers. That includes the colors and gradients of
 //!   a `tab-indicator` rule.
@@ -105,7 +105,7 @@ const ENGINE_ACTIONS: &[&str] = &[
 const TILING: &str = "tiling {\n    layout \"niri\"\n}\n\n";
 
 const ENGINE_HEADER: &str = "\
-// The niri engine's options, window rules and binds, converted from a niri config.
+// The niri engine's settings, window rules and binds, converted from a niri config.
 // https://github.com/faetalize/bento#layout-engines
 ";
 
@@ -129,7 +129,7 @@ pub fn convert(niri_config: &str) -> miette::Result<Conversion> {
         native: native_actions().into_iter().map(|a| a.name).collect(),
         edits: Vec::new(),
         notes: Vec::new(),
-        options: Vec::new(),
+        settings: Vec::new(),
         scoped: Vec::new(),
         rules: Vec::new(),
         binds: Vec::new(),
@@ -162,12 +162,12 @@ enum Kind {
     Unknown,
 }
 
-/// The options that an `output` or `workspace` block of the engine's file sets.
+/// The settings that an `output` or `workspace` block of the engine's file sets.
 struct Scoped {
     /// `output` or `workspace`.
     kind: &'static str,
     name: String,
-    options: Vec<Moved>,
+    settings: Vec<Moved>,
 }
 
 struct Converter<'a> {
@@ -175,7 +175,7 @@ struct Converter<'a> {
     native: HashSet<String>,
     edits: Vec<Edit>,
     notes: Vec<String>,
-    options: Vec<Moved>,
+    settings: Vec<Moved>,
     scoped: Vec<Scoped>,
     rules: Vec<String>,
     binds: Vec<Moved>,
@@ -223,7 +223,7 @@ impl<'a> Converter<'a> {
     }
 
     /// Moves `focus-follows-mouse` out of `input`: whether focus follows the pointer is the
-    /// engine's to say, as its options.
+    /// engine's to say, as its settings.
     fn input(&mut self, node: &Node) {
         for child in node.children() {
             if &**child.node_name != "focus-follows-mouse" {
@@ -249,7 +249,7 @@ impl<'a> Converter<'a> {
             let lines = vec![option("focus-follows-mouse", &[quote(mode)])];
             let comments = self.comments(child);
             self.remove(child);
-            self.options.push(Moved { comments, lines });
+            self.settings.push(Moved { comments, lines });
         }
     }
 
@@ -266,7 +266,7 @@ impl<'a> Converter<'a> {
             self.notes.extend(notes);
             let moved = Moved { comments, lines };
             match &scope {
-                None => self.options.push(moved),
+                None => self.settings.push(moved),
                 Some((kind, name)) => {
                     let index = self
                         .scoped
@@ -278,12 +278,12 @@ impl<'a> Converter<'a> {
                             self.scoped.push(Scoped {
                                 kind,
                                 name: name.clone(),
-                                options: Vec::new(),
+                                settings: Vec::new(),
                             });
                             self.scoped.last_mut().unwrap()
                         }
                     };
-                    scoped.options.push(moved);
+                    scoped.settings.push(moved);
                 }
             }
         }
@@ -619,27 +619,27 @@ impl<'a> Converter<'a> {
         }
 
         let mut engine = String::from(ENGINE_HEADER);
-        if !self.options.is_empty() {
-            let options = render(&self.options);
-            let _ = write!(engine, "\noptions {{\n{options}\n}}\n");
+        if !self.settings.is_empty() {
+            let settings = render(&self.settings);
+            let _ = write!(engine, "\nsettings {{\n{settings}\n}}\n");
         }
         for scoped in &self.scoped {
-            let options = render(&scoped.options);
-            if options.is_empty() {
+            let settings = render(&scoped.settings);
+            if settings.is_empty() {
                 continue;
             }
-            // Two levels down: the block, and its `options`.
+            // Two levels down: the block, and its `settings`.
             let nest = |line: &str| match line.is_empty() {
                 true => String::new(),
                 false => format!("    {line}"),
             };
-            let options: Vec<String> = options.lines().map(nest).collect();
+            let settings: Vec<String> = settings.lines().map(nest).collect();
             let name = quote(&scoped.name);
             let kind = scoped.kind;
-            let options = options.join("\n");
+            let settings = settings.join("\n");
             let _ = write!(
                 engine,
-                "\n{kind} {name} {{\n    options {{\n{options}\n    }}\n}}\n"
+                "\n{kind} {name} {{\n    settings {{\n{settings}\n    }}\n}}\n"
             );
         }
         for rule in &self.rules {
@@ -784,7 +784,7 @@ fn render(moved: &[Moved]) -> String {
     out
 }
 
-/// A setting as a line of the engine's `options {}`: `name value...`.
+/// A setting as a line of the engine's `settings {}`: `name value...`.
 fn option(name: &str, values: &[String]) -> String {
     let mut line = String::from(name);
     for value in values {
@@ -837,7 +837,7 @@ fn number(literal: &Literal) -> Option<f64> {
     }
 }
 
-/// A `proportion 0.5` or `fixed 960` child, as the size the engine's options take.
+/// A `proportion 0.5` or `fixed 960` child, as the size the engine's settings take.
 fn preset(node: &Node) -> Option<String> {
     let value = number(&node.arguments.first()?.literal)?;
     match &**node.node_name {
@@ -892,7 +892,7 @@ fn gradient_option(setting: &str, node: &Node) -> Option<String> {
     Some(line)
 }
 
-/// A color as the `#rrggbb` or `#rrggbbaa` the engine's options take.
+/// A color as the `#rrggbb` or `#rrggbbaa` the engine's settings take.
 fn hex(color: Color) -> String {
     let byte = |x: f32| (x.clamp(0., 1.) * 255.).round() as u8;
     let mut hex = format!(
@@ -908,7 +908,7 @@ fn hex(color: Color) -> String {
 }
 
 /// A niri color node, which is a CSS color string or four 0-255 numbers, as the `#rrggbb` or
-/// `#rrggbbaa` the engine's options take.
+/// `#rrggbbaa` the engine's settings take.
 fn color_hex(node: &Node) -> Option<String> {
     let first = node.arguments.first()?;
     let color = match &*first.literal {
@@ -1173,7 +1173,7 @@ workspace "web" {
     fn focus_follows_mouse_becomes_the_engines() {
         let (converted, config) = convert_niri();
         let option = |name: &str| {
-            let option = config.tiling.options.iter().find(|(n, _)| n == name);
+            let option = config.tiling.settings.iter().find(|(n, _)| n == name);
             option.map(|(_, values)| values.clone())
         };
         assert_eq!(option("focus-follows-mouse"), Some(strings(&["in-view"])));
@@ -1184,10 +1184,10 @@ workspace "web" {
     }
 
     #[test]
-    fn layout_settings_become_engine_options() {
+    fn layout_settings_become_engine_settings() {
         let (converted, config) = convert_niri();
         let option = |name: &str| {
-            let option = config.tiling.options.iter().find(|(n, _)| n == name);
+            let option = config.tiling.settings.iter().find(|(n, _)| n == name);
             option.map(|(_, values)| values.clone())
         };
 
@@ -1327,14 +1327,14 @@ workspace "web" {
     }
 
     #[test]
-    fn output_and_workspace_layouts_become_scoped_options() {
+    fn output_and_workspace_layouts_become_scoped_settings() {
         let (converted, config) = convert_niri();
         let tiling = &config.tiling;
 
-        assert_eq!(tiling.output_options.len(), 1);
-        let output = &tiling.output_options[0];
+        assert_eq!(tiling.output_settings.len(), 1);
+        let output = &tiling.output_settings[0];
         assert_eq!(output.name, "eDP-1");
-        let names: Vec<_> = output.options.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<_> = output.settings.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(
             names,
             [
@@ -1343,13 +1343,13 @@ workspace "web" {
                 "tab-indicator-active-gradient"
             ]
         );
-        assert_eq!(output.options[0].1, strings(&["25%"]));
+        assert_eq!(output.settings[0].1, strings(&["25%"]));
 
-        assert_eq!(tiling.workspace_options.len(), 1);
-        let workspace = &tiling.workspace_options[0];
+        assert_eq!(tiling.workspace_settings.len(), 1);
+        let workspace = &tiling.workspace_settings[0];
         assert_eq!(workspace.name, "web");
         assert_eq!(
-            workspace.options,
+            workspace.settings,
             [(String::from("default-column-display"), strings(&["tabbed"]))]
         );
         // The comment went along.
@@ -1363,14 +1363,14 @@ workspace "web" {
         assert!(!converted.config.contains("0.25"));
         assert!(!converted.config.contains("tabbed"));
 
-        // The result is a config bento reads, so the options reach the right workspaces.
+        // The result is a config bento reads, so the settings reach the right workspaces.
         let output_name = crate::OutputName {
             connector: String::from("edp-1"),
             make: None,
             model: None,
             serial: None,
         };
-        let layers = tiling.option_layers(Some(&output_name), Some("web"));
+        let layers = tiling.setting_layers(Some(&output_name), Some("web"));
         assert_eq!(layers.len(), 3);
     }
 
@@ -1520,7 +1520,7 @@ window-rule {
     }
 
     #[test]
-    fn settings_written_as_the_defaults_are_still_options() {
+    fn settings_written_as_the_defaults_are_still_written() {
         let niri = r#"
 layout {
     center-focused-column "never"
@@ -1537,7 +1537,7 @@ layout {
         let config = Config::parse_mem_with_engine(&converted.config, &converted.engine).unwrap();
         let names: Vec<_> = config
             .tiling
-            .options
+            .settings
             .iter()
             .map(|(n, _)| n.as_str())
             .collect();
@@ -1550,8 +1550,8 @@ layout {
                 "insert-hint"
             ]
         );
-        assert_eq!(config.tiling.options[1].1, vec![TilingOption::Bool(true)]);
-        assert_eq!(config.tiling.options[3].1, vec![TilingOption::Bool(false)]);
+        assert_eq!(config.tiling.settings[1].1, vec![TilingOption::Bool(true)]);
+        assert_eq!(config.tiling.settings[3].1, vec![TilingOption::Bool(false)]);
     }
 
     #[test]

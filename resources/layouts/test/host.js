@@ -1,7 +1,7 @@
 // A stand-in for bento, to test layout engines with node:
 //
 //     import { TestHost } from "./host.js";
-//     const host = await TestHost.load("../bento.js", { options: { gravity: true } });
+//     const host = await TestHost.load("../bento.js", { settings: { gravity: true } });
 //     const a = host.open();
 //     host.action("focus-left");
 //     assert.deepEqual(host.rect(a), { x: 16, y: 16, w: 616, h: 688 });
@@ -16,8 +16,8 @@ import { SearchField, rank } from "./search.js";
 
 const DEFAULT_MONITOR = { size: { w: 1280, h: 720 }, scale: 1, workspaces: 2 };
 
-/** The options written for `name` in `by`, which match names the way bento does: ignoring case. */
-function scopedOptions(by, name) {
+/** The settings written for `name` in `by`, which match names the way bento does: ignoring case. */
+function scopedSettings(by, name) {
     if (name === null) return {};
     const key = Object.keys(by).find((other) => other.toLowerCase() === name.toLowerCase());
     return key === undefined ? {} : by[key];
@@ -56,8 +56,8 @@ export class TestHost {
      *
      * `opts.monitors` lists the monitors, each `{ name, size, scale, workingArea, workspaces,
      * position }`; by default there's one, `"DP-1"`, 1280 × 720 with two workspaces. `opts.config`
-     * overrides parts of the workspaces' config, `opts.options` are the engine's options,
-     * `opts.outputOptions` and `opts.workspaceOptions` the options that differ per monitor name
+     * overrides parts of the workspaces' config, `opts.settings` are the engine's settings,
+     * `opts.outputSettings` and `opts.workspaceSettings` the settings that differ per monitor name
      * and per workspace name, and `opts.state` the state the previous instance of the engine
      * saved.
      */
@@ -69,11 +69,11 @@ export class TestHost {
 
     constructor(module, opts = {}) {
         this.meta = JSON.parse(prelude.load(module));
-        this.options = opts.options ?? {};
+        this.settings = opts.settings ?? {};
         /** What the engine said about focus following the pointer, `{ on, maxScroll }`. */
         this.focusFollowsMouse = null;
-        this.outputOptions = opts.outputOptions ?? {};
-        this.workspaceOptions = opts.workspaceOptions ?? {};
+        this.outputSettings = opts.outputSettings ?? {};
+        this.workspaceSettings = opts.workspaceSettings ?? {};
         this.config = {
             gaps: 16,
             struts: { left: 0, right: 0, top: 0, bottom: 0 },
@@ -91,7 +91,7 @@ export class TestHost {
         /** What the engine was told, by object, as JSON. */
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
-        this.toldOptions = null;
+        this.toldSettings = null;
         /**
          * The running search, which bento owns: `{ scope, field }`, with the scope as the engine
          * asked for it, `{ kind: "all" }`, `{ kind: "workspace", id }` or `{ kind: "group", id }`.
@@ -251,7 +251,7 @@ export class TestHost {
             view: { size: monitor.size, workingArea: monitor.workingArea, scale: monitor.scale },
             camera: ws.camera,
             config: this.config,
-            options: this.engineOptions(ws.monitor, ws.name),
+            settings: this.engineSettings(ws.monitor, ws.name),
             focused: ws.focused,
         };
     }
@@ -334,10 +334,10 @@ export class TestHost {
             sync.keyboardAvailable = available;
             this.toldKeyboardAvailable = available;
         }
-        const options = this.engineOptions();
-        if (JSON.stringify(this.toldOptions) !== JSON.stringify(options)) {
-            sync.options = options;
-            this.toldOptions = options;
+        const options = this.engineSettings();
+        if (JSON.stringify(this.toldSettings) !== JSON.stringify(options)) {
+            sync.settings = options;
+            this.toldSettings = options;
         }
         return sync;
     }
@@ -351,7 +351,7 @@ export class TestHost {
             sync.windows.length === 0 &&
             sync.groups === undefined &&
             sync.search === undefined &&
-            sync.options === undefined &&
+            sync.settings === undefined &&
             sync.keyboardAvailable === undefined &&
             sync.focusedMonitor === this.toldFocusedMonitor
         );
@@ -369,7 +369,7 @@ export class TestHost {
                 sync,
                 event: {
                     type: "create",
-                    options: this.engineOptions(),
+                    settings: this.engineSettings(),
                     savedState: state,
                     windows,
                     focused: this.focused(),
@@ -1145,30 +1145,30 @@ export class TestHost {
         this.flush();
     }
 
-    setOptions(options) {
-        this.options = options;
+    setSettings(options) {
+        this.settings = options;
         this.flush();
     }
 
-    /** Sets the options of the workspaces on a monitor, or with `null` takes them away. */
-    setOutputOptions(monitor, options) {
-        setScoped(this.outputOptions, monitor, options);
+    /** Sets the settings of the workspaces on a monitor, or with `null` takes them away. */
+    setOutputSettings(monitor, options) {
+        setScoped(this.outputSettings, monitor, options);
         this.flush();
     }
 
-    /** Sets the options of the workspaces with a name, or with `null` takes them away. */
-    setWorkspaceOptions(name, options) {
-        setScoped(this.workspaceOptions, name, options);
+    /** Sets the settings of the workspaces with a name, or with `null` takes them away. */
+    setWorkspaceSettings(name, options) {
+        setScoped(this.workspaceSettings, name, options);
         this.flush();
     }
 
     /**
-     * The engine's options as bento sends them, written as in the .kdl file, with defaults filled
-     * in and sizes turned into presets. Without arguments they are the top-level options. For a
-     * workspace they are those, then its monitor's `outputOptions` and then its own
-     * `workspaceOptions` by name, a later one replacing an earlier one option by option.
+     * The engine's settings as bento sends them, written as in the .kdl file, with defaults filled
+     * in and sizes turned into presets. Without arguments they are the top-level settings. For a
+     * workspace they are those, then its monitor's `outputSettings` and then its own
+     * `workspaceSettings` by name, a later one replacing an earlier one option by option.
      */
-    engineOptions(monitor = null, workspace = null) {
+    engineSettings(monitor = null, workspace = null) {
         const preset = (value) => {
             if (typeof value !== "string") return value;
             return value.endsWith("%")
@@ -1176,12 +1176,12 @@ export class TestHost {
                 : { fixed: Number(value) };
         };
         const written = {
-            ...this.options,
-            ...scopedOptions(this.outputOptions, monitor),
-            ...scopedOptions(this.workspaceOptions, workspace),
+            ...this.settings,
+            ...scopedSettings(this.outputSettings, monitor),
+            ...scopedSettings(this.workspaceSettings, workspace),
         };
         const options = {};
-        for (const spec of this.meta.options) {
+        for (const spec of this.meta.settings) {
             let value = spec.name in written ? written[spec.name] : spec.default;
             if (spec.type === "size") {
                 value = spec.list ? value.map(preset) : preset(value);
@@ -1317,7 +1317,7 @@ export class TestHost {
         this.grab = null;
         this.told = { monitors: new Map(), workspaces: new Map(), windows: new Map() };
         this.toldGroups = null;
-        this.toldOptions = null;
+        this.toldSettings = null;
         this.timers.clear();
         // The engine that held the keyboard is gone, so nobody is told.
         this.keyboard.grabbed = false;

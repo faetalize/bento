@@ -1,4 +1,4 @@
-// Options and binds for the bento engine, loaded only while it runs. bento copies this file to
+// Settings and binds for the bento engine, loaded only while it runs. bento copies this file to
 // ~/.config/bento/engines/bento.kdl the first time the engine runs without one; from then on
 // it's yours to edit.
 //
@@ -7,22 +7,22 @@
 
 // Everything below is at its default.
 //
-// Options can differ per output and per named workspace: an `output` or `workspace` block next to
-// `options` holds the options that change there. A workspace has the options above, then those
+// Settings can differ per output and per named workspace: an `output` or `workspace` block next to
+// `settings` holds the settings that change there. A workspace has the settings above, then those
 // of its output, then its own, each replacing the one before it:
 //
 // output "DP-2" {
-//     options {
+//     settings {
 //         default-width "33.333%"
 //     }
 // }
 //
 // workspace "web" {
-//     options {
+//     settings {
 //         gravity false
 //     }
 // }
-options {
+settings {
     // With gravity, windows slide left until they touch another window.
     gravity true
 

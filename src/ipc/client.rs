@@ -805,12 +805,12 @@ fn print_layout_engine(engine: &LayoutEngine) {
     }
 
     println!();
-    if engine.options.is_empty() {
-        println!("No options.");
+    if engine.settings.is_empty() {
+        println!("No settings.");
     } else {
-        println!("Options:");
+        println!("Settings:");
     }
-    print_options(&engine.options);
+    print_settings(&engine.settings);
 
     println!();
     if engine.window_rules.is_empty() {
@@ -832,9 +832,9 @@ fn print_layout_engine(engine: &LayoutEngine) {
     print_actions(&engine.actions);
 }
 
-/// Options of an engine or settings of a shell, with their values, types and descriptions.
-fn print_options(options: &[niri_ipc::LayoutEngineOption]) {
-    for option in options {
+/// Settings of an engine or a shell, with their values, types and descriptions.
+fn print_settings(settings: &[niri_ipc::LayoutEngineOption]) {
+    for option in settings {
         let value = fmt_option_value(&option.value);
         if option.value == option.default {
             println!("  {}: {value} (default)", option.name);
@@ -867,7 +867,7 @@ fn print_shell(shell: &bento_ipc::Shell) {
     for block in &shell.settings {
         println!();
         println!("{}:", block.name);
-        print_options(&block.settings);
+        print_settings(&block.settings);
     }
     if shell.settings.is_empty() {
         println!();

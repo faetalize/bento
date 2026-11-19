@@ -5,7 +5,7 @@
 // window covers a rectangle of whole cells: a starting column and row plus a span. Windows are
 // independent of each other: they can sit in different rows, stack on top of each other and leave
 // holes. Moving or resizing one pushes the others out of the way, in order, and with left gravity
-// (the `gravity` option, on by default) windows slide left within their rows until they touch
+// (the `gravity` setting, on by default) windows slide left within their rows until they touch
 // another window or column 0, which is the fixed left edge of the strip.
 //
 // This file has two parts:
@@ -206,7 +206,7 @@ export const meta = {
         // move the highlight between seams, and the second press puts it there.
         stuff: { description: "Squeeze the focused window between two others." },
     },
-    options: {
+    settings: {
         gravity: {
             type: "boolean",
             default: true,
@@ -1308,8 +1308,8 @@ function createSpace(bento, ws) {
     let workingArea;
     let metrics;
 
-    // The workspace's options: the engine's, with what its monitor and its name set on top.
-    const options = (name) => ws.options[name];
+    // The workspace's settings: the engine's, with what its monitor and its name set on top.
+    const setting = (name) => ws.settings[name];
     /** Snaps a coordinate to physical pixels on the workspace's monitor. */
     const pixel = (value) => ws.monitor.round(value);
 
@@ -1317,7 +1317,7 @@ function createSpace(bento, ws) {
     grid.setGravity(gravityOption());
 
     function gravityOption() {
-        return options("gravity") !== false;
+        return setting("gravity") !== false;
     }
 
     function updateGeometry() {
@@ -1353,11 +1353,11 @@ function createSpace(bento, ws) {
         };
     }
 
-    // Window rules. A rule that no rule sets is left out of `rules`, so the option of the same
+    // Window rules. A rule that no rule sets is left out of `rules`, so the setting of the same
     // name is the default, if there is one. `null` is a size left to the window.
 
     const rulesWidth = (rules) =>
-        rules["default-width"] !== undefined ? rules["default-width"] : options("default-width");
+        rules["default-width"] !== undefined ? rules["default-width"] : setting("default-width");
     const rulesHeight = (rules) => rules["default-height"] ?? null;
 
     /** Whether `item` is a group: several windows sharing its area. */
@@ -1676,7 +1676,7 @@ function createSpace(bento, ws) {
             });
         if (slot === "pick") hintNode = box;
         else dropNode = box;
-        box.set({ rect, background: options("hint-color") });
+        box.set({ rect, background: setting("hint-color") });
         if (box.parent !== hintLayer) {
             hintLayer.append(box);
         }
@@ -1882,7 +1882,7 @@ function createSpace(bento, ws) {
                 groupPickNodes.set(win.id, node);
                 pickLayer.append(node);
             }
-            node.set({ rect: shownRect(item, win), background: options("hint-color") });
+            node.set({ rect: shownRect(item, win), background: setting("hint-color") });
         }
         for (const [id, node] of groupPickNodes) {
             if (!ids.has(id)) {
@@ -2155,8 +2155,8 @@ function createSpace(bento, ws) {
 
     function isCentering() {
         return (
-            options("center-focused-window") === "always" ||
-            (options("always-center-single-window") && isSingleColumn())
+            setting("center-focused-window") === "always" ||
+            (setting("always-center-single-window") && isSingleColumn())
         );
     }
 
@@ -2218,7 +2218,7 @@ function createSpace(bento, ws) {
         if (isCentering()) {
             return centeredOffset(targetX, item);
         }
-        if (options("center-focused-window") !== "on-overflow" || prev === null || prev === item) {
+        if (setting("center-focused-window") !== "on-overflow" || prev === null || prev === item) {
             return fitOffset(targetX, item);
         }
 
@@ -3148,7 +3148,7 @@ function createSpace(bento, ws) {
             return false;
         }
         const borders = item.windows[0].borders.w;
-        const spans = options("preset-widths").map((preset) => colsForPreset(preset, borders));
+        const spans = setting("preset-widths").map((preset) => colsForPreset(preset, borders));
         return resizeItem(item, nextPresetSpan(grid.area(item).cols, spans, forwards), null);
     }
 
@@ -3158,7 +3158,7 @@ function createSpace(bento, ws) {
             return false;
         }
         const borders = item.windows[0].borders.h;
-        const spans = options("preset-heights").map((preset) => rowsForPreset(preset, borders));
+        const spans = setting("preset-heights").map((preset) => rowsForPreset(preset, borders));
         return resizeItem(item, null, nextPresetSpan(grid.area(item).rows, spans, forwards));
     }
 
@@ -3636,7 +3636,7 @@ function createSpace(bento, ws) {
 
     /** Draws `targets`, with `current` stood out, and takes away the ones drawn before. */
     function drawTargets(targets, current) {
-        const color = opaque(options("hint-color"));
+        const color = opaque(setting("hint-color"));
         const keys = new Set();
         for (const target of targets) {
             keys.add(target.key);
@@ -3845,7 +3845,7 @@ function createSpace(bento, ws) {
                 snaps.push({ pos, item });
             }
         } else {
-            const onOverflow = options("center-focused-window") === "on-overflow";
+            const onOverflow = setting("center-focused-window") === "on-overflow";
 
             // Width of the window next to `item` in `dir` on the grid, if any.
             const adjacentWidth = (item, dir) => {
@@ -4720,10 +4720,10 @@ function createSpace(bento, ws) {
 // The engine: one space for each workspace, and what crosses from one to another.
 
 export default function create(bento) {
-    // Focus follows the pointer as the options say; bento does the focusing. "in-view" is only
+    // Focus follows the pointer as the settings say; bento does the focusing. "in-view" is only
     // windows that focusing doesn't scroll the view to.
     const followMouse = () => {
-        const mode = bento.options["focus-follows-mouse"];
+        const mode = bento.settings["focus-follows-mouse"];
         bento.setFocusFollowsMouse(mode !== "never", { maxScroll: mode === "in-view" ? 0 : null });
     };
     followMouse();

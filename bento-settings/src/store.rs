@@ -35,7 +35,7 @@ struct Edit {
 pub enum File {
     /// bento's `config.kdl`.
     Main,
-    /// The running engine's own file, with its options and binds.
+    /// The running engine's own file, with its settings and binds.
     Engine,
     /// The shell's settings, `shell/settings.kdl` next to the config.
     ShellSettings,
@@ -557,19 +557,19 @@ mod tests {
             store.flush();
             assert!(!engine_path.exists());
 
-            store.edit_in(File::Engine, "options.gravity", |doc| {
-                doc.set(&["options", "gravity"], vec![Value::Bool(true)])
+            store.edit_in(File::Engine, "settings.gravity", |doc| {
+                doc.set(&["settings", "gravity"], vec![Value::Bool(true)])
             });
             store.flush();
             assert_eq!(
                 fs::read_to_string(&engine_path).unwrap(),
-                "options {\n    gravity true\n}\n"
+                "settings {\n    gravity true\n}\n"
             );
             assert!(!fs::read_to_string(&config_path)
                 .unwrap()
                 .contains("gravity"));
             assert_eq!(
-                store.config().tiling.options,
+                store.config().tiling.settings,
                 [(
                     String::from("gravity"),
                     vec![niri_config::TilingOption::Bool(true)]
@@ -593,7 +593,7 @@ mod tests {
             let engine_path = dir.join("engines").join("niri.kdl");
             fs::write(
                 &engine_path,
-                "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n",
+                "output \"DP-2\" {\n    settings {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n",
             )
             .unwrap();
 
@@ -609,10 +609,10 @@ mod tests {
             let (gradient_, color_) = (gradient.clone(), color.clone());
             store.edit_in(
                 File::Engine,
-                "options.tab-indicator-active-gradient",
+                "settings.tab-indicator-active-gradient",
                 move |doc| {
                     doc.set_node(
-                        &["options", "tab-indicator-active-gradient"],
+                        &["settings", "tab-indicator-active-gradient"],
                         option_values(&gradient_),
                         option_properties(&gradient_),
                     )
@@ -620,10 +620,10 @@ mod tests {
             );
             store.edit_in(
                 File::Engine,
-                "options.tab-indicator-active-color",
+                "settings.tab-indicator-active-color",
                 move |doc| {
                     doc.set(
-                        &["options", "tab-indicator-active-color"],
+                        &["settings", "tab-indicator-active-color"],
                         option_values(&color_),
                     )
                 },
@@ -633,13 +633,13 @@ mod tests {
             let text = fs::read_to_string(&engine_path).unwrap();
             assert_eq!(
                 text,
-                "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n\noptions {\n    tab-indicator-active-gradient from=\"#80c8ff\" to=\"#c7ff7f80\" angle=45 relative-to=\"view\"\n    tab-indicator-active-color \"#112233\"\n}\n"
+                "output \"DP-2\" {\n    settings {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n\nsettings {\n    tab-indicator-active-gradient from=\"#80c8ff\" to=\"#c7ff7f80\" angle=45 relative-to=\"view\"\n    tab-indicator-active-color \"#112233\"\n}\n"
             );
 
-            // The file is what bento reads, and the output's options stay.
+            // The file is what bento reads, and the output's settings stay.
             let config = store.config();
-            assert_eq!(config.tiling.options.len(), 2);
-            assert_eq!(config.tiling.output_options.len(), 1);
+            assert_eq!(config.tiling.settings.len(), 2);
+            assert_eq!(config.tiling.output_settings.len(), 1);
             drop(config);
             assert!(option_properties(&color).is_empty());
             assert!(option_values(&gradient).is_empty());
@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_edits_keep_window_rules_and_typed_options() {
+    fn engine_edits_keep_window_rules_and_typed_settings() {
         on_own_context(|| {
             use niri_ipc::LayoutEngineOptionValue as OptionValue;
 
@@ -662,7 +662,7 @@ mod tests {
             let engine_path = dir.join("engines").join("niri.kdl");
             let engine = "\
 // Mine.
-options {
+settings {
     default-column-width
     center-focused-column \"always\"
 }
@@ -681,18 +681,21 @@ binds {
 
             let store = Store::load_from(config_path);
             assert_eq!(store.config().tiling.window_rules.len(), 1);
-            assert!(store.config().tiling.options[0].1.is_empty());
+            assert!(store.config().tiling.settings[0].1.is_empty());
 
             // A list is written as several values, and a size with no value as a bare name.
             let widths = Some(OptionValue::List(vec![
                 OptionValue::String(String::from("33%")),
                 OptionValue::String(String::from("800")),
             ]));
-            store.edit_in(File::Engine, "options.preset-column-widths", move |doc| {
-                doc.set(&["options", "preset-column-widths"], option_values(&widths))
+            store.edit_in(File::Engine, "settings.preset-column-widths", move |doc| {
+                doc.set(
+                    &["settings", "preset-column-widths"],
+                    option_values(&widths),
+                )
             });
-            store.edit_in(File::Engine, "options.default-column-width", |doc| {
-                doc.set(&["options", "default-column-width"], option_values(&None))
+            store.edit_in(File::Engine, "settings.default-column-width", |doc| {
+                doc.set(&["settings", "default-column-width"], option_values(&None))
             });
             store.flush();
 
@@ -706,8 +709,8 @@ binds {
             );
             let config = store.config();
             assert_eq!(config.tiling.window_rules.len(), 1);
-            assert_eq!(config.tiling.options.len(), 3);
-            assert_eq!(config.tiling.options[2].1.len(), 2);
+            assert_eq!(config.tiling.settings.len(), 3);
+            assert_eq!(config.tiling.settings[2].1.len(), 2);
             drop(config);
 
             fs::remove_dir_all(&dir).unwrap();

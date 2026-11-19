@@ -8,12 +8,12 @@
 //         layout "bento"              // built in; also "niri" and "windows11", or a .js file
 //     }
 //
-// The engine's options, binds and window rules live in its own .kdl file, see
+// The engine's settings, binds and window rules live in its own .kdl file, see
 // `docs/engine-design.md`.
 //
 // The module exports `meta`, describing the engine, and a default function that creates it:
 //
-//     export const meta = { api: 2, name: "my-engine", actions: { ... }, options: { ... } };
+//     export const meta = { api: 2, name: "my-engine", actions: { ... }, settings: { ... } };
 //     export default function create(bento) {
 //         bento.addEventListener("windowadd", (e) => { ... });
 //     }
@@ -48,7 +48,7 @@ export interface Rect {
     h: number;
 }
 
-/** A size from options or window rules, written `"50%"` or `"800"` in the .kdl file. */
+/** A size from settings or window rules, written `"50%"` or `"800"` in the .kdl file. */
 export type Preset = { proportion: number } | { fixed: number };
 
 /**
@@ -69,10 +69,11 @@ export type SizingMode = "normal" | "fullscreen" | "maximized";
 export type ValueType = "boolean" | "number" | "string" | "choice" | "size" | "color" | "gradient";
 
 /**
- * An option, or a property an engine's window rules can set. Values are written in the engine's
- * .kdl file: `center-focused-column "never"`, `preset-column-widths "33%" "50%" "67%"`.
+ * A setting, or a property an engine's window rules can set, declared the same way as a shell's
+ * settings. Values are written in the engine's .kdl file: `center-focused-column "never"`,
+ * `preset-column-widths "33%" "50%" "67%"`.
  */
-export interface OptionSpec {
+export interface SettingSpec {
     /**
      * `"size"` values reach the engine as a `Preset`. A size written with no value, like
      * `default-column-width` alone on its line, reaches it as `null`: the window decides.
@@ -96,6 +97,10 @@ export interface OptionSpec {
     /** The values a `"choice"` accepts. */
     choices?: string[];
     description?: string;
+    /** The page of bento Settings it shows on, by its id, rather than the Engine page. */
+    page?: string;
+    /** The group on that page it shows in. */
+    group?: string;
 }
 
 /**
@@ -137,13 +142,14 @@ export interface Meta {
      * can't take the name of one of bento's own actions: the engine fails to load if it does.
      */
     actions?: Record<string, ActionSpec>;
-    options?: Record<string, OptionSpec>;
+    /** The engine's settings, written in the `settings {}` section of its .kdl file. */
+    settings?: Record<string, SettingSpec>;
     /**
      * Properties the engine's window rules can set, like `default-column-width`. Rules are
      * written in the engine's .kdl file with the same `match` and `exclude` as bento's own, and
      * reach the engine resolved, as `Window.rules`.
      */
-    windowRules?: Record<string, OptionSpec>;
+    windowRules?: Record<string, SettingSpec>;
     /**
      * Whether bento's floating layer exists under this engine; true by default. With it off,
      * windows that ask to float stay with the engine, which gets `floatrequest`.
@@ -352,7 +358,7 @@ export interface BentoEvents {
     action: ActionEvent;
     /** The keyboard focus moved, to a window or to an empty workspace. */
     focuschange: BentoEvent;
-    /** bento's config or the engine's options changed. */
+    /** bento's config or the engine's settings changed. */
     configchange: BentoEvent;
     newwindowsize: NewWindowSizeQuery;
     unload: UnloadEvent;
@@ -459,10 +465,10 @@ export interface Bento extends EventTarget<BentoEvents> {
     readonly windows: readonly Window[];
     readonly groups: readonly Group[];
     /**
-     * The engine's options, from its .kdl file, with defaults filled in. A workspace's own options,
-     * which can differ per monitor and per named workspace, are `Workspace.options`.
+     * The engine's settings, from its .kdl file, with defaults filled in. A workspace's own
+     * settings, which can differ per monitor and per named workspace, are `Workspace.settings`.
      */
-    readonly options: Readonly<Record<string, unknown>>;
+    readonly settings: Readonly<Record<string, unknown>>;
     /** State the previous instance of this engine saved in `unload`, or `null`. */
     readonly savedState: unknown;
 
@@ -572,11 +578,11 @@ export interface Workspace extends EventTarget<WorkspaceEvents> {
     /** bento's settings for this workspace, which can differ per monitor or workspace. */
     readonly config: Config;
     /**
-     * The engine's options for this workspace: `Bento.options`, with what the engine's file sets
-     * for this workspace's monitor (`output "DP-2" { options {} }`) and then for this workspace by
-     * name (`workspace "web" { options {} }`) on top. `configchange` tells when they change.
+     * The engine's settings for this workspace: `Bento.settings`, with what the engine's file sets
+     * for this workspace's monitor (`output "DP-2" { settings {} }`) and then for this workspace by
+     * name (`workspace "web" { settings {} }`) on top. `configchange` tells when they change.
      */
-    readonly options: Readonly<Record<string, unknown>>;
+    readonly settings: Readonly<Record<string, unknown>>;
     /** The monitor's working area minus the config's struts, starting at a physical pixel. */
     readonly tilingArea: Rect;
     /** The root of what's drawn on this workspace: window nodes and the engine's own nodes. */

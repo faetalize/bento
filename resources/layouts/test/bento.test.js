@@ -35,7 +35,7 @@ const ROW_STEP = METRICS.cellH + METRICS.gap;
 async function setup(opts = {}) {
     return TestHost.load("../bento.js", {
         ...opts,
-        options: { "default-width": "100", ...(opts.options ?? {}) },
+        settings: { "default-width": "100", ...(opts.settings ?? {}) },
     });
 }
 
@@ -509,7 +509,7 @@ describe("grid layout", () => {
     });
 
     test("dropping on a seam stuffs the window into it", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         const w = host.open({ rules: { "default-width": { fixed: 100 } } });
@@ -524,7 +524,7 @@ describe("grid layout", () => {
     });
 
     test("dropping between two windows of a group joins it there", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         const w = host.open();
@@ -659,7 +659,7 @@ describe("grid layout", () => {
     });
 
     test("stacked windows count as a single column for centering", async () => {
-        const host = await setup({ options: { "always-center-single-window": true } });
+        const host = await setup({ settings: { "always-center-single-window": true } });
         host.open();
         halfHeight(host, 1);
         host.open();
@@ -676,7 +676,7 @@ describe("grid layout", () => {
     });
 
     test("center on overflow compares with the window beside", async () => {
-        const host = await setUpStackAndOne(60, { options: { "center-focused-window": "on-overflow" } });
+        const host = await setUpStackAndOne(60, { settings: { "center-focused-window": "on-overflow" } });
         host.action("focus-left");
         assert.equal(host.focused(), 1);
         // Window 1 and window 3 beside it don't fit together, so window 1 is centered. Window 2
@@ -932,7 +932,7 @@ describe("grid layout", () => {
 describe("split and swap", () => {
     /** A and B stacked on the left half, C on the right half at full height. */
     async function setUpStackAndOne() {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         host.activate(a);
@@ -969,7 +969,7 @@ describe("split and swap", () => {
     });
 
     test("splitting stacked gives the window the half facing it", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         host.action("split-v");
@@ -1145,7 +1145,7 @@ describe("sticky vertical resizing", () => {
 });
 
 describe("stuff", () => {
-    const half = { options: { "default-width": "50%" } };
+    const half = { settings: { "default-width": "50%" } };
     const rect = (x, y, w, h) => ({ x, y, w, h });
 
     test("stuffing between windows side by side splits their span in three", async () => {
@@ -1259,7 +1259,7 @@ describe("stuff", () => {
 });
 
 describe("layout API", () => {
-    test("declares its actions, options and window rules", async () => {
+    test("declares its actions, settings and window rules", async () => {
         const host = await setup();
         assert.equal(host.meta.name, "bento");
         const names = host.meta.actions.map((action) => action.name);
@@ -1278,7 +1278,7 @@ describe("layout API", () => {
             [["workspace", "workspace"]],
         );
         assert.deepEqual(
-            host.meta.options.map(({ name, default: value }) => [name, value]),
+            host.meta.settings.map(({ name, default: value }) => [name, value]),
             [
                 ["gravity", true],
                 ["center-focused-window", "never"],
@@ -1416,7 +1416,7 @@ describe("layout API", () => {
     });
 
     test("a group shows as a carousel, whose slits activate their windows", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         host.open();
         host.open();
         host.groupWindows([1, 2], 1);
@@ -1650,7 +1650,7 @@ describe("layout API", () => {
         host.action("move-down");
 
         // Without gravity, windows stay where they're moved.
-        host.setOptions({ gravity: false });
+        host.setSettings({ gravity: false });
         repeat(5, () => host.action("move-down"));
         assert.deepEqual(cells(host, [3]), ["2 × 6 at 4, 6"]);
         host.action("move-left");
@@ -1665,7 +1665,7 @@ describe("layout API", () => {
         // Turning gravity back on slides windows left.
         host.activate(3);
         host.action("move-right");
-        host.setOptions({ gravity: true });
+        host.setSettings({ gravity: true });
         assert.deepEqual(cells(host, [3]), ["2 × 6 at 2, 6"]);
     });
 
@@ -1685,7 +1685,7 @@ describe("layout API", () => {
 
         // Struts shrink the working area.
         host.config = { ...host.config, struts: { left: 0, right: 0, top: 100, bottom: 0 } };
-        host.setOptions(host.options);
+        host.setSettings(host.settings);
         assert.equal(host.screenRect(1).y, 116);
     });
 
@@ -1921,7 +1921,7 @@ describe("what the engine exposes and draws", () => {
     });
 
     test("the hints follow their color option", async () => {
-        const host = await setup({ options: { "hint-color": "#ff000080" } });
+        const host = await setup({ settings: { "hint-color": "#ff000080" } });
         host.open();
         host.action("swap");
         assert.ok(drawn(host).some((node) => node.background === "#ff000080"));
@@ -2457,12 +2457,12 @@ describe("grid", () => {
     });
 });
 
-test("focus follows the mouse as the options say", async () => {
+test("focus follows the mouse as the settings say", async () => {
     const off = await setup();
     off.open();
     assert.deepEqual(off.focusFollowsMouse, { on: false, maxScroll: null });
 
-    const on = await setup({ options: { "focus-follows-mouse": "always" } });
+    const on = await setup({ settings: { "focus-follows-mouse": "always" } });
     on.open();
     assert.deepEqual(on.focusFollowsMouse, { on: true, maxScroll: null });
 });

@@ -645,7 +645,7 @@ describe("centering", () => {
     });
 
     test("center-focused-column always", async () => {
-        const host = await load({ options: { "center-focused-column": "always" } });
+        const host = await load({ settings: { "center-focused-column": "always" } });
         const a = host.open();
         assert.deepEqual(host.screenRect(a), rect(332, 16, 616, 688));
         const b = host.open();
@@ -655,7 +655,7 @@ describe("centering", () => {
     });
 
     test("center-focused-column on-overflow", async () => {
-        const host = await load({ options: { "center-focused-column": "on-overflow" } });
+        const host = await load({ settings: { "center-focused-column": "on-overflow" } });
         const [, b] = openMany(host, 2);
         // Two half columns fit together.
         assert.deepEqual(host.screenRect(b), rect(648, 16, 616, 688));
@@ -665,7 +665,7 @@ describe("centering", () => {
     });
 
     test("always-center-single-column", async () => {
-        const host = await load({ options: { "always-center-single-column": true } });
+        const host = await load({ settings: { "always-center-single-column": true } });
         const a = host.open();
         assert.deepEqual(host.screenRect(a), rect(332, 16, 616, 688));
         const b = host.open();
@@ -745,9 +745,9 @@ describe("tabbed columns", () => {
         assert.equal(tabsOf(host).length, 0);
     });
 
-    test("the tab indicator follows its options", async () => {
+    test("the tab indicator follows its settings", async () => {
         const host = await load({
-            options: {
+            settings: {
                 "tab-indicator-position": "top",
                 "tab-indicator-width": 6,
                 "tab-indicator-gap": 2,
@@ -770,19 +770,19 @@ describe("tabbed columns", () => {
                 [rect(308, 8, 308, 6), "#112233", 3],
             ],
         );
-        const off = await load({ options: { "tab-indicator": false } });
+        const off = await load({ settings: { "tab-indicator": false } });
         openStacked(off);
         off.action("toggle-column-tabbed-display");
         assert.equal(tabsOf(off).length, 0);
 
-        const single = await load({ options: { "tab-indicator-hide-when-single-tab": true } });
+        const single = await load({ settings: { "tab-indicator-hide-when-single-tab": true } });
         single.open();
         single.action("toggle-column-tabbed-display");
         assert.equal(tabsOf(single).length, 0);
     });
 
     test("the tabs of the indicator can have space between them", async () => {
-        const host = await load({ options: { "tab-indicator-gaps-between-tabs": 4 } });
+        const host = await load({ settings: { "tab-indicator-gaps-between-tabs": 4 } });
         openStacked(host);
         host.action("toggle-column-tabbed-display");
         // The same 344 px of indicator, with 4 px between the two tabs.
@@ -791,7 +791,7 @@ describe("tabbed columns", () => {
             [rect(-9, 188, 4, 170), rect(-9, 362, 4, 170)],
         );
 
-        const one = await load({ options: { "tab-indicator-gaps-between-tabs": 4 } });
+        const one = await load({ settings: { "tab-indicator-gaps-between-tabs": 4 } });
         one.open();
         one.action("toggle-column-tabbed-display");
         assert.deepEqual(tabsOf(one).map((tab) => tab.rect), [rect(-9, 188, 4, 344)]);
@@ -801,7 +801,7 @@ describe("tabbed columns", () => {
         const active = { from: "#112233", to: "#445566", angle: 90, relativeTo: "view", in: "oklab" };
         const urgent = { from: "#aa0000", to: "#ff0000" };
         const host = await load({
-            options: { "tab-indicator-active-gradient": active, "tab-indicator-urgent-gradient": urgent },
+            settings: { "tab-indicator-active-gradient": active, "tab-indicator-urgent-gradient": urgent },
         });
         const [a] = openStacked(host);
         host.action("toggle-column-tabbed-display");
@@ -818,14 +818,14 @@ describe("tabbed columns", () => {
         );
 
         // A gradient that's taken away leaves the color.
-        host.setOptions({ "tab-indicator-active-gradient": null });
+        host.setSettings({ "tab-indicator-active-gradient": null });
         assert.equal(tabsOf(host)[1].background, "#7fc8ff");
     });
 
-    test("a window's rules paint its tab, over the options", async () => {
+    test("a window's rules paint its tab, over the settings", async () => {
         const gradient = { from: "#000000", to: "#ffffff", angle: 0 };
         const option = { from: "#111111", to: "#222222" };
-        const host = await load({ options: { "tab-indicator-active-gradient": option } });
+        const host = await load({ settings: { "tab-indicator-active-gradient": option } });
         const a = host.open({
             rules: {
                 "tab-indicator-inactive-color": "#010203",
@@ -853,7 +853,7 @@ describe("tabbed columns", () => {
 
     test("a tab indicator within the column takes room from the tabs", async () => {
         const host = await load({
-            options: { "tab-indicator-gap": 6, "tab-indicator-place-within-column": true },
+            settings: { "tab-indicator-gap": 6, "tab-indicator-place-within-column": true },
         });
         const [a, b] = openStacked(host);
         host.action("toggle-column-tabbed-display");
@@ -869,7 +869,7 @@ describe("tabbed columns", () => {
     });
 
     test("new columns can be tabbed by default", async () => {
-        const host = await load({ options: { "default-column-display": "tabbed" } });
+        const host = await load({ settings: { "default-column-display": "tabbed" } });
         const [a, b] = openStacked(host);
         assert.deepEqual(host.rect(a), rect(0, 16, 616, 688));
         assert.equal(host.isVisible(a), false);
@@ -1021,7 +1021,7 @@ describe("dragging windows", () => {
         assert.deepEqual(host.screenRect(a), rect(16, 16, 616, 688));
     });
 
-    test("the hint goes away when the pointer leaves, and follows its options", async () => {
+    test("the hint goes away when the pointer leaves, and follows its settings", async () => {
         const host = await load();
         const [, b] = openMany(host, 2);
         const info = startDrag(host, b);
@@ -1030,12 +1030,12 @@ describe("dragging windows", () => {
         host.send({ type: "dragleave", workspace: host.activeWorkspace().id });
         assert.equal(hintOf(host), null);
 
-        const plain = await load({ options: { "insert-hint": false } });
+        const plain = await load({ settings: { "insert-hint": false } });
         const [, c] = openMany(plain, 2);
         dragOver(plain, startDrag(plain, c), { x: 620, y: 300 }, undefined, true);
         assert.equal(drawn(plain).length, 0);
 
-        const colored = await load({ options: { "insert-hint-color": "#ff000080" } });
+        const colored = await load({ settings: { "insert-hint-color": "#ff000080" } });
         const [, d] = openMany(colored, 2);
         dragOver(colored, startDrag(colored, d), { x: 620, y: 300 }, undefined, true);
         assert.equal(drawn(colored)[0].background, "#ff000080");
@@ -1043,7 +1043,7 @@ describe("dragging windows", () => {
         // A gradient wins over the color.
         const gradient = { from: "#ff0000", to: "#0000ff", angle: 45, relativeTo: "view" };
         const painted = await load({
-            options: { "insert-hint-color": "#ff000080", "insert-hint-gradient": gradient },
+            settings: { "insert-hint-color": "#ff000080", "insert-hint-gradient": gradient },
         });
         const [, e] = openMany(painted, 2);
         dragOver(painted, startDrag(painted, e), { x: 620, y: 300 }, undefined, true);
@@ -1080,7 +1080,7 @@ describe("interactive resize", () => {
     });
 
     test("centered columns resize from both sides", async () => {
-        const host = await load({ options: { "center-focused-column": "always" } });
+        const host = await load({ settings: { "center-focused-column": "always" } });
         const a = host.open();
         host.resize(a, { right: true }, { x: 50, y: 0 });
         assert.deepEqual(host.screenRect(a), rect(282, 16, 716, 688));
@@ -1110,7 +1110,7 @@ describe("swipes", () => {
     });
 
     test("with centered columns, the view snaps to the closest centered column", async () => {
-        const host = await load({ options: { "center-focused-column": "always" } });
+        const host = await load({ settings: { "center-focused-column": "always" } });
         const [, b] = openMany(host, 3);
         assert.equal(host.camera().x, 932);
         host.swipe(host.activeWorkspace().id, [-700]);
@@ -1242,7 +1242,7 @@ describe("windows that change", () => {
         const host = await load();
         const a = host.open();
         host.config = { ...host.config, gaps: 8 };
-        host.setOptions({});
+        host.setSettings({});
         assert.deepEqual(host.rect(a), rect(0, 8, 628, 704));
         // It's still in view, so the view doesn't move.
         assert.deepEqual(host.screenRect(a), rect(16, 8, 628, 704));
@@ -1359,10 +1359,10 @@ describe("window rules", () => {
     });
 });
 
-describe("options", () => {
+describe("settings", () => {
     test("default-column-width and the presets are the engine's own", async () => {
         const host = await load({
-            options: {
+            settings: {
                 "default-column-width": "800",
                 "preset-column-widths": ["25%", "75%"],
             },
@@ -1378,7 +1378,7 @@ describe("options", () => {
     test("changing the presets resets the columns' preset index", async () => {
         const host = await load();
         const a = host.open();
-        host.setOptions({ "preset-column-widths": ["40%", "60%"] });
+        host.setSettings({ "preset-column-widths": ["40%", "60%"] });
         host.action("switch-preset-column-width");
         // 616 px isn't one of the new presets: the next larger one is 60%.
         assert.equal(host.rect(a).w, 742);
@@ -1506,10 +1506,10 @@ describe("workspaces and monitors", () => {
         assert.deepEqual(columnsOf(host), [[a], [c]]);
     });
 
-    test("workspaces follow the options of their monitor and their own name", async () => {
+    test("workspaces follow the settings of their monitor and their own name", async () => {
         const host = await load({
             monitors: [{ name: "DP-1" }, { name: "DP-2" }],
-            outputOptions: { "DP-2": { "default-column-width": "25%", "tab-indicator-width": 8 } },
+            outputSettings: { "DP-2": { "default-column-width": "25%", "tab-indicator-width": 8 } },
         });
         const [dp1, dp2] = [host.workspace(0, "DP-1"), host.workspace(0, "DP-2")];
         const a = host.open();
@@ -1517,20 +1517,20 @@ describe("workspaces and monitors", () => {
         assert.equal(host.rect(a).w, 616);
         assert.equal(host.rect(b).w, 300);
 
-        // The indicator is drawn with the options of the workspace it's on.
+        // The indicator is drawn with the settings of the workspace it's on.
         host.actionOn(a, "toggle-column-tabbed-display");
         host.actionOn(b, "toggle-column-tabbed-display");
         assert.equal(tabsOf(host, dp1.id)[0].rect.w, 4);
         assert.equal(tabsOf(host, dp2.id)[0].rect.w, 8);
 
-        // A workspace's own options come after its monitor's, by name.
+        // A workspace's own settings come after its monitor's, by name.
         const web = host.workspace(1, "DP-2");
         web.name = "web";
-        host.setWorkspaceOptions("web", { "default-column-width": "100%" });
+        host.setWorkspaceSettings("web", { "default-column-width": "100%" });
         const c = host.open({ workspace: web.id });
         assert.equal(host.rect(c).w, 1248);
         // Changing them reaches the strips that already exist.
-        host.setOutputOptions("DP-2", { "tab-indicator-width": 6 });
+        host.setOutputSettings("DP-2", { "tab-indicator-width": 6 });
         assert.equal(tabsOf(host, dp2.id)[0].rect.w, 6);
         assert.equal(tabsOf(host, dp1.id)[0].rect.w, 4);
     });
@@ -1748,7 +1748,7 @@ describe("random operations", () => {
                     },
                 ],
                 config: { struts: { left: 20.5, right: 10, top: 5, bottom: 0 } },
-                options: {
+                settings: {
                     "center-focused-column": "always",
                     "tab-indicator-position": "top",
                     "tab-indicator-width": 4,
@@ -1762,7 +1762,7 @@ describe("random operations", () => {
             "on-overflow, single column centered",
             {
                 config: { gaps: 7 },
-                options: {
+                settings: {
                     "center-focused-column": "on-overflow",
                     "always-center-single-column": true,
                 },
@@ -1882,14 +1882,14 @@ describe("random operations", () => {
     });
 });
 
-test("focus follows the mouse as the options say", async () => {
+test("focus follows the mouse as the settings say", async () => {
     const off = await load();
     off.open();
     assert.deepEqual(off.focusFollowsMouse, { on: false, maxScroll: null });
 
-    const on = await load({ options: { "focus-follows-mouse": "in-view" } });
+    const on = await load({ settings: { "focus-follows-mouse": "in-view" } });
     on.open();
     assert.deepEqual(on.focusFollowsMouse, { on: true, maxScroll: 0 });
-    on.setOptions({ "focus-follows-mouse": "always" });
+    on.setSettings({ "focus-follows-mouse": "always" });
     assert.deepEqual(on.focusFollowsMouse, { on: true, maxScroll: null });
 });

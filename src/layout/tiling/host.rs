@@ -253,7 +253,7 @@ pub struct Host {
     /// The search, as the layout was last told: it only hears about what changed.
     search: Option<SearchInfo>,
     focused_monitor: Option<String>,
-    options: Option<Value>,
+    settings: Option<Value>,
     /// What to tell the layout about again, because it changed it and bento may not agree.
     resend_all: bool,
     resend_workspaces: HashSet<u64>,
@@ -294,7 +294,7 @@ impl Host {
         self.groups = None;
         self.search = None;
         self.focused_monitor = None;
-        self.options = None;
+        self.settings = None;
         self.resend_all = false;
         self.resend_workspaces.clear();
         self.resend_windows.clear();
@@ -444,7 +444,7 @@ impl<W: LayoutElement> Layout<W> {
                     }));
                     let output_name = mon.output().user_data().get::<OutputName>();
                     for (ws_idx, ws) in mon.workspaces.iter().enumerate() {
-                        let options = engine::workspace_options_json(
+                        let settings = engine::workspace_settings_json(
                             &self.options.tiling,
                             output_name,
                             ws.name().map(String::as_str),
@@ -453,7 +453,7 @@ impl<W: LayoutElement> Layout<W> {
                             ws.name(),
                             Some(names[idx].clone()),
                             ws_idx,
-                            options,
+                            settings,
                         );
                         workspaces.push(to_value(&info));
                         add_windows(ws);
@@ -465,12 +465,14 @@ impl<W: LayoutElement> Layout<W> {
             }
             MonitorSet::NoOutputs { workspaces } => {
                 for (idx, ws) in workspaces.iter().enumerate() {
-                    let options = engine::workspace_options_json(
+                    let settings = engine::workspace_settings_json(
                         &self.options.tiling,
                         None,
                         ws.name().map(String::as_str),
                     );
-                    let info = ws.scrolling().workspace_info(ws.name(), None, idx, options);
+                    let info = ws
+                        .scrolling()
+                        .workspace_info(ws.name(), None, idx, settings);
                     snapshot.workspaces.push(to_value(&info));
                     add_windows(ws);
                 }
@@ -627,10 +629,10 @@ impl<W: LayoutElement> Layout<W> {
         host.focused_monitor = snapshot.focused_monitor.clone();
         sync.focused_monitor = snapshot.focused_monitor;
 
-        let options = engine::options_json(&self.options.tiling);
-        if host.options.as_ref() != Some(&options) {
-            host.options = Some(options.clone());
-            sync.options = Some(options);
+        let settings = engine::settings_json(&self.options.tiling);
+        if host.settings.as_ref() != Some(&settings) {
+            host.settings = Some(settings.clone());
+            sync.settings = Some(settings);
         }
 
         if host.keyboard_told != Some(keyboard_available) {
@@ -693,8 +695,8 @@ impl<W: LayoutElement> Layout<W> {
                 .insert(info["id"].as_u64().unwrap_or_default(), info);
         }
         self.host.focused_monitor = snapshot.focused_monitor.clone();
-        let options = engine::options_json(&self.options.tiling);
-        self.host.options = Some(options.clone());
+        let settings = engine::settings_json(&self.options.tiling);
+        self.host.settings = Some(settings.clone());
 
         let groups = self.group_infos();
         self.host.groups = Some(groups.clone());
@@ -714,7 +716,7 @@ impl<W: LayoutElement> Layout<W> {
 
         let event = json!({
             "type": "create",
-            "options": options,
+            "settings": settings,
             "savedState": engine::take_state(),
             "windows": windows,
             "focused": focused,
@@ -1400,7 +1402,7 @@ impl<W: LayoutElement> Layout<W> {
                 LayoutEngineOptionValue::Boolean(value) => TilingOption::Bool(*value),
                 LayoutEngineOptionValue::Number(value) => TilingOption::Number(*value),
                 LayoutEngineOptionValue::String(value) => TilingOption::String(value.clone()),
-                // Action arguments are single values; only options are lists or gradients.
+                // Action arguments are single values; only settings are lists or gradients.
                 LayoutEngineOptionValue::Gradient(_) | LayoutEngineOptionValue::List(_) => break,
             };
             values.push(convert(i, &default));

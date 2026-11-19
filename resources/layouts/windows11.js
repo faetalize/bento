@@ -76,7 +76,7 @@ export const meta = {
             description: "Move the focused window to the monitor on the right, keeping its place.",
         },
     },
-    options: {
+    settings: {
         "snap-assist": {
             type: "boolean",
             default: true,
@@ -372,7 +372,7 @@ export default function create(bento) {
 
     /** What a window dropped with the pointer at `p` snaps to: a zone, `MAXIMIZE`, or null. */
     function dropTarget(ws, p) {
-        if (!ws.options["edge-snap"]) return null;
+        if (!ws.settings["edge-snap"]) return null;
         const a = ws.monitor.workingArea;
         const nearTop = p.y < a.y + CORNER_REACH;
         const nearBottom = p.y > a.y + a.h - CORNER_REACH;
@@ -1128,7 +1128,7 @@ export default function create(bento) {
      */
     function offerAssist(win, zones = null) {
         const ws = win.workspace;
-        if (!ws.options["snap-assist"]) return false;
+        if (!ws.settings["snap-assist"]) return false;
         const candidates = assistCandidates(win);
         const zone = zones?.[0] ?? freeZone(ws);
         if (candidates.length === 0 || zone === null) return false;

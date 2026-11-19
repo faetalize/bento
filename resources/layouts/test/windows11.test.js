@@ -113,7 +113,7 @@ test("clicking a window focuses and raises it", async () => {
 });
 
 test("dropping a window at an edge or a corner snaps it, and at the top maximizes it", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     const ws = h.activeWorkspace().id;
 
@@ -136,7 +136,7 @@ test("dropping a window at an edge or a corner snaps it, and at the top maximize
 });
 
 test("a window dragged away from its zone or maximized gets its own size back", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     const ws = h.activeWorkspace().id;
 
@@ -158,7 +158,7 @@ test("a window dragged away from its zone or maximized gets its own size back", 
 });
 
 test("snapping by a drop keeps the place it had, which the keyboard restores", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.drag(a, h.activeWorkspace().id, [{ x: 5, y: 360 }]);
     h.action("snap-right");
@@ -186,7 +186,7 @@ test("a preview shows where a dragged window would snap, and fades when it would
 });
 
 test("with edge-snap off, a window dropped at an edge stays where it's dropped", async () => {
-    const h = await load({ options: { "edge-snap": false } });
+    const h = await load({ settings: { "edge-snap": false } });
     const a = h.open({ size: SIZE });
     h.drag(a, h.activeWorkspace().id, [{ x: 5, y: 360 }]);
     assert.deepEqual(h.rect(a), rect(-5, 350, 640, 400));
@@ -264,7 +264,7 @@ test("from its own size, up maximizes, and down restores and then minimizes", as
 });
 
 test("snapped windows side by side resize together across their shared edge", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.action("snap-left");
     const b = h.open({ size: SIZE });
@@ -281,7 +281,7 @@ test("snapped windows side by side resize together across their shared edge", as
 });
 
 test("an edge shared by a half and two quarters moves for all three", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.action("snap-left");
     const b = h.open({ size: SIZE });
@@ -549,7 +549,7 @@ test("Snap Assist follows a drop, with the pointer, and can be turned off", asyn
     h.pointer(`w${a}`, "click");
     assert.deepEqual(h.rect(a), LEFT);
 
-    const off = await load({ options: { "snap-assist": false } });
+    const off = await load({ settings: { "snap-assist": false } });
     off.open({ size: SIZE });
     off.open({ size: SIZE });
     off.action("snap-left");
@@ -640,7 +640,7 @@ test("closing the focused window focuses the one used before it", async () => {
 });
 
 test("reloading keeps zones, sizes, minimized windows and the order used", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.action("snap-left");
     const b = h.open({ size: SIZE });

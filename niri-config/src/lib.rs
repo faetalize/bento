@@ -63,7 +63,7 @@ use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
     default_engine_config, engine_config_path, engine_config_path_in, resolve_gradient,
-    EngineOptions, EngineRules, EngineWindowRule, ScopedOptions, ShellSettings, Tiling,
+    EngineRules, EngineSettings, EngineWindowRule, ScopedSettings, ShellSettings, Tiling,
     TilingLayout, TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
@@ -2057,9 +2057,9 @@ mod tests {
                 layout: BuiltIn(
                     "bento",
                 ),
-                options: [],
-                output_options: [],
-                workspace_options: [],
+                settings: [],
+                output_settings: [],
+                workspace_settings: [],
                 window_rules: [],
             },
             prefer_no_csd: true,

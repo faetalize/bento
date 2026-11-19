@@ -107,7 +107,7 @@ input {
 // actions do. "bento" puts windows on a grid of cells, "niri" gives niri's scrollable columns,
 // and a path loads an engine file.
 //
-// Each engine's options and binds go in a file of its own, loaded only while that engine runs:
+// Each engine's settings and binds go in a file of its own, loaded only while that engine runs:
 // engines/bento.kdl next to this config for "bento", or a .kdl next to an engine file.
 // https://github.com/faetalize/bento#layout-engines
 tiling {

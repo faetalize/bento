@@ -12,7 +12,7 @@ use crate::utils::{expand_home_path, MergeWith};
 use crate::window_rule::Match;
 use crate::{Config, CurrentFile, Includes, OutputName};
 
-/// Which tiling layout bento runs, and its options.
+/// Which tiling layout bento runs, and its settings.
 ///
 /// ```kdl
 /// tiling {
@@ -20,25 +20,25 @@ use crate::{Config, CurrentFile, Includes, OutputName};
 /// }
 /// ```
 ///
-/// The options and window rules come from the engine's own file, next to its binds (see
+/// The settings and window rules come from the engine's own file, next to its binds (see
 /// [`engine_config_path`]):
 ///
 /// ```kdl
-/// options {
+/// settings {
 ///     gravity true
 ///     preset-column-widths "33%" "50%" "67%"
 ///     active-gradient from="#80c8ff" to="#c7ff7f" angle=45
 /// }
 ///
-/// // Options for the workspaces of an output, and for a named workspace.
+/// // Settings for the workspaces of an output, and for a named workspace.
 /// output "DP-2" {
-///     options {
+///     settings {
 ///         gravity false
 ///     }
 /// }
 ///
 /// workspace "web" {
-///     options {
+///     settings {
 ///         preset-column-widths "50%"
 ///     }
 /// }
@@ -55,47 +55,47 @@ use crate::{Config, CurrentFile, Includes, OutputName};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tiling {
     pub layout: TilingLayout,
-    /// Options for the layout, by name, with the values as written: an option is `name value...`,
-    /// and several values make a list. The layout declares their types, so they're checked and
-    /// converted when it loads.
-    pub options: EngineOptions,
-    /// Options that differ on the workspaces of an output, in the order they're written.
-    pub output_options: Vec<ScopedOptions>,
-    /// Options that differ on a named workspace, in the order they're written.
-    pub workspace_options: Vec<ScopedOptions>,
+    /// Settings for the layout, by name, with the values as written: a setting is
+    /// `name value...`, and several values make a list. The layout declares their types, so
+    /// they're checked and converted when it loads.
+    pub settings: EngineSettings,
+    /// Settings that differ on the workspaces of an output, in the order they're written.
+    pub output_settings: Vec<ScopedSettings>,
+    /// Settings that differ on a named workspace, in the order they're written.
+    pub workspace_settings: Vec<ScopedSettings>,
     /// The layout's own window rules, in the order they're written.
     pub window_rules: Vec<EngineWindowRule>,
 }
 
-/// Options by name, with the values as written.
-pub type EngineOptions = Vec<(String, Vec<TilingOption>)>;
+/// Settings by name, with the values as written.
+pub type EngineSettings = Vec<(String, Vec<TilingOption>)>;
 
-/// The options that an `output` or `workspace` block of the engine's file sets for the output or
+/// The settings that an `output` or `workspace` block of the engine's file sets for the output or
 /// workspace it names.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ScopedOptions {
+pub struct ScopedSettings {
     pub name: String,
-    pub options: EngineOptions,
+    pub settings: EngineSettings,
 }
 
 impl Tiling {
-    /// The lists of options that apply to a workspace, in the order they take effect: the
-    /// top-level options, then those of the outputs `output` matches, then those of the
-    /// workspaces called `workspace`. An option that a later list sets replaces the earlier ones.
-    pub fn option_layers(
+    /// The lists of settings that apply to a workspace, in the order they take effect: the
+    /// top-level settings, then those of the outputs `output` matches, then those of the
+    /// workspaces called `workspace`. A setting that a later list sets replaces the earlier ones.
+    pub fn setting_layers(
         &self,
         output: Option<&OutputName>,
         workspace: Option<&str>,
-    ) -> Vec<&EngineOptions> {
+    ) -> Vec<&EngineSettings> {
         let outputs = self
-            .output_options
+            .output_settings
             .iter()
             .filter(|scoped| output.is_some_and(|output| output.matches(&scoped.name)));
-        let workspaces = self.workspace_options.iter().filter(|scoped| {
+        let workspaces = self.workspace_settings.iter().filter(|scoped| {
             workspace.is_some_and(|workspace| workspace.eq_ignore_ascii_case(&scoped.name))
         });
-        let scoped = outputs.chain(workspaces).map(|scoped| &scoped.options);
-        std::iter::once(&self.options).chain(scoped).collect()
+        let scoped = outputs.chain(workspaces).map(|scoped| &scoped.settings);
+        std::iter::once(&self.settings).chain(scoped).collect()
     }
 }
 
@@ -214,9 +214,9 @@ impl Default for Tiling {
     fn default() -> Self {
         Self {
             layout: TilingLayout::BuiltIn(String::from("bento")),
-            options: Vec::new(),
-            output_options: Vec::new(),
-            workspace_options: Vec::new(),
+            settings: Vec::new(),
+            output_settings: Vec::new(),
+            workspace_settings: Vec::new(),
             window_rules: Vec::new(),
         }
     }
@@ -261,10 +261,10 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for Tiling {
                         TilingLayout::BuiltIn(name)
                     };
                 }
-                "options" => ctx.emit_error(DecodeError::unexpected(
+                "settings" | "options" => ctx.emit_error(DecodeError::unexpected(
                     child,
                     "node",
-                    "engine options go in the engine's own file, like `engines/bento.kdl` next to \
+                    "engine settings go in the engine's own file, like `engines/bento.kdl` next to \
                      this config",
                 )),
                 name => ctx.emit_error(DecodeError::unexpected(
@@ -279,7 +279,7 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for Tiling {
     }
 }
 
-/// The file with the engine's options and binds: `engines/<name>.kdl` next to the main config for
+/// The file with the engine's settings and binds: `engines/<name>.kdl` next to the main config for
 /// a built-in engine, or the engine file with a `.kdl` extension.
 pub fn engine_config_path(config_path: &Path, layout: &TilingLayout) -> PathBuf {
     engine_config_path_in(config_path.parent().unwrap_or(Path::new("")), layout)
@@ -293,13 +293,13 @@ pub fn engine_config_path_in(dir: &Path, layout: &TilingLayout) -> PathBuf {
     }
 }
 
-/// The default file of a built-in engine, with its binds and options.
+/// The default file of a built-in engine, with its binds and settings.
 pub fn default_engine_config(name: &str) -> Option<&'static str> {
     let config = DEFAULT_ENGINE_CONFIGS.iter().find(|(n, _)| *n == name);
     config.map(|(_, text)| *text)
 }
 
-/// Default files of the engines that ship with bento, with their binds and options.
+/// Default files of the engines that ship with bento, with their binds and settings.
 const DEFAULT_ENGINE_CONFIGS: &[(&str, &str)] = &[
     ("bento", include_str!("../../resources/layouts/bento.kdl")),
     ("niri", include_str!("../../resources/layouts/niri.kdl")),
@@ -377,17 +377,22 @@ where
             seen.push(name);
 
             match name {
-                "options" => {
-                    config.borrow_mut().tiling.options = decode_options(node, ctx)?;
+                "settings" => {
+                    config.borrow_mut().tiling.settings = decode_settings(node, ctx)?;
                 }
+                "options" => ctx.emit_error(DecodeError::unexpected(
+                    &node.node_name,
+                    "node",
+                    "an engine's settings are written `settings {}`",
+                )),
                 "output" | "workspace" => {
                     let scoped = decode_scoped(node, ctx)?;
                     let mut config = config.borrow_mut();
                     let tiling = &mut config.tiling;
                     let list = if name == "output" {
-                        &mut tiling.output_options
+                        &mut tiling.output_settings
                     } else {
-                        &mut tiling.workspace_options
+                        &mut tiling.workspace_settings
                     };
                     if list
                         .iter()
@@ -413,7 +418,7 @@ where
                     let config = &mut *config;
                     // The engine's file loads only while its engine runs, so it's the narrower
                     // layer: its binds take over keys the main config binds too, the way a
-                    // workspace's options override its output's. Switching engines then never
+                    // workspace's settings override its output's. Switching engines then never
                     // fails on a key, and the main config's binds are kept aside to say so.
                     let taken = |key: &Key| part.0.iter().any(|new| new.key.conflicts_with(key));
                     let (taken_over, kept) = std::mem::take(&mut config.binds.0)
@@ -434,7 +439,7 @@ where
                     node,
                     "node",
                     format!(
-                        "unexpected node `{}`, an engine's file has `options`, `output`, \
+                        "unexpected node `{}`, an engine's file has `settings`, `output`, \
                          `workspace`, `window-rule` and `binds`",
                         name.escape_default()
                     ),
@@ -446,21 +451,21 @@ where
     }
 }
 
-/// The options in an `options` node.
-fn decode_options<S: knuffel::traits::ErrorSpan>(
+/// The settings in a `settings` node, or in a block of the shell's settings.
+fn decode_settings<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
-) -> Result<EngineOptions, DecodeError<S>> {
-    let mut options = Vec::new();
-    for option in node.children() {
-        let name = String::from(&**option.node_name);
-        options.push((name, decode_values(option, ctx)?));
+) -> Result<EngineSettings, DecodeError<S>> {
+    let mut settings = Vec::new();
+    for setting in node.children() {
+        let name = String::from(&**setting.node_name);
+        settings.push((name, decode_values(setting, ctx)?));
     }
-    Ok(options)
+    Ok(settings)
 }
 
 /// The shell's settings, as `~/.config/bento/shell/settings.kdl` writes them: a block for each
-/// module and each shell, by its name, with its settings written the way an engine's options are.
+/// module and each shell, by its name, with its settings written the way an engine's are.
 ///
 /// ```kdl
 /// taskbar {
@@ -475,7 +480,7 @@ fn decode_options<S: knuffel::traits::ErrorSpan>(
 /// The modules and shells declare their settings' types, so the values are checked and converted
 /// once they're loaded.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ShellSettings(pub Vec<(String, EngineOptions)>);
+pub struct ShellSettings(pub Vec<(String, EngineSettings)>);
 
 impl ShellSettings {
     pub fn parse(text: &str) -> Result<Self, knuffel::Error> {
@@ -487,7 +492,7 @@ impl ShellSettings {
 
     /// The settings of the module or shell `name`, from every block of its name in order, so that
     /// one written later wins.
-    pub fn of(&self, name: &str) -> EngineOptions {
+    pub fn of(&self, name: &str) -> EngineSettings {
         let blocks = self.0.iter().filter(|(block, _)| block == name);
         blocks
             .flat_map(|(_, settings)| settings.iter().cloned())
@@ -496,7 +501,7 @@ impl ShellSettings {
 }
 
 /// A block of [`ShellSettings`].
-struct SettingsBlock(String, EngineOptions);
+struct SettingsBlock(String, EngineSettings);
 
 impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for SettingsBlock {
     fn decode_node(
@@ -511,15 +516,15 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for SettingsBlock {
             ));
         }
         let name = String::from(&**node.node_name);
-        Ok(Self(name, decode_options(node, ctx)?))
+        Ok(Self(name, decode_settings(node, ctx)?))
     }
 }
 
-/// An `output "DP-2" { options { … } }` or `workspace "web" { options { … } }` node.
+/// An `output "DP-2" { settings { … } }` or `workspace "web" { settings { … } }` node.
 fn decode_scoped<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
-) -> Result<ScopedOptions, DecodeError<S>> {
+) -> Result<ScopedSettings, DecodeError<S>> {
     let kind = &**node.node_name;
 
     let mut arguments = node.arguments.iter();
@@ -545,15 +550,15 @@ fn decode_scoped<S: knuffel::traits::ErrorSpan>(
         ));
     }
 
-    let mut options = Vec::new();
+    let mut settings = Vec::new();
     let mut seen = false;
     for child in node.children() {
-        if &**child.node_name != "options" {
+        if &**child.node_name != "settings" {
             ctx.emit_error(DecodeError::unexpected(
                 child,
                 "node",
                 format!(
-                    "unexpected node `{}`, an {kind} block has `options`",
+                    "unexpected node `{}`, an {kind} block has `settings`",
                     child.node_name.escape_default()
                 ),
             ));
@@ -561,17 +566,17 @@ fn decode_scoped<S: knuffel::traits::ErrorSpan>(
             ctx.emit_error(DecodeError::unexpected(
                 &child.node_name,
                 "node",
-                "duplicate node `options`, single node expected",
+                "duplicate node `settings`, single node expected",
             ));
         } else {
             seen = true;
-            options = decode_options(child, ctx)?;
+            settings = decode_settings(child, ctx)?;
         }
     }
-    Ok(ScopedOptions { name, options })
+    Ok(ScopedSettings { name, settings })
 }
 
-/// A gradient option or window rule property, which is written with properties: `from` and `to`
+/// A gradient setting or window rule property, which is written with properties: `from` and `to`
 /// colours, and optionally `angle`, `relative-to` and `in`.
 fn decode_gradient<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,
@@ -643,7 +648,7 @@ fn decode_gradient<S: knuffel::traits::ErrorSpan>(
     Ok(vec![TilingOption::Gradient(gradient)])
 }
 
-/// The values of an option or window rule property: the node's arguments, or for a gradient its
+/// The values of a setting or window rule property: the node's arguments, or for a gradient its
 /// properties.
 fn decode_values<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,
@@ -783,7 +788,7 @@ mod tests {
             }
             "#,
             r#"
-            options {
+            settings {
                 gravity false
                 rows 12
                 ratio 0.5
@@ -799,7 +804,7 @@ mod tests {
             config.tiling,
             Tiling {
                 layout: TilingLayout::BuiltIn(String::from("niri")),
-                options: vec![
+                settings: vec![
                     (String::from("gravity"), vec![TilingOption::Bool(false)]),
                     (String::from("rows"), vec![TilingOption::Number(12.)]),
                     (String::from("ratio"), vec![TilingOption::Number(0.5)]),
@@ -810,8 +815,8 @@ mod tests {
                     ),
                     (String::from("default-column-width"), vec![]),
                 ],
-                output_options: Vec::new(),
-                workspace_options: Vec::new(),
+                output_settings: Vec::new(),
+                workspace_settings: Vec::new(),
                 window_rules: Vec::new(),
             }
         );
@@ -877,7 +882,7 @@ mod tests {
         let config = Config::parse_mem_with_engine(
             "",
             r##"
-            options {
+            settings {
                 active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view" in="oklch shorter hue"
                 inactive-gradient from="#000" to="#ffffff80"
                 urgent-gradient
@@ -890,9 +895,9 @@ mod tests {
         )
         .unwrap();
 
-        let options = &config.tiling.options;
+        let settings = &config.tiling.settings;
         assert_eq!(
-            options[0].1,
+            settings[0].1,
             [TilingOption::Gradient(LayoutEngineGradient {
                 angle: Some(45.),
                 relative_to: Some(String::from("view")),
@@ -901,11 +906,11 @@ mod tests {
             })]
         );
         assert_eq!(
-            options[1].1,
+            settings[1].1,
             [TilingOption::Gradient(gradient("#000", "#ffffff80"))]
         );
         // A gradient with no value is left out.
-        assert!(options[2].1.is_empty());
+        assert!(settings[2].1.is_empty());
 
         let rule = &config.tiling.window_rules[0].properties;
         assert_eq!(
@@ -938,7 +943,7 @@ mod tests {
             (r##"from=1 to="#fff""##, "expected a string"),
             (r##""x" from="#000" to="#fff""##, "written with properties"),
         ] {
-            let text = format!("options {{ active-gradient {gradient}; }}");
+            let text = format!("settings {{ active-gradient {gradient}; }}");
             let result = Config::parse_mem_with_engine("", &text);
             let text = format!("{:?}", miette::Report::new(result.unwrap_err()));
             assert!(text.contains(problem), "{gradient}: {text}");
@@ -976,29 +981,29 @@ mod tests {
     }
 
     #[test]
-    fn options_differ_per_output_and_workspace() {
+    fn settings_differ_per_output_and_workspace() {
         let config = Config::parse_mem_with_engine(
             "",
             r#"
-            options {
+            settings {
                 gravity true
                 rows 4
             }
 
             output "DP-2" {
-                options {
+                settings {
                     rows 6
                 }
             }
 
             output "HDMI-A-1" {
-                options {
+                settings {
                     gravity false
                 }
             }
 
             workspace "web" {
-                options {
+                settings {
                     rows 8
                 }
             }
@@ -1006,8 +1011,8 @@ mod tests {
         )
         .unwrap();
         let tiling = &config.tiling;
-        assert_eq!(tiling.output_options.len(), 2);
-        assert_eq!(tiling.workspace_options.len(), 1);
+        assert_eq!(tiling.output_settings.len(), 2);
+        assert_eq!(tiling.workspace_settings.len(), 1);
 
         let output = |connector: &str| OutputName {
             connector: String::from(connector),
@@ -1015,7 +1020,7 @@ mod tests {
             model: None,
             serial: None,
         };
-        let rows = |layers: Vec<&EngineOptions>| -> Vec<f64> {
+        let rows = |layers: Vec<&EngineSettings>| -> Vec<f64> {
             let rows = layers
                 .into_iter()
                 .flatten()
@@ -1027,29 +1032,32 @@ mod tests {
             .collect()
         };
 
-        // The top-level options come first, so the ones after them win.
-        assert_eq!(rows(tiling.option_layers(None, None)), [4.]);
+        // The top-level settings come first, so the ones after them win.
+        assert_eq!(rows(tiling.setting_layers(None, None)), [4.]);
         let dp2 = output("dp-2");
-        assert_eq!(rows(tiling.option_layers(Some(&dp2), None)), [4., 6.]);
+        assert_eq!(rows(tiling.setting_layers(Some(&dp2), None)), [4., 6.]);
         assert_eq!(
-            rows(tiling.option_layers(Some(&dp2), Some("WEB"))),
+            rows(tiling.setting_layers(Some(&dp2), Some("WEB"))),
             [4., 6., 8.]
         );
-        assert_eq!(rows(tiling.option_layers(None, Some("web"))), [4., 8.]);
+        assert_eq!(rows(tiling.setting_layers(None, Some("web"))), [4., 8.]);
         let other = output("DP-3");
-        assert_eq!(rows(tiling.option_layers(Some(&other), Some("mail"))), [4.]);
+        assert_eq!(
+            rows(tiling.setting_layers(Some(&other), Some("mail"))),
+            [4.]
+        );
     }
 
     #[test]
     fn output_and_workspace_blocks_are_checked() {
         for (text, problem) in [
-            ("output { options { rows 1; }; }", "the output's name"),
+            ("output { settings { rows 1; }; }", "the output's name"),
             (r#"output "a" "b" { }"#, "unexpected argument"),
             (r#"output "a" x=1 { }"#, "unexpected property"),
-            (r#"workspace "a" { rows 1; }"#, "has `options`"),
+            (r#"workspace "a" { rows 1; }"#, "has `settings`"),
             (
-                r#"workspace "a" { options { }; options { }; }"#,
-                "duplicate node `options`",
+                r#"workspace "a" { settings { }; settings { }; }"#,
+                "duplicate node `settings`",
             ),
             (r#"output "a" { }; output "A" { }"#, "duplicate output"),
             (
@@ -1090,11 +1098,11 @@ mod tests {
     }
 
     #[test]
-    fn engine_options_stay_out_of_the_main_config() {
+    fn engine_settings_stay_out_of_the_main_config() {
         let config = Config::parse_mem(
             r#"
             tiling {
-                options {
+                settings {
                     gravity true
                 }
             }
@@ -1174,10 +1182,10 @@ mod tests {
         let config = Config::parse_mem_with_engine("", "layout { gaps 8; }");
         assert!(error(config).contains("unexpected node `layout`"));
 
-        // An option's values are arguments (or the properties of a gradient), not children.
-        let config = Config::parse_mem_with_engine("", "options { rows x=1; }");
+        // A setting's values are arguments (or the properties of a gradient), not children.
+        let config = Config::parse_mem_with_engine("", "settings { rows x=1; }");
         assert!(error(config).contains("unexpected property"));
-        let config = Config::parse_mem_with_engine("", "options { rows { x; }; }");
+        let config = Config::parse_mem_with_engine("", "settings { rows { x; }; }");
         assert!(error(config).contains("takes its values as arguments"));
     }
 

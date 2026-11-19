@@ -600,7 +600,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         name: Option<&String>,
         monitor: Option<String>,
         index: usize,
-        options: Value,
+        settings: Value,
     ) -> WorkspaceInfo {
         let Struts {
             left,
@@ -635,7 +635,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                     bottom: bottom.0,
                 },
             },
-            options,
+            settings,
             focused: self.active,
         }
     }
