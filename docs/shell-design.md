@@ -54,10 +54,11 @@ number in them can be animated.
 ## The shell is written in TSX and CSS
 
 The shell is written like a web page, in TSX with Solid: components in JSX, which run once, and
-values that update exactly what reads them when they change. Styles are CSS, with its flexbox, its
-margins and its start and end, with bento's own properties for what CSS has no word for, like
-materials and springs. libadwaita's colours are its variables: the window colours, the accent,
-light and dark.
+values that update exactly what reads them when they change. Styles are CSS written as typed
+objects in the scripts: its flexbox, its margins, its start and end and its states, with bento's
+own properties for what CSS has no word for, like materials and springs, which an editor completes
+and checks like the rest. libadwaita's colours are variables: the window colours, the accent, light
+and dark.
 
 A file can hold a whole shell with its interactions, or a single module, and imports others. A
 module is a component: its modes are its props, and what it holds are its children. bento ships
