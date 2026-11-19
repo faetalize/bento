@@ -10,8 +10,10 @@
 //   import { Clock } from "bento:modules/clock";
 //   import { Bar } from "./bar";
 //
-// bento loads `~/.config/bento/shell/main.tsx` if it's there, or its own shell, `bento:shells/unix`,
-// otherwise, and loads it again when any file changes. Its default export is the root component:
+// The shell that runs is chosen in bento's config, `shell { script "windows" }`, or in bento's
+// settings: one of bento's own shells by name, or a file of one's own, by its path, which bento
+// loads again when any of its files changes. Its default export is the root component. One of
+// bento's own is a start for one's own:
 //
 //   export { default } from "bento:shells/unix";
 //
@@ -22,22 +24,24 @@
 // `bento:stock/shells/<name>` are the same for whole shells.
 //
 // bento's own shells are `unix`, islands along the top, and `windows`, a taskbar along the
-// bottom. Its modules are `ui` (buttons, sliders, switches, islands, flyouts, `popup`), `apps`
-// (app search, and the app a window is of), `clock`, `workspaces`, `notifications`, `sound`,
-// `network`, `bluetooth`, `power`, `brightness`, `media`, `clipboard`, `control-center` (quick
-// settings and the notification center), `launcher`, `start-menu`, `taskbar`, `tray` and
-// `workspace-editor`. Each is a feature with the
-// views it has: `sound` has its status icon, sliders, page, switcher and on-screen indicator.
-//
-// For an editor: a `tsconfig.json` next to the files with `"jsx": "preserve"`,
-// `"jsxImportSource": "bento"`, `"lib": ["es2023"]` and this file in `"types"`, and Solid's types
-// with `npm i -D solid-js@2`, for the editor only.
+// bottom. What modules there are, and what each has, an editor shows: bento keeps a copy of its
+// modules, its shells, this file and Solid's types in `~/.local/share/bento/shell/`, and a
+// `tsconfig.json` in `~/.config/bento/shell/` that points an editor there.
 //
 // This is the first cut of the API. The scene doesn't have paths, masks, gradients, shadows,
 // blend modes or 3D transforms yet.
 
+/** Calls `fn` once what's running now is done. */
+declare function queueMicrotask(fn: () => void): void;
+
+interface ImportMeta {
+  /** The module's name: its file's name without the extension, like `taskbar`, which its
+   * settings are kept by. */
+  readonly name: string;
+}
+
 declare module "bento" {
-  import type { Accessor, JSX as SolidJSX } from "solid-js";
+  import type { Accessor, Element as SolidElement } from "solid-js";
 
   // ---------------------------------------------------------------------------------------------
   // Styles
@@ -298,7 +302,7 @@ declare module "bento" {
   export interface TextProps extends NodeProps {
     ref?: SceneNode | ((node: SceneNode) => void);
     /** Strings and numbers, as one run of text. */
-    children?: string | number | (string | number | false | null | undefined)[];
+    children?: string | number | false | null | (string | number | false | null | undefined)[];
   }
 
   export interface ImageProps extends NodeProps {
@@ -570,10 +574,114 @@ declare module "bento" {
   /** The time, on the mark of every `ms`, 1000 unless it says: `const time = now()`. */
   export function now(ms?: number): Accessor<Date>;
 
-  /** What the shell keeps between runs, by key, as a signal and its setter: `const [pinned,
-   * setPinned] = stored<string[]>("pinned", [])`. Keys are shared by every module, so a module of
-   * one's own puts its name in front of its keys. */
+  /** What the shell notes for itself as it's used, its state, kept between runs by key, as a
+   * signal and its setter: `const [quiet, setQuiet] = stored("doNotDisturb", false)`. Keys are
+   * shared by every module, so a module of one's own puts its name in front of its keys. What
+   * the user chooses is a setting instead, see `useSettings`. */
   export function stored<T>(key: string, fallback: T): [Accessor<T>, (value: T) => void];
+
+  // ---------------------------------------------------------------------------------------------
+  // Settings
+  //
+  // A setting is a typed value that a module declares for its feature, which every shell with the
+  // module shares, or a shell declares for itself. The user's are in
+  // `~/.config/bento/shell/settings.kdl`, a block for each module and shell by its name, and
+  // bento's settings show the running shell's:
+  //
+  //   taskbar {
+  //       pinned "firefox" "org.gnome.Nautilus"
+  //   }
+  //
+  // A module declares them in its `meta`, typed like engines' options, and reads them with
+  // `useSettings`, which gets them again as the file changes:
+  //
+  //   export const meta = {
+  //     settings: {
+  //       pinned: { type: "string", list: true, default: [], description: "Apps pinned to it." },
+  //     },
+  //   } satisfies Meta;
+  //   const [settings, setSetting] = useSettings(import.meta, meta);
+  //   settings.pinned; // string[]
+  //
+  // What a shell places a module with, its props, is the shell's own and not a setting; how a
+  // module's props and settings go together is the module's to say.
+  // ---------------------------------------------------------------------------------------------
+
+  /** The types a setting can have, as engines' options have them. */
+  export type SettingType =
+    | "boolean"
+    | "number"
+    | "string"
+    | "choice"
+    | "size"
+    | "color"
+    | "gradient";
+
+  /** A setting as a module or shell declares it. */
+  export interface Setting {
+    type: SettingType;
+    /** Whether it's a list of values of its type, written as several. */
+    list?: boolean;
+    /** The values a `choice` takes. */
+    choices?: readonly string[];
+    /** Its value when the file doesn't set it, as the file writes it: `"50%"` for a size. A
+     * size or gradient without one has none. */
+    default?: unknown;
+    /** What it is, which bento's settings show. */
+    description?: string;
+  }
+
+  /** What a module or shell says about itself. */
+  export interface Meta {
+    /** Its settings, by name. */
+    settings?: Record<string, Setting>;
+  }
+
+  /** A size, as a setting of type `size` reads: a proportion of the working area, or pixels. */
+  export type SizeValue = { proportion: number } | { fixed: number };
+
+  /** A gradient, as a setting of type `gradient` reads and is written. */
+  export interface GradientValue {
+    from: string;
+    to: string;
+    angle?: number;
+    relativeTo?: "node" | "view";
+    in?: string;
+  }
+
+  type ScalarOf<T extends SettingType> = T extends "boolean"
+    ? boolean
+    : T extends "number"
+      ? number
+      : T extends "size"
+        ? SizeValue | null
+        : T extends "gradient"
+          ? GradientValue | null
+          : string;
+
+  /** The value a setting reads as. */
+  export type SettingValue<S extends Setting> = S["list"] extends true
+    ? ScalarOf<S["type"]>[]
+    : ScalarOf<S["type"]>;
+
+  /** The settings `M` declares, by name, with their values. */
+  export type Settings<M extends Meta> = {
+    readonly [K in keyof M["settings"]]: M["settings"][K] extends Setting
+      ? SettingValue<M["settings"][K]>
+      : never;
+  };
+
+  /** The settings that `meta` declares for the module `module` is, which is `import.meta`: a
+   * store of their values, which changes as the file does, and what writes one to the file, as
+   * it's written there, like `"50%"` for a size. A setting written as its default leaves the file.
+   * A module in place of bento's module of its name has its settings. */
+  export function useSettings<M extends Meta>(
+    module: ImportMeta,
+    meta: M,
+  ): readonly [
+    Settings<M>,
+    <K extends keyof M["settings"] & string>(setting: K, value: unknown) => void,
+  ];
 
   export function log(...parts: unknown[]): void;
 
@@ -741,16 +849,16 @@ declare module "bento" {
   export { For, Show, Switch, Match, Repeat, Errored, Loading, Reveal } from "solid-js";
 
   export namespace JSX {
-    type Element = SolidJSX.Element;
+    type Element = SolidElement;
   }
 }
 
 declare module "bento/jsx-runtime" {
-  import type { JSX as SolidJSX } from "solid-js";
+  import type { Element as SolidElement } from "solid-js";
   import type { BoxProps, TextProps, ImageProps, InputProps, CopyProps } from "bento";
 
   export namespace JSX {
-    type Element = SolidJSX.Element;
+    type Element = SolidElement;
     interface ElementChildrenAttribute {
       children: {};
     }

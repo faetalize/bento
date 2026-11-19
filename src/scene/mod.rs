@@ -15,7 +15,9 @@
 pub mod apps;
 pub mod host;
 pub mod modules;
+pub mod reference;
 pub mod script;
+pub mod settings;
 mod spring;
 pub mod text;
 pub mod vk;
@@ -1022,7 +1024,10 @@ impl Scene {
         }
         for i in 0..self.roots.len() {
             let (root, size) = (self.roots[i].node, self.roots[i].size);
-            let surfaces = self.node(root).map(|n| n.children.clone()).unwrap_or_default();
+            let surfaces = self
+                .node(root)
+                .map(|n| n.children.clone())
+                .unwrap_or_default();
             let mut reserved = [0f32; 4];
             // Those put beside a node go once that node has its place.
             let (beside, held): (Vec<NodeId>, Vec<NodeId>) = surfaces.into_iter().partition(|id| {
@@ -1149,7 +1154,11 @@ impl Scene {
         let _ = tree.compute_layout_with_measure(taffy, available, |input, _, id, _| {
             measure(nodes, fonts, input, id.copied())
         });
-        let laid = self.tree.layout(taffy).map(|l| l.size).unwrap_or(Size::ZERO);
+        let laid = self
+            .tree
+            .layout(taffy)
+            .map(|l| l.size)
+            .unwrap_or(Size::ZERO);
         // Its own style again, for scripts to change; the layout stays until the next one.
         let _ = self.tree.set_style(taffy, own);
 
@@ -1224,17 +1233,15 @@ impl Scene {
             let Some(above) = at.parent.and_then(|id| self.node(id)) else {
                 break;
             };
-            if above.placement.is_none() {
-                let layout = self.tree.layout(above.taffy).ok()?;
-                x += layout.location.x;
-                y += layout.location.y;
-            } else {
+            if let Some(placement) = &above.placement {
                 // A surface's own layout is at its output's top left; its place is its origin.
-                let origin = above.placement.unwrap().origin;
-                x += origin[0];
-                y += origin[1];
+                x += placement.origin[0];
+                y += placement.origin[1];
                 break;
             }
+            let layout = self.tree.layout(above.taffy).ok()?;
+            x += layout.location.x;
+            y += layout.location.y;
             at = above;
         }
         Some([x, y, size[0], size[1]])
@@ -1600,14 +1607,11 @@ impl Scene {
 
     /// The topmost surface of output `output` in `band`, or any, that covers `point`.
     pub fn surface_at(&self, output: &str, point: [f32; 2], band: Option<Band>) -> Option<NodeId> {
-        self.surfaces(output, band)
-            .into_iter()
-            .rev()
-            .find(|id| {
-                let mut found = Vec::new();
-                self.pick_node(*id, point, Scaling::NONE, None, &mut found);
-                found.iter().any(|id| self.takes_pointer(*id))
-            })
+        self.surfaces(output, band).into_iter().rev().find(|id| {
+            let mut found = Vec::new();
+            self.pick_node(*id, point, Scaling::NONE, None, &mut found);
+            found.iter().any(|id| self.takes_pointer(*id))
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1886,8 +1890,7 @@ impl Scene {
             return Vec::new();
         };
         let mut chain = Vec::new();
-        loop {
-            let Some(node) = self.node(at) else { break };
+        while let Some(node) = self.node(at) {
             if node.events & HOVER != 0 {
                 chain.push(at);
             }
@@ -2250,7 +2253,9 @@ fn apply_layout(style: &mut Style, key: &str, value: &Value) -> bool {
         "alignItems" => style.align_items = align_items(value).unwrap_or(AlignItems::NORMAL),
         "alignSelf" => style.align_self = align_items(value),
         "alignContent" => style.align_content = justify(value).unwrap_or(JustifyContent::NORMAL),
-        "justifyContent" => style.justify_content = justify(value).unwrap_or(JustifyContent::NORMAL),
+        "justifyContent" => {
+            style.justify_content = justify(value).unwrap_or(JustifyContent::NORMAL)
+        }
         "position" => {
             style.position = match value.as_str() {
                 Some("absolute") => Position::Absolute,
@@ -2322,21 +2327,24 @@ fn apply_placement(placement: &mut Placement, key: &str, value: &Value) -> bool 
             placement.anchor = ["top", "right", "bottom", "left"].map(|e| edges.contains(&e));
         }
         "attach" => {
-            placement.attach = value.get("node").and_then(Value::as_u64).map(|node| Attach {
-                node: node as NodeId,
-                side: match value["side"].as_str() {
-                    Some("top") => 0,
-                    Some("right") => 1,
-                    Some("left") => 3,
-                    _ => 2,
-                },
-                align: match value["align"].as_str() {
-                    Some("center") => 0.5,
-                    Some("end") => 1.,
-                    _ => 0.,
-                },
-                gap: value["gap"].as_f64().unwrap_or(0.) as f32,
-            })
+            placement.attach = value
+                .get("node")
+                .and_then(Value::as_u64)
+                .map(|node| Attach {
+                    node: node as NodeId,
+                    side: match value["side"].as_str() {
+                        Some("top") => 0,
+                        Some("right") => 1,
+                        Some("left") => 3,
+                        _ => 2,
+                    },
+                    align: match value["align"].as_str() {
+                        Some("center") => 0.5,
+                        Some("end") => 1.,
+                        _ => 0.,
+                    },
+                    gap: value["gap"].as_f64().unwrap_or(0.) as f32,
+                })
         }
         "reserve" => {
             placement.reserve = match value {
@@ -2447,7 +2455,9 @@ mod tests {
         let shell = Shell::load(
             &[(String::from("DP-1"), (1920., 1080.))],
             None,
+            crate::scene::host::UNIX,
             serde_json::json!({ "gaps": 8 }),
+            Default::default(),
         )
         .unwrap();
         let mut scene = shell.scene.borrow_mut();
@@ -2690,7 +2700,11 @@ mod tests {
         scene.append(holder, held, None);
         scene.lay_out();
         scene.advance(1., Some(1.));
-        assert!(scene.draw_all("DP-1").is_empty(), "{:?}", scene.draw_all("DP-1"));
+        assert!(
+            scene.draw_all("DP-1").is_empty(),
+            "{:?}",
+            scene.draw_all("DP-1")
+        );
         assert!(!scene.covers("DP-1", [0., 0.], None));
 
         // Displayed again, it's there.
@@ -2934,7 +2948,10 @@ mod tests {
         scene.lay_out();
         // Over the button, its middle on the button's, but kept on the output by its margin.
         assert_eq!(scene.layout(button), Some([1872., 1032., 40., 40.]));
-        assert_eq!(scene.layout(flyout), Some([1920. - 8. - 300., 1032. - 10. - 100., 300., 100.]));
+        assert_eq!(
+            scene.layout(flyout),
+            Some([1920. - 8. - 300., 1032. - 10. - 100., 300., 100.])
+        );
     }
 
     #[test]
@@ -2946,10 +2963,17 @@ mod tests {
             serde_json::json!({ "layer": "background", "z": -1 }),
             style.clone(),
         );
-        let (bar, _) = surface(&mut scene, serde_json::json!({ "layer": "overlay", "z": -1 }), style);
+        let (bar, _) = surface(
+            &mut scene,
+            serde_json::json!({ "layer": "overlay", "z": -1 }),
+            style,
+        );
         scene.lay_out();
         scene.advance(1., Some(1.));
-        assert_eq!(scene.bands("DP-1"), [Band::BackgroundBelow, Band::OverlayBelow]);
+        assert_eq!(
+            scene.bands("DP-1"),
+            [Band::BackgroundBelow, Band::OverlayBelow]
+        );
         assert_eq!(scene.draw("DP-1", Band::BackgroundBelow).len(), 1);
         assert_eq!(scene.draw("DP-1", Band::TopAbove).len(), 0);
         assert_eq!(scene.surface_at("DP-1", [960., 540.], None), Some(bar));
@@ -2969,7 +2993,8 @@ mod tests {
         );
         let rows: Vec<NodeId> = (0..5)
             .map(|_| {
-                let row = scene.create("box", &serde_json::json!({ "height": 50, "flexShrink": 0 }));
+                let row =
+                    scene.create("box", &serde_json::json!({ "height": 50, "flexShrink": 0 }));
                 scene.append(list, row, None);
                 row
             })
@@ -3030,7 +3055,14 @@ mod tests {
     #[test]
     fn the_shell_keeps_the_top_for_its_islands_and_bentos_gaps() {
         let style = serde_json::json!({ "gaps": 16 });
-        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None, style).unwrap();
+        let shell = Shell::load(
+            &[(String::from("DP-1"), (1920., 1080.))],
+            None,
+            crate::scene::host::UNIX,
+            style,
+            Default::default(),
+        )
+        .unwrap();
         shell.scene.borrow_mut().lay_out();
         assert_eq!(
             shell.scene.borrow().reserved("DP-1"),
@@ -3043,7 +3075,9 @@ mod tests {
         let shell = Shell::load(
             &[(String::from("DP-1"), (1920., 1080.))],
             None,
+            crate::scene::host::UNIX,
             serde_json::json!({ "gaps": 8 }),
+            Default::default(),
         )
         .unwrap();
         let glass = |scene: &Scene| -> Vec<[f32; 4]> {

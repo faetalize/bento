@@ -25,6 +25,10 @@ pub struct Shell {
     /// written `built-in false`, the way bento Settings turns it off.
     #[knuffel(child)]
     pub built_in: Option<Flag>,
+    /// Which shell bento draws: one of its own by name, `"unix"` or `"windows"`, or a file of
+    /// one's own, by its path. bento's own `"unix"` when it's left out.
+    #[knuffel(child, unwrap(argument))]
+    pub script: Option<String>,
     /// Temperatures in Fahrenheit rather than Celsius.
     #[knuffel(child)]
     pub fahrenheit: bool,
@@ -40,6 +44,43 @@ impl Shell {
     /// Whether bento draws its own shell.
     pub fn built_in(&self) -> bool {
         self.built_in.is_some_and(|flag| flag.0)
+    }
+
+    /// Which shell bento draws.
+    pub fn script(&self) -> ShellScript {
+        ShellScript::from_config(self.script.as_deref())
+    }
+}
+
+/// Which shell bento draws, the way the config names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellScript {
+    /// One of bento's own shells, by name.
+    BuiltIn(String),
+    /// A shell file, by its path as written, which can start with `~`.
+    File(std::path::PathBuf),
+}
+
+impl ShellScript {
+    /// The shell bento draws when the config names none.
+    pub const DEFAULT: &str = "unix";
+
+    /// The shell that `script` names: a path when it has a `/` or a script's extension, one of
+    /// bento's own otherwise.
+    pub fn from_config(script: Option<&str>) -> Self {
+        let script = script.map(str::trim).filter(|s| !s.is_empty());
+        match script {
+            None => Self::BuiltIn(String::from(Self::DEFAULT)),
+            Some(script)
+                if script.contains('/')
+                    || [".tsx", ".ts", ".jsx", ".js"]
+                        .iter()
+                        .any(|e| script.ends_with(e)) =>
+            {
+                Self::File(std::path::PathBuf::from(script))
+            }
+            Some(name) => Self::BuiltIn(String::from(name)),
+        }
     }
 }
 

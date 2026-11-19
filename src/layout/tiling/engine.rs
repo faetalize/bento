@@ -277,7 +277,7 @@ impl OptionType {
 
 impl OptionMeta {
     /// The default, as the values it's written with in the layout's file.
-    fn default_values(&self) -> Vec<TilingOption> {
+    pub fn default_values(&self) -> Vec<TilingOption> {
         match &self.default {
             None => Vec::new(),
             Some(LayoutEngineOptionValue::List(values)) => {
@@ -743,23 +743,7 @@ pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
             },
         };
 
-        let options = meta.options.iter().map(|option| {
-            // Like the engine sees it: the last value wins, and one that doesn't fit the type
-            // gives the default.
-            let default = option.ipc_value(&option.default_values());
-            let value = configured(&[&config.options], option)
-                .map(|values| option.ipc_value(values))
-                .unwrap_or_else(|| default.clone());
-            LayoutEngineOption {
-                name: option.name.clone(),
-                r#type: option.r#type.ipc(),
-                list: option.list,
-                choices: option.choices.clone(),
-                default,
-                description: option.description.clone(),
-                value,
-            }
-        });
+        let options = ipc_options(&meta.options, &config.options);
         let window_rules = meta.window_rules.iter().map(|rule| LayoutEngineWindowRule {
             name: rule.name.clone(),
             r#type: rule.r#type.ipc(),
@@ -774,7 +758,7 @@ pub fn ipc_info(config: &Tiling) -> Option<niri_ipc::LayoutEngine> {
             description: meta.description.clone(),
             source,
             floating: meta.floating,
-            options: options.collect(),
+            options,
             window_rules: window_rules.collect(),
             actions: meta.actions.clone(),
             error: LOAD_ERROR.with_borrow(Clone::clone),
@@ -813,19 +797,45 @@ pub fn workspace_options_json(
 }
 
 fn resolved_options_json(layers: &[&EngineOptions]) -> serde_json::Value {
-    ENGINE.with_borrow(|engine| {
-        let Some(engine) = engine else {
-            return json!({});
-        };
-        let options = engine.meta.options.iter().map(|option| {
-            let values = configured(layers, option)
-                .map(<[TilingOption]>::to_vec)
-                .unwrap_or_else(|| option.default_values());
-            let value = option.convert(&values).unwrap_or(serde_json::Value::Null);
-            (option.name.clone(), value)
-        });
-        serde_json::Value::Object(options.collect())
+    ENGINE.with_borrow(|engine| match engine {
+        Some(engine) => resolve_options(&engine.meta.options, layers),
+        None => json!({}),
     })
+}
+
+/// `options` as JSON, by name: each converted by its type from what the last of `layers` that
+/// sets it to something that fits writes, or its default.
+pub fn resolve_options(options: &[OptionMeta], layers: &[&EngineOptions]) -> serde_json::Value {
+    let options = options.iter().map(|option| {
+        let values = configured(layers, option)
+            .map(<[TilingOption]>::to_vec)
+            .unwrap_or_else(|| option.default_values());
+        let value = option.convert(&values).unwrap_or(serde_json::Value::Null);
+        (option.name.clone(), value)
+    });
+    serde_json::Value::Object(options.collect())
+}
+
+/// `options` as bento shows them to clients, with the values `values` writes for them.
+pub fn ipc_options(options: &[OptionMeta], values: &EngineOptions) -> Vec<LayoutEngineOption> {
+    let options = options.iter().map(|option| {
+        // As the engine or the shell sees it: the last value wins, and one that doesn't fit the
+        // type gives the default.
+        let default = option.ipc_value(&option.default_values());
+        let value = configured(&[values], option)
+            .map(|values| option.ipc_value(values))
+            .unwrap_or_else(|| default.clone());
+        LayoutEngineOption {
+            name: option.name.clone(),
+            r#type: option.r#type.ipc(),
+            list: option.list,
+            choices: option.choices.clone(),
+            default,
+            description: option.description.clone(),
+            value,
+        }
+    });
+    options.collect()
 }
 
 /// The properties that the layout's window rules set for one window, as JSON, converted by the

@@ -24,7 +24,11 @@ fn shell_files() {
 
     let mut out = String::from("&[\n");
     for path in files {
-        let name = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        let name = path
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         // Types are for editors.
         if name.starts_with("types/") {
             continue;
@@ -38,6 +42,41 @@ fn shell_files() {
     out.push_str("]\n");
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("shell_files.rs");
     std::fs::write(dest, out).unwrap();
+
+    // Types for editors, bento's and Solid's, which bento copies where an editor finds them.
+    let mut types = Vec::new();
+    collect_all(&root.join("types"), &mut types);
+    types.sort();
+    let mut out = String::from("&[\n");
+    for path in types {
+        let name = path
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        println!("cargo:rerun-if-changed={}", path.display());
+        out.push_str(&format!(
+            "    ({name:?}, include_str!({:?})),\n",
+            path.display().to_string()
+        ));
+    }
+    out.push_str("]\n");
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("shell_types.rs");
+    std::fs::write(dest, out).unwrap();
+}
+
+fn collect_all(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_all(&path, files);
+        } else {
+            files.push(path);
+        }
+    }
 }
 
 fn collect(dir: &Path, files: &mut Vec<PathBuf>) {

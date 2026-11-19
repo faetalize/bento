@@ -8,7 +8,7 @@ export const player = () => data("media")?.players?.[0];
 
 /** What's playing: its cover, title and artist, and its controls. */
 export function MediaCard() {
-  const control = (icon: string, act: string, can: () => boolean) => (
+  const control = (icon: string, act: "PlayPause" | "Next" | "Previous", can: () => boolean) => (
     <Button
       icon={icon}
       size={18}
@@ -38,7 +38,7 @@ export function MediaCard() {
           }
         >
           <box style={{ width: 48, height: 48, borderRadius: 12, overflow: "hidden", flexShrink: 0 }}>
-            <image src={player()!.art} style={{ width: 48, height: 48 }} />
+            <image src={player()!.art!} style={{ width: 48, height: 48 }} />
           </box>
         </Show>
         <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minWidth: 0 }}>

@@ -13,8 +13,9 @@
 
 import {
   action, after, command, config, data, focusedOutput, notify, onAction, outputs, run, useOutput,
+  type JSX,
 } from "bento";
-import { createEffect, createSignal, For, Match, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createSignal, For, Match, Show, Switch } from "solid-js";
 import { ACTIVE, Button, Heading, ICON_ROOM, Island, Note, Toggle, popup } from "bento:modules/ui";
 import { ClipboardHistory } from "bento:modules/clipboard";
 import { NotificationCard, notifications } from "bento:modules/notifications";

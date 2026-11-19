@@ -34,6 +34,7 @@ pub mod appearance;
 pub mod binds;
 pub mod convert;
 pub mod debug;
+pub mod edit;
 pub mod error;
 pub mod gestures;
 pub mod input;
@@ -62,8 +63,8 @@ use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
     default_engine_config, engine_config_path, engine_config_path_in, resolve_gradient,
-    EngineOptions, EngineRules, EngineWindowRule, ScopedOptions, Tiling, TilingLayout,
-    TilingOption,
+    EngineOptions, EngineRules, EngineWindowRule, ScopedOptions, ShellSettings, Tiling,
+    TilingLayout, TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
@@ -3123,6 +3124,7 @@ mod tests {
             }
             shell {
                 built-in
+                script "windows"
                 fahrenheit
                 screenshot {
                     command "grim -g \"$(slurp)\" - | swappy -f -"
@@ -3142,8 +3144,20 @@ mod tests {
         // Settings alone name no program to run as the shell.
         assert!(shell.command.is_empty());
         assert!(shell.built_in());
+        assert_eq!(
+            shell.script(),
+            ShellScript::BuiltIn(String::from("windows"))
+        );
         let off = do_parse("shell \"bento-shell\" {\n    built-in false\n}\n");
-        assert!(!off.shell.unwrap().built_in());
+        let off = off.shell.unwrap();
+        assert!(!off.built_in());
+        // bento's unix shell, when the config names none.
+        assert_eq!(off.script(), ShellScript::BuiltIn(String::from("unix")));
+        let file = ShellScript::from_config(Some("~/.config/bento/shell/mine.tsx"));
+        assert_eq!(
+            file,
+            ShellScript::File(PathBuf::from("~/.config/bento/shell/mine.tsx"))
+        );
         assert!(shell.fahrenheit);
         let screenshot = shell.screenshot.unwrap();
         assert_eq!(
@@ -3158,6 +3172,47 @@ mod tests {
         let record = shell.screen_record.unwrap();
         assert_eq!(record.command.as_deref(), Some("wf-recorder"));
         assert_eq!(record.notification, None);
+    }
+
+    #[test]
+    fn the_shells_settings_file_has_a_block_for_each_module_and_shell() {
+        let settings = ShellSettings::parse(
+            r#"
+            taskbar {
+                pinned "firefox" "org.gnome.Nautilus"
+            }
+            windows {
+                height 48
+            }
+            taskbar {
+                pinned "foot"
+            }
+            "#,
+        )
+        .unwrap();
+        // Blocks of one name add up, and what's written later wins.
+        assert_eq!(
+            settings.of("taskbar"),
+            vec![
+                (
+                    String::from("pinned"),
+                    vec![
+                        TilingOption::String(String::from("firefox")),
+                        TilingOption::String(String::from("org.gnome.Nautilus")),
+                    ]
+                ),
+                (
+                    String::from("pinned"),
+                    vec![TilingOption::String(String::from("foot"))]
+                ),
+            ]
+        );
+        assert_eq!(
+            settings.of("windows"),
+            vec![(String::from("height"), vec![TilingOption::Number(48.)])]
+        );
+        assert!(settings.of("clock").is_empty());
+        assert!(ShellSettings::parse("taskbar \"x\" {}").is_err());
     }
 
     #[test]
@@ -3195,6 +3250,7 @@ mod tests {
         +                "bento-shell",
         +            ],
         +            built_in: None,
+        +            script: None,
         +            fahrenheit: false,
         +            screenshot: None,
         +            screen_record: None,

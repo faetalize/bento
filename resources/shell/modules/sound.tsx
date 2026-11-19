@@ -3,6 +3,7 @@
 
 import {
   Surface, after, bentoStyle, command, data, focusedOutput, notify, onAction, outputs, stored,
+  useSettings, type Meta,
 } from "bento";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { Button, Heading, Note, Row, Slider, grows, growsWith } from "bento:modules/ui";
@@ -59,13 +60,35 @@ export function toggleMute(kind: Kind) {
 // Pinned outputs, and the switcher that goes around them.
 // ------------------------------------------------------------------------------------------------
 
+export const meta = {
+  settings: {
+    pinned: {
+      type: "string",
+      list: true,
+      default: [] as string[],
+      description: "The sound outputs pinned for the switcher, by their name in the sound server.",
+    },
+  },
+} satisfies Meta;
+
+export const [settings, setSetting] = useSettings(import.meta, meta);
+
 /** The sound outputs pinned for the switcher, by name, in the order they were pinned. */
-export const [pinned, setPinnedList] = stored<string[]>("pinnedOutputs", []);
+export const pinned = () => settings.pinned;
 
 export function setPinned(name: string, pin: boolean) {
   const list = pinned().filter((other) => other !== name);
   if (pin) list.push(name);
-  setPinnedList(list);
+  setSetting("pinned", list);
+}
+
+// Pins kept as the shell's state before they were a setting move to the settings.
+{
+  const [old, setOld] = stored<string[]>("pinnedOutputs", []);
+  if (old().length > 0) {
+    if (pinned().length === 0) setSetting("pinned", old());
+    setOld([]);
+  }
 }
 
 /** Makes the next pinned output the default one, going around, past the ones that aren't

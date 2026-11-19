@@ -240,13 +240,26 @@ debug {
 }
 ```
 
-bento draws its own shell too, while it's being built: islands of glass along the top of each output. Shells are written in TSX with [Solid](https://www.solidjs.com), with styles as CSS written in objects; bento compiles them itself as it loads them, so there's nothing to install or build. `~/.config/bento/shell/main.tsx`, if it's there, is the shell, and its default export is its root component; otherwise it's bento's own, `bento:shells/unix` (`resources/shell/shells/unix.tsx`). bento has a second shell, laid out like Windows 11's, with a taskbar along the bottom, a start menu, live previews of windows, quick settings and a notification center; a `main.tsx` of `export { default } from "bento:shells/windows";` makes it the shell. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes. What a shell is written against is in [`resources/shell/types/bento.d.ts`](resources/shell/types/bento.d.ts). It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
+bento draws its own shell too, while it's being built: islands of glass along the top of each output. Shells are written in TSX with [Solid](https://www.solidjs.com), with styles as CSS written in objects; bento compiles them itself as it loads them, so there's nothing to install or build. It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
 
 ```kdl
 shell {
     built-in
+    script "unix" // or "windows", or a path to a shell of your own, like "~/.config/bento/shell/mine.tsx"
 }
 ```
+
+bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one to start a shell of your own from; bento's own aren't edited in place. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
+
+Modules and shells declare their settings, like the apps pinned to the taskbar, which bento Settings shows and `~/.config/bento/shell/settings.kdl` keeps, a block for each module and shell by its name:
+
+```kdl
+taskbar {
+    pinned "firefox" "org.gnome.Nautilus"
+}
+```
+
+What a shell can use, an editor shows: bento keeps a copy of its modules, its shells and their types in `~/.local/share/bento/shell/`, and a `tsconfig.json` in `~/.config/bento/shell/` that points an editor there. `bento msg shell` prints the running shell's settings.
 
 A shell program named with `shell "…"` keeps running alongside it.
 

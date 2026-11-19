@@ -2,7 +2,9 @@
 // weather where the config says the user is. In bento's own shell it's the middle island, which
 // opens into the calendar, its time growing into the calendar's.
 
-import { action, after, command, config, data, now, onData, paced, settling, useOutput } from "bento";
+import {
+  action, after, command, config, data, now, onData, paced, settling, useOutput, type Style,
+} from "bento";
 import { createEffect, createMemo, createRoot, createSignal, For, Show } from "solid-js";
 import { ACTIVE, Button, Island, popup } from "bento:modules/ui";
 
@@ -150,6 +152,11 @@ export function Month() {
 export function Weather(props: { onSettings?: () => void }) {
   const degrees = (value: number) => `${Math.round(value)}°`;
   const weather = () => data("weather");
+  // The weather, once it's been fetched.
+  const fetched = () => {
+    const w = weather();
+    return w?.ok ? w : null;
+  };
   const location = () => config().location;
   const details = () => {
     const w = weather();
@@ -160,7 +167,7 @@ export function Weather(props: { onSettings?: () => void }) {
       w.humidity !== null && `Humidity ${Math.round(w.humidity)}%`,
     ].filter(Boolean).join("  ·  ");
   };
-  const dim = { color: "fg/0.7" };
+  const dim: Style = { color: "fg/0.7" };
   return (
     <box
       style={{
@@ -188,14 +195,14 @@ export function Weather(props: { onSettings?: () => void }) {
         }
       >
         <Show when={weather()} fallback={<text style={dim}>Fetching the weather…</text>}>
-          <Show when={weather()!.ok} fallback={<text style={dim}>The weather couldn't be fetched.</text>}>
+          <Show when={fetched()} fallback={<text style={dim}>The weather couldn't be fetched.</text>}>
             <box style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-              <image icon={weather()!.icon} size={36} />
+              <image icon={fetched()!.icon} size={36} />
               <box style={{ flexDirection: "column", flexGrow: 1 }}>
                 <text style={{ fontSize: 22, fontWeight: 700 }}>
-                  {`${Math.round(weather()!.temperature)}${weather()!.unit}`}
+                  {`${Math.round(fetched()!.temperature)}${fetched()!.unit}`}
                 </text>
-                <text style={dim}>{weather()!.label}</text>
+                <text style={dim}>{fetched()!.label}</text>
               </box>
             </box>
             <text style={{ fontSize: 12, color: "fg/0.6" }}>{details()}</text>
@@ -203,7 +210,7 @@ export function Weather(props: { onSettings?: () => void }) {
               <text style={{ fontSize: 12, color: "fg/0.6" }}>{location()!.name}</text>
             </Show>
             <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
-              <For each={weather()!.days}>
+              <For each={fetched()!.days}>
                 {(day: any) => {
                   // Noon, so the day is the same in every timezone.
                   const date = new Date(`${day.date}T12:00:00`);

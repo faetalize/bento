@@ -14,7 +14,8 @@ use std::fmt::Write as _;
 
 use knuffel::ast;
 use knuffel::span::Span;
-use niri_config::Key;
+
+use crate::Key;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -667,6 +668,64 @@ fn write_string(out: &mut String, text: &str) {
         }
     }
     out.push('"');
+}
+
+/// A plain value for a layout engine option or action argument, or `None` for a list or a
+/// gradient, which is written with [`option_properties`].
+pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Option<Value> {
+    use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
+    Some(match value {
+        OptionValue::Boolean(x) => Value::Bool(*x),
+        OptionValue::Number(x) if x.fract() == 0. => Value::Int(*x as i64),
+        OptionValue::Number(x) => Value::Float(*x),
+        OptionValue::String(x) => Value::Str(x.clone()),
+        OptionValue::Gradient(_) | OptionValue::List(_) => return None,
+    })
+}
+
+/// The values an option is written with: one for a plain option, one each for a list, none for a
+/// size left to the window or a gradient.
+pub fn option_values(value: &Option<niri_ipc::LayoutEngineOptionValue>) -> Vec<Value> {
+    use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
+    match value {
+        None => Vec::new(),
+        Some(OptionValue::List(items)) => items.iter().filter_map(option_value).collect(),
+        Some(value) => option_value(value).into_iter().collect(),
+    }
+}
+
+/// The properties an option is written with, which only a gradient has: `from`, `to`, and the
+/// other properties it sets.
+pub fn option_properties(
+    value: &Option<niri_ipc::LayoutEngineOptionValue>,
+) -> Vec<(String, Value)> {
+    use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
+    let Some(OptionValue::Gradient(gradient)) = value else {
+        return Vec::new();
+    };
+    let text = |text: &String| Value::Str(text.clone());
+    let mut properties = vec![
+        (String::from("from"), text(&gradient.from)),
+        (String::from("to"), text(&gradient.to)),
+    ];
+    if let Some(angle) = gradient.angle {
+        let angle = if angle.fract() == 0. {
+            Value::Int(angle as i64)
+        } else {
+            Value::Float(angle)
+        };
+        properties.push((String::from("angle"), angle));
+    }
+    if let Some(relative_to) = &gradient.relative_to {
+        properties.push((String::from("relative-to"), text(relative_to)));
+    }
+    if let Some(space) = &gradient.color_space {
+        properties.push((String::from("in"), text(space)));
+    }
+    properties
 }
 
 #[cfg(test)]

@@ -3552,7 +3552,9 @@ impl State {
                     .or(self.niri.tablet_cursor_location);
                 let at = pos.and_then(|pos| self.niri.contents_under(pos).shell);
                 if let Some(scene) = &mut self.niri.scene {
-                    let at = at.as_ref().map(|(name, point, band)| (name.as_str(), *point, *band));
+                    let at = at
+                        .as_ref()
+                        .map(|(name, point, band)| (name.as_str(), *point, *band));
                     if scene.release(TABLET_KEY, 1, at) {
                         self.niri.queue_redraw_all();
                     }

@@ -32,7 +32,8 @@
 #![warn(missing_docs)]
 
 pub use niri_ipc::{
-    LayoutEngine, LayoutEngineAction, OutputAction, PickedColor, Timestamp, Transform,
+    LayoutEngine, LayoutEngineAction, LayoutEngineOption, OutputAction, PickedColor, Timestamp,
+    Transform,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -187,6 +188,8 @@ pub enum Get {
     EngineState,
     /// bento's own actions, with their arguments.
     Actions,
+    /// The shell bento draws, and the settings it and its modules declare.
+    Shell,
 }
 
 /// bento's answer to a [`Request`].
@@ -223,6 +226,8 @@ pub enum Response {
     EngineState(Value),
     /// bento's own actions.
     Actions(Vec<LayoutEngineAction>),
+    /// The shell bento draws.
+    Shell(Shell),
     /// The window that was picked, if the user picked one.
     PickedWindow(Option<Window>),
     /// The colour that was picked, if the user picked one.
@@ -239,6 +244,51 @@ impl Response {
             response => Ok(response),
         }
     }
+}
+
+/// The shell bento draws, and its settings.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Shell {
+    /// The shell the config names.
+    pub source: ShellSource,
+    /// Why the shell the config names failed to load, if it did. The last shell that loaded stays
+    /// on screen, or bento's unix shell if none had.
+    pub error: Option<String>,
+    /// Why the settings file can't be read, if it can't. The settings it last had stay.
+    pub settings_error: Option<String>,
+    /// The settings of the shell and of each module it uses that declares any, in the order
+    /// they're loaded: a module's are shared by every shell that has it.
+    pub settings: Vec<ShellSettings>,
+    /// What the settings file sets that nothing running declares, as `name` for a whole block or
+    /// `name.setting`. It stays in the file, for a shell that declares it.
+    pub unused: Vec<String>,
+}
+
+/// Where the shell bento draws comes from.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ShellSource {
+    /// One of bento's own shells.
+    BuiltIn {
+        /// Its name, like `"unix"`.
+        name: String,
+    },
+    /// A shell file of one's own.
+    File {
+        /// Its path.
+        path: String,
+    },
+}
+
+/// The settings that a module or shell declares, with their values.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellSettings {
+    /// The module's or shell's name, which its block in the settings file goes by.
+    pub name: String,
+    /// Its settings, in the order it declares them, typed like engines' options.
+    pub settings: Vec<LayoutEngineOption>,
 }
 
 /// What became of an [`Request::Output`].

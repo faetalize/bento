@@ -18,7 +18,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 use niri_config::{engine_config_path, Config};
 
-use crate::kdl::{Document, Value};
+use crate::kdl::Document;
 
 /// How long after the last change to save, so dragging a slider writes once.
 const SAVE_DELAY: Duration = Duration::from_millis(150);
@@ -37,6 +37,8 @@ pub enum File {
     Main,
     /// The running engine's own file, with its options and binds.
     Engine,
+    /// The shell's settings, `shell/settings.kdl` next to the config.
+    ShellSettings,
 }
 
 #[derive(Clone)]
@@ -321,6 +323,16 @@ impl Store {
 /// Applies edits to the config and the engine's file and writes them, if bento accepts the result.
 /// Runs off the main thread.
 fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
+    let (shell_edits, edits): (Vec<_>, Vec<_>) = edits
+        .into_iter()
+        .partition(|edit| edit.file == File::ShellSettings);
+    let mut shell = None;
+    if !shell_edits.is_empty() {
+        let shell_path = shell_settings_path(path);
+        let text = apply(&shell_path, shell_edits)?;
+        niri_config::ShellSettings::parse(&text).map_err(|err| describe(&err))?;
+        shell = Some((shell_path, text));
+    }
     let (engine_edits, main_edits): (Vec<_>, Vec<_>) = edits
         .into_iter()
         .partition(|edit| edit.file == File::Engine);
@@ -344,12 +356,19 @@ fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
     let config = parsed.config.map_err(|err| describe(&err))?;
 
     let mut written = vec![(path.to_owned(), main)];
-    // Only an edit creates the engine's file.
+    // Only an edit creates the engine's file, or the shell's settings.
     written.extend(engine.filter(|_| engine_changes));
+    written.extend(shell);
     for (path, text) in &written {
         write(path, text)?;
     }
     Ok(Saved { written, config })
+}
+
+/// The shell's settings, `shell/settings.kdl` next to the config at `config_path`.
+pub fn shell_settings_path(config_path: &Path) -> PathBuf {
+    let dir = config_path.parent().unwrap_or(Path::new(""));
+    dir.join("shell").join("settings.kdl")
 }
 
 /// Applies edits to the file at `path` as it is now, so changes made elsewhere since are kept.
@@ -437,67 +456,10 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-/// A plain value for a layout engine option or action argument, or `None` for a list or a
-/// gradient, which is written with [`option_properties`].
-pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Option<Value> {
-    use niri_ipc::LayoutEngineOptionValue as OptionValue;
-
-    Some(match value {
-        OptionValue::Boolean(x) => Value::Bool(*x),
-        OptionValue::Number(x) if x.fract() == 0. => Value::Int(*x as i64),
-        OptionValue::Number(x) => Value::Float(*x),
-        OptionValue::String(x) => Value::Str(x.clone()),
-        OptionValue::Gradient(_) | OptionValue::List(_) => return None,
-    })
-}
-
-/// The values an option is written with: one for a plain option, one each for a list, none for a
-/// size left to the window or a gradient.
-pub fn option_values(value: &Option<niri_ipc::LayoutEngineOptionValue>) -> Vec<Value> {
-    use niri_ipc::LayoutEngineOptionValue as OptionValue;
-
-    match value {
-        None => Vec::new(),
-        Some(OptionValue::List(items)) => items.iter().filter_map(option_value).collect(),
-        Some(value) => option_value(value).into_iter().collect(),
-    }
-}
-
-/// The properties an option is written with, which only a gradient has: `from`, `to`, and the
-/// other properties it sets.
-pub fn option_properties(
-    value: &Option<niri_ipc::LayoutEngineOptionValue>,
-) -> Vec<(String, Value)> {
-    use niri_ipc::LayoutEngineOptionValue as OptionValue;
-
-    let Some(OptionValue::Gradient(gradient)) = value else {
-        return Vec::new();
-    };
-    let text = |text: &String| Value::Str(text.clone());
-    let mut properties = vec![
-        (String::from("from"), text(&gradient.from)),
-        (String::from("to"), text(&gradient.to)),
-    ];
-    if let Some(angle) = gradient.angle {
-        let angle = if angle.fract() == 0. {
-            Value::Int(angle as i64)
-        } else {
-            Value::Float(angle)
-        };
-        properties.push((String::from("angle"), angle));
-    }
-    if let Some(relative_to) = &gradient.relative_to {
-        properties.push((String::from("relative-to"), text(relative_to)));
-    }
-    if let Some(space) = &gradient.color_space {
-        properties.push((String::from("in"), text(space)));
-    }
-    properties
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kdl::{option_properties, option_values, Value};
     use crate::model::{BoolStyle, Input, Setting};
 
     /// Edits run on another thread, so the settings they use live for the whole program.

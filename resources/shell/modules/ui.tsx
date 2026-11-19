@@ -1,8 +1,10 @@
 // bento's own widgets: buttons, sliders, switches, and islands of glass that open into panels.
 // Every other stock module builds from them, so a `modules/ui.tsx` of one's own restyles them all.
 
-import { Surface, after, css, paced, settling, type Edge } from "bento";
-import { createEffect, createSignal, For, Show, type JSX } from "solid-js";
+import {
+  Surface, after, css, paced, settling, type Edge, type JSX, type TextProps,
+} from "bento";
+import { createEffect, createSignal, For, Show } from "solid-js";
 
 /** What's lit, like the current workspace or a slider's level: the accent, see-through enough
  * to keep the glass under it. */
@@ -116,7 +118,9 @@ export function Slider(props: SliderProps) {
   const [set, setSet] = createSignal<number | null>(null);
   createEffect(
     () => props.value,
-    () => setSet(null),
+    () => {
+      setSet(null);
+    },
   );
   const value = () => set() ?? props.value;
   const put = (next: number) => {
@@ -290,7 +294,7 @@ function PanelHolder(props: {
   open: boolean;
   shown: boolean;
   pad: number;
-  hold: string;
+  hold: "start" | "center" | "end";
   onSize: (width: number, height: number) => void;
   children: JSX.Element;
 }) {
@@ -332,7 +336,7 @@ function PanelHolder(props: {
         flexDirection: "row", justifyContent: props.hold,
         visibility: visible() ? "visible" : "hidden",
         opacity: props.shown ? 1 : 0, blur: props.shown ? 0 : 6,
-        transition: props.shown ? null : { opacity: 0.1, blur: 0.1 },
+        transition: props.shown ? undefined : { opacity: 0.1, blur: 0.1 },
       }}
     >
       <Show when={made()} keyed>
@@ -353,12 +357,12 @@ function PanelHolder(props: {
 // ------------------------------------------------------------------------------------------------
 
 /** A section's title. */
-export function Heading(props: { children: JSX.Element }) {
+export function Heading(props: { children: TextProps["children"] }) {
   return <text style={{ fontSize: 12, fontWeight: 700, color: "fg/0.6" }}>{props.children}</text>;
 }
 
 /** A dim line, for a list with nothing in it. */
-export function Note(props: { children: JSX.Element }) {
+export function Note(props: { children: TextProps["children"] }) {
   return (
     <box style={{ padding: [8, 12] }}>
       <text style={{ color: "fg/0.6" }}>{props.children}</text>

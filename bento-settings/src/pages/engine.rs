@@ -19,10 +19,10 @@ use niri_ipc::{
 
 use super::migrate;
 use crate::ipc;
-use crate::kdl::{self, Value};
+use crate::kdl::{self, option_properties, option_values, Value};
 use crate::model::Category;
 use crate::page::PageContext;
-use crate::store::{option_properties, option_values, tilde, File};
+use crate::store::{tilde, File};
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
@@ -83,10 +83,10 @@ struct View {
 type Shape = (TilingLayout, Result<LayoutEngine, String>);
 
 /// Shows a new value in an option's row. An option with no value is a size left to the window.
-type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
+pub(super) type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
 
 /// Saves a value someone set in a row.
-type Change = Rc<dyn Fn(Option<OptionValue>)>;
+pub(super) type Change = Rc<dyn Fn(Option<OptionValue>)>;
 
 struct OptionRow {
     show: ShowValue,
@@ -294,8 +294,6 @@ fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGrou
 
 fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
     let path = format!("options.{}", option.name);
-    let title = crate::page::title_from(&option.name);
-    let description = option.description.clone().unwrap_or_default();
 
     let change: Change = {
         let ctx = view.ctx.clone();
@@ -315,8 +313,24 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
         })
     };
 
+    let (row, show) = option_widget(option, view.updating.clone(), change);
+    view.ctx.anchor(&path, &row);
+    view.options.borrow_mut().push(OptionRow { show });
+    row
+}
+
+/// The row for an option of an engine, or a setting of a shell, which are typed alike: the field
+/// of its type, or a list of them. `change` gets what someone sets, unless `quiet` is set while
+/// the row shows a new value.
+pub(super) fn option_widget(
+    option: &LayoutEngineOption,
+    quiet: Rc<Cell<bool>>,
+    change: Change,
+) -> (gtk::Widget, ShowValue) {
+    let title = crate::page::title_from(&option.name);
+    let description = option.description.clone().unwrap_or_default();
     let digits = digits(&option.default);
-    let (row, show): (gtk::Widget, ShowValue) = if option.list {
+    if option.list {
         let list = ListRow::new(option, &title, &description, digits, change);
         let show = {
             let list = list.clone();
@@ -330,14 +344,10 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             subtitle: &description,
             digits,
             choices: &option.choices,
-            // Set while rows show new values, so their change signals don't write them back.
-            quiet: view.updating.clone(),
+            quiet,
         };
         field.build(change)
-    };
-    view.ctx.anchor(&path, &row);
-    view.options.borrow_mut().push(OptionRow { show });
-    row
+    }
 }
 
 /// How many decimals a number option shows: as many as its default needs, up to two.

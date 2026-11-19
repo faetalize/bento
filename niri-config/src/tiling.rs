@@ -459,6 +459,62 @@ fn decode_options<S: knuffel::traits::ErrorSpan>(
     Ok(options)
 }
 
+/// The shell's settings, as `~/.config/bento/shell/settings.kdl` writes them: a block for each
+/// module and each shell, by its name, with its settings written the way an engine's options are.
+///
+/// ```kdl
+/// taskbar {
+///     pinned "firefox" "org.gnome.Nautilus"
+/// }
+///
+/// windows {
+///     height 48
+/// }
+/// ```
+///
+/// The modules and shells declare their settings' types, so the values are checked and converted
+/// once they're loaded.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShellSettings(pub Vec<(String, EngineOptions)>);
+
+impl ShellSettings {
+    pub fn parse(text: &str) -> Result<Self, knuffel::Error> {
+        let blocks = knuffel::parse::<Vec<SettingsBlock>>("settings.kdl", text)?;
+        Ok(Self(
+            blocks.into_iter().map(|block| (block.0, block.1)).collect(),
+        ))
+    }
+
+    /// The settings of the module or shell `name`, from every block of its name in order, so that
+    /// one written later wins.
+    pub fn of(&self, name: &str) -> EngineOptions {
+        let blocks = self.0.iter().filter(|(block, _)| block == name);
+        blocks
+            .flat_map(|(_, settings)| settings.iter().cloned())
+            .collect()
+    }
+}
+
+/// A block of [`ShellSettings`].
+struct SettingsBlock(String, EngineOptions);
+
+impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for SettingsBlock {
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, DecodeError<S>> {
+        for value in &node.arguments {
+            ctx.emit_error(DecodeError::unexpected(
+                &value.literal,
+                "argument",
+                "a block of settings is only its name",
+            ));
+        }
+        let name = String::from(&**node.node_name);
+        Ok(Self(name, decode_options(node, ctx)?))
+    }
+}
+
 /// An `output "DP-2" { options { … } }` or `workspace "web" { options { … } }` node.
 fn decode_scoped<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,

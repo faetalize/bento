@@ -1,4 +1,5 @@
-//! bento's own shell: whether bento draws it, and what the buttons in its control center run.
+//! bento's own shell: whether bento draws it, which shell it is, its settings, and what the
+//! buttons in its control center run.
 
 use niri_config::{Config, ShellCommand};
 
@@ -46,6 +47,21 @@ pub fn category() -> Category {
                         "experimental",
                         "desktop shell",
                     ]),
+                ),
+        )
+        .group(
+            Group::custom(super::shell::build)
+                .search_item(
+                    "shell.choice",
+                    "Shell",
+                    &[
+                        "unix", "windows", "taskbar", "custom", "file", "copy", "tsx",
+                    ],
+                )
+                .search_item(
+                    "shell.choice",
+                    "Shell Settings",
+                    &["pinned", "modules", "settings.kdl", "height"],
                 ),
         )
         .group(

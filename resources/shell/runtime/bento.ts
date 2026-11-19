@@ -276,6 +276,25 @@ export function stored<T>(key: string, fallback: T): [() => T, (value: T) => voi
   return [value, set];
 }
 
+// The settings that modules and shells declare in their `meta`, by the module's name, each a
+// store that the settings file keeps up to date.
+const settingStores = new Map<string, (values: any) => void>();
+
+export function useSettings(module: { name: string }, meta: { settings?: Record<string, any> }) {
+  const name = module.name;
+  const declared = Object.entries(meta.settings ?? {}).map(([setting, declaration]) => ({
+    ...declaration,
+    name: setting,
+  }));
+  const [values, setValues] = keyed<any>(read(native.declare(name, JSON.stringify(declared)), {}));
+  settingStores.set(name, setValues);
+  const set = (setting: string, value: unknown) => {
+    // bento checks it, writes it to the file, and says what the settings are now.
+    setValues(read(native.setSetting(name, setting, JSON.stringify(value ?? null)), {}));
+  };
+  return [values, set] as const;
+}
+
 // The shell's actions, by name, and what listens.
 const ACTIONS: Record<string, string> = { launcher: "toggle-launcher" };
 
@@ -1271,6 +1290,11 @@ function handle(event: any) {
     }
     case "style":
       setStyleValue(event.style ?? {});
+      return;
+    case "settings":
+      for (const [name, values] of Object.entries(event.settings ?? {})) {
+        settingStores.get(name)?.(values);
+      }
       return;
     case "outputs":
       setOutputList(read(native.outputs(), []));

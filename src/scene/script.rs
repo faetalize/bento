@@ -1,10 +1,10 @@
 //! The shell's scripts: TSX with Solid that builds and changes the scene, and reacts to its
 //! events, compiled as they load (see [`super::modules`]).
 //!
-//! The shell is `~/.config/bento/shell/main.tsx` if it's there, or bento's own, `bento:shells/unix`,
-//! otherwise: the default export of either is the root component, which bento's renderer, in the
-//! `bento` module, mounts. A changed file is loaded again; a shell that fails to load or throws
-//! leaves the last working one on screen, and the error is logged.
+//! The shell is the one the config names: one of bento's own, like `bento:shells/unix`, or a file
+//! of one's own. Its default export is the root component, which bento's renderer, in the `bento`
+//! module, mounts. A changed file is loaded again; a shell that fails to load or throws leaves the
+//! last working one on screen, and the error is logged.
 //!
 //! Scripts never run per frame: only when something happens, like a click, a timer or bento's
 //! state changing. A call that runs too long is stopped.
@@ -19,6 +19,7 @@ use rquickjs::prelude::Opt;
 use rquickjs::{CatchResultExt as _, Context, Function, Module, Persistent, Runtime};
 
 use super::modules::{ScriptLoader, Sources};
+use super::settings::Settings;
 use super::{ImageSource, Scene};
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
@@ -47,9 +48,10 @@ impl std::fmt::Debug for Shell {
     }
 }
 
-/// When the shell's files last changed, with bento's own read from `dir`, to load them again.
-pub fn mtimes(dir: Option<&Path>) -> Vec<(PathBuf, Option<SystemTime>)> {
-    Sources::new(dir).mtimes()
+/// When the shell's files last changed, with bento's own read from `dir` and the shell starting
+/// from `entry`, to load them again.
+pub fn mtimes(dir: Option<&Path>, entry: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
+    Sources::new(dir).mtimes(entry)
 }
 
 /// Where what scripts keep between runs is written, like which sound outputs are pinned. Tests
@@ -66,15 +68,22 @@ fn state_path() -> Option<PathBuf> {
 }
 
 impl Shell {
-    /// Loads the user's shell, or bento's own, onto `outputs`, each its logical size, with
-    /// bento's own shell and widgets read from `dir` if it's given.
+    /// Loads the shell that starts from module `entry` onto `outputs`, each its logical size,
+    /// with bento's own shell and modules read from `dir` if it's given, and its settings from
+    /// `settings`.
     pub fn load(
         outputs: &[(String, (f32, f32))],
         dir: Option<&Path>,
+        entry: &str,
         style: serde_json::Value,
+        settings: Rc<RefCell<Settings>>,
     ) -> anyhow::Result<Self> {
         let sources = Rc::new(Sources::new(dir));
-        let entry = sources.entry();
+        #[cfg(test)]
+        let entry = &super::modules::TEST_ENTRY
+            .with(|test| test.borrow().clone())
+            .unwrap_or_else(|| String::from(entry));
+        settings.borrow_mut().forget_declarations();
 
         let mut scene = Scene::new();
         for (name, size) in outputs {
@@ -321,6 +330,39 @@ impl Shell {
                     }
                     *state.borrow_mut() = json;
                 })
+                .map_err(js)?,
+            )?;
+            // The settings that modules and shells declare in their `meta`, and write.
+            let s = settings.clone();
+            native.set(
+                "declare",
+                Function::new(
+                    ctx.clone(),
+                    move |ctx: rquickjs::Ctx<'_>, name: String, declared: String| {
+                        let values = s.borrow_mut().declare(&name, &declared);
+                        values.map(|values| values.to_string()).map_err(|err| {
+                            rquickjs::Exception::throw_message(&ctx, &format!("{err:#}"))
+                        })
+                    },
+                )
+                .map_err(js)?,
+            )?;
+            let s = settings.clone();
+            native.set(
+                "setSetting",
+                Function::new(
+                    ctx.clone(),
+                    move |ctx: rquickjs::Ctx<'_>, name: String, setting: String, value: String| {
+                        let mut settings = s.borrow_mut();
+                        match settings.set(&name, &setting, &value) {
+                            Ok(()) => Ok(settings.values(&name).to_string()),
+                            Err(err) => Err(rquickjs::Exception::throw_message(
+                                &ctx,
+                                &format!("{err:#}"),
+                            )),
+                        }
+                    },
+                )
                 .map_err(js)?,
             )?;
             ctx.globals().set("__bento", native)?;

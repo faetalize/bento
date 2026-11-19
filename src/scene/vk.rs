@@ -1929,7 +1929,9 @@ mod tests {
         let shell = super::super::script::Shell::load(
             &[(String::from("DP-1"), (1920., 1080.))],
             None,
+            crate::scene::host::UNIX,
             serde_json::json!({ "gaps": 8 }),
+            Default::default(),
         )
         .unwrap();
         let items = {

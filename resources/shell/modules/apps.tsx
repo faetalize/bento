@@ -103,7 +103,15 @@ export function AppRow(props: {
 
 export const start = (app: App) => launch(app.id);
 
+/** An app's id without `.desktop`, like `org.gnome.Nautilus`, as settings name apps. */
+export const appId = (app: App) => app.id.replace(/\.desktop$/, "");
+
 const bare = (id: string) => id.replace(/\.desktop$/, "").toLowerCase();
+
+/** The app with id `id`, written with `.desktop` or without. */
+export function appById(id: string): App | undefined {
+  return known().find((app) => bare(app.id) === bare(id));
+}
 
 // The apps, read again at most every few seconds, for what looks one up often.
 let cached: App[] = [];

@@ -1,0 +1,325 @@
+//! The shell's settings: typed values that its modules and the shell itself declare in their
+//! `meta`, which the user sets in `~/.config/bento/shell/settings.kdl`, a block for each by its
+//! name.
+//!
+//! Settings are declared with the same types as engines' options, and are checked and converted
+//! the same way. A module reads its settings as they are, and gets them again when the file
+//! changes, without the shell loading again. A module can write its own, as when an app is
+//! pinned. Settings that nothing declares stay in the file: bento says so rather than failing, so
+//! that switching shells loses nothing.
+
+use std::path::PathBuf;
+use std::time::SystemTime;
+
+use anyhow::{anyhow, bail, Context as _};
+use niri_config::edit::{option_properties, option_values, Document};
+use niri_config::{EngineOptions, ShellSettings};
+use niri_ipc::{LayoutEngineOption, LayoutEngineOptionValue};
+
+use crate::layout::tiling::engine::{ipc_options, resolve_options, OptionMeta};
+
+/// The settings file, and what the running shell declares.
+#[derive(Debug, Default)]
+pub struct Settings {
+    /// The file, or none, in tests, which keep the settings in memory alone.
+    path: Option<PathBuf>,
+    /// When the file last changed, as it was read.
+    mtime: Option<SystemTime>,
+    /// The file's text as it was read, to edit.
+    text: String,
+    /// The settings the file sets.
+    file: ShellSettings,
+    /// Why the file can't be read, while it can't.
+    error: Option<String>,
+    /// The settings each module and the shell declares, by its name, in the order they did.
+    declared: Vec<(String, Vec<OptionMeta>)>,
+    /// What a test writes to the file, which reads as a change.
+    #[cfg(test)]
+    written: Option<String>,
+}
+
+impl Settings {
+    /// The user's settings, from `~/.config/bento/shell/settings.kdl`.
+    pub fn load() -> Self {
+        let path = if cfg!(test) {
+            None
+        } else {
+            directories::BaseDirs::new()
+                .map(|dirs| dirs.config_dir().join("bento/shell/settings.kdl"))
+        };
+        let mut settings = Self {
+            path,
+            ..Self::default()
+        };
+        settings.read();
+        settings
+    }
+
+    /// Settings with `text` as the file, which isn't on disk.
+    #[cfg(test)]
+    pub fn from_text(text: &str) -> Self {
+        let mut settings = Self::default();
+        settings.take_text(String::from(text));
+        settings
+    }
+
+    /// Reads the file again if it changed since it was read. Returns whether it did.
+    pub fn reload_if_changed(&mut self) -> bool {
+        #[cfg(test)]
+        if let Some(text) = self.written.take() {
+            self.take_text(text);
+            return true;
+        }
+        let Some(path) = &self.path else {
+            return false;
+        };
+        let mtime = path.metadata().and_then(|m| m.modified()).ok();
+        if mtime == self.mtime {
+            return false;
+        }
+        self.read();
+        true
+    }
+
+    fn read(&mut self) {
+        let Some(path) = &self.path else { return };
+        self.mtime = path.metadata().and_then(|m| m.modified()).ok();
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                warn!("error reading the shell's settings: {err}");
+                self.error = Some(err.to_string());
+                return;
+            }
+        };
+        self.take_text(text);
+    }
+
+    fn take_text(&mut self, text: String) {
+        match ShellSettings::parse(&text) {
+            Ok(file) => {
+                self.file = file;
+                self.text = text;
+                self.error = None;
+            }
+            Err(err) => {
+                // The last settings that read stay until the file is fixed.
+                let report = format!("{:?}", miette::Report::new(err));
+                warn!("error reading the shell's settings: {report}");
+                self.error = Some(report);
+            }
+        }
+    }
+
+    /// Writes `text` as the file, as someone editing it does.
+    #[cfg(test)]
+    pub fn write_file(&mut self, text: &str) {
+        self.written = Some(String::from(text));
+    }
+
+    /// Forgets what the shell declared, for a shell loading again to declare it anew.
+    pub fn forget_declarations(&mut self) {
+        self.declared.clear();
+    }
+
+    /// Takes what module or shell `name` declares, as the JSON array of its settings, and
+    /// returns their values, by name.
+    pub fn declare(&mut self, name: &str, declared: &str) -> anyhow::Result<serde_json::Value> {
+        let declared: Vec<OptionMeta> = serde_json::from_str(declared)
+            .with_context(|| format!("{name}'s settings are declared wrong"))?;
+        for setting in &declared {
+            if let Err(problem) = setting.convert(&setting.default_values()) {
+                bail!(
+                    "{name}'s default for its setting {:?} is wrong: it {problem}",
+                    setting.name
+                );
+            }
+        }
+        match self.declared.iter_mut().find(|(n, _)| n == name) {
+            Some((_, settings)) => *settings = declared,
+            None => self.declared.push((String::from(name), declared)),
+        }
+        Ok(self.values(name))
+    }
+
+    /// The values of `name`'s settings, by name: what the file sets, if it fits, or the default.
+    pub fn values(&self, name: &str) -> serde_json::Value {
+        let Some((_, declared)) = self.declared.iter().find(|(n, _)| n == name) else {
+            return serde_json::json!({});
+        };
+        resolve_options(declared, &[&self.file.of(name)])
+    }
+
+    /// The values of every module's and shell's settings, by its name.
+    pub fn all_values(&self) -> serde_json::Value {
+        let all = self
+            .declared
+            .iter()
+            .map(|(name, _)| (name.clone(), self.values(name)));
+        serde_json::Value::Object(all.collect())
+    }
+
+    /// Writes `name`'s setting `setting` to the file: `value` as it's written, or the default
+    /// when it's the default or `null`, which stays out of the file.
+    pub fn set(&mut self, name: &str, setting: &str, value: &str) -> anyhow::Result<()> {
+        let declared = self
+            .declared
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, declared)| declared.iter().find(|s| s.name == setting))
+            .ok_or_else(|| anyhow!("{name} declares no setting {setting:?}"))?;
+        let value: Option<LayoutEngineOptionValue> =
+            serde_json::from_str(value).context("the value isn't JSON")?;
+
+        // Check it the way the file is read.
+        let mut doc = Document::parse(format!("{name} {{\n}}\n"))?;
+        let path = [name, setting];
+        doc.set_node(&path, option_values(&value), option_properties(&value));
+        let check = ShellSettings::parse(doc.text())?;
+        let written = check
+            .of(name)
+            .pop()
+            .map(|(_, values)| values)
+            .unwrap_or_default();
+        if let Err(problem) = declared.convert(&written) {
+            bail!("{name}'s setting {setting:?} {problem}");
+        }
+
+        let mut doc = Document::parse(self.text.clone())
+            .map_err(|_| anyhow!("the settings file has an error, so it's left as it is"))?;
+        if value.is_none() || value == declared.default {
+            doc.remove(&path);
+        } else {
+            doc.set_node(&path, option_values(&value), option_properties(&value));
+        }
+        let text = String::from(doc.text());
+        if let Some(file) = &self.path {
+            if let Some(dir) = file.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(file, &text)
+                .with_context(|| format!("error writing {}", file.display()))?;
+            self.mtime = file.metadata().and_then(|m| m.modified()).ok();
+        }
+        self.take_text(text);
+        Ok(())
+    }
+
+    /// What the file sets that nothing running declares, as `name` for a whole block or
+    /// `name.setting`, and the settings it sets to what doesn't fit, with why.
+    pub fn problems(&self) -> (Vec<String>, Vec<String>) {
+        let mut unused = Vec::new();
+        let mut wrong = Vec::new();
+        for (name, settings) in &self.file.0 {
+            let Some((_, declared)) = self.declared.iter().find(|(n, _)| n == name) else {
+                if !unused.contains(name) {
+                    unused.push(name.clone());
+                }
+                continue;
+            };
+            for (setting, values) in settings {
+                match declared.iter().find(|s| s.name == *setting) {
+                    None => unused.push(format!("{name}.{setting}")),
+                    Some(meta) => {
+                        if let Err(problem) = meta.convert(values) {
+                            wrong.push(format!("{name}.{setting} {problem}"));
+                        }
+                    }
+                }
+            }
+        }
+        (unused, wrong)
+    }
+
+    /// Says in the log what the file sets that isn't used, and what doesn't fit.
+    pub fn warn_problems(&self) {
+        let (unused, wrong) = self.problems();
+        if !unused.is_empty() {
+            warn!(
+                "the shell's settings file sets what the running shell doesn't declare, which \
+                 stays in the file: {}",
+                unused.join(", ")
+            );
+        }
+        for problem in wrong {
+            warn!("the shell's setting {problem}, so it's left at its default");
+        }
+    }
+
+    /// Each module's and shell's settings with their values, for bento's settings.
+    pub fn ipc(&self) -> Vec<(String, Vec<LayoutEngineOption>)> {
+        let blocks = self
+            .declared
+            .iter()
+            .filter(|(_, declared)| !declared.is_empty());
+        let blocks = blocks.map(|(name, declared)| {
+            let values: EngineOptions = self.file.of(name);
+            (name.clone(), ipc_options(declared, &values))
+        });
+        blocks.collect()
+    }
+
+    /// Why the file can't be read, if it can't.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const TASKBAR: &str = r#"[
+        { "name": "pinned", "type": "string", "list": true, "default": [] },
+        { "name": "size", "type": "number", "default": 40 }
+    ]"#;
+
+    #[test]
+    fn a_module_gets_what_the_file_sets_or_its_defaults() {
+        let mut settings = Settings::from_text("taskbar {\n    pinned \"firefox\" \"foot\"\n}\n");
+        let values = settings.declare("taskbar", TASKBAR).unwrap();
+        assert_eq!(
+            values,
+            json!({ "pinned": ["firefox", "foot"], "size": 40.0 })
+        );
+    }
+
+    #[test]
+    fn a_setting_that_does_not_fit_is_its_default_and_said_so() {
+        let mut settings =
+            Settings::from_text("taskbar {\n    size \"big\"\n    gone 1\n}\nold {\n}\n");
+        let values = settings.declare("taskbar", TASKBAR).unwrap();
+        assert_eq!(values["size"], json!(40.0));
+        let (unused, wrong) = settings.problems();
+        assert_eq!(unused, ["taskbar.gone", "old"]);
+        assert_eq!(wrong, ["taskbar.size must be a number"]);
+    }
+
+    #[test]
+    fn a_module_writes_its_settings_into_the_file_and_leaves_the_rest() {
+        let text = "// Mine.\nclock {\n    seconds true\n}\n";
+        let mut settings = Settings::from_text(text);
+        settings.declare("taskbar", TASKBAR).unwrap();
+        settings.set("taskbar", "pinned", r#"["firefox"]"#).unwrap();
+        assert_eq!(settings.values("taskbar")["pinned"], json!(["firefox"]));
+        assert!(settings.text.starts_with(text));
+
+        // The default stays out of the file.
+        settings.set("taskbar", "pinned", "[]").unwrap();
+        assert!(!settings.text.contains("pinned"));
+
+        let wrong = settings.set("taskbar", "size", r#""big""#);
+        assert!(wrong.is_err());
+        assert!(settings.set("taskbar", "nothing", "1").is_err());
+    }
+
+    #[test]
+    fn a_wrong_default_is_a_wrong_declaration() {
+        let mut settings = Settings::from_text("");
+        let declared = r#"[{ "name": "size", "type": "number", "default": "big" }]"#;
+        assert!(settings.declare("taskbar", declared).is_err());
+    }
+}

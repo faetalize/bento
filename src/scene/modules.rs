@@ -11,6 +11,9 @@
 //! - `bento:shells/<name>` and `bento:stock/shells/<name>`: the same for whole shells;
 //! - `./file` and `../file`: next to the script that imports it, with or without its extension.
 //!
+//! Each module's `import.meta.name` is its file's name without the extension, which its settings
+//! are kept by: `taskbar` for bento's taskbar and for a module of one's own in its place.
+//!
 //! bento's own files are built in. To work on them, `debug { shell-scripts }` names a folder that
 //! takes their place file by file: a file there is read in place of the built-in one with its
 //! path, and the rest stay built in.
@@ -60,24 +63,18 @@ impl Sources {
         }
     }
 
-    /// The module the shell starts from: the user's `main.tsx`, or bento's own shell.
-    pub fn entry(&self) -> String {
-        #[cfg(test)]
-        if let Some(entry) = TEST_ENTRY.with(|entry| entry.borrow().clone()) {
-            return entry;
-        }
-        self.user
-            .as_ref()
-            .and_then(|dir| with_extension(&dir.join("main")))
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| String::from("bento:shells/unix"))
-    }
-
-    /// When each of the shell's files last changed, to load them again when one does.
-    pub fn mtimes(&self) -> Vec<(PathBuf, Option<SystemTime>)> {
+    /// When each of the shell's files last changed, with the shell starting from `entry`, to
+    /// load them again when one does.
+    pub fn mtimes(&self, entry: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
         let mut files = Vec::new();
         for dir in self.user.iter().chain(&self.stock) {
             scripts_in(dir, &mut files);
+        }
+        // A shell of one's own can be anywhere, and so can the files next to it.
+        if let Some(dir) = Path::new(entry).parent().filter(|_| entry.starts_with('/')) {
+            if !self.user.as_ref().is_some_and(|user| dir.starts_with(user)) {
+                scripts_in(dir, &mut files);
+            }
         }
         files.sort();
         files
@@ -317,8 +314,19 @@ impl Loader for ScriptLoader {
             .sources
             .load(name)
             .map_err(|err| rquickjs::Exception::throw_message(ctx, &format!("{err:#}")))?;
-        Module::declare(ctx.clone(), name, code)
+        let module = Module::declare(ctx.clone(), name, code)?;
+        // What a module's settings are kept by: its file's name, like `taskbar` or `windows`.
+        module.meta()?.set("name", module_name(name))?;
+        Ok(module)
     }
+}
+
+/// The name a module goes by, which its settings are kept by: its file's name without the
+/// extension, whether it's bento's or one's own in its place.
+pub fn module_name(name: &str) -> String {
+    let name = name.strip_prefix(STOCK_PREFIX).unwrap_or(name);
+    let stem = Path::new(name).file_stem().unwrap_or_default();
+    stem.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -332,4 +340,3 @@ mod tests {
         }
     }
 }
-

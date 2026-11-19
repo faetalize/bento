@@ -1,8 +1,10 @@
 //! bento's own shell in bento: loads the shell's script, moves its scene on, draws it per output
 //! with the Vulkan renderer, and hands the result and its glass to bento's compositing.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime};
 
@@ -18,6 +20,7 @@ use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Physical, Rectangle, Scale, Transform};
 
 use super::script::{self, Shell};
+use super::settings::Settings;
 use super::vk::{Renderer, Target};
 use super::{Band, Item, Material, NodeId, Theme, CLICK};
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
@@ -27,6 +30,10 @@ use crate::render_helpers::glass::{self, GlassFrame};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
+
+/// bento's unix shell, which runs when the config names no shell, or the one it names fails to
+/// load first.
+pub const UNIX: &str = "bento:shells/unix";
 
 /// What bento's own shell keeps along an output's edges, top, right, bottom and left, that the
 /// output's working area leaves out, as layer surfaces' exclusive zones are.
@@ -238,11 +245,21 @@ fn changed(old: &[Item], new: &[Item], scale: f64, loaded: bool) -> Vec<Rectangl
     rects
 }
 
+/// When each of the shell's files last changed.
+type Mtimes = Vec<(std::path::PathBuf, Option<SystemTime>)>;
+
 #[derive(Default)]
 pub struct SceneHost {
     shell: Option<Shell>,
-    /// When the shell's files had last changed when they were loaded, or failed to.
-    loaded_mtimes: Option<Vec<(std::path::PathBuf, Option<SystemTime>)>>,
+    /// The module the shell starts from and when its files had last changed when they were
+    /// loaded, or failed to.
+    loaded_mtimes: Option<(String, Mtimes)>,
+    /// Why the shell the config names failed to load, if it did.
+    load_error: Option<String>,
+    /// The shell's settings, which outlive a shell loading again.
+    settings: Option<Rc<RefCell<Settings>>>,
+    /// Whether bento's reference copy of the shell is written, for editors.
+    wrote_reference: bool,
     renderer: Option<Renderer>,
     renderer_failed: bool,
     /// Each output's scene, by band.
@@ -294,19 +311,40 @@ impl std::fmt::Debug for SceneHost {
 }
 
 impl SceneHost {
-    /// Loads the shell, again when its files changed, onto `outputs`, each with its logical size,
-    /// with bento's own shell and widgets read from `dir` if it's given. A shell that fails to
-    /// load leaves the last one.
+    /// Loads the shell that starts from module `entry`, again when its files changed or it's
+    /// another one, onto `outputs`, each with its logical size, with bento's own shell and modules
+    /// read from `dir` if it's given. A shell that fails to load leaves the last one, or bento's
+    /// unix shell when there's none yet.
     pub fn ensure_loaded(
         &mut self,
         outputs: &[(String, (f32, f32))],
         dir: Option<&Path>,
+        entry: &str,
         style: serde_json::Value,
     ) {
-        let mtimes = script::mtimes(dir);
+        if !self.wrote_reference {
+            self.wrote_reference = true;
+            if !cfg!(test) {
+                super::reference::write();
+            }
+        }
+        let settings = self
+            .settings
+            .get_or_insert_with(|| Rc::new(RefCell::new(Settings::load())))
+            .clone();
+
+        let mtimes = (String::from(entry), script::mtimes(dir, entry));
         if self.loaded_mtimes.as_ref() != Some(&mtimes) {
             self.loaded_mtimes = Some(mtimes);
-            match Shell::load(outputs, dir, style.clone()) {
+            let mut loaded = Shell::load(outputs, dir, entry, style.clone(), settings.clone());
+            self.load_error = loaded.as_ref().err().map(|err| format!("{err:#}"));
+            if let Err(err) = &loaded {
+                warn!("error loading the shell: {err:?}");
+                if self.shell.is_none() && entry != UNIX {
+                    loaded = Shell::load(outputs, dir, UNIX, style.clone(), settings.clone());
+                }
+            }
+            match loaded {
                 Ok(shell) => {
                     for data in self.data_state.values() {
                         shell.send(data);
@@ -321,9 +359,16 @@ impl SceneHost {
                     self.sent_minimap = None;
                     self.sent_windows = None;
                     self.generation += 1;
+                    settings.borrow().warn_problems();
                 }
                 Err(err) => warn!("error loading the shell: {err:?}"),
             }
+        } else if settings.borrow_mut().reload_if_changed() {
+            if let Some(shell) = &self.shell {
+                let values = settings.borrow().all_values();
+                shell.send(&serde_json::json!({ "type": "settings", "settings": values }));
+            }
+            settings.borrow().warn_problems();
         }
 
         let Some(shell) = &self.shell else { return };
@@ -357,6 +402,24 @@ impl SceneHost {
         if !added.is_empty() || !gone.is_empty() || resized {
             self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
             shell.send(&serde_json::json!({ "type": "outputs", "outputs": added }));
+        }
+    }
+
+    /// The shell that's drawn and its settings, for bento's settings, with `source` saying where
+    /// it comes from.
+    pub fn ipc_info(&self, source: bento_ipc::ShellSource) -> bento_ipc::Shell {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        let blocks = settings.as_ref().map(|s| s.ipc()).unwrap_or_default();
+        let (unused, _) = settings.as_ref().map(|s| s.problems()).unwrap_or_default();
+        bento_ipc::Shell {
+            source,
+            error: self.load_error.clone(),
+            settings_error: settings.as_ref().and_then(|s| s.error().map(String::from)),
+            settings: blocks
+                .into_iter()
+                .map(|(name, settings)| bento_ipc::ShellSettings { name, settings })
+                .collect(),
+            unused,
         }
     }
 
@@ -560,7 +623,8 @@ impl SceneHost {
                 "type": "press", "id": id, "button": button, "x": point[0], "y": point[1],
             }));
         }
-        self.presses.insert(key, (hit, String::from(name), point, band));
+        self.presses
+            .insert(key, (hit, String::from(name), point, band));
         true
     }
 
@@ -602,11 +666,17 @@ impl SceneHost {
         let (Some(shell), Some((name, point, band))) = (&self.shell, &self.pointer) else {
             return false;
         };
-        let target = shell.scene.borrow().scroll_target(name, *point, Some(*band));
+        let target = shell
+            .scene
+            .borrow()
+            .scroll_target(name, *point, Some(*band));
         match target {
             // What scrolls in its box moves as far as the wheel goes, bento's own way.
             Some((id, true)) => {
-                shell.scene.borrow_mut().scroll(id, (delta[1] * SCROLL_SPEED) as f32);
+                shell
+                    .scene
+                    .borrow_mut()
+                    .scroll(id, (delta[1] * SCROLL_SPEED) as f32);
                 self.generation += 1;
             }
             Some((id, false)) => shell.send(&serde_json::json!({
@@ -860,7 +930,12 @@ impl SceneHost {
         let Some(buffer) = &state.shown else {
             return;
         };
-        let id = state.ids.borrow_mut().entry(ns).or_insert_with(Id::new).clone();
+        let id = state
+            .ids
+            .borrow_mut()
+            .entry(ns)
+            .or_insert_with(Id::new)
+            .clone();
         push(SceneElement {
             texture: PrimaryGpuTextureRenderElement(TextureRenderElement::from_texture_buffer(
                 buffer.clone(),
@@ -960,9 +1035,7 @@ fn draw_band(
         return;
     }
     let rescaled = state.drawn.is_none_or(|(_, before, _)| before != scale);
-    let images = state
-        .drawn
-        .is_some_and(|(_, _, epoch)| epoch != vk.epoch());
+    let images = state.drawn.is_some_and(|(_, _, epoch)| epoch != vk.epoch());
     state.drawn = Some(now);
     // The scene changed, but not in what this band shows: its picture stays.
     let same =
@@ -1086,7 +1159,11 @@ mod tests {
                         material: Material::None,
                         fill,
                         ..
-                    } => fill[3] > 0. && super::super::inside_rounded(restart, *rect, [0.; 4]) && rect[2] < 400.,
+                    } => {
+                        fill[3] > 0.
+                            && super::super::inside_rounded(restart, *rect, [0.; 4])
+                            && rect[2] < 400.
+                    }
                     _ => false,
                 })
                 .count()
@@ -1094,7 +1171,11 @@ mod tests {
         assert_eq!(lit(&host), 0);
         host.covers_any("DP-1", restart);
         let cursor = host.pointer_moved(SceneHost::at("DP-1", restart));
-        assert_eq!(cursor.as_deref(), Some("pointer"), "a row that does something shows a hand");
+        assert_eq!(
+            cursor.as_deref(),
+            Some("pointer"),
+            "a row that does something shows a hand"
+        );
         settle(&mut host, &mut now);
         assert_eq!(lit(&host), 1, "lit under the pointer");
         host.pointer_moved(None);
@@ -1107,7 +1188,10 @@ mod tests {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         let field = |host: &SceneHost| {
             let scene = host.shell.as_ref().unwrap().scene.borrow();
-            scene.seen("DP-1", "Search apps").first().map(|(_, opacity, _)| *opacity)
+            scene
+                .seen("DP-1", "Search apps")
+                .first()
+                .map(|(_, opacity, _)| *opacity)
         };
         for time in 0..3 {
             host.toggle_launcher(Some(String::from("DP-1")));
@@ -1126,7 +1210,7 @@ mod tests {
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         host.data_line(&DEVICES.replace('\n', " "));
@@ -1149,7 +1233,7 @@ mod tests {
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         // How much the launcher draws on an output: what's below the islands.
@@ -1242,7 +1326,7 @@ mod tests {
     fn the_launcher_never_jumps_typing_as_it_opens_and_turns_around_where_it_is() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         // Close to real time, which the script's timers run on.
         let mut now = Instant::now();
         let mut step = |host: &mut SceneHost| {
@@ -1306,7 +1390,7 @@ mod tests {
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         let drawn = |host: &SceneHost, output: &str| {
@@ -1386,7 +1470,10 @@ mod tests {
     }
 
     fn click(host: &mut SceneHost, output: &str, point: [f32; 2]) {
-        assert!(host.covers_any(output, point), "nothing to click at {point:?}");
+        assert!(
+            host.covers_any(output, point),
+            "nothing to click at {point:?}"
+        );
         host.press(1, 1, SceneHost::at(output, point));
         host.release(1, 1, SceneHost::at(output, point));
     }
@@ -1431,13 +1518,46 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_follows_its_settings_file_as_it_changes() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        assert_eq!(host.reserved("DP-1"), [0., 0., 48., 0.]);
+
+        let settings = host.settings.clone().unwrap();
+        settings
+            .borrow_mut()
+            .write_file("windows {\n    height 60\n}\n");
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        now += Duration::from_millis(16);
+        host.advance(now, None);
+        assert_eq!(host.reserved("DP-1"), [0., 0., 60., 0.]);
+
+        // What the running shell declares, for bento's settings.
+        let info = host.ipc_info(bento_ipc::ShellSource::BuiltIn {
+            name: String::from("windows"),
+        });
+        let names: Vec<&str> = info
+            .settings
+            .iter()
+            .map(|block| block.name.as_str())
+            .collect();
+        assert!(names.contains(&"windows"), "{names:?}");
+        assert!(names.contains(&"taskbar"), "{names:?}");
+        assert!(info.unused.is_empty());
+    }
+
+    #[test]
     fn the_windows_shell_has_a_taskbar_with_its_apps_previews_and_start_menu() {
         super::super::modules::TEST_ENTRY
             .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
         let shell = super::super::script::Shell::load(
             &[(String::from("DP-1"), (1920., 1080.))],
             None,
+            UNIX,
             serde_json::json!({ "gaps": 8 }),
+            Rc::default(),
         );
         if let Err(err) = &shell {
             panic!("{err:#}");
@@ -1509,7 +1629,7 @@ mod tests {
     fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, style);
+        host.ensure_loaded(&outputs, None, UNIX, style);
         host.set_workspaces(serde_json::json!({
             "DP-1": [
                 { "index": 0, "name": null, "active": true, "focused": true, "id": 7 },
@@ -2317,7 +2437,7 @@ mod tests {
             serde_json::json!({ "name": "Reykjavik", "latitude": 64.15, "longitude": -21.94 });
         let style = serde_json::json!({ "gaps": 8, "config": { "location": place } });
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, style);
+        host.ensure_loaded(&outputs, None, UNIX, style);
         let asked = commands(&host)
             .into_iter()
             .find(|c| c["cmd"] == "weather")
@@ -2552,7 +2672,7 @@ mod tests {
         let started = Instant::now();
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (2560., 1440.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         host.set_workspaces(serde_json::json!({
             "DP-1": [{ "index": 0, "name": null, "active": true, "focused": true, "id": 7 }],
         }));
@@ -2938,7 +3058,7 @@ mod tests {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
         let style = serde_json::json!({ "gaps": 8, "animations": false, "slowdown": 1 });
-        host.ensure_loaded(&outputs, None, style);
+        host.ensure_loaded(&outputs, None, UNIX, style);
         host.toggle_launcher(Some(String::from("DP-1")));
         host.advance(Instant::now(), None);
         let glass = launcher_glass(&host).unwrap();
@@ -2952,7 +3072,7 @@ mod tests {
     fn the_caret_keeps_up_with_typing() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         // The script's timers, like the caret's blink, run on real time, so this one stays close
         // to it and settles the springs without them.
         let mut now = Instant::now();
@@ -3027,7 +3147,7 @@ mod tests {
     fn what_the_data_program_says_reaches_the_shell_and_a_reloaded_one() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         host.data_line(r#"{"type":"network","connected":true,"icon":"network-wired-symbolic"}"#);
         let mut now = Instant::now();
         settle(&mut host, &mut now);
@@ -3042,7 +3162,7 @@ mod tests {
 
         // Loaded again, the shell hears the last of it straight away.
         host.loaded_mtimes = None;
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         settle(&mut host, &mut now);
         assert!(shows_wired(&host));
     }
@@ -3051,7 +3171,7 @@ mod tests {
     fn a_click_opens_the_calendar_and_escape_or_a_press_elsewhere_closes_it() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
 

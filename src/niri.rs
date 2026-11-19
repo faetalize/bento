@@ -123,7 +123,6 @@ use wayland_server::protocol::wl_output::WlOutput;
 
 #[cfg(feature = "dbus")]
 use crate::a11y::A11y;
-use crate::scene::Band;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
@@ -184,6 +183,7 @@ use crate::render_helpers::{
     encompassing_geo, render_to_dmabuf, render_to_encompassing_texture, render_to_shm,
     render_to_texture, render_to_vec, shaders, RenderCtx, RenderTarget,
 };
+use crate::scene::Band;
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
 use crate::ui::config_error_notification::ConfigErrorNotification;
@@ -5211,6 +5211,7 @@ impl Niri {
                 .flatten()
                 .unwrap_or(dir)
         });
+        let (entry, _) = self.shell_entry();
         let style = self.shell_style();
         // What the config sets for the shell rides along with the style, and scripts hear of
         // either changing.
@@ -5253,10 +5254,9 @@ impl Niri {
         let mut windows = Vec::new();
         self.layout
             .with_windows(|mapped, output, workspace, _layout| {
-                let (title, app_id) =
-                    crate::utils::with_toplevel_role(mapped.toplevel(), |role| {
-                        (role.title.clone(), role.app_id.clone())
-                    });
+                let (title, app_id) = crate::utils::with_toplevel_role(mapped.toplevel(), |role| {
+                    (role.title.clone(), role.app_id.clone())
+                });
                 windows.push(serde_json::json!({
                     "id": mapped.id().get(),
                     "appId": app_id,
@@ -5269,7 +5269,7 @@ impl Niri {
                 }));
             });
         let scene = self.scene.get_or_insert_with(Default::default);
-        scene.ensure_loaded(&outputs, dir.as_deref(), style);
+        scene.ensure_loaded(&outputs, dir.as_deref(), &entry, style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         scene.set_windows(serde_json::Value::Array(windows));
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));
@@ -5517,8 +5517,10 @@ impl Niri {
                 if let Some(scene) = &self.scene {
                     // Its window copies, over what it draws.
                     for copy in scene.copies(&output_name, $band) {
-                        let Some((_, win)) =
-                            self.layout.windows().find(|(_, w)| w.id().get() == copy.window)
+                        let Some((_, win)) = self
+                            .layout
+                            .windows()
+                            .find(|(_, w)| w.id().get() == copy.window)
                         else {
                             continue;
                         };

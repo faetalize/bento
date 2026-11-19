@@ -251,6 +251,8 @@ layout {
 shell "bento-shell" {
     // Draw bento's own shell, which is experimental, alongside the program.
     // built-in
+    // Which of bento's shells it draws, "unix" or "windows", or a path to a shell of your own.
+    // script "unix"
 }
 
 // To run a shell command (with variables, pipes, etc.), use spawn-sh-at-startup:

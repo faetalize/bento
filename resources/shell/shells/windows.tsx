@@ -3,7 +3,7 @@
 // the clock with the notifications, and a sliver that shows the desktop. Notifications come up
 // over the taskbar's end. The taskbar is in the top layer, so fullscreen windows cover it.
 
-import { Surface, action, focusedOutput, onAction, outputs } from "bento";
+import { Surface, action, focusedOutput, onAction, outputs, useSettings, type Meta } from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Flyout, popup } from "bento:modules/ui";
 import { Clock, Month } from "bento:modules/clock";
@@ -17,8 +17,16 @@ import { StartMenu } from "bento:modules/start-menu";
 import { Tray } from "bento:modules/tray";
 import { WorkspaceEditor } from "bento:modules/workspace-editor";
 
-/** How tall the taskbar is. */
-const HEIGHT = 48;
+export const meta = {
+  settings: {
+    height: { type: "number", default: 48, description: "How tall the taskbar is, in pixels." },
+  },
+} satisfies Meta;
+
+const [settings] = useSettings(import.meta, meta);
+
+/** How tall the taskbar is, with room for its buttons. */
+const height = () => Math.max(40, settings.height);
 
 // The launcher's shortcut opens the focused output's start menu.
 onAction("toggle-launcher", ({ output }) => {
@@ -76,13 +84,13 @@ function Taskbar(props: { output: string }) {
         output={output}
         anchor={["bottom", "left", "right"]}
         layer="top"
-        reserve={HEIGHT}
-        style={{ height: HEIGHT, flexDirection: "column" }}
+        reserve={height()}
+        style={{ height: height(), flexDirection: "column" }}
       >
         <box
           ref={setBar}
           style={{
-            material: "mica", height: HEIGHT, flexDirection: "row", alignItems: "center",
+            material: "mica", height: height(), flexDirection: "row", alignItems: "center",
             padding: [0, 0, 0, 12],
           }}
         >
@@ -137,17 +145,17 @@ function Taskbar(props: { output: string }) {
             {/* The sliver at the end shows the desktop. */}
             <box
               style={{
-                width: 12, height: HEIGHT, marginLeft: 4,
+                width: 12, height: height(), marginLeft: 4,
                 ":hover": { background: "fg/0.1" },
               }}
               onClick={() => action("layout-action", ["show-desktop"])}
             >
-              <box style={{ position: "absolute", left: 0, top: 12, width: 1, height: 24, background: "fg/0.2" }} />
+              <box style={{ position: "absolute", left: 0, top: (height() - 24) / 2, width: 1, height: 24, background: "fg/0.2" }} />
             </box>
           </box>
         </box>
       </Surface>
-      <StartMenu output={output} bottom={HEIGHT + 12} />
+      <StartMenu output={output} bottom={height() + 12} />
       <Flyout output={output} popup={quick} from={quickButton()} side="top" align="end" keyboard>
         <QuickSettings output={output} onClose={() => popup.close(quick)} />
       </Flyout>

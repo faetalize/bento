@@ -16,6 +16,7 @@ mod location;
 mod migrate;
 mod planned;
 mod preview;
+mod shell;
 pub mod shortcuts;
 mod system;
 mod theme;
