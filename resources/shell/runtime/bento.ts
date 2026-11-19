@@ -801,7 +801,7 @@ function nativeParent(node: Node): Node | null {
 // ------------------------------------------------------------------------------------------------
 
 const KINDS: Record<string, string> = {
-  box: "box", text: "text", image: "image", input: "box", surface: "surface",
+  box: "box", text: "text", image: "image", input: "box", surface: "surface", copy: "copy",
 };
 
 /** Sets a `<text>`'s words from the strings and numbers in it, as one run of text. */
@@ -817,7 +817,9 @@ const IMAGE_PROPS = ["icon", "src", "size"];
 
 function createNode(tag: string, props?: Record<string, any>): Node {
   const kind = KINDS[tag];
-  if (!kind) throw new Error(`there's no <${tag}>: bento's are <box>, <text>, <image>, <input> and <surface>`);
+  if (!kind) {
+    throw new Error(`there's no <${tag}>: bento's are <box>, <text>, <image>, <input>, <copy> and <surface>`);
+  }
   const node = new Node(tag, kind, tag === "image" ? { size: 16, flexShrink: 0 } : {});
   if (tag === "image") node.own = { size: 16, flexShrink: 0 };
   if (tag === "surface") {
@@ -874,6 +876,9 @@ function setProperty(node: Node, name: string, value: any, _prev?: any) {
       if (name === "icon") delete node.own.src;
       node.own[name] = value;
     }
+    node.update();
+  } else if (node.tag === "copy" && name === "window") {
+    node.own.window = value ?? null;
     node.update();
   } else if (node.input) {
     node.input.set(name, value);

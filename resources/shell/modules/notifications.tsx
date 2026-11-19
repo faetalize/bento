@@ -149,8 +149,15 @@ const STAY = 5000;
 export interface ToastsProps {
   /** The output they show on. */
   output: string;
-  /** What they come out of, like an island: they hang under it, and come down out of it. */
+  /** What they come out of, like an island: they hang beside it, on its `side`, and come out of
+   * it. */
   from?: any;
+  /** Which side of what they come out of they hang on: under an island at the top, or over a
+   * taskbar at the bottom. Without `from`, the corner of the output they're in. `"bottom"`
+   * unless it says. */
+  side?: "top" | "bottom";
+  /** How far from the output's edges they are, without `from`. */
+  margin?: number;
   /** While true, none come, and those showing go, as while a list shows them itself. */
   held?: boolean;
   /** Hears how many show, as it changes. */
@@ -203,6 +210,11 @@ export function Toasts(props: ToastsProps) {
     goers.delete(hide);
   });
 
+  // Over what they come from, they come up out of it; under it, down.
+  const side = () => props.side ?? "bottom";
+  const up = () => side() === "top";
+  const away = () => (up() ? ISLAND + 8 : -(ISLAND + 8));
+
   // Held, the toasts showing go.
   createEffect(
     () => Boolean(props.held),
@@ -216,9 +228,12 @@ export function Toasts(props: ToastsProps) {
       output={props.output}
       layer="overlay"
       z={-1}
-      attach={props.from ? { to: props.from, side: "bottom", align: "end", gap: 8 } : undefined}
-      anchor={props.from ? undefined : ["top", "right"]}
-      style={{ flexDirection: "column", alignItems: "end", gap: 8 }}
+      attach={props.from ? { to: props.from, side: side(), align: "end", gap: 8 } : undefined}
+      anchor={props.from ? undefined : [up() ? "bottom" : "top", "right"]}
+      style={{
+        flexDirection: up() ? "column-reverse" : "column", alignItems: "end", gap: 8,
+        margin: props.margin ?? 8,
+      }}
     >
       <Show when={!props.held}>
         <For each={showing()}>
@@ -228,9 +243,9 @@ export function Toasts(props: ToastsProps) {
                 material: "glass", borderRadius: TOAST_RADIUS, width: TOAST_WIDTH, padding: 12,
                 overflow: "hidden", cursor: "pointer", flexDirection: "column",
               }}
-              // It comes down out of what it hangs from, whose glass it melts with on the way.
-              enter={{ ...grows(TOAST_RADIUS).enter, translate: [0, -(ISLAND + 8)] }}
-              exit={{ ...grows(TOAST_RADIUS).exit, translate: [0, -(ISLAND + 8)] }}
+              // It comes out of what it hangs from, whose glass it melts with on the way.
+              enter={{ ...grows(TOAST_RADIUS).enter, translate: [0, away()] }}
+              exit={{ ...grows(TOAST_RADIUS).exit, translate: [0, away()] }}
               // A click does what the notification is for, or sends it away if it's for nothing.
               onClick={() => {
                 if (notifications.hasDefault(n)) notifications.invoke(n.id, "default");

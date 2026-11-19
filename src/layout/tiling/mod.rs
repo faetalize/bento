@@ -2319,6 +2319,57 @@ impl Placement {
     }
 }
 
+/// Draws a live copy of `win`'s contents fitted into `rect` on the output, centred, at
+/// `opacity`, with `radius` on its corners and cut to `clip`, a rounded rect, if it's given: what
+/// the window draws itself, without its border, focus ring, shadow or popups, as an engine's copy
+/// node draws it. bento's own shell draws its copies with it.
+#[allow(clippy::too_many_arguments)]
+pub fn render_window_copy<W: LayoutElement, R: NiriRenderer>(
+    mut ctx: RenderCtx<R>,
+    win: &W,
+    rect: Rectangle<f64, Logical>,
+    radius: f64,
+    opacity: f64,
+    clip: Option<(Rectangle<f64, Logical>, f64)>,
+    output_scale: f64,
+    push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
+) {
+    let size = win.size().to_f64();
+    if opacity <= 0. || size.w <= 0. || size.h <= 0. || rect.is_empty() {
+        return;
+    }
+    // The window fitted into the rect, drawn at its own size where the fitted copy starts, and
+    // scaled by `fit` around there.
+    let fit = f64::min(rect.size.w / size.w, rect.size.h / size.h);
+    let fitted = size.upscale(fit);
+    let pos = (rect.loc + (rect.size - fitted).downscale(2.).to_point())
+        .to_physical_precise_round(output_scale)
+        .to_logical(output_scale);
+    let own = Rectangle::new(pos, fitted);
+    let clip = match clip {
+        Some((area, outer)) => own
+            .intersection(area)
+            .map(|area| (area, if radius > 0. { radius } else { outer })),
+        None => Some((own, radius)),
+    };
+    let Some((clip, radius)) = clip else { return };
+    let map = TileMap {
+        pivot: pos,
+        scale: fit,
+        offset: Point::from((0., 0.)),
+        clip: Some((clip, radius)),
+    };
+    let placement = Placement::new(&map, output_scale);
+    let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+    let scale = Scale::from(output_scale);
+    win.render_normal(ctx.r(), pos, scale, opacity as f32, &mut |elem| {
+        let elem = placement.round_corners(elem.into(), clip_shader.as_ref());
+        if let Some(elem) = placement.place(elem) {
+            push(elem);
+        }
+    });
+}
+
 /// What the pointer is on, among the windows that the layout draws.
 enum Under<'a, W: LayoutElement> {
     /// A window that the app gets the pointer for: its tile, where the window's buffer is so that

@@ -274,6 +274,8 @@ impl ImageSource {
 #[derive(Debug, Clone)]
 pub enum Kind {
     Box,
+    /// A live copy of a window, by its id, fitted into the node and centred.
+    Copy(Option<u64>),
     Image(Option<ImageSource>),
     Text {
         text: String,
@@ -572,6 +574,17 @@ impl Item {
     }
 }
 
+/// A live copy of a window, as bento draws it over the rest of its band: where, how faded, with
+/// what corners, and cut to what.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyItem {
+    pub window: u64,
+    pub rect: [f32; 4],
+    pub radius: f32,
+    pub opacity: f32,
+    pub clip: Option<Clip>,
+}
+
 /// A rounded rectangle that what's drawn is cut to.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Clip {
@@ -722,6 +735,7 @@ impl Scene {
                 laid: None,
                 edit: (kind == "input").then(Default::default),
             },
+            "copy" => Kind::Copy(None),
             _ => Kind::Box,
         };
         let id = match self.free.pop() {
@@ -786,6 +800,9 @@ impl Scene {
         for (key, value) in props {
             relayout |= apply_layout(&mut style, key, value);
             apply_look(node, key, value);
+            if let (Kind::Copy(window), "window") = (&mut node.kind, key.as_str()) {
+                *window = value.as_u64();
+            }
             if let Kind::Image(source) = &mut node.kind {
                 match key.as_str() {
                     "icon" => *source = value.as_str().map(|v| ImageSource::Icon(v.into())),
@@ -1521,11 +1538,19 @@ impl Scene {
 
     /// What to draw of output `name`'s surfaces in `band`, back to front.
     pub fn draw(&self, output: &str, band: Band) -> Vec<Item> {
+        self.draw_with_copies(output, band).0
+    }
+
+    /// What to draw of output `name`'s surfaces in `band`, back to front, and the window copies
+    /// in them, which bento draws over it.
+    pub fn draw_with_copies(&self, output: &str, band: Band) -> (Vec<Item>, Vec<CopyItem>) {
         let mut items = Vec::new();
+        let mut copies = Vec::new();
         for child in self.surfaces(output, Some(band)) {
-            self.draw_node(child, 1., None, Scaling::NONE, 0., None, &mut items);
+            let mut out = (&mut items, &mut copies);
+            self.draw_node(child, 1., None, Scaling::NONE, 0., None, &mut out);
         }
-        items
+        (items, copies)
     }
 
     /// What to draw of output `name`'s surfaces in every band, back to front.
@@ -1594,8 +1619,9 @@ impl Scene {
         scaling: Scaling,
         blur: f32,
         color: Option<Paint>,
-        items: &mut Vec<Item>,
+        out: &mut (&mut Vec<Item>, &mut Vec<CopyItem>),
     ) {
+        let items = &mut *out.0;
         let Some(node) = self.node(id) else { return };
         if node.hidden || !self.displayed(node) {
             return;
@@ -1625,7 +1651,7 @@ impl Scene {
         let blur = blur + node.springs[BLUR].value.max(0.) as f32;
 
         match &node.kind {
-            Kind::Box => {
+            Kind::Box | Kind::Copy(_) => {
                 let fill = node.look.fill.or(node.look.tint);
                 if node.look.material != Material::None
                     || fill.is_some()
@@ -1642,6 +1668,15 @@ impl Scene {
                             .map_or((0., [0.; 4]), |(w, p)| (w, p.resolve(&self.theme))),
                         opacity,
                         blur,
+                        clip,
+                    });
+                }
+                if let Kind::Copy(Some(window)) = node.kind {
+                    out.1.push(CopyItem {
+                        window,
+                        rect,
+                        radius: radii[0],
+                        opacity,
                         clip,
                     });
                 }
@@ -1680,7 +1715,7 @@ impl Scene {
             clip
         };
         for child in &node.children {
-            self.draw_node(*child, opacity, clip, scaling, blur, color, items);
+            self.draw_node(*child, opacity, clip, scaling, blur, color, out);
         }
     }
 

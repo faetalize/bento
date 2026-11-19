@@ -5515,6 +5515,30 @@ impl Niri {
         macro_rules! push_shell {
             ($band:expr) => {{
                 if let Some(scene) = &self.scene {
+                    // Its window copies, over what it draws.
+                    for copy in scene.copies(&output_name, $band) {
+                        let Some((_, win)) =
+                            self.layout.windows().find(|(_, w)| w.id().get() == copy.window)
+                        else {
+                            continue;
+                        };
+                        let rect = |r: [f32; 4]| {
+                            Rectangle::new(
+                                Point::from((f64::from(r[0]), f64::from(r[1]))),
+                                Size::from((f64::from(r[2]), f64::from(r[3]))),
+                            )
+                        };
+                        crate::layout::tiling::render_window_copy(
+                            ctx.r(),
+                            win,
+                            rect(copy.rect),
+                            f64::from(copy.radius),
+                            f64::from(copy.opacity),
+                            copy.clip.map(|c| (rect(c.rect), f64::from(c.radii[0]))),
+                            output_scale.x,
+                            &mut |elem| push(OutputRenderElements::ShellCopy(elem)),
+                        );
+                    }
                     scene.render_content(&output_name, $band, None, &mut |elem| {
                         push(OutputRenderElements::Scene(elem))
                     });
@@ -8358,6 +8382,7 @@ niri_render_elements! {
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
         Scene = crate::scene::host::SceneElement,
+        ShellCopy = crate::layout::tiling::TilingSpaceRenderElement<R>,
         RelocatedScene = CropRenderElement<RelocateRenderElement<RescaleRenderElement<
             crate::scene::host::SceneElement
         >>>,

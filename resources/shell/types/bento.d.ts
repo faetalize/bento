@@ -21,9 +21,12 @@
 // override exports the same names, with the same props. `bento:shells/<name>` and
 // `bento:stock/shells/<name>` are the same for whole shells.
 //
-// bento's own modules are `ui` (buttons, sliders, switches, islands, `popup`), `clock`,
-// `workspaces`, `notifications`, `sound`, `network`, `bluetooth`, `power`, `brightness`, `media`,
-// `clipboard`, `control-center`, `launcher` and `workspace-editor`. Each is a feature with the
+// bento's own shells are `unix`, islands along the top, and `windows`, a taskbar along the
+// bottom. Its modules are `ui` (buttons, sliders, switches, islands, flyouts, `popup`), `apps`
+// (app search, and the app a window is of), `clock`, `workspaces`, `notifications`, `sound`,
+// `network`, `bluetooth`, `power`, `brightness`, `media`, `clipboard`, `control-center` (quick
+// settings and the notification center), `launcher`, `start-menu`, `taskbar`, `tray` and
+// `workspace-editor`. Each is a feature with the
 // views it has: `sound` has its status icon, sliders, page, switcher and on-screen indicator.
 //
 // For an editor: a `tsconfig.json` next to the files with `"jsx": "preserve"`,
@@ -307,6 +310,16 @@ declare module "bento" {
     src?: string;
     /** Its width and height, unless its style says. 16 when neither does. */
     size?: number;
+  }
+
+  export interface CopyProps extends NodeProps {
+    ref?: SceneNode | ((node: SceneNode) => void);
+    /** The window it shows, by its id: a live copy of it, fitted into the node and centred,
+     * with the node's corner radius, without its border, focus ring or shadow, as an engine's
+     * copy node shows one. The window stays where it is. bento draws copies over the rest of
+     * their surfaces' layer, so nothing in the shell goes over one. Surfaces under the windows
+     * don't show copies. */
+    window?: number;
   }
 
   export interface InputProps extends NodeProps {
@@ -733,7 +746,7 @@ declare module "bento" {
 
 declare module "bento/jsx-runtime" {
   import type { JSX as SolidJSX } from "solid-js";
-  import type { BoxProps, TextProps, ImageProps, InputProps } from "bento";
+  import type { BoxProps, TextProps, ImageProps, InputProps, CopyProps } from "bento";
 
   export namespace JSX {
     type Element = SolidJSX.Element;
@@ -749,6 +762,8 @@ declare module "bento/jsx-runtime" {
       image: ImageProps;
       /** A text field: bento keeps what's typed, its caret and selection. */
       input: InputProps;
+      /** A live copy of a window, as for previews and switchers. */
+      copy: CopyProps;
     }
   }
 }

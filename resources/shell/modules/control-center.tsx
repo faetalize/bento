@@ -134,18 +134,54 @@ const PAGES: Record<Page, string> = {
   displays: "Displays",
 };
 
-/** The control center for output `output`. `onClose` closes it. */
-export function ControlCenter(props: { output: string; onClose: () => void }) {
-  const [page, setPage] = createSignal<Page | null>(null);
+/** The notifications, the newest few, and the rest behind "Show More", with a way to clear them
+ * all. While it shows, they're looked at as they come. `onUsed` hears one's action done. */
+export function NotificationCenter(props: { onUsed?: () => void }) {
   const [allNotes, setAllNotes] = createSignal(false);
-  // It opens with the notifications looked at, and a monitor's own buttons change its
-  // brightness too.
   notifications.looked();
-  command("brightness-refresh", {});
-  // While it's open, what comes is looked at as it comes.
   createEffect(notifications.unseen, (unseen) => {
     if (unseen) notifications.looked();
   });
+  const kept = () => notifications.kept().slice(0, MOST_NOTES);
+  const shownNotes = () => (allNotes() ? kept() : kept().slice(0, NOTES));
+  return (
+    <box style={{ flexDirection: "column", gap: GAP }}>
+      <box style={{ flexDirection: "row", alignItems: "center", gap: GAP, height: 26 }}>
+        <box style={{ flexGrow: 1 }}>
+          <Heading>Notifications</Heading>
+        </box>
+        <Show when={kept().length > 0}>
+          <Button
+            label="Clear All"
+            style={{ height: 26, background: "fg/0.08" }}
+            onClick={() => notifications.dismissAll()}
+          />
+        </Show>
+      </box>
+      <box style={{ flexDirection: "column", gap: 6, overflow: "hidden" }}>
+        <For each={shownNotes()} fallback={<Note>No Notifications</Note>}>
+          {(n) => <NotificationCard notification={n} onUsed={props.onUsed} />}
+        </For>
+      </box>
+      <Show when={kept().length > shownNotes().length}>
+        <Button
+          label={`Show ${kept().length - shownNotes().length} More`}
+          style={{ height: 30, background: "fg/0.08" }}
+          onClick={() => setAllNotes(true)}
+        />
+      </Show>
+    </box>
+  );
+}
+
+/** Quick settings for output `output`: along the top, the battery, and buttons for a
+ * screenshot, a screen recording, the settings and the power menu; the volume and the output's
+ * brightness; the tiles; and what's playing, then what it holds. What has more to it opens a
+ * page in its place. `onClose` closes what it's in. */
+export function QuickSettings(props: { output: string; onClose: () => void; children?: JSX.Element }) {
+  const [page, setPage] = createSignal<Page | null>(null);
+  // A monitor's own buttons change its brightness too.
+  command("brightness-refresh", {});
 
   const TILES: TileSpec[] = [
     {
@@ -206,9 +242,6 @@ export function ControlCenter(props: { output: string; onClose: () => void }) {
     return out;
   };
 
-  const kept = () => notifications.kept().slice(0, MOST_NOTES);
-  const shownNotes = () => (allNotes() ? kept() : kept().slice(0, NOTES));
-  // The list is looked at as more come, since it's open.
   const display = () => displayOf(props.output);
 
   const main = () => (
@@ -255,32 +288,7 @@ export function ControlCenter(props: { output: string; onClose: () => void }) {
         </For>
       </box>
       <MediaCard />
-      <box style={{ flexDirection: "column", gap: GAP }}>
-        <box style={{ flexDirection: "row", alignItems: "center", gap: GAP, height: 26 }}>
-          <box style={{ flexGrow: 1 }}>
-            <Heading>Notifications</Heading>
-          </box>
-          <Show when={kept().length > 0}>
-            <Button
-              label="Clear All"
-              style={{ height: 26, background: "fg/0.08" }}
-              onClick={() => notifications.dismissAll()}
-            />
-          </Show>
-        </box>
-        <box style={{ flexDirection: "column", gap: 6, overflow: "hidden" }}>
-          <For each={shownNotes()} fallback={<Note>No Notifications</Note>}>
-            {(n) => <NotificationCard notification={n} onUsed={props.onClose} />}
-          </For>
-        </box>
-        <Show when={kept().length > shownNotes().length}>
-          <Button
-            label={`Show ${kept().length - shownNotes().length} More`}
-            style={{ height: 30, background: "fg/0.08" }}
-            onClick={() => setAllNotes(true)}
-          />
-        </Show>
-      </box>
+      {props.children}
     </box>
   );
 
@@ -334,6 +342,16 @@ export function ControlCenter(props: { output: string; onClose: () => void }) {
         )}
       </Show>
     </box>
+  );
+}
+
+/** The control center of bento's own shell: quick settings, with the notifications under
+ * them. */
+export function ControlCenter(props: { output: string; onClose: () => void }) {
+  return (
+    <QuickSettings output={props.output} onClose={props.onClose}>
+      <NotificationCenter onUsed={props.onClose} />
+    </QuickSettings>
   );
 }
 

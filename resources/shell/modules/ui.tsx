@@ -1,7 +1,7 @@
 // bento's own widgets: buttons, sliders, switches, and islands of glass that open into panels.
 // Every other stock module builds from them, so a `modules/ui.tsx` of one's own restyles them all.
 
-import { after, css, paced, settling } from "bento";
+import { Surface, after, css, paced, settling, type Edge } from "bento";
 import { createEffect, createSignal, For, Show, type JSX } from "solid-js";
 
 /** What's lit, like the current workspace or a slider's level: the accent, see-through enough
@@ -17,6 +17,9 @@ export const ICON_ROOM = 6;
 // ------------------------------------------------------------------------------------------------
 
 const [current, setCurrent] = createSignal<string | null>(null);
+// What a press outside it closed just now: the press on its own button that closed it doesn't
+// open it again as it ends.
+let dismissed: { key: string; at: number } | null = null;
 
 export const popup = {
   /** What's open, by its key. */
@@ -27,7 +30,18 @@ export const popup = {
   close: (key?: string) => {
     if (key === undefined || current() === key) setCurrent(null);
   },
-  toggle: (key: string) => setCurrent(current() === key ? null : key),
+  /** Closes `key` for a press outside it. */
+  dismiss: (key: string) => {
+    if (current() !== key) return;
+    dismissed = { key, at: Date.now() };
+    setCurrent(null);
+  },
+  toggle: (key: string) => {
+    const just = dismissed?.key === key && Date.now() - dismissed.at < 500;
+    dismissed = null;
+    if (just) return;
+    setCurrent(current() === key ? null : key);
+  },
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -425,3 +439,70 @@ export const growsWith = {
   enter: { opacity: 0, blur: 4, scale: 0 },
   exit: { opacity: 0, blur: 4, scale: 0 },
 };
+
+// ------------------------------------------------------------------------------------------------
+// Flyouts.
+// ------------------------------------------------------------------------------------------------
+
+export interface FlyoutProps {
+  output: string;
+  /** What `popup` has it as, which opens and closes it, one of what's open over the desktop. */
+  popup?: string;
+  /** Whether it's open, for one that isn't one of `popup`'s, like previews on hover. */
+  open?: boolean;
+  /** What it comes out of, on its `side`, lined up with its `align`. */
+  from?: any;
+  side?: Edge;
+  align?: "start" | "center" | "end";
+  /** Without `from`, the edges it's held to. */
+  anchor?: Edge[];
+  /** How far from what it comes out of, or from the output's edges. */
+  gap?: number;
+  /** Whether it takes the keys while it's open. */
+  keyboard?: boolean;
+  radius?: number;
+  padding?: number;
+  /** Whether a press outside it closes it. */
+  light?: boolean;
+  children?: JSX.Element;
+}
+
+/** A panel of glass that comes out of a button, as quick settings come out of a taskbar, and
+ * slides back in. It's made afresh each time it opens, and Escape or a press elsewhere closes
+ * it. */
+export function Flyout(props: FlyoutProps) {
+  const open = () => props.open ?? (props.popup !== undefined && popup.is(props.popup));
+  const close = () => props.popup !== undefined && popup.close(props.popup);
+  const side = () => props.side ?? "top";
+  // It slides in from the side it comes out of.
+  const slide = (): [number, number] =>
+    side() === "top" ? [0, 12] : side() === "bottom" ? [0, -12] : side() === "left" ? [12, 0] : [-12, 0];
+  return (
+    <Surface
+      output={props.output}
+      layer="top"
+      z={2}
+      attach={props.from ? {
+        to: props.from, side: side(), align: props.align ?? "center", gap: props.gap ?? 12,
+      } : undefined}
+      anchor={props.from ? undefined : props.anchor}
+      keyboard={open() && props.keyboard ? "exclusive" : "none"}
+      onEscape={close}
+      onOutside={() => props.light !== false && props.popup !== undefined && popup.dismiss(props.popup)}
+      style={{ margin: props.gap ?? 12 }}
+    >
+      <Show when={open()}>
+        <box
+          style={{
+            material: "glass", borderRadius: props.radius ?? 18, padding: props.padding ?? 16,
+            overflow: "hidden", flexDirection: "column",
+          }}
+          enter={{ opacity: 0, translate: slide() }}
+          exit={{ opacity: 0, translate: slide() }}
+        >
+          {props.children}
+        </box>
+      </Show>
+    </Surface>
+  );
+}

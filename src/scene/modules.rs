@@ -26,6 +26,12 @@ use rquickjs::{Ctx, Module};
 /// bento's own shell: every script under `resources/shell`, by its path there.
 pub const STOCK: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/shell_files.rs"));
 
+#[cfg(test)]
+thread_local! {
+    /// The shell a test starts from, if it isn't bento's own.
+    pub static TEST_ENTRY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
 /// What names bento's own files go by, to tell them from the user's, which go by their path.
 const STOCK_PREFIX: &str = "stock:";
 
@@ -56,6 +62,10 @@ impl Sources {
 
     /// The module the shell starts from: the user's `main.tsx`, or bento's own shell.
     pub fn entry(&self) -> String {
+        #[cfg(test)]
+        if let Some(entry) = TEST_ENTRY.with(|entry| entry.borrow().clone()) {
+            return entry;
+        }
         self.user
             .as_ref()
             .and_then(|dir| with_extension(&dir.join("main")))

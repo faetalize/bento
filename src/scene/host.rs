@@ -875,6 +875,15 @@ impl SceneHost {
         });
     }
 
+    /// The window copies in output `output`'s surfaces in `band`, which bento draws over its
+    /// picture.
+    pub fn copies(&self, output: &str, band: Band) -> Vec<super::CopyItem> {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.scene.borrow().draw_with_copies(output, band).1)
+            .unwrap_or_default()
+    }
+
     /// Pushes the glass under output `output`'s surfaces in `band`.
     #[allow(clippy::too_many_arguments)]
     pub fn render_glass(
@@ -1380,6 +1389,73 @@ mod tests {
                 repeat: false,
             });
         }
+    }
+
+    #[test]
+    fn the_windows_shell_has_a_taskbar_with_its_apps_previews_and_start_menu() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let shell = super::super::script::Shell::load(
+            &[(String::from("DP-1"), (1920., 1080.))],
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        );
+        if let Err(err) = &shell {
+            panic!("{err:#}");
+        }
+        drop(shell);
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        // Along the bottom, keeping its height from the windows.
+        let reserved = host.reserved("DP-1");
+        assert_eq!(reserved, [0., 0., 48., 0.]);
+        assert!(shows(&host, "DP-1", "start-here-symbolic"));
+
+        // Two windows of one app are one button, whose previews are live copies of both.
+        let window = |id: u32, focused: bool| {
+            serde_json::json!({
+                "id": id, "appId": "org.example.Editor", "title": format!("Note {id}"),
+                "workspace": 7, "output": "DP-1", "focused": focused, "urgent": false,
+                "floating": false,
+            })
+        };
+        host.set_windows(serde_json::json!([window(1, true), window(2, false)]));
+        settle(&mut host, &mut now);
+        let buttons = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "application-x-executable");
+        assert_eq!(buttons.len(), 1, "one button for the app: {buttons:?}");
+        let button = [buttons[0][0] + 4., buttons[0][1] + 4.];
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        let copies: Vec<u64> = Band::ALL
+            .into_iter()
+            .flat_map(|band| host.copies("DP-1", band))
+            .map(|copy| copy.window)
+            .collect();
+        assert_eq!(copies, [1, 2], "a preview of each window");
+        assert!(shows(&host, "DP-1", "Note 2"));
+
+        // A click goes to the next window, as the first has the focus.
+        commands(&host);
+        click(&mut host, "DP-1", button);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "focus-window");
+        assert_eq!(ran[0]["window"], 2);
+
+        // The start button opens the start menu, which takes the keys.
+        let start = middle_of(&host, "DP-1", "start-here-symbolic");
+        click(&mut host, "DP-1", start);
+        settle(&mut host, &mut now);
+        assert!(host.wants_keyboard());
+        assert!(shows(&host, "DP-1", "Search for apps"));
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        assert!(!host.wants_keyboard());
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
     fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {
