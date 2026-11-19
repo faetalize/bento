@@ -83,7 +83,7 @@ struct OutputScene {
     ids: std::cell::RefCell<HashMap<Option<usize>, Id>>,
     damage: DamageBag<i32, Physical>,
     /// The glass under what was last drawn.
-    glass: Vec<([f32; 4], [f32; 4])>,
+    glass: Vec<GlassPiece>,
     effect: FramebufferEffect,
     /// The generation of the scene last looked at, at what scale, and with which of the icons
     /// and images that were loading.
@@ -990,6 +990,26 @@ impl SceneHost {
     }
 }
 
+/// A piece of glass under the shell: its rectangle, its corners' radii, and how opaque it is.
+pub type GlassPiece = ([f32; 4], [f32; 4], f32);
+
+/// The glass under `items`, with each piece as opaque as its shape is, so it fades with it.
+fn glass_of(items: &[Item]) -> Vec<GlassPiece> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Shape {
+                rect,
+                radii,
+                material: Material::Glass | Material::Acrylic | Material::Mica,
+                opacity,
+                ..
+            } if *opacity > 0.01 => Some((*rect, *radii, *opacity)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 impl SceneHost {
     /// A point on output `output` where the pointer is over the shell, in the band of the
@@ -1045,19 +1065,7 @@ fn draw_band(
         return;
     }
 
-    state.glass = items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Shape {
-                rect,
-                radii,
-                material: Material::Glass | Material::Acrylic | Material::Mica,
-                opacity,
-                ..
-            } if *opacity > 0.01 => Some((*rect, *radii)),
-            _ => None,
-        })
-        .collect();
+    state.glass = glass_of(&items);
     // Showing nothing, it takes no images, and nothing is drawn over what's below.
     if items.is_empty() {
         state.shown = None;
@@ -1561,6 +1569,40 @@ mod tests {
     }
 
     #[test]
+    fn the_start_menu_comes_out_of_the_start_button() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let settings = host.settings.clone().unwrap();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        // Where the start menu's left edge is, by its heading, and the start button's middle.
+        let mut places = |host: &mut SceneHost, now: &mut Instant| {
+            host.toggle_launcher(Some(String::from("DP-1")));
+            settle(host, now);
+            let heading = host.shell.as_ref().unwrap().scene.borrow().find("DP-1", "All apps");
+            let button = middle_of(host, "DP-1", "ph-squares-four-symbolic");
+            host.toggle_launcher(Some(String::from("DP-1")));
+            settle(host, now);
+            (heading[0][0], button[0])
+        };
+
+        // On a taskbar in the middle, around the button.
+        let (menu, button) = places(&mut host, &mut now);
+        let middle = menu - 24. + 336.;
+        assert!((middle - button).abs() < 40., "menu {menu}, button {button}");
+
+        // On one to the left, from the button's left edge, not in the middle of the output.
+        settings
+            .borrow_mut()
+            .write_file("windows {\n    alignment \"left\"\n}\n");
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        let (menu, button) = places(&mut host, &mut now);
+        assert!(menu < 100., "menu {menu}, button {button}");
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
     fn the_windows_shell_has_a_taskbar_with_its_apps_previews_and_start_menu() {
         super::super::modules::TEST_ENTRY
             .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
@@ -1674,6 +1716,41 @@ mod tests {
             .flat_map(|band| host.copies("DP-1", band))
             .map(|copy| copy.window)
             .collect()
+    }
+
+    #[test]
+    fn the_start_menus_glass_fades_with_it() {
+        let (mut host, mut now, _) = windows_shell_with_an_app();
+        let glass = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let items: Vec<Item> = Band::ALL
+                .into_iter()
+                .flat_map(|band| scene.draw("DP-1", band))
+                .collect();
+            glass_of(&items)
+        };
+        let fading = |host: &mut SceneHost, now: &mut Instant| {
+            let mut seen = Vec::new();
+            for _ in 0..40 {
+                *now += Duration::from_millis(16);
+                host.advance(*now, Some(1.));
+                seen.extend(glass(host).into_iter().map(|(_, _, opacity)| opacity));
+            }
+            seen
+        };
+        host.toggle_launcher(Some(String::from("DP-1")));
+        let coming = fading(&mut host, &mut now);
+        assert!(
+            coming.iter().any(|o| *o > 0.05 && *o < 0.95),
+            "its glass is there at once: {coming:?}"
+        );
+        host.toggle_launcher(Some(String::from("DP-1")));
+        let going = fading(&mut host, &mut now);
+        assert!(
+            going.iter().any(|o| *o > 0.05 && *o < 0.95),
+            "its glass is gone at once: {going:?}"
+        );
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
     #[test]

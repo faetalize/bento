@@ -1,7 +1,8 @@
 // A start menu: the apps, found by typing as the launcher finds them, or all of them in a grid,
-// and the power menu. It comes up over a taskbar, in the middle of the output.
+// and the power menu. It comes out of the start button, or up from the bottom of the output, in its
+// middle.
 
-import { apps, type App } from "bento";
+import { apps, type App, type SceneNode } from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
 import { AppRow, appIcon, appSearch, preloadIcons, start } from "bento:modules/apps";
@@ -30,16 +31,25 @@ function AppTile(props: { app: App; onClick: () => void }) {
   );
 }
 
-/** The start menu of `output`, which `popup` opens as `start:<output>`. */
-export function StartMenu(props: { output: string; bottom: number }) {
+/** The start menu of `output`, which `popup` opens as `start:<output>`: over the start button
+ * `from`, lined up with it as `align` says, or else `bottom` up from the bottom of the output. */
+export function StartMenu(props: {
+  output: string;
+  from?: SceneNode;
+  align?: "start" | "center" | "end";
+  bottom?: number;
+}) {
   preloadIcons(ICON);
   const key = `start:${props.output}`;
   return (
     <Flyout
       output={props.output}
       popup={key}
+      from={props.from}
+      side="top"
+      align={props.align ?? "center"}
       anchor={["bottom"]}
-      gap={props.bottom}
+      gap={props.from ? undefined : props.bottom}
       keyboard
       padding={16}
       radius={14}

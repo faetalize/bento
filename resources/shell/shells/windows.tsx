@@ -102,6 +102,7 @@ function Taskbar(props: { output: string }) {
   // The clipboard's shortcut opens this too, by its name.
   const clipboard = `clipboard:${output}`;
   const [bar, setBar] = createSignal<any>(null);
+  const [startButton, setStartButton] = createSignal<any>(null);
   const [quickButton, setQuickButton] = createSignal<any>(null);
   const [clockButton, setClockButton] = createSignal<any>(null);
   const [clipboardButton, setClipboardButton] = createSignal<any>(null);
@@ -127,7 +128,11 @@ function Taskbar(props: { output: string }) {
             <box style={{ flexGrow: 1, flexBasis: 0 }} />
           </Show>
           <box style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-            <BarButton open={popup.is(start)} onClick={() => popup.toggle(start)}>
+            <BarButton
+              ref={setStartButton}
+              open={popup.is(start)}
+              onClick={() => popup.toggle(start)}
+            >
               <image icon="ph-squares-four-symbolic" size={20} />
             </BarButton>
             {/* The overview, of every workspace. */}
@@ -200,7 +205,13 @@ function Taskbar(props: { output: string }) {
           </box>
         </box>
       </Surface>
-      <StartMenu output={output} bottom={height() + 12} />
+      {/* Over the start button: from its left edge on a taskbar to the left, and around it on
+          one in the middle. */}
+      <StartMenu
+        output={output}
+        from={startButton()}
+        align={settings.alignment === "left" ? "start" : "center"}
+      />
       <Flyout output={output} popup={quick} from={quickButton()} side="top" align="end" keyboard>
         <QuickSettings output={output} onClose={() => popup.close(quick)} />
       </Flyout>

@@ -85,6 +85,7 @@ pub fn effect_commit(
             glass.rects[..count].as_flattened(),
             glass.radii[..count].as_flattened(),
             &glass.melts[..count],
+            &glass.opacities[..count],
             glass.curves[..glass.curve_count].as_flattened(),
             &glass.path_ends[..glass.path_count],
         ] {
@@ -114,6 +115,8 @@ pub struct GlassShapes {
     pub radii: [[f32; 4]; MAX_GLASS_SHAPES],
     /// How close other glass comes for each to melt into it.
     pub melts: [f32; MAX_GLASS_SHAPES],
+    /// How opaque each is, as it fades in or out.
+    pub opacities: [f32; MAX_GLASS_SHAPES],
     pub count: usize,
     /// The paths' curves, in order of their paths: each its start, control point and end.
     pub curves: [[f32; 6]; MAX_GLASS_CURVES],
@@ -135,6 +138,7 @@ impl Default for GlassShapes {
             rects: Default::default(),
             radii: Default::default(),
             melts: [DEFAULT_MELT; MAX_GLASS_SHAPES],
+            opacities: [1.; MAX_GLASS_SHAPES],
             count: 0,
             curves: [[0.; 6]; MAX_GLASS_CURVES],
             curve_count: 0,
@@ -405,7 +409,7 @@ pub fn uniforms(
                 r2,
                 r3,
                 shapes.melts[i],
-                0.,
+                shapes.opacities[i],
                 0.,
                 0.,
                 0.,
@@ -577,13 +581,14 @@ pub fn style() -> (bool, Option<[f32; 4]>) {
     )
 }
 
-/// Renders glass for bento's own shell: rounded rectangles, each its rectangle and its corners'
-/// radii, in an output's logical coordinates, melting together where they come `melt` close.
+/// Renders glass for bento's own shell: rounded rectangles, each its rectangle, its corners'
+/// radii and how opaque it is, in an output's logical coordinates, melting together where they
+/// come `melt` close.
 #[allow(clippy::too_many_arguments)]
 pub fn render_rects(
     effect: &FramebufferEffect,
     ns: Option<usize>,
-    rects: &[([f32; 4], [f32; 4])],
+    rects: &[([f32; 4], [f32; 4], f32)],
     melt: f32,
     scale: f64,
     blur: niri_config::Blur,
@@ -593,7 +598,7 @@ pub fn render_rects(
     let rects = &rects[..rects.len().min(MAX_GLASS_SHAPES)];
     let shapes: Vec<GlassShape> = rects
         .iter()
-        .map(|(rect, radii)| GlassShape {
+        .map(|(rect, radii, _)| GlassShape {
             rect: *rect,
             radius: radii[0],
             melt,
@@ -615,11 +620,14 @@ pub fn render_rects(
         ..GlassShapes::default()
     };
     let origin = [bounds.loc.x as f32, bounds.loc.y as f32];
-    for (i, (rect, radii)) in rects.iter().enumerate() {
+    for (i, (rect, radii, opacity)) in rects.iter().enumerate() {
         let [x, y, w, h] = *rect;
         uniforms.rects[i] = [x - origin[0], y - origin[1], w, h];
         uniforms.radii[i] = *radii;
-        uniforms.melts[i] = melt;
+        // A piece fading out lets go of the glass it melted into as it goes, so the other's edge
+        // doesn't fade with it.
+        uniforms.melts[i] = melt * opacity;
+        uniforms.opacities[i] = *opacity;
     }
     let uniforms = uniforms.lit(frame, geometry.loc, 1.);
     let params = RenderParams {
