@@ -84,6 +84,13 @@ reloads them when they change, without building anything or logging out. Scripts
 and say where things go; they never run in the per-frame loop. A script that fails leaves the last
 working shell on screen and reports the error.
 
+What a shell can use is found in an editor, from the types alone, with nothing to install: bento
+keeps a copy of its modules, its shells, its API's types and Solid's in
+`~/.local/share/bento/shell/`, written again when bento changes, and a `tsconfig.json` in
+`~/.config/bento/shell/` that points an editor there. Importing completes bento's modules, and
+each module's props and every primitive are documented where they're used. The types are the one
+place that says what there is; nothing else lists it.
+
 How anything moves is the scripts' too: bento moves what scripts set with springs, at the speeds
 they ask for, and says when a motion settles; how things come and go, grow out of a point, turn
 into each other and fade is built from that in the scripts. bento holds no choreography of its
