@@ -33,7 +33,11 @@ position in depth and a 3D transform from the start. While anything moves, bento
 scene each frame, like a game; when nothing changes, it draws nothing. Fullscreen games go straight
 to the display.
 
-## Widgets are scripts
+## The shell is a game's UI layer
+
+The shell is built the way a game engine's UI is: bento gives it primitives, and everything else,
+the shell's parts, how they look, fit together and move, is the scripts'. bento assumes no bar,
+panel or other part of a shell of its own.
 
 bento gives the shell primitives, in Rust:
 
@@ -47,14 +51,23 @@ bento gives the shell primitives, in Rust:
 They're drawn from distance fields where they can be, so they stay sharp at any size and every
 number in them can be animated.
 
-Widgets, bento's own and the user's, are JavaScript built from those primitives, and so is the
-whole shell. They live in `~/.config/bento/shell/`, next to the widgets bento ships, and bento
+## The shell is written in TSX and CSS
+
+The shell is written like a web page, in TSX with Solid: components in JSX, which run once, and
+values that update exactly what reads them when they change. Styles are CSS, with its flexbox, its
+margins and its start and end, with bento's own properties for what CSS has no word for, like
+materials and springs. libadwaita's colours are its variables: the window colours, the accent,
+light and dark.
+
+A file can hold a whole shell with its interactions, or a single module, and imports others. A
+module is a component: its modes are its props, and what it holds are its children. bento ships
+its modules and one or two shells built from them, so that a module of one's own, or a change to
+one of bento's, is one file.
+
+The shell's files live in `~/.config/bento/shell/`, next to the ones bento ships, and bento
 reloads them when they change, without building anything or logging out. Scripts react to events
 and say where things go; they never run in the per-frame loop. A script that fails leaves the last
 working shell on screen and reports the error.
-
-Styles are style objects in the scripts, with libadwaita's colours: the window colours, the accent,
-light and dark.
 
 How anything moves is the scripts' too: bento moves what scripts set with springs, at the speeds
 they ask for, and says when a motion settles; how things come and go, grow out of a point, turn
