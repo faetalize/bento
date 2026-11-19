@@ -3139,15 +3139,6 @@ mod tests {
             shell {
                 built-in
                 script "windows"
-                fahrenheit
-                screenshot {
-                    command "grim -g \"$(slurp)\" - | swappy -f -"
-                    notification "Screenshot taken"
-                    notification-body "It's in Pictures."
-                }
-                screen-record {
-                    command "wf-recorder"
-                }
             }
             "#,
         );
@@ -3172,20 +3163,6 @@ mod tests {
             file,
             ShellScript::File(PathBuf::from("~/.config/bento/shell/mine.tsx"))
         );
-        assert!(shell.fahrenheit);
-        let screenshot = shell.screenshot.unwrap();
-        assert_eq!(
-            screenshot.command.as_deref(),
-            Some(r#"grim -g "$(slurp)" - | swappy -f -"#)
-        );
-        assert_eq!(screenshot.notification.as_deref(), Some("Screenshot taken"));
-        assert_eq!(
-            screenshot.notification_body.as_deref(),
-            Some("It's in Pictures.")
-        );
-        let record = shell.screen_record.unwrap();
-        assert_eq!(record.command.as_deref(), Some("wf-recorder"));
-        assert_eq!(record.notification, None);
     }
 
     #[test]
@@ -3265,9 +3242,6 @@ mod tests {
         +            ],
         +            built_in: None,
         +            script: None,
-        +            fahrenheit: false,
-        +            screenshot: None,
-        +            screen_record: None,
         +        },
         +    ),
 

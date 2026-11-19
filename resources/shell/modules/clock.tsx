@@ -3,7 +3,8 @@
 // opens into the calendar, its time growing into the calendar's.
 
 import {
-  action, after, command, config, data, now, onData, paced, settling, useOutput, type Style,
+  action, after, command, config, data, now, onData, paced, settling, useModule, useOutput,
+  type Meta, type Style,
 } from "bento";
 import { createEffect, createMemo, createRoot, createSignal, For, Show } from "solid-js";
 import { ACTIVE, Button, Island, popup } from "bento:modules/ui";
@@ -30,14 +31,28 @@ export const longDate = (at: Date) =>
 const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 
+export const meta = {
+  settings: {
+    fahrenheit: {
+      type: "boolean",
+      default: false,
+      description: "Temperatures in Fahrenheit rather than Celsius.",
+      page: "location",
+      group: "Weather",
+    },
+  },
+} satisfies Meta;
+
+const { settings } = useModule(import.meta, meta);
+
 // The data program fetches the weather for the place the config has, and stops without one. It
-// hears the place again whenever it changes, and when the program starts.
+// hears the place again whenever it or the units change, and when the program starts.
 createRoot(() => {
   const ask = () => {
-    const { location, fahrenheit } = config();
-    command("weather", location ? { ...location, fahrenheit: Boolean(fahrenheit) } : {});
+    const location = config().location;
+    command("weather", location ? { ...location, fahrenheit: settings.fahrenheit } : {});
   };
-  createEffect(() => JSON.stringify([config().location, config().fahrenheit]), ask);
+  createEffect(() => JSON.stringify([config().location, settings.fahrenheit]), ask);
   onData("ready", ask);
 });
 

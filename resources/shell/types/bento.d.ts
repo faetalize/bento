@@ -501,17 +501,9 @@ declare module "bento" {
   }
   export const bentoStyle: Accessor<BentoStyle>;
 
-  /** What bento's config sets for the shell. */
+  /** What bento's config has for the shell: where the user is, which bento's settings set. */
   export interface ShellConfig {
     location: { name: string | null; latitude: number; longitude: number } | null;
-    fahrenheit: boolean;
-    screenshot: ShellCommand | null;
-    screenRecord: ShellCommand | null;
-  }
-  export interface ShellCommand {
-    command: string;
-    notification: string | null;
-    body: string | null;
   }
   export const config: Accessor<ShellConfig>;
 

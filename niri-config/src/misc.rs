@@ -29,15 +29,6 @@ pub struct Shell {
     /// one's own, by its path. bento's own `"unix"` when it's left out.
     #[knuffel(child, unwrap(argument))]
     pub script: Option<String>,
-    /// Temperatures in Fahrenheit rather than Celsius.
-    #[knuffel(child)]
-    pub fahrenheit: bool,
-    /// What the control center's screenshot button runs, rather than bento's own screenshot.
-    #[knuffel(child)]
-    pub screenshot: Option<ShellCommand>,
-    /// What the control center's screen record button runs.
-    #[knuffel(child)]
-    pub screen_record: Option<ShellCommand>,
 }
 
 impl Shell {
@@ -82,18 +73,6 @@ impl ShellScript {
             Some(name) => Self::BuiltIn(String::from(name)),
         }
     }
-}
-
-/// A command one of the shell's buttons runs, with `sh -c`, and the notification it shows once
-/// the command is done, if it has a title.
-#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
-pub struct ShellCommand {
-    #[knuffel(child, unwrap(argument))]
-    pub command: Option<String>,
-    #[knuffel(child, unwrap(argument))]
-    pub notification: Option<String>,
-    #[knuffel(child, unwrap(argument))]
-    pub notification_body: Option<String>,
 }
 
 /// Where the user is, for what depends on it, like the weather.

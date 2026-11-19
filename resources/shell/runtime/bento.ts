@@ -206,7 +206,7 @@ export const bentoStyle = createRoot(() =>
   }, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) }),
 );
 
-const CONFIG_DEFAULTS = { location: null, fahrenheit: false, screenshot: null, screenRecord: null };
+const CONFIG_DEFAULTS = { location: null };
 
 export const config = createRoot(() =>
   createMemo(() => ({ ...CONFIG_DEFAULTS, ...(styleValue()?.config ?? {}) }), {

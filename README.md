@@ -281,7 +281,7 @@ debug {
 
 The left island shows the workspaces and a minimap of the one on screen: its tiles where they sit, with the part the view shows marked. Scrolling over the minimap moves the focus along the columns, and a click on a tile focuses its window.
 
-The middle island is the clock, and opens into the calendar, with the weather where you are. Settings → Location sets the place, by its name or its coordinates, and Celsius or Fahrenheit. The weather and the search for places come from [Open-Meteo](https://open-meteo.com), which gets the place's coordinates and what you search for, and nothing else:
+The middle island is the clock, and opens into the calendar, with the weather where you are. Settings → Location sets the place, by its name or its coordinates, and, while the shell has the clock, Celsius or Fahrenheit (`clock { fahrenheit true }` in the shell's settings). The weather and the search for places come from [Open-Meteo](https://open-meteo.com), which gets the place's coordinates and what you search for, and nothing else:
 
 ```kdl
 location {
@@ -299,19 +299,14 @@ The right island is the status, and opens into the control center, laid out like
 - What's playing, from any app that says so over MPRIS.
 - The notifications. A toast goes after a moment and its notification stays here until it's dismissed, unless the app marked it as transient. With Do Not Disturb on, only critical notifications come as toasts.
 
-The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Shell sets them:
+The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title. They're the control center's settings, which Settings → Shell sets while the shell has the control center, kept in the shell's settings:
 
 ```kdl
-shell {
-    fahrenheit
-    screenshot {
-        command "grim -g \"$(slurp)\" - | swappy -f -"
-        notification "Screenshot taken"
-        notification-body "It's in Pictures."
-    }
-    screen-record {
-        command "wf-recorder -f ~/Videos/recording.mp4"
-    }
+control-center {
+    screenshot-command "grim -g \"$(slurp)\" - | swappy -f -"
+    screenshot-notification "Screenshot taken"
+    screenshot-notification-body "It's in Pictures."
+    record-command "wf-recorder -f ~/Videos/recording.mp4"
 }
 ```
 

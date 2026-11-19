@@ -2592,13 +2592,14 @@ mod tests {
 
     #[test]
     fn the_screenshot_button_runs_its_command_and_shows_its_notification_after() {
-        let style = serde_json::json!({
-            "gaps": 8,
-            "config": {
-                "screenshot": { "command": "grim", "notification": "Shot", "body": "Saved." },
-            },
-        });
-        let (mut host, mut now) = loaded(style);
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let settings = host.settings.clone().unwrap();
+        settings.borrow_mut().write_file(
+            "control-center {\n    screenshot-command \"grim\"\n    screenshot-notification \"Shot\"\n    \
+             screenshot-notification-body \"Saved.\"\n}\n",
+        );
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
         open_control_center(&mut host, &mut now);
         commands(&host);
         let button = middle_of(&host, "DP-1", "camera-photo-symbolic");

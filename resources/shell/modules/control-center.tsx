@@ -41,24 +41,26 @@ const SLIDER = WIDTH - 32 - GAP;
 const NOTES = 3;
 const MOST_NOTES = 20;
 
-/** Runs what the config sets for the screenshot or the screen record button, once the control
+/** Runs what the settings set for the screenshot or the screen record button, once the control
  * center is out of the picture, and shows its notification when it's done, if it has one. */
-function capture(which: "screenshot" | "screenRecord") {
-  const set = config()[which];
+function capture(which: "screenshot" | "record") {
+  const line = settings[`${which}-command`].trim();
+  const title = settings[`${which}-notification`].trim();
+  const body = settings[`${which}-notification-body`];
   popup.close();
-  if (!set && which === "screenRecord") {
+  if (!line && which === "record") {
     // Nothing records the screen until a command is set.
     action("spawn", ["bento-settings", "shell"]);
     return;
   }
   after(350, async () => {
-    if (!set) {
+    if (!line) {
       action("screenshot");
       return;
     }
     const icon = which === "screenshot" ? "camera-photo-symbolic" : "media-record-symbolic";
-    const code = await run(set.command!);
-    if (set.notification && code === 0) notify(set.notification, set.body ?? "", icon);
+    const code = await run(line);
+    if (title && code === 0) notify(title, body, icon);
   });
 }
 
@@ -257,7 +259,7 @@ export function QuickSettings(props: { output: string; onClose: () => void; chil
           </text>
         </box>
         <Round icon="camera-photo-symbolic" onClick={() => capture("screenshot")} />
-        <Round icon="media-record-symbolic" onClick={() => capture("screenRecord")} />
+        <Round icon="media-record-symbolic" onClick={() => capture("record")} />
         <Round
           icon="emblem-system-symbolic"
           onClick={() => {
@@ -360,6 +362,50 @@ export function ControlCenter(props: { output: string; onClose: () => void }) {
 }
 
 export const meta = {
+  settings: {
+    "screenshot-command": {
+      type: "string",
+      default: "",
+      description: "What the screenshot button runs, with sh. Without a command, it takes bento's own screenshot.",
+      page: "shell",
+      group: "Screenshot Button",
+    },
+    "screenshot-notification": {
+      type: "string",
+      default: "",
+      description: "The title of a notification that shows once the command is done; none shows without one.",
+      page: "shell",
+      group: "Screenshot Button",
+    },
+    "screenshot-notification-body": {
+      type: "string",
+      default: "",
+      description: "The notification's text.",
+      page: "shell",
+      group: "Screenshot Button",
+    },
+    "record-command": {
+      type: "string",
+      default: "",
+      description: "What the screen record button runs, with sh, and again to stop a recording if that's how the program works.",
+      page: "shell",
+      group: "Screen Record Button",
+    },
+    "record-notification": {
+      type: "string",
+      default: "",
+      description: "The title of a notification that shows once the command is done; none shows without one.",
+      page: "shell",
+      group: "Screen Record Button",
+    },
+    "record-notification-body": {
+      type: "string",
+      default: "",
+      description: "The notification's text.",
+      page: "shell",
+      group: "Screen Record Button",
+    },
+  },
   actions: {
     "toggle-clipboard": {
       description: "Show or hide the clipboard's history.",
@@ -367,7 +413,7 @@ export const meta = {
   },
 } satisfies Meta;
 
-useModule(import.meta, meta);
+const { settings } = useModule(import.meta, meta);
 
 // The clipboard's shortcut opens the history in the focused output's status island.
 onAction("toggle-clipboard", ({ output }) => {

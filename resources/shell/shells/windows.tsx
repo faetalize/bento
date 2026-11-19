@@ -5,7 +5,9 @@
 // Notifications come up over the taskbar's end. The taskbar is in the top layer, so fullscreen
 // windows cover it.
 
-import { Surface, action, focusedOutput, onAction, outputs, useModule, type Meta } from "bento";
+import {
+  Surface, action, focusedOutput, onAction, outputs, useModule, type Meta, type Style,
+} from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Divider, Flyout, popup } from "bento:modules/ui";
 import { ClipboardHistory } from "bento:modules/clipboard";
@@ -43,7 +45,7 @@ export const meta = {
 const { settings } = useModule(import.meta, meta);
 
 /** The buttons of quick things, like the sound output switcher: the size of the tray's icons. */
-const SMALL = {
+const SMALL: Style = {
   width: 28, height: 28, paddingLeft: 0, paddingRight: 0, borderRadius: 6,
   ":hover": { background: "fg/0.08" },
 };

@@ -5213,33 +5213,17 @@ impl Niri {
         });
         let (entry, _) = self.shell_entry();
         let style = self.shell_style();
-        // What the config sets for the shell rides along with the style, and scripts hear of
-        // either changing.
+        // What bento's config has for the shell, where the user is, rides along with the style,
+        // and scripts hear of either changing.
         let settings = {
             let config = self.config.borrow();
-            let shell = config.shell.clone().unwrap_or_default();
-            let command = |c: Option<niri_config::ShellCommand>| {
-                c.filter(|c| c.command.as_deref().is_some_and(|c| !c.trim().is_empty()))
-                    .map(|c| {
-                        serde_json::json!({
-                            "command": c.command,
-                            "notification": c.notification.filter(|t| !t.trim().is_empty()),
-                            "body": c.notification_body,
-                        })
-                    })
-            };
             let location = &config.location;
             let place = location.latitude.zip(location.longitude).map(|(lat, lon)| {
                 serde_json::json!({
                     "name": location.name, "latitude": lat.0, "longitude": lon.0,
                 })
             });
-            serde_json::json!({
-                "location": place,
-                "fahrenheit": shell.fahrenheit,
-                "screenshot": command(shell.screenshot),
-                "screenRecord": command(shell.screen_record),
-            })
+            serde_json::json!({ "location": place })
         };
         let style = serde_json::json!({
             "gaps": style.gaps,
