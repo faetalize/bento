@@ -144,7 +144,7 @@ After linking, niri itself can't run from that config if it uses anything specif
 ### The shell
 
 bento's shell, `bento-shell`, is the desktop around the workspaces: a glass bar along the top of each monitor with the workspaces, the clock, the tray and the status icons, and the calendar, quick settings, notifications and the volume indicator that grow out of it.
-`toggle-launcher`, bound to <kbd>Super</kbd><kbd>D</kbd>, opens its launcher.
+`shell-action "toggle-launcher"`, bound to <kbd>Super</kbd><kbd>D</kbd>, opens its launcher.
 
 The config names the shell, and bento starts it, and starts it again if it exits:
 
@@ -152,7 +152,7 @@ The config names the shell, and bento starts it, and starts it again if it exits
 shell "bento-shell"
 ```
 
-bento hands it a Wayland connection of its own, through `WAYLAND_SOCKET`. On that connection only, the `bento_shell_v1` protocol (`resources/bento-shell-v1.xml`) gives the shell bento's commands for it, like `toggle-launcher`, and glass: the shell gives bento rounded shapes for each of its surfaces, and bento refracts, blurs and lights what's behind them, melting shapes that come close into one piece.
+bento hands it a Wayland connection of its own, through `WAYLAND_SOCKET`. On that connection only, the `bento_shell_v1` protocol (`resources/bento-shell-v1.xml`) gives the shell the `shell-action` binds, like `toggle-launcher`, and glass: the shell gives bento rounded shapes for each of its surfaces, and bento refracts, blurs and lights what's behind them, melting shapes that come close into one piece.
 Without a `shell` line, bento starts no shell.
 
 ### Other desktop shells

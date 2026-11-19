@@ -128,9 +128,12 @@ impl Shell {
                 }
             });
             let weak = Rc::downgrade(&shell);
-            bento.connect_toggle_launcher(move || {
-                if let Some(shell) = weak.upgrade() {
-                    shell.launcher().toggle();
+            // Its own actions, which binds run with shell-action.
+            bento.connect_action(move |name, _| {
+                let Some(shell) = weak.upgrade() else { return };
+                match name {
+                    "toggle-launcher" => shell.launcher().toggle(),
+                    _ => eprintln!("the shell has no action called {name}"),
                 }
             });
         }

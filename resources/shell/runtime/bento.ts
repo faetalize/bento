@@ -299,9 +299,7 @@ export function useModule(
   return { settings: values, setSetting };
 }
 
-// The shell's actions, by name, and what listens.
-const ACTIONS: Record<string, string> = { launcher: "toggle-launcher" };
-
+// What listens to the shell's actions, by their names.
 const actionListeners = new Map<string, Set<(event: any) => void>>();
 
 function listen<T>(map: Map<string, Set<T>>, name: string, fn: T) {
@@ -1344,13 +1342,6 @@ function handle(event: any) {
         fn({ output: event.output ?? null, args: event.args ?? [] });
       }
       return;
-    case "launcher": {
-      const name = ACTIONS[event.type] ?? event.type;
-      for (const fn of [...(actionListeners.get(name) ?? [])]) {
-        fn({ output: event.output ?? null, args: [] });
-      }
-      return;
-    }
     case "data-ready":
       // The data program started.
       for (const fn of [...(dataListeners.get("ready") ?? [])]) fn({});

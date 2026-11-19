@@ -6,7 +6,7 @@
 // windows cover it.
 
 import {
-  Surface, action, focusedOutput, onAction, outputs, useModule, type Meta, type Style,
+  Surface, action, focusedOutput, outputs, useModule, type Meta, type Style,
 } from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Divider, Flyout, popup } from "bento:modules/ui";
@@ -57,11 +57,6 @@ const height = () => Math.max(40, settings.height);
  * distance from the taskbar's edge whichever button it's from: close enough to melt into it as
  * one piece, never so far that it half melts. */
 const over = (size: number) => (height() - size) / 2 + 2;
-
-// The launcher's shortcut opens the focused output's start menu.
-onAction("toggle-launcher", ({ output }) => {
-  popup.toggle(`start:${output ?? focusedOutput() ?? outputs()[0]}`);
-});
 
 export default function Windows() {
   return (

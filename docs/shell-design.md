@@ -126,9 +126,10 @@ only the shell's to choose is a prop, not a setting.
 
 An action is something a shortcut can do, like switching to the next pinned sound output, with
 its description and arguments, as an engine's are. A shortcut runs it with
-`shell-action "name" args…`. The module that declares an action handles it. bento's own list of
-actions has only what bento does itself; the launcher's is one of them, since bento hands it to
-whichever shell runs, its own or a program.
+`shell-action "name" args…`. The module that declares an action handles it, like the launcher's
+`toggle-launcher` and the start menu's `toggle-start-menu`, so a shell without a launcher has no
+action for one. bento's own list of actions has only what bento does itself. A shell program
+outside bento gets the `shell-action` binds too, by name, and handles the ones it has.
 
 What the user chooses is a setting, and what a shell notes for itself as it's used, like Do Not
 Disturb or what's been seen, is state. Something the shell writes as it's used and the user chose,

@@ -535,10 +535,9 @@ declare module "bento" {
     options?: { properties?: Record<string, unknown>; window?: number; workspace?: number },
   ): void;
 
-  /** Listens to an action, which binds run with the focused output: one a module declares in
-   * its `meta`, which a bind runs as `shell-action "name" args…`, or bento's own
-   * `toggle-launcher`, which bento hands to whichever shell runs. Listening inside a component,
-   * it stops when the component goes. */
+  /** Listens to an action a module declares in its `meta`, which a bind runs as
+   * `shell-action "name" args…`, with the focused output. Listening inside a component, it stops
+   * when the component goes. */
   export function onAction(
     name: string,
     fn: (event: { output: OutputName | null; args: string[] }) => void,

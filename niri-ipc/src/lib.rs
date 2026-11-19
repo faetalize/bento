@@ -349,8 +349,6 @@ pub enum Action {
     },
     /// Show the hotkey overlay.
     ShowHotkeyOverlay {},
-    /// Show or hide the shell's launcher.
-    ToggleLauncher {},
     /// Run one of the shell's own actions, by the name the module that declares it gives it.
     ShellAction {
         /// Name of the action.

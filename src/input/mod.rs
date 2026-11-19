@@ -1692,20 +1692,14 @@ impl State {
                     self.niri.a11y_announce_hotkey_overlay();
                 }
             }
-            Action::ShellAction(name, args) => {
-                if let Some(scene) = &self.niri.scene {
+            // The shell's, bento's own or a program's.
+            Action::ShellAction(name, args) => match &self.niri.scene {
+                Some(scene) => {
                     let output = self.niri.layout.active_output().map(|o| o.name());
                     scene.shell_action(&name, &args, output);
                     self.niri.queue_redraw_all();
                 }
-            }
-            Action::ToggleLauncher => match &self.niri.scene {
-                Some(scene) => {
-                    let output = self.niri.layout.active_output().map(|o| o.name());
-                    scene.toggle_launcher(output);
-                    self.niri.queue_redraw_all();
-                }
-                None => self.niri.bento_shell_state.toggle_launcher(),
+                None => self.niri.bento_shell_state.action(&name, &args),
             },
             Action::MoveWorkspaceToMonitorLeft => {
                 if let Some(output) = self.niri.output_left() {

@@ -2,11 +2,25 @@
 // and the power menu. It comes out of the start button, or up from the bottom of the output, in its
 // middle.
 
-import { apps, type App, type SceneNode } from "bento";
+import {
+  apps, focusedOutput, onAction, outputs, useModule, type App, type Meta, type SceneNode,
+} from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
 import { AppRow, appIcon, appSearch, preloadIcons, start } from "bento:modules/apps";
 import { PowerPage } from "bento:modules/power";
+
+export const meta = {
+  actions: {
+    "toggle-start-menu": { description: "Show or hide the start menu on the focused output." },
+  },
+} satisfies Meta;
+
+useModule(import.meta, meta);
+
+onAction("toggle-start-menu", ({ output }) => {
+  popup.toggle(`start:${output ?? focusedOutput() ?? outputs()[0]}`);
+});
 
 const WIDTH = 640;
 const COLUMNS = 6;

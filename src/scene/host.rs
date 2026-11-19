@@ -501,14 +501,6 @@ impl SceneHost {
             .unwrap_or_default()
     }
 
-    /// Tells the shell that its launcher's shortcut was pressed, with the output that has the
-    /// focus.
-    pub fn toggle_launcher(&self, output: Option<String>) {
-        if let Some(shell) = &self.shell {
-            shell.send(&serde_json::json!({ "type": "launcher", "output": output }));
-        }
-    }
-
     /// Whether the pointer is over the shell.
     pub fn pointer_over(&self) -> bool {
         self.pointer.is_some()
@@ -1203,7 +1195,7 @@ mod tests {
                 .map(|(_, opacity, _)| *opacity)
         };
         for time in 0..3 {
-            host.toggle_launcher(Some(String::from("DP-1")));
+            host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
             settle(&mut host, &mut now);
             let shown = field(&host);
             assert!(shown.is_some_and(|o| o > 0.99), "opening {time}: {shown:?}");
@@ -1261,7 +1253,7 @@ mod tests {
                 .count()
         };
 
-        host.toggle_launcher(Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
         settle(&mut host, &mut now);
         assert!(overlay(&host, "DP-2") > 0, "it opens on the focused output");
         // In the middle of the output at its tallest, 544 high, and only the search bar until
@@ -1296,11 +1288,11 @@ mod tests {
         assert!(!host.wants_keyboard());
 
         // Opened again while it shrinks away, it's the same launcher turning around.
-        host.toggle_launcher(Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
         now += std::time::Duration::from_millis(30);
         host.advance(now, Some(1.));
-        host.toggle_launcher(Some(String::from("DP-2")));
-        host.toggle_launcher(Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
         now += std::time::Duration::from_millis(30);
         host.advance(now, Some(1.));
         assert_eq!(glass_below_islands(&host, "DP-2").len(), 1, "one launcher");
@@ -1342,7 +1334,7 @@ mod tests {
             now += std::time::Duration::from_millis(16);
             host.advance(now, Some(1.));
         };
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         step(&mut host);
         let mut last = launcher_glass(&host).unwrap();
         let mut speed = [0f32; 4];
@@ -1376,12 +1368,12 @@ mod tests {
         }
 
         // Closed and opened again on the way, it goes on from where it is.
-        host.toggle_launcher(None);
+        host.shell_action("toggle-launcher", &[], None);
         for _ in 0..12 {
             step(&mut host);
         }
         let closing = launcher_glass(&host).unwrap();
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         step(&mut host);
         let turning = launcher_glass(&host).unwrap();
         for i in 0..4 {
@@ -1566,6 +1558,10 @@ mod tests {
         assert!(names.contains(&"windows"), "{names:?}");
         assert!(names.contains(&"taskbar"), "{names:?}");
         assert!(info.unused.is_empty());
+        // The start menu's shortcut is the start menu's own action, not bento's.
+        let actions: Vec<&str> = info.actions.iter().map(|a| a.name.as_str()).collect();
+        assert!(actions.contains(&"toggle-start-menu"), "{actions:?}");
+        assert!(!actions.contains(&"toggle-launcher"), "{actions:?}");
     }
 
     #[test]
@@ -1576,12 +1572,12 @@ mod tests {
         let settings = host.settings.clone().unwrap();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
         // Where the start menu's left edge is, by its heading, and the start button's middle.
-        let mut places = |host: &mut SceneHost, now: &mut Instant| {
-            host.toggle_launcher(Some(String::from("DP-1")));
+        let places = |host: &mut SceneHost, now: &mut Instant| {
+            host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
             settle(host, now);
             let heading = host.shell.as_ref().unwrap().scene.borrow().find("DP-1", "All apps");
             let button = middle_of(host, "DP-1", "ph-squares-four-symbolic");
-            host.toggle_launcher(Some(String::from("DP-1")));
+            host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
             settle(host, now);
             (heading[0][0], button[0])
         };
@@ -1741,7 +1737,7 @@ mod tests {
         click(&mut host, "DP-1", clipboard);
         settle(&mut host, &mut now);
 
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
         let from_start = above_taskbar(&mut host, &mut now);
         // Close enough to melt into it whole, and as close whatever button it came from.
         assert!(from_clipboard < 4., "{from_clipboard}");
@@ -1781,12 +1777,12 @@ mod tests {
                 "it's there at its size at once: {shown:?}"
             );
         };
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
         let coming = frames(&mut host, &mut now);
         grows(&coming);
         assert!(coming.last().unwrap().is_some_and(|([_, _, _, h], _, _)| h > 500.));
 
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
         let going = frames(&mut host, &mut now);
         grows(&going);
         assert!(going.last().unwrap().is_none(), "{going:?}");
@@ -2954,7 +2950,7 @@ mod tests {
             let frame = scene.seen("DP-1", placeholder)[0].0;
             assert!(frame[3] < size * 2., "{placeholder}: {frame:?}");
         };
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         one_line(&host, "Search apps", 22.);
         type_keys(&mut host, &["Escape"]);
@@ -3194,7 +3190,7 @@ mod tests {
         run(&mut host, "idle", 0., 30);
         for round in ["cold", "warm"] {
             println!("--- {round}");
-            let e = timed(&mut || host.toggle_launcher(Some(String::from("DP-1"))));
+            let e = timed(&mut || host.shell_action("toggle-launcher", &[], Some(String::from("DP-1"))));
             run(&mut host, "launcher opens", e, 40);
             for key in ["f", "i", "r"] {
                 let e = timed(&mut || type_keys(&mut host, &[key]));
@@ -3433,7 +3429,7 @@ mod tests {
         shot(&host, "volume-level", [660, 960, 600, 120]);
         settle(&mut host, &mut now);
 
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         type_keys(&mut host, &["f", "i"]);
         settle(&mut host, &mut now);
@@ -3503,7 +3499,7 @@ mod tests {
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
         let style = serde_json::json!({ "gaps": 8, "animations": false, "slowdown": 1 });
         host.ensure_loaded(&outputs, None, UNIX, style);
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         host.advance(Instant::now(), None);
         let glass = launcher_glass(&host).unwrap();
         assert_eq!(
@@ -3520,7 +3516,7 @@ mod tests {
         // The script's timers, like the caret's blink, run on real time, so this one stays close
         // to it and settles the springs without them.
         let mut now = Instant::now();
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         host.advance(now, Some(1.));
         // Its content shows once it stretches.
         now += std::time::Duration::from_millis(200);
