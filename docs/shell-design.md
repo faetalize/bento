@@ -75,10 +75,12 @@ on-screen indicator, so a feature lives in one place and every shell that has it
 ships its modules and two shells built from them, so that a module of one's own, or a change to
 one of bento's, is one file.
 
-The shell's files live in `~/.config/bento/shell/`. Its `main.tsx` is the shell that runs, which
-can be one of bento's, and without one bento runs its unix shell. A module there takes the place of
-bento's module of its name everywhere, and bento's own stays there to build on. bento reloads them
-when they change, without building anything or logging out. Scripts react to events
+Which shell runs is chosen the way the engine is: in bento's config, and in bento's settings,
+among bento's shells and a file of one's own. bento's own shells aren't edited in place; one is
+duplicated into a file of one's own to start from, and that file is the shell that runs. A
+shell's files and one's own modules live in `~/.config/bento/shell/`; a module there takes the
+place of bento's module of its name everywhere, and bento's own stays there to build on. bento
+reloads them when they change, without building anything or logging out. Scripts react to events
 and say where things go; they never run in the per-frame loop. A script that fails leaves the last
 working shell on screen and reports the error.
 
@@ -102,12 +104,13 @@ Disturb or what's been seen, is state. Something the shell writes as it's used a
 like pinned apps, is a setting.
 
 Settings are kept in `~/.config/bento/shell/settings.kdl`, a block for each module and each shell
-by its name. A module of one's own in place of bento's has the settings of its name. State is kept
+by its name. They're the user's. What a shell prefers for a module it uses, like a clock on two
+lines in a taskbar, isn't a setting: it's what it places the module with, its props. A module of one's own in place of bento's has the settings of its name. State is kept
 apart, in bento's state folder.
 
 A module reads its settings as they are, and gets them again as the file changes, without a
-reload. What a module is placed with comes first, then its setting, then its default. A module can
-change its own settings, as when an app is pinned.
+reload. How its props and its settings go together is the module's to say, one over the other or
+one changing the other. A module can change its own settings, as when an app is pinned.
 
 bento's settings show the running shell's settings, as bento hands it their declarations, the way
 they show the running engine's options. Settings that nothing declares stay in the file, and
