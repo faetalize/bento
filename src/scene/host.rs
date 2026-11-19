@@ -1565,31 +1565,13 @@ mod tests {
             panic!("{err:#}");
         }
         drop(shell);
-        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let (mut host, mut now, button) = windows_shell_with_an_app();
         // Along the bottom, keeping its height from the windows.
         let reserved = host.reserved("DP-1");
         assert_eq!(reserved, [0., 0., 48., 0.]);
         assert!(shows(&host, "DP-1", "start-here-symbolic"));
 
         // Two windows of one app are one button, whose previews are live copies of both.
-        let window = |id: u32, focused: bool| {
-            serde_json::json!({
-                "id": id, "appId": "org.example.Editor", "title": format!("Note {id}"),
-                "workspace": 7, "output": "DP-1", "focused": focused, "urgent": false,
-                "floating": false,
-            })
-        };
-        host.set_windows(serde_json::json!([window(1, true), window(2, false)]));
-        settle(&mut host, &mut now);
-        let buttons = host
-            .shell
-            .as_ref()
-            .unwrap()
-            .scene
-            .borrow()
-            .find("DP-1", "application-x-executable");
-        assert_eq!(buttons.len(), 1, "one button for the app: {buttons:?}");
-        let button = [buttons[0][0] + 4., buttons[0][1] + 4.];
         host.pointer_at(Some(("DP-1", button)));
         settle(&mut host, &mut now);
         let copies: Vec<u64> = Band::ALL
@@ -1645,6 +1627,113 @@ mod tests {
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    /// The windows shell, with two windows of one app on its taskbar, and a point on the app's
+    /// button.
+    fn windows_shell_with_an_app() -> (SceneHost, Instant, [f32; 2]) {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let window = |id: u32, focused: bool| {
+            serde_json::json!({
+                "id": id, "appId": "org.example.Editor", "title": format!("Note {id}"),
+                "workspace": 7, "output": "DP-1", "focused": focused, "urgent": false,
+                "floating": false,
+            })
+        };
+        host.set_windows(serde_json::json!([window(1, true), window(2, false)]));
+        settle(&mut host, &mut now);
+        let buttons = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "application-x-executable");
+        assert_eq!(buttons.len(), 1, "one button for the app: {buttons:?}");
+        let button = [buttons[0][0] + 4., buttons[0][1] + 4.];
+        (host, now, button)
+    }
+
+    /// The windows the shell shows live copies of.
+    fn copied(host: &SceneHost) -> Vec<u64> {
+        Band::ALL
+            .into_iter()
+            .flat_map(|band| host.copies("DP-1", band))
+            .map(|copy| copy.window)
+            .collect()
+    }
+
+    #[test]
+    fn a_taskbar_button_shows_no_previews_while_its_menu_is_open() {
+        let (mut host, mut now, button) = windows_shell_with_an_app();
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        assert_eq!(copied(&host), [1, 2]);
+
+        assert!(host.covers_any("DP-1", button));
+        host.press(3, 3, SceneHost::at("DP-1", button));
+        host.release(3, 3, SceneHost::at("DP-1", button));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        assert_eq!(copied(&host), Vec::<u64>::new());
+
+        // Going to the menu and coming back to the button brings no previews over it.
+        host.pointer_at(None);
+        settle(&mut host, &mut now);
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        assert_eq!(copied(&host), Vec::<u64>::new());
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_taskbar_button_dragged_past_another_takes_its_place() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let window = |id: u32, app: &str| {
+            serde_json::json!({
+                "id": id, "appId": app, "title": app, "workspace": 7, "output": "DP-1",
+                "focused": false, "urgent": false, "floating": false,
+            })
+        };
+        host.set_windows(serde_json::json!([
+            window(1, "org.example.A"),
+            window(2, "org.example.B")
+        ]));
+        settle(&mut host, &mut now);
+        let buttons = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "application-x-executable");
+        assert_eq!(buttons.len(), 2, "{buttons:?}");
+        let first = [buttons[0][0] + 4., buttons[0][1] + 4.];
+        let second = [buttons[1][0] + 4., buttons[1][1] + 4.];
+        commands(&host);
+        host.take_actions();
+
+        // A's button, dragged onto B's, takes its place, and letting go there isn't a click.
+        assert!(host.covers_any("DP-1", first));
+        host.press(1, 1, SceneHost::at("DP-1", first));
+        host.pointer_at(Some(("DP-1", [first[0] + 12., first[1]])));
+        host.pointer_at(Some(("DP-1", second)));
+        settle(&mut host, &mut now);
+        host.release(1, 1, SceneHost::at("DP-1", second));
+        settle(&mut host, &mut now);
+        assert!(host.take_actions().is_empty(), "the drop was a click");
+
+        // B's is first now.
+        click(&mut host, "DP-1", first);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "focus-window");
+        assert_eq!(ran[0]["window"], 2);
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 

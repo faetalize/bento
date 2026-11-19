@@ -961,6 +961,26 @@ impl Scene {
         self.changed = true;
     }
 
+    /// Puts `child` in `parent` before the first of `siblings` that `parent` holds, or last if
+    /// it holds none of them: the nodes that come after it in the script's tree, some of which,
+    /// like those on their way out, bento may not hold.
+    pub fn insert_before(&mut self, parent: NodeId, child: NodeId, siblings: &[NodeId]) {
+        let Some(node) = self.node(parent) else {
+            return;
+        };
+        let before = siblings
+            .iter()
+            .filter(|sibling| **sibling != child)
+            .find_map(|sibling| node.children.iter().position(|c| c == sibling));
+        // Its own place counts from without it.
+        let own = node.children.iter().position(|c| *c == child);
+        let index = match (before, own) {
+            (Some(before), Some(own)) if own < before => Some(before - 1),
+            (before, _) => before,
+        };
+        self.append(parent, child, index);
+    }
+
     fn detach(&mut self, child: NodeId) {
         let Some(parent) = self.node(child).and_then(|n| n.parent) else {
             return;
@@ -2941,6 +2961,35 @@ mod tests {
         scene.append(root, surface, None);
         scene.append(surface, held, None);
         (surface, held)
+    }
+
+    #[test]
+    fn a_child_put_before_another_comes_before_it() {
+        let mut scene = Scene::new();
+        let (_, row) = surface(
+            &mut scene,
+            serde_json::json!({ "anchor": ["top", "left"] }),
+            serde_json::json!({ "flexDirection": "row" }),
+        );
+        let style = serde_json::json!({ "width": 40, "height": 40 });
+        let a = scene.create("box", &style);
+        let b = scene.create("box", &style);
+        scene.append(row, a, None);
+        scene.append(row, b, None);
+        scene.lay_out();
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(0.));
+        scene.append(row, b, Some(0));
+        scene.lay_out();
+        assert_eq!(scene.layout(b).map(|r| r[0]), Some(0.));
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(40.));
+
+        // Before the first of the nodes after it that's there: one that isn't is passed over.
+        scene.insert_before(row, a, &[9999, b]);
+        scene.lay_out();
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(0.));
+        scene.insert_before(row, a, &[9999]);
+        scene.lay_out();
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(40.));
     }
 
     #[test]

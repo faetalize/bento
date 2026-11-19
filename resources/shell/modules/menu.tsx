@@ -51,6 +51,9 @@ export function openMenu(place: MenuPlace, items: MenuItem[]) {
   popup.open(KEY);
 }
 
+/** Whether a menu is open, for what would come up over it to wait. */
+export const menuOpen = () => popup.is(KEY);
+
 /** Closes the menu, if one is open. */
 export function closeMenu() {
   popup.close(KEY);

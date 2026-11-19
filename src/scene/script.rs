@@ -149,6 +149,18 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
+                "insertBefore",
+                Function::new(
+                    ctx.clone(),
+                    move |parent: u32, child: u32, siblings: String| {
+                        let siblings: Vec<u32> = serde_json::from_str(&siblings).unwrap_or_default();
+                        s.borrow_mut().insert_before(parent, child, &siblings);
+                    },
+                )
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
                 "edit",
                 Function::new(ctx.clone(), move |id: u32, key: String| {
                     let key = serde_json::from_str(&key).unwrap_or_default();

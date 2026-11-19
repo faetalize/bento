@@ -939,7 +939,12 @@ function insertChild(parent: Node, node: Node, anchor?: Node | null) {
     const index = anchor ? parent.held.indexOf(anchor) : -1;
     if (index >= 0) parent.held.splice(index, 0, node);
     else parent.held.push(node);
-    native.append(parent.id, node.id, index >= 0 ? index : -1);
+    // Before what comes after it, by id, rather than at an index: bento holds what's on its way
+    // out, and doesn't hold some of what the script has, so their places differ.
+    const after = parent.children.slice(parent.children.indexOf(node) + 1).map((one) => one.id);
+    // A bento built before it had `insertBefore` places it by index.
+    if (native.insertBefore) native.insertBefore(parent.id, node.id, JSON.stringify(after));
+    else native.append(parent.id, node.id, index >= 0 ? index : -1);
     node.attached = true;
     enter(node);
   } else {
