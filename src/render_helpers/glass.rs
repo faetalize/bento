@@ -624,9 +624,9 @@ pub fn render_rects(
         let [x, y, w, h] = *rect;
         uniforms.rects[i] = [x - origin[0], y - origin[1], w, h];
         uniforms.radii[i] = *radii;
-        // A piece fading out lets go of the glass it melted into as it goes, so the other's edge
-        // doesn't fade with it.
-        uniforms.melts[i] = melt * opacity;
+        // A piece melts no further than it's big, so one growing out of other glass or shrinking
+        // back into it swells it only as much as it's there.
+        uniforms.melts[i] = melt.min(w).min(h);
         uniforms.opacities[i] = *opacity;
     }
     let uniforms = uniforms.lit(frame, geometry.loc, 1.);

@@ -165,8 +165,8 @@ Each shape has a material, as on Windows:
 With bento's `plain` material, the shell's glass is blurred evenly too, without an edge to bend
 or light it.
 
-A shape's material fades with it: as a panel fades in or out, so does its glass, and it lets go of
-the glass it melts into as it goes.
+A shape's material fades with it, and a piece of glass melts no further than it's big, so one
+growing out of other glass, or shrinking back into it, swells it only as much as it's there.
 
 ## bento's shells
 
@@ -267,7 +267,8 @@ The start menu comes out of the start button: around it on a taskbar in the midd
 left edge on one to the left. It finds apps the way the launcher does, shows all of them
 otherwise, and has the power menu. Quick settings and the notification center are the control center's parts, each
 coming out of its button. Every panel over the taskbar comes out the same distance from its edge,
-close enough to melt into it as one piece, never so far that it half melts. Notifications come up over the taskbar's end.
+close enough to melt into it as one piece, never so far that it half melts. Each grows out of the
+taskbar from its button's end and shrinks back into it, its glass flowing out of the taskbar's. Notifications come up over the taskbar's end.
 
 ## The tray
 

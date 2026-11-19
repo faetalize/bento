@@ -193,9 +193,11 @@ float inradius_of(vec4 rect) {
 }
 
 // Melts a piece of glass into the glass so far: its outline and the depth of its surface melt as
-// shapes do, and the slope, inradius and opacity there follow the nearer piece, blended across the
-// seam by the same weight the smooth minimum gives each, so a thin piece keeps its own beside a
-// wide one and the slope stays the depth's exact slope.
+// shapes do, and the slope and inradius there follow the nearer piece, blended across the seam by
+// the same weight the smooth minimum gives each, so a thin piece keeps its own beside a wide one
+// and the slope stays the depth's exact slope. Its opacity is the nearer piece's, blended only a
+// pixel either side of the middle of the seam, so a piece fading out doesn't fade the edge of the
+// glass it melts into.
 void melt(inout float outline, inout float depth, inout vec2 slope, inout float inradius,
           inout float opacity, float outline2, float depth2, vec2 slope2, float inradius2,
           float opacity2, float k) {
@@ -203,7 +205,7 @@ void melt(inout float outline, inout float depth, inout vec2 slope, inout float 
     float nearer = clamp(0.5 + 0.5 * (depth2 - depth) / k, 0.0, 1.0);
     slope = mix(slope2, slope, nearer);
     inradius = mix(inradius2, inradius, nearer);
-    opacity = mix(opacity2, opacity, nearer);
+    opacity = mix(opacity2, opacity, clamp(0.5 + 0.5 * (depth2 - depth), 0.0, 1.0));
     depth = smooth_min(depth, depth2, k);
     outline = smooth_min(outline, outline2, k);
 }

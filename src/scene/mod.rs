@@ -399,8 +399,11 @@ pub struct Node {
     /// Whether it was left out of the last layout, hidden or not displayed: shown again, it
     /// comes in at its place, not from where it was.
     left_out: bool,
-    /// The size it's drawn at, around the middle of its place, or `None` for its place's size.
+    /// The size it's drawn at, or `None` for its place's size.
     draw_size: Option<[f32; 2]>,
+    /// Where in its place a shape drawn at another size is held, as fractions of its width and
+    /// height: its middle, `[0.5, 0.5]`, unless it says an edge or a corner.
+    draw_from: [f32; 2],
     animate: bool,
     /// Whether it's left out: neither drawn nor hit.
     hidden: bool,
@@ -790,6 +793,7 @@ impl Scene {
             left_out: false,
             responses: [None; SPRINGS],
             draw_size: None,
+            draw_from: [0.5, 0.5],
             animate: true,
             hidden: false,
             placed_size: false,
@@ -892,6 +896,9 @@ impl Scene {
         // Shown or hidden, it's placed again, or left out.
         if props.get("hidden").is_some() || props.get("visibility").is_some() {
             self.layout_dirty = true;
+        }
+        if let Some(from) = props.get("drawFrom") {
+            node.draw_from = draw_from(from.as_str().unwrap_or("center"));
         }
         if let Some(size) = props.get("drawSize") {
             node.draw_size = pair(size);
@@ -1626,9 +1633,10 @@ impl Scene {
     fn drawn(node: &Node) -> [f32; 4] {
         let s = |i: usize| node.springs[i].value as f32;
         let (w, h) = (s(DW).max(0.), s(DH).max(0.));
-        let cx = s(X) + s(W) / 2. + s(DX);
-        let cy = s(Y) + s(H) / 2. + s(DY);
-        [cx - w / 2., cy - h / 2., w, h]
+        let [fx, fy] = node.draw_from;
+        let x = s(X) + s(DX) + (s(W) - w) * fx;
+        let y = s(Y) + s(DY) + (s(H) - h) * fy;
+        [x, y, w, h]
     }
 
     /// What to draw of output `name`'s surfaces in `band`, back to front.
@@ -2103,6 +2111,22 @@ impl Scaling {
 }
 
 /// Two numbers, like a size or an offset.
+/// Where in its place a shape is held, from a style's `drawFrom`: `"center"`, an edge, or a corner
+/// like `"bottom right"`, as fractions of its width and height.
+fn draw_from(value: &str) -> [f32; 2] {
+    let mut at = [0.5, 0.5];
+    for word in value.split_whitespace() {
+        match word {
+            "left" => at[0] = 0.,
+            "right" => at[0] = 1.,
+            "top" => at[1] = 0.,
+            "bottom" => at[1] = 1.,
+            _ => (),
+        }
+    }
+    at
+}
+
 fn pair(value: &Value) -> Option<[f32; 2]> {
     match value.as_array()?.as_slice() {
         [a, b, ..] => Some([a.as_f64()? as f32, b.as_f64()? as f32]),
@@ -2729,6 +2753,21 @@ mod tests {
         assert!(moving[2] > 100. && moving[2] < 560., "{moving:?}");
         settle(&mut scene);
         assert_eq!(scene.frame(node).unwrap(), [680., 200., 560., 120.]);
+    }
+
+    #[test]
+    fn a_drawn_size_is_held_at_the_edge_or_corner_it_says() {
+        let mut scene = Scene::new();
+        let node = panel(
+            &mut scene,
+            serde_json::json!({ "drawSize": [100, 40], "drawFrom": "bottom right" }),
+        );
+        settle(&mut scene);
+        assert_eq!(scene.frame(node).unwrap(), [1140., 280., 100., 40.]);
+        scene.set(node, &serde_json::json!({ "drawFrom": "bottom" }));
+        assert_eq!(scene.frame(node).unwrap(), [910., 280., 100., 40.]);
+        scene.set(node, &serde_json::json!({ "drawFrom": "top left" }));
+        assert_eq!(scene.frame(node).unwrap(), [680., 200., 100., 40.]);
     }
 
     #[test]

@@ -148,6 +148,9 @@ declare module "bento" {
      * scaling what it holds: a shape that grows out of a point is drawn from `[0, 0]`. `null` is
      * its place's size. */
     drawSize?: [number, number] | null;
+    /** Where in its place its shape is held while it's drawn at another size: its middle, an
+     * edge, or a corner, like `"bottom right"`, as a panel grows out of a bar from there. */
+    drawFrom?: "center" | Edge | `${"top" | "bottom"} ${"left" | "right"}`;
     /** How blurred it's drawn, with what it holds, in logical pixels. */
     blur?: number;
     /** `"hidden"` cuts what it holds to its shape, rounded corners and all; `"scroll"` too, and

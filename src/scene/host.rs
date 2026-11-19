@@ -1750,37 +1750,46 @@ mod tests {
     }
 
     #[test]
-    fn the_start_menus_glass_fades_with_it() {
+    fn the_start_menu_grows_out_of_the_taskbar_and_back_into_it() {
         let (mut host, mut now, _) = windows_shell_with_an_app();
-        let glass = |host: &SceneHost| {
-            let scene = host.shell.as_ref().unwrap().scene.borrow();
-            let items: Vec<Item> = Band::ALL
-                .into_iter()
-                .flat_map(|band| scene.draw("DP-1", band))
-                .collect();
-            glass_of(&items)
-        };
-        let fading = |host: &mut SceneHost, now: &mut Instant| {
+        // The start menu's glass, frame by frame: its rectangle and how opaque it is.
+        let frames = |host: &mut SceneHost, now: &mut Instant| {
             let mut seen = Vec::new();
-            for _ in 0..40 {
+            for _ in 0..90 {
                 *now += Duration::from_millis(16);
                 host.advance(*now, Some(1.));
-                seen.extend(glass(host).into_iter().map(|(_, _, opacity)| opacity));
+                let scene = host.shell.as_ref().unwrap().scene.borrow();
+                let items: Vec<Item> = Band::ALL
+                    .into_iter()
+                    .flat_map(|band| scene.draw("DP-1", band))
+                    .collect();
+                let menu = glass_of(&items).into_iter().find(|piece| piece.0[2] < 1920.);
+                seen.push(menu);
             }
             seen
         };
+        let grows = |seen: &[Option<GlassPiece>]| {
+            let shown: Vec<GlassPiece> = seen.iter().flatten().copied().collect();
+            // Whole, at full strength, and coming out of the taskbar's edge, 2px over it.
+            assert!(shown.iter().all(|(_, _, opacity)| *opacity > 0.99), "{shown:?}");
+            assert!(
+                shown.iter().all(|([_, y, _, h], _, _)| (1032. - (y + h) - 2.).abs() < 0.5),
+                "{shown:?}"
+            );
+            assert!(
+                shown.iter().any(|([_, _, _, h], _, _)| *h > 1. && *h < 300.),
+                "it's there at its size at once: {shown:?}"
+            );
+        };
         host.toggle_launcher(Some(String::from("DP-1")));
-        let coming = fading(&mut host, &mut now);
-        assert!(
-            coming.iter().any(|o| *o > 0.05 && *o < 0.95),
-            "its glass is there at once: {coming:?}"
-        );
+        let coming = frames(&mut host, &mut now);
+        grows(&coming);
+        assert!(coming.last().unwrap().is_some_and(|([_, _, _, h], _, _)| h > 500.));
+
         host.toggle_launcher(Some(String::from("DP-1")));
-        let going = fading(&mut host, &mut now);
-        assert!(
-            going.iter().any(|o| *o > 0.05 && *o < 0.95),
-            "its glass is gone at once: {going:?}"
-        );
+        let going = frames(&mut host, &mut now);
+        grows(&going);
+        assert!(going.last().unwrap().is_none(), "{going:?}");
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 

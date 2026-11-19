@@ -2,7 +2,8 @@
 // Every other stock module builds from them, so a `modules/ui.tsx` of one's own restyles them all.
 
 import {
-  Surface, after, css, paced, settling, type Edge, type JSX, type KeyEvent, type TextProps,
+  Surface, after, css, paced, settling, type Edge, type JSX, type KeyEvent, type Style,
+  type TextProps,
 } from "bento";
 import { createEffect, createSignal, For, Show } from "solid-js";
 
@@ -605,15 +606,28 @@ export interface FlyoutProps {
 }
 
 /** A panel of glass that comes out of a button, as quick settings come out of a taskbar, and
- * slides back in. It's made afresh each time it opens, and Escape or a press elsewhere closes
- * it. */
+ * goes back into it: it grows out of the side it comes out of, from the end it's lined up with,
+ * its glass melting into the bar's while it's close, and what it holds fades in. Held to the
+ * output's edges instead, it slides in. It's made afresh each time it opens, and Escape or a
+ * press elsewhere closes it. */
 export function Flyout(props: FlyoutProps) {
   const open = () => props.open ?? (props.popup !== undefined && popup.is(props.popup));
   const close = () => props.popup !== undefined && popup.close(props.popup);
   const side = () => props.side ?? "top";
-  // It slides in from the side it comes out of.
+  const attached = () => !!(props.from || props.at);
+  // Where it grows from: the edge facing what it comes out of, at the end it's lined up with.
+  const growsFrom = () => {
+    const facing = ({ top: "bottom", bottom: "top", left: "right", right: "left" } as const)[side()];
+    const across = side() === "top" || side() === "bottom"
+      ? { start: " left", center: "", end: " right" }
+      : { start: " top", center: "", end: " bottom" };
+    return `${facing}${across[props.align ?? "center"]}` as Style["drawFrom"];
+  };
+  // Held to the output's edges, it slides in from the side it comes out of.
   const slide = (): [number, number] =>
     side() === "top" ? [0, 12] : side() === "bottom" ? [0, -12] : side() === "left" ? [12, 0] : [-12, 0];
+  const pose = () =>
+    attached() ? { drawSize: [0, 0] as [number, number] } : { opacity: 0, translate: slide() };
   return (
     <Surface
       output={props.output}
@@ -634,12 +648,14 @@ export function Flyout(props: FlyoutProps) {
         <box
           style={{
             material: "glass", borderRadius: props.radius ?? 18, padding: props.padding ?? 16,
-            overflow: "hidden", flexDirection: "column",
+            overflow: "hidden", flexDirection: "column", drawFrom: growsFrom(),
           }}
-          enter={{ opacity: 0, translate: slide() }}
-          exit={{ opacity: 0, translate: slide() }}
+          enter={pose()}
+          exit={pose()}
         >
-          {props.children}
+          <box style={{ flexDirection: "column" }} enter={{ opacity: 0 }} exit={{ opacity: 0 }}>
+            {props.children}
+          </box>
         </box>
       </Show>
     </Surface>
