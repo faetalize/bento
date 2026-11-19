@@ -128,7 +128,7 @@ function Taskbar(props: { output: string }) {
           </Show>
           <box style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
             <BarButton open={popup.is(start)} onClick={() => popup.toggle(start)}>
-              <image icon="ph-squares-four-symbolic" size={20} style={{ color: "accent" }} />
+              <image icon="ph-squares-four-symbolic" size={20} />
             </BarButton>
             {/* The overview, of every workspace. */}
             <BarButton onClick={() => action("toggle-overview")}>
