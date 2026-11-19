@@ -31,12 +31,14 @@ function AppTile(props: { app: App; onClick: () => void }) {
   );
 }
 
-/** The start menu of `output`, which `popup` opens as `start:<output>`: over the start button
- * `from`, lined up with it as `align` says, or else `bottom` up from the bottom of the output. */
+/** The start menu of `output`, which `popup` opens as `start:<output>`: `gap` over the start
+ * button `from`, lined up with it as `align` says, or else `bottom` up from the bottom of the
+ * output. */
 export function StartMenu(props: {
   output: string;
   from?: SceneNode;
   align?: "start" | "center" | "end";
+  gap?: number;
   bottom?: number;
 }) {
   preloadIcons(ICON);
@@ -49,7 +51,7 @@ export function StartMenu(props: {
       side="top"
       align={props.align ?? "center"}
       anchor={["bottom"]}
-      gap={props.from ? undefined : props.bottom}
+      gap={props.from ? props.gap : props.bottom}
       keyboard
       padding={16}
       radius={14}

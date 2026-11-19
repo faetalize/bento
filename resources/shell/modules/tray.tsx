@@ -101,8 +101,14 @@ function Icon(props: { item: TrayIcon; output: string; size: number }) {
 }
 
 /** The tray on `output`: the pinned icons in a row, and a chevron to the rest, which come out
- * on its `side`, `"top"` for a tray along the bottom of the output. */
-export function Tray(props: { output: string; side?: Edge; size?: number; style?: any }) {
+ * on its `side`, `"top"` for a tray along the bottom of the output, `gap` from it. */
+export function Tray(props: {
+  output: string;
+  side?: Edge;
+  gap?: number;
+  size?: number;
+  style?: any;
+}) {
   const key = () => `tray:${props.output}`;
   const side = () => props.side ?? "bottom";
   const size = () => props.size ?? 16;
@@ -126,7 +132,15 @@ export function Tray(props: { output: string; side?: Edge; size?: number; style?
             size={size()}
           />
         </box>
-        <Flyout output={props.output} popup={key()} from={chevron} side={side()} padding={6} radius={12}>
+        <Flyout
+          output={props.output}
+          popup={key()}
+          from={chevron}
+          side={side()}
+          gap={props.gap}
+          padding={6}
+          radius={12}
+        >
           <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 2, maxWidth: 5 * 30 }}>
             <For each={hidden()} keyed={(item: TrayIcon) => item.id}>
               {(item: () => TrayIcon) => <Icon item={item()} output={props.output} size={size()} />}

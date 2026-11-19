@@ -53,6 +53,11 @@ const SMALL: Style = {
 /** How tall the taskbar is, with room for its buttons. */
 const height = () => Math.max(40, settings.height);
 
+/** How far a panel is from a button `size` tall on the taskbar, for it to come out the same
+ * distance from the taskbar's edge whichever button it's from: close enough to melt into it as
+ * one piece, never so far that it half melts. */
+const over = (size: number) => (height() - size) / 2 + 2;
+
 // The launcher's shortcut opens the focused output's start menu.
 onAction("toggle-launcher", ({ output }) => {
   popup.toggle(`start:${output ?? focusedOutput() ?? outputs()[0]}`);
@@ -149,7 +154,7 @@ function Taskbar(props: { output: string }) {
           >
             {/* Three areas, a line between each: the tray, quick things like the sound output
                 switcher and the clipboard, and quick settings with the clock. */}
-            <Tray output={output} side="top" />
+            <Tray output={output} side="top" gap={over(28)} />
             <Divider length={24} style={{ margin: [0, 4] }} />
             {/* While sound outputs are pinned, a click goes to the next, and a right click opens
                 quick settings, where they're pinned. */}
@@ -211,14 +216,15 @@ function Taskbar(props: { output: string }) {
         output={output}
         from={startButton()}
         align={settings.alignment === "left" ? "start" : "center"}
+        gap={over(40)}
       />
-      <Flyout output={output} popup={quick} from={quickButton()} side="top" align="end" keyboard>
+      <Flyout output={output} popup={quick} from={quickButton()} side="top" align="end" gap={over(40)} keyboard>
         <QuickSettings output={output} onClose={() => popup.close(quick)} />
       </Flyout>
-      <Flyout output={output} popup={clipboard} from={clipboardButton()} side="top" align="end" keyboard>
+      <Flyout output={output} popup={clipboard} from={clipboardButton()} side="top" align="end" gap={over(28)} keyboard>
         <ClipboardHistory onPicked={() => popup.close(clipboard)} />
       </Flyout>
-      <Flyout output={output} popup={calendar} from={clockButton()} side="top" align="end" keyboard>
+      <Flyout output={output} popup={calendar} from={clockButton()} side="top" align="end" gap={over(40)} keyboard>
         <box style={{ flexDirection: "column", gap: 16, width: 360 }}>
           <NotificationCenter onUsed={() => popup.close(calendar)} />
           <box style={{ height: 1, background: "fg/0.1" }} />

@@ -1718,6 +1718,37 @@ mod tests {
             .collect()
     }
 
+    /// How far above the taskbar the glass of the panel open over it is, once it's settled.
+    fn above_taskbar(host: &mut SceneHost, now: &mut Instant) -> f32 {
+        settle(host, now);
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let items: Vec<Item> = Band::ALL
+            .into_iter()
+            .flat_map(|band| scene.draw("DP-1", band))
+            .collect();
+        let glass = glass_of(&items);
+        let taskbar = glass.iter().find(|piece| piece.0[2] >= 1920.).unwrap().0;
+        let panel = glass.iter().find(|piece| piece.0[2] < 1920.).unwrap().0;
+        taskbar[1] - (panel[1] + panel[3])
+    }
+
+    #[test]
+    fn the_taskbars_panels_all_melt_into_it_alike() {
+        let (mut host, mut now, _) = windows_shell_with_an_app();
+        let clipboard = middle_of(&host, "DP-1", "edit-paste-symbolic");
+        click(&mut host, "DP-1", clipboard);
+        let from_clipboard = above_taskbar(&mut host, &mut now);
+        click(&mut host, "DP-1", clipboard);
+        settle(&mut host, &mut now);
+
+        host.toggle_launcher(Some(String::from("DP-1")));
+        let from_start = above_taskbar(&mut host, &mut now);
+        // Close enough to melt into it whole, and as close whatever button it came from.
+        assert!(from_clipboard < 4., "{from_clipboard}");
+        assert_eq!(from_start, from_clipboard);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
     #[test]
     fn the_start_menus_glass_fades_with_it() {
         let (mut host, mut now, _) = windows_shell_with_an_app();

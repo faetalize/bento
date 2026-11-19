@@ -615,7 +615,7 @@ pub fn render_rects(
 
     let mut uniforms = GlassShapes {
         count: rects.len(),
-        glass: blur.glass,
+        glass: shell_glass(&blur),
         accent: accent(),
         ..GlassShapes::default()
     };
@@ -649,6 +649,28 @@ pub fn render_rects(
         push(look.into());
     }
     push(elem.into());
+}
+
+/// The glass under bento's own shell for `blur`'s material. Plain is the shell's shapes blurred
+/// evenly, as apps' plain blur is: glass that's flat, clear, and catches no light, so nothing
+/// bends or lights what's behind.
+fn shell_glass(blur: &niri_config::Blur) -> niri_config::Glass {
+    match blur.material {
+        niri_config::Material::Glass => blur.glass,
+        niri_config::Material::Plain => niri_config::Glass {
+            bezel: 0.,
+            thickness: 0.,
+            dispersion: 0.,
+            reflection: 0.,
+            color: Color::from_rgba8_unpremul(0, 0, 0, 0),
+            follow_accent: false,
+            pattern: GlassPattern::Smooth,
+            pattern_depth: 0.,
+            pointer_light: 0.,
+            lights: Default::default(),
+            ..blur.glass
+        },
+    }
 }
 
 /// `bounds` grown out to whole steps of [`AREA_STEP`].
@@ -700,6 +722,26 @@ fn bounds(shapes: &[GlassShape], paths: &[GlassCurve]) -> Option<Rectangle<i32, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_shells_glass_is_flat_and_clear_when_the_material_is_plain() {
+        let blur = niri_config::Blur {
+            material: niri_config::Material::Plain,
+            ..Default::default()
+        };
+        let glass = super::shell_glass(&blur);
+        assert_eq!(glass.bezel, 0., "it has an edge that bends what's behind");
+        assert_eq!(glass.thickness, 0.);
+        assert_eq!(glass.reflection, 0.);
+        assert_eq!(glass.pointer_light, 0.);
+        assert!(glass.lights.iter().all(Option::is_none), "it catches the light");
+        assert_eq!(glass.pattern_depth, 0.);
+        assert_eq!(glass.color.a, 0., "it's tinted");
+        assert!(!glass.follow_accent);
+
+        let blur = niri_config::Blur::default();
+        assert_eq!(super::shell_glass(&blur), blur.glass);
+    }
+
     use smithay::backend::renderer::element::Element as _;
 
     use super::*;
