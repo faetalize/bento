@@ -39,6 +39,11 @@ pub fn category() -> Category {
                     "shell.choice",
                     "Shell Settings",
                     &["pinned", "modules", "settings.kdl", "height"],
+                )
+                .search_item(
+                    "shell.actions",
+                    "Shell Shortcuts",
+                    &["shell-action", "actions", "binds", "keybinds"],
                 ),
         )
 }

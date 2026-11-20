@@ -14,7 +14,7 @@ use std::time::Duration;
 use adw::prelude::*;
 use bento_ipc::Shell;
 use gtk::glib;
-use niri_config::ShellScript;
+use niri_config::{Action, ShellScript};
 
 use crate::ipc;
 use crate::kdl::Value;
@@ -27,14 +27,19 @@ const BUILT_IN: &[(&str, &str)] = &[("unix", "Unix"), ("windows", "Windows")];
 struct View {
     ctx: PageContext,
     column: gtk::Box,
-    /// The configured shell and the running one with its setting values left out. The page is
-    /// rebuilt only when this changes; the settings' rows keep themselves up to date.
+    /// The configured shell, the running one with its setting values left out, and how many of
+    /// its actions have a shortcut. The page is rebuilt only when this changes; the settings'
+    /// rows keep themselves up to date.
     shown: RefCell<Option<Shape>>,
 }
 
-type Shape = (ShellScript, Result<Shell, String>);
+type Shape = (ShellScript, Result<Shell, String>, Option<String>);
 
-fn shape(script: ShellScript, shell: &Result<Shell, String>) -> Shape {
+fn shape(ctx: &PageContext, shell: &Result<Shell, String>) -> Shape {
+    let shortcuts = shell
+        .as_ref()
+        .ok()
+        .and_then(|shell| shortcuts_summary(ctx, shell));
     let shell = shell.clone().map(|mut shell| {
         for block in &mut shell.settings {
             for setting in &mut block.settings {
@@ -43,7 +48,7 @@ fn shape(script: ShellScript, shell: &Result<Shell, String>) -> Shape {
         }
         shell
     });
-    (script, shell)
+    (script(ctx), shell, shortcuts)
 }
 
 fn script(ctx: &PageContext) -> ShellScript {
@@ -80,7 +85,7 @@ pub fn build(ctx: &PageContext) -> gtk::Widget {
 
 fn refresh(view: &Rc<View>) {
     let shell = ipc::shell();
-    let shape = shape(script(&view.ctx), &shell);
+    let shape = shape(&view.ctx, &shell);
     if view.shown.borrow().as_ref() == Some(&shape) {
         return;
     }
@@ -107,6 +112,9 @@ fn refresh(view: &Rc<View>) {
             let settings = crate::pages::placed(&view.ctx, "shell");
             view.ctx.anchor("shell.settings", &settings);
             view.column.append(&settings);
+            if let Some(summary) = &shape.2 {
+                view.column.append(&shortcuts_group(view, summary));
+            }
             if !shell.unused.is_empty() {
                 view.column.append(&problem_group(
                     "Not Used",
@@ -123,6 +131,57 @@ fn refresh(view: &Rc<View>) {
             .append(&problem_group("Couldn't Get the Shell's Settings", err)),
     }
     view.shown.replace(Some(shape));
+}
+
+/// How many actions the shell and its modules have and how many have a shortcut, or nothing when
+/// they have none.
+fn shortcuts_summary(ctx: &PageContext, shell: &Shell) -> Option<String> {
+    if shell.actions.is_empty() {
+        return None;
+    }
+    // With its default keys and the user's, as bento settles which runs each key.
+    let config = ctx.store.config();
+    let declared: Vec<_> = shell.actions.iter().map(|a| a.action.clone()).collect();
+    let mut defaults = niri_config::shortcuts::bento_defaults().to_vec();
+    defaults.extend(niri_config::shortcuts::declared_binds(
+        &declared,
+        niri_config::shortcuts::shell_action,
+    ));
+    let resolved = niri_config::shortcuts::resolve(&config.binds.0, &config.unbound, &defaults);
+    let bound = declared
+        .iter()
+        .filter(|action| {
+            resolved.in_use.iter().any(|bind| {
+                matches!(
+                    niri_config::shortcuts::shortcut(bind),
+                    Some(Action::ShellAction(name, ..)) if *name == action.name
+                )
+            })
+        })
+        .count();
+    let total = declared.len();
+    Some(format!(
+        "This shell has {total} {}, {bound} with a shortcut",
+        if total == 1 { "action" } else { "actions" }
+    ))
+}
+
+/// The shell's shortcuts summed up, with a link to the Shortcuts page, which lists them by module.
+fn shortcuts_group(view: &Rc<View>, summary: &str) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    view.ctx.anchor("shell.actions", &group);
+    let row = adw::ActionRow::builder()
+        .use_markup(false)
+        .title("Shortcuts")
+        .subtitle(summary)
+        .activatable(true)
+        .build();
+    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    row.connect_activated(|row| {
+        let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
+    });
+    group.add(&row);
+    group
 }
 
 fn set_script(ctx: &PageContext, script: String) {
