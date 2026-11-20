@@ -1779,6 +1779,51 @@ mod tests {
     }
 
     #[test]
+    fn a_panel_opened_and_closed_over_and_over_stays_where_it_comes_out() {
+        let (mut host, mut now, _) = windows_shell_with_an_app();
+        let toggle = |host: &SceneHost| {
+            host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
+        };
+        // Where its glass is, frame by frame, apart from the taskbar's.
+        let mut seen = Vec::new();
+        let mut look = |host: &mut SceneHost, now: &mut Instant| {
+            *now += Duration::from_millis(16);
+            host.advance(*now, Some(1.));
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let items: Vec<Item> = Band::ALL
+                .into_iter()
+                .flat_map(|band| scene.draw("DP-1", band))
+                .collect();
+            seen.extend(glass_of(&items).into_iter().filter(|p| p.0[2] < 1920.));
+        };
+        // Pressed again and again, some presses within a frame, some a frame apart.
+        for i in 0..12 {
+            toggle(&host);
+            if i % 3 == 0 {
+                toggle(&host);
+            }
+            look(&mut host, &mut now);
+        }
+        for _ in 0..60 {
+            look(&mut host, &mut now);
+        }
+        // It comes out over the clipboard's button, at the right of the taskbar.
+        let astray: Vec<_> = seen.iter().filter(|([x, _, w, _], _, _)| x + w < 1700.).collect();
+        assert!(astray.is_empty(), "glass away from the button: {astray:?}");
+        // Closed, every one of them goes in the end; open, one is left.
+        settle(&mut host, &mut now);
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let items: Vec<Item> = Band::ALL
+            .into_iter()
+            .flat_map(|band| scene.draw("DP-1", band))
+            .collect();
+        let left: Vec<_> = glass_of(&items).into_iter().filter(|p| p.0[2] < 1920.).collect();
+        assert!(left.len() <= 1, "{left:?}");
+        drop(scene);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
     fn the_start_menu_slides_out_of_the_taskbar_and_back_into_it() {
         let (mut host, mut now, _) = windows_shell_with_an_app();
         // The start menu's glass, frame by frame: its rectangle and how opaque it is.

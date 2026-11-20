@@ -409,6 +409,9 @@ class Node {
   exit: any = null;
   entered = false;
   leaving: (() => void) | null = null;
+  /** For a surface, the size it keeps while what it held goes, and how many are going: emptied,
+   * it would shrink to nothing and move, taking them with it. */
+  kept: { width: number; height: number; going: number } | null = null;
   /** Whether what made it is gone, so that it goes once it's taken out. */
   disposed = false;
   /** Whether it's in bento's scene, in something. */
@@ -452,6 +455,12 @@ class Node {
     if (this.style[":active"]) events.add("click");
     if (this.leaving || this.hiding || this.exit) events.add("settle");
     const next: Record<string, any> = { ...style, ...this.own, events: [...events].sort() };
+    if (this.kept) {
+      const at = (value: unknown, least: number) =>
+        typeof value === "number" && value > least ? value : least;
+      next.minWidth = at(next.minWidth, this.kept.width);
+      next.minHeight = at(next.minHeight, this.kept.height);
+    }
     // What a click does something on shows a hand, unless its style says how the pointer looks.
     const clicks = this.handlers.onClick || this.handlers.onMiddleClick || this.handlers.onRightClick;
     if (clicks && next.cursor === undefined) next.cursor = "pointer";
@@ -739,12 +748,19 @@ function enter(node: Node) {
   queueMicrotask(() => native.set(node.id, JSON.stringify({ jump: from })));
 }
 
-/** Takes `node` out of bento's scene, after its exit motion if it has one. */
-function leave(node: Node) {
-  const holder = node.surface ? null : nativeParent(node);
+/** Takes `node` out of bento's scene, after its exit motion if it has one, from `from`, what held
+ * it, which it's no longer in. */
+function leave(node: Node, from: Node | null = null) {
+  const holder = node.surface ? null : from;
+  // Whether its surface keeps its size for it while it goes.
+  let keeping = false;
   const done = () => {
     node.leaving = null;
     if (holder) holder.held = holder.held.filter((one) => one !== node);
+    if (keeping && holder?.kept && --holder.kept.going === 0) {
+      holder.kept = null;
+      holder.update();
+    }
     if (node.dead) return;
     native.detach(node.id);
     node.attached = false;
@@ -781,6 +797,17 @@ function leave(node: Node) {
       position: "absolute", left: place.x - around.x, top: place.y - around.y,
       width: place.width, height: place.height,
     });
+    // A surface keeps its size while it goes, so it stays where it is, and the surface with it.
+    if (holder?.surface) {
+      keeping = true;
+      const kept = holder.kept ?? { width: 0, height: 0, going: 0 };
+      holder.kept = {
+        width: Math.max(kept.width, around.width),
+        height: Math.max(kept.height, around.height),
+        going: kept.going + 1,
+      };
+      holder.update();
+    }
   }
   let stop: (() => void) | null = null;
   node.leaving = () => {
@@ -979,7 +1006,7 @@ function removeChild(parent: Node, node: Node) {
     });
   }
   if (node.surface) unmount(node);
-  else if (parent.id >= 0) leave(node);
+  else if (parent.id >= 0) leave(node, parent);
 }
 
 function makeTextNode(value: unknown): Node {

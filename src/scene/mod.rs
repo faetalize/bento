@@ -1238,7 +1238,16 @@ impl Scene {
             tree, nodes, fonts, ..
         } = self;
         let _ = tree.compute_layout_with_measure(taffy, available, |input, _, id, _| {
-            measure(nodes, fonts, input, id.copied())
+            let mut out = measure(nodes, fonts, input, id.copied());
+            // taffy keeps what's out of a box's flow in a list of its own, and only empties it
+            // for a box with a positioning area, which it gives a box with nothing in it none of.
+            // A box left empty by what was out of its flow would keep it on the list, and taffy
+            // would read it once it's gone. With an area, it's emptied.
+            out.oof_positioning_area.get_or_insert(taffy::OofPositioningArea {
+                size: out.size,
+                offset: taffy::Point::ZERO,
+            });
+            out
         });
         let laid = self
             .tree
@@ -2891,6 +2900,23 @@ mod tests {
         settle(&mut scene);
         let end = scene.frame(other).unwrap();
         assert_eq!(start[1] - end[1], 80., "{start:?} {end:?}");
+    }
+
+    #[test]
+    fn a_box_left_empty_by_what_was_out_of_its_flow_lays_out() {
+        let mut scene = Scene::new();
+        let holder = panel(&mut scene, serde_json::json!({}));
+        let absolute = scene.create(
+            "box",
+            &serde_json::json!({ "position": "absolute", "width": 20, "height": 20 }),
+        );
+        scene.append(holder, absolute, None);
+        scene.lay_out();
+        // taffy keeps what's out of a box's flow in a list of its own, which it doesn't empty
+        // for a box laid out with nothing in it, and then reads what's gone from it.
+        scene.remove(absolute);
+        scene.lay_out();
+        assert_eq!(scene.frame(holder).unwrap()[2], 560.);
     }
 
     #[test]
