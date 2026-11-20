@@ -992,6 +992,8 @@ impl SceneHost {
 pub type GlassPiece = ([f32; 4], [f32; 4], f32);
 
 /// The glass under `items`, with each piece as opaque as its shape is, so it fades with it.
+/// A shape cut by what clips it is the part of it inside, with its corners, so glass sliding out
+/// from behind an edge shows only past the edge.
 fn glass_of(items: &[Item]) -> Vec<GlassPiece> {
     items
         .iter()
@@ -1001,11 +1003,28 @@ fn glass_of(items: &[Item]) -> Vec<GlassPiece> {
                 radii,
                 material: Material::Glass | Material::Acrylic | Material::Mica,
                 opacity,
+                clip,
                 ..
-            } if *opacity > 0.01 => Some((*rect, *radii, *opacity)),
+            } if *opacity > 0.01 => {
+                let rect = match clip {
+                    Some(clip) => cut(*rect, clip.rect)?,
+                    None => *rect,
+                };
+                let most = rect[2].min(rect[3]) / 2.;
+                Some((rect, radii.map(|r| r.min(most)), *opacity))
+            }
             _ => None,
         })
         .collect()
+}
+
+/// The part of `rect` inside `clip`, if any.
+fn cut(rect: [f32; 4], clip: [f32; 4]) -> Option<[f32; 4]> {
+    let x0 = rect[0].max(clip[0]);
+    let y0 = rect[1].max(clip[1]);
+    let x1 = (rect[0] + rect[2]).min(clip[0] + clip[2]);
+    let y1 = (rect[1] + rect[3]).min(clip[1] + clip[3]);
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
 }
 
 #[cfg(test)]
@@ -1760,7 +1779,7 @@ mod tests {
     }
 
     #[test]
-    fn the_start_menu_grows_out_of_the_taskbar_and_back_into_it() {
+    fn the_start_menu_slides_out_of_the_taskbar_and_back_into_it() {
         let (mut host, mut now, _) = windows_shell_with_an_app();
         // The start menu's glass, frame by frame: its rectangle and how opaque it is.
         let frames = |host: &mut SceneHost, now: &mut Instant| {
@@ -1780,8 +1799,10 @@ mod tests {
         };
         let grows = |seen: &[Option<GlassPiece>]| {
             let shown: Vec<GlassPiece> = seen.iter().flatten().copied().collect();
-            // Whole, at full strength, and coming out of the taskbar's edge, 2px over it.
+            // At its whole width and full strength, coming out of the taskbar's edge, 2px over
+            // it, as if from behind it.
             assert!(shown.iter().all(|(_, _, opacity)| *opacity > 0.99), "{shown:?}");
+            assert!(shown.iter().all(|([_, _, w, _], _, _)| *w == 672.), "{shown:?}");
             assert!(
                 shown.iter().all(|([_, y, _, h], _, _)| (1032. - (y + h) - 2.).abs() < 0.5),
                 "{shown:?}"
@@ -1800,6 +1821,33 @@ mod tests {
         let going = frames(&mut host, &mut now);
         grows(&going);
         assert!(going.last().unwrap().is_none(), "{going:?}");
+
+        // What it holds slides up with it, rather than being uncovered where it is.
+        // Where the search field's icon is drawn, moved with what holds it.
+        let heading = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let items: Vec<Item> = Band::ALL
+                .into_iter()
+                .flat_map(|band| scene.draw("DP-1", band))
+                .collect();
+            items.iter().find_map(|item| match item {
+                Item::Image {
+                    rect,
+                    source: super::super::ImageSource::Icon(name),
+                    ..
+                } if name == "system-search-symbolic" => Some(rect[1]),
+                _ => None,
+            })
+        };
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        for _ in 0..4 {
+            now += Duration::from_millis(16);
+            host.advance(now, Some(1.));
+        }
+        let early = heading(&host).unwrap();
+        settle(&mut host, &mut now);
+        let settled = heading(&host).unwrap();
+        assert!(early > settled + 100., "{early} {settled}");
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 

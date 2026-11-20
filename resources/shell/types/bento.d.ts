@@ -63,6 +63,9 @@ declare module "bento" {
   export type ThemeColor = "fg" | "accent" | "window";
   export type Paint = ThemeColor | `${ThemeColor}/${number}` | `#${string}`;
 
+  /** Logical pixels, or a percentage of the node's own size. */
+  export type Offset = number | `${number}%`;
+
   /** Logical pixels, a percentage of the parent, or `"auto"`. */
   export type Length = number | `${number}%` | "auto";
 
@@ -142,14 +145,16 @@ declare module "bento" {
     opacity?: number;
     /** How big it's drawn around its middle, with what it holds, as a fraction of its size. */
     scale?: number;
-    /** How far it's drawn from its place, `[x, y]`, without moving anything else. */
-    translate?: [number, number];
-    /** How big its own shape is drawn around the middle of its place, `[width, height]`, without
-     * scaling what it holds: a shape that grows out of a point is drawn from `[0, 0]`. `null` is
-     * its place's size. */
-    drawSize?: [number, number] | null;
+    /** How far it's drawn from its place, `[x, y]`, without moving anything else: pixels, or a
+     * percentage of its own size, like `[0, "100%"]` for its whole height down. */
+    translate?: [Offset, Offset];
+    /** How big its own shape is drawn in its place, `[width, height]`, without scaling what it
+     * holds, in pixels or percentages of its place's size: a shape that grows out of a point is
+     * drawn from `[0, 0]`, and one that slides out of its bottom edge from `["100%", 0]`. `null`
+     * is its place's size. */
+    drawSize?: [Offset, Offset] | null;
     /** Where in its place its shape is held while it's drawn at another size: its middle, an
-     * edge, or a corner, like `"bottom right"`, as a panel grows out of a bar from there. */
+     * edge, or a corner, like `"bottom right"`, as a panel slides out of a bar from there. */
     drawFrom?: "center" | Edge | `${"top" | "bottom"} ${"left" | "right"}`;
     /** How blurred it's drawn, with what it holds, in logical pixels. */
     blur?: number;

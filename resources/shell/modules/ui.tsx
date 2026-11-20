@@ -2,7 +2,7 @@
 // Every other stock module builds from them, so a `modules/ui.tsx` of one's own restyles them all.
 
 import {
-  Surface, after, css, paced, settling, type Edge, type JSX, type KeyEvent, type Style,
+  Surface, after, css, paced, settling, type Edge, type JSX, type KeyEvent, type Offset,
   type TextProps,
 } from "bento";
 import { createEffect, createSignal, For, Show } from "solid-js";
@@ -606,28 +606,53 @@ export interface FlyoutProps {
 }
 
 /** A panel of glass that comes out of a button, as quick settings come out of a taskbar, and
- * goes back into it: it grows out of the side it comes out of, from the end it's lined up with,
- * its glass melting into the bar's while it's close, and what it holds fades in. Held to the
- * output's edges instead, it slides in. It's made afresh each time it opens, and Escape or a
- * press elsewhere closes it. */
+ * goes back into it: it slides out of its edge facing the button, as if from behind it, its glass
+ * melting out of the bar's while it's close. Held to the output's edges instead, it fades and
+ * slides in. It's made afresh each time it opens, and Escape or a press elsewhere closes it. */
 export function Flyout(props: FlyoutProps) {
   const open = () => props.open ?? (props.popup !== undefined && popup.is(props.popup));
   const close = () => props.popup !== undefined && popup.close(props.popup);
   const side = () => props.side ?? "top";
   const attached = () => !!(props.from || props.at);
-  // Where it grows from: the edge facing what it comes out of, at the end it's lined up with.
-  const growsFrom = () => {
-    const facing = ({ top: "bottom", bottom: "top", left: "right", right: "left" } as const)[side()];
-    const across = side() === "top" || side() === "bottom"
-      ? { start: " left", center: "", end: " right" }
-      : { start: " top", center: "", end: " bottom" };
-    return `${facing}${across[props.align ?? "center"]}` as Style["drawFrom"];
+  const across = () => side() === "top" || side() === "bottom";
+  // The edge facing what it comes out of, which it slides out of.
+  const edge = () =>
+    ({ top: "bottom", bottom: "top", left: "right", right: "left" } as const)[side()];
+  // Towards what it comes out of, by its whole size.
+  const behind = (): [Offset, Offset] => {
+    const away: Record<Edge, [Offset, Offset]> = {
+      top: [0, "100%"], bottom: [0, "-100%"], left: ["100%", 0], right: ["-100%", 0],
+    };
+    return away[side()];
   };
+  // Its glass is cut down to that edge, and what it holds slides with the glass's far edge.
+  const glassPose = () =>
+    attached()
+      ? { drawSize: (across() ? ["100%", 0] : [0, "100%"]) as [Offset, Offset] }
+      : { opacity: 0, translate: slide() };
+  const contentPose = () => (attached() ? { translate: behind() } : {});
   // Held to the output's edges, it slides in from the side it comes out of.
   const slide = (): [number, number] =>
     side() === "top" ? [0, 12] : side() === "bottom" ? [0, -12] : side() === "left" ? [12, 0] : [-12, 0];
-  const pose = () =>
-    attached() ? { drawSize: [0, 0] as [number, number] } : { opacity: 0, translate: slide() };
+  // Made as it opens, so its poses are plain values there as it's made, before its effects run.
+  const Panel = () => {
+    const glass = glassPose();
+    const content = contentPose();
+    return (
+      <box
+        style={{
+          material: "glass", borderRadius: props.radius ?? 18, padding: props.padding ?? 16,
+          overflow: "hidden", flexDirection: "column", drawFrom: edge(),
+        }}
+        enter={glass}
+        exit={glass}
+      >
+        <box style={{ flexDirection: "column" }} enter={content} exit={content}>
+          {props.children}
+        </box>
+      </box>
+    );
+  };
   return (
     <Surface
       output={props.output}
@@ -645,18 +670,7 @@ export function Flyout(props: FlyoutProps) {
       style={{ margin: props.gap ?? 12 }}
     >
       <Show when={open()}>
-        <box
-          style={{
-            material: "glass", borderRadius: props.radius ?? 18, padding: props.padding ?? 16,
-            overflow: "hidden", flexDirection: "column", drawFrom: growsFrom(),
-          }}
-          enter={pose()}
-          exit={pose()}
-        >
-          <box style={{ flexDirection: "column" }} enter={{ opacity: 0 }} exit={{ opacity: 0 }}>
-            {props.children}
-          </box>
-        </box>
+        <Panel />
       </Show>
     </Surface>
   );

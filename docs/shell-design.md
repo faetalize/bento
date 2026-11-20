@@ -274,8 +274,8 @@ The start menu comes out of the start button: around it on a taskbar in the midd
 left edge on one to the left. It finds apps the way the launcher does, shows all of them
 otherwise, and has the power menu. Quick settings and the notification center are the control center's parts, each
 coming out of its button. Every panel over the taskbar comes out the same distance from its edge,
-close enough to melt into it as one piece, never so far that it half melts. Each grows out of the
-taskbar from its button's end and shrinks back into it, its glass flowing out of the taskbar's. Notifications come up over the taskbar's end.
+close enough to melt into it as one piece, never so far that it half melts. Each slides out of
+the taskbar's edge as if from behind it, and back in, its glass flowing out of the taskbar's. Notifications come up over the taskbar's end.
 
 ## The tray
 

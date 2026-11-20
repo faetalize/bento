@@ -399,11 +399,20 @@ pub struct Node {
     /// Whether it was left out of the last layout, hidden or not displayed: shown again, it
     /// comes in at its place, not from where it was.
     left_out: bool,
-    /// The size it's drawn at, or `None` for its place's size.
-    draw_size: Option<[f32; 2]>,
+    /// The size it's drawn at, each way in pixels and in fractions of its place's, or `None` for
+    /// its place's size.
+    draw_size: Option<[Offset; 2]>,
+    /// A drawn size it jumped to before it was laid out, in fractions of a size it didn't have
+    /// yet, which it starts from once it's laid out.
+    jumped_size: Option<[Offset; 2]>,
     /// Where in its place a shape drawn at another size is held, as fractions of its width and
     /// height: its middle, `[0.5, 0.5]`, unless it says an edge or a corner.
     draw_from: [f32; 2],
+    /// How far it's drawn from its place, each way in pixels and in fractions of its size.
+    translate: [Offset; 2],
+    /// A translation it jumped to before it was laid out, in fractions of a size it didn't have
+    /// yet, which it starts from once it's laid out.
+    jumped_translate: Option<[Offset; 2]>,
     animate: bool,
     /// Whether it's left out: neither drawn nor hit.
     hidden: bool,
@@ -793,7 +802,10 @@ impl Scene {
             left_out: false,
             responses: [None; SPRINGS],
             draw_size: None,
+            jumped_size: None,
             draw_from: [0.5, 0.5],
+            translate: Default::default(),
+            jumped_translate: None,
             animate: true,
             hidden: false,
             placed_size: false,
@@ -889,7 +901,9 @@ impl Scene {
             node.springs[RADII + i].target = f64::from(node.look.radii[i]);
         }
         if let Some(offset) = props.get("translate") {
-            let [dx, dy] = pair(offset).unwrap_or([0., 0.]);
+            node.translate = offsets(offset).unwrap_or_default();
+            let size = [node.springs[W].target, node.springs[H].target].map(|x| x as f32);
+            let [dx, dy] = resolve(node.translate, size);
             node.springs[DX].target = f64::from(dx);
             node.springs[DY].target = f64::from(dy);
         }
@@ -901,12 +915,15 @@ impl Scene {
             node.draw_from = draw_from(from.as_str().unwrap_or("center"));
         }
         if let Some(size) = props.get("drawSize") {
-            node.draw_size = pair(size);
-            if let Some([w, h]) = node.draw_size {
+            node.draw_size = offsets(size);
+            let place = [node.springs[W].target, node.springs[H].target].map(|x| x as f32);
+            if let Some(size) = node.draw_size {
+                let [w, h] = resolve(size, place);
                 node.springs[DW].target = f64::from(w);
                 node.springs[DH].target = f64::from(h);
-            } else {
-                // Its place's size, which the next layout sets.
+            }
+            // What follows its place's size takes it from the next layout.
+            if follows_place(node.draw_size) {
                 self.layout_dirty = true;
             }
         }
@@ -935,8 +952,26 @@ impl Scene {
                         &[RADII, RADII + 1, RADII + 2, RADII + 3],
                         sides(value).map(Vec::from).unwrap_or_default(),
                     ),
-                    "translate" => (&[DX, DY], pair(value).map(Vec::from).unwrap_or_default()),
-                    "drawSize" => (&[DW, DH], pair(value).map(Vec::from).unwrap_or_default()),
+                    "translate" => {
+                        let offset = offsets(value).unwrap_or_default();
+                        let size = [node.springs[W].target, node.springs[H].target];
+                        let [dx, dy] = resolve(offset, size.map(|x| x as f32));
+                        // A fraction of a size it doesn't have yet is taken once it has one.
+                        if !node.placed && offset.iter().any(|o| o.of_size != 0.) {
+                            node.jumped_translate = Some(offset);
+                        }
+                        (&[DX, DY], vec![dx, dy])
+                    }
+                    "drawSize" => {
+                        let Some(size) = offsets(value) else { continue };
+                        let place = [node.springs[W].target, node.springs[H].target];
+                        let [w, h] = resolve(size, place.map(|x| x as f32));
+                        // A fraction of a size it doesn't have yet is taken once it has one.
+                        if !node.placed && size.iter().any(|o| o.of_size != 0.) {
+                            node.jumped_size = Some(size);
+                        }
+                        (&[DW, DH], vec![w, h])
+                    }
                     _ => continue,
                 };
                 for (spring, value) in springs.iter().zip(values) {
@@ -1381,13 +1416,22 @@ impl Scene {
         }
         let node = self.node_mut(id).unwrap();
         // Drawn at its place's size, unless it says another.
-        let size = node.draw_size.unwrap_or([target[2], target[3]]);
+        let place = [target[2], target[3]];
+        let size = node.draw_size.map_or(place, |size| resolve(size, place));
+        let first = !node.placed;
         if !node.placed {
             node.placed = true;
             for (spring, value) in node.springs.iter_mut().zip(target) {
                 spring.jump(f64::from(value));
             }
-            if !node.placed_size {
+            if let Some(jumped) = node.jumped_size.take() {
+                // It starts from where it jumped to, and moves to its own size.
+                let [w, h] = resolve(jumped, place);
+                for (spring, value) in [(DW, w), (DH, h)] {
+                    node.springs[spring].value = f64::from(value);
+                    node.springs[spring].velocity = 0.;
+                }
+            } else if !node.placed_size {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
@@ -1396,7 +1440,7 @@ impl Scene {
             for (spring, value) in node.springs.iter_mut().zip(target) {
                 spring.jump(f64::from(value));
             }
-            if node.draw_size.is_none() {
+            if follows_place(node.draw_size) {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
@@ -1404,7 +1448,7 @@ impl Scene {
             for (spring, value) in node.springs.iter_mut().zip(target) {
                 spring.jump(f64::from(value));
             }
-            if node.draw_size.is_none() {
+            if follows_place(node.draw_size) {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
@@ -1414,6 +1458,22 @@ impl Scene {
         }
         node.springs[DW].target = f64::from(size[0]);
         node.springs[DH].target = f64::from(size[1]);
+        // A translation by a fraction of its size follows its size.
+        let [dx, dy] = resolve(node.translate, [target[2], target[3]]);
+        node.springs[DX].target = f64::from(dx);
+        node.springs[DY].target = f64::from(dy);
+        let by_size = node.translate.iter().any(|o| o.of_size != 0.);
+        if let Some(jumped) = node.jumped_translate.take() {
+            // It starts from where it jumped to, and moves to its own translation.
+            let [x, y] = resolve(jumped, [target[2], target[3]]);
+            for (spring, value) in [(DX, x), (DY, y)] {
+                node.springs[spring].value = f64::from(value);
+                node.springs[spring].velocity = 0.;
+            }
+        } else if by_size && (first || !node.animate) {
+            node.springs[DX].jump(f64::from(dx));
+            node.springs[DY].jump(f64::from(dy));
+        }
         node.left_out = false;
         for child in children {
             self.place(child, [target[0], target[1] - scrolled]);
@@ -1814,6 +1874,8 @@ impl Scene {
         } else {
             clip
         };
+        // What it holds is moved with it.
+        let scaling = scaling.then(Scaling::moved(node));
         for child in &node.children {
             self.draw_node(*child, opacity, clip, scaling, blur, color, out);
         }
@@ -1864,6 +1926,7 @@ impl Scene {
         } else {
             clip
         };
+        let scaling = scaling.then(Scaling::moved(node));
         for child in &node.children {
             self.pick_node(*child, point, scaling, clip, found);
         }
@@ -2088,6 +2151,17 @@ impl Scaling {
         still: true,
     };
 
+    /// How far `node` is drawn from its place, which moves what it holds with it.
+    fn moved(node: &Node) -> Self {
+        let (dx, dy) = (&node.springs[DX], &node.springs[DY]);
+        let at_rest = |s: &Spring| s.velocity == 0. && (s.value - s.target).abs() < 1e-6;
+        Self {
+            by: 1.,
+            offset: [dx.value as f32, dy.value as f32],
+            still: at_rest(dx) && at_rest(dy),
+        }
+    }
+
     /// This scaling, applied after `inner`.
     fn then(self, inner: Self) -> Self {
         Self {
@@ -2110,7 +2184,6 @@ impl Scaling {
     }
 }
 
-/// Two numbers, like a size or an offset.
 /// Where in its place a shape is held, from a style's `drawFrom`: `"center"`, an edge, or a corner
 /// like `"bottom right"`, as fractions of its width and height.
 fn draw_from(value: &str) -> [f32; 2] {
@@ -2127,11 +2200,41 @@ fn draw_from(value: &str) -> [f32; 2] {
     at
 }
 
-fn pair(value: &Value) -> Option<[f32; 2]> {
+/// A length one way, as `translate` takes it: pixels, and a fraction of the node's own size, which
+/// a percentage like `"100%"` is.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Offset {
+    px: f32,
+    of_size: f32,
+}
+
+/// A translation, `[x, y]`, each a number of pixels or a percentage of the node's size.
+fn offsets(value: &Value) -> Option<[Offset; 2]> {
+    let one = |value: &Value| match value {
+        Value::Number(n) => Some(Offset {
+            px: n.as_f64()? as f32,
+            of_size: 0.,
+        }),
+        Value::String(text) => Some(Offset {
+            px: 0.,
+            of_size: text.strip_suffix('%')?.trim().parse::<f32>().ok()? / 100.,
+        }),
+        _ => None,
+    };
     match value.as_array()?.as_slice() {
-        [a, b, ..] => Some([a.as_f64()? as f32, b.as_f64()? as f32]),
+        [x, y] => Some([one(x)?, one(y)?]),
         _ => None,
     }
+}
+
+/// Whether a drawn size follows its place's: none, which is its place's, or a fraction of it.
+fn follows_place(size: Option<[Offset; 2]>) -> bool {
+    size.is_none_or(|size| size.iter().any(|o| o.of_size != 0.))
+}
+
+/// `offset` in pixels, for a node of `size`.
+fn resolve(offset: [Offset; 2], size: [f32; 2]) -> [f32; 2] {
+    [0, 1].map(|i| offset[i].px + offset[i].of_size * size[i])
 }
 
 /// Measures a text node for taffy.
@@ -2768,6 +2871,26 @@ mod tests {
         assert_eq!(scene.frame(node).unwrap(), [910., 280., 100., 40.]);
         scene.set(node, &serde_json::json!({ "drawFrom": "top left" }));
         assert_eq!(scene.frame(node).unwrap(), [680., 200., 100., 40.]);
+    }
+
+    #[test]
+    fn a_translation_can_be_a_fraction_of_its_size() {
+        let mut scene = Scene::new();
+        // The panel is 560 by 120.
+        let node = panel(&mut scene, serde_json::json!({ "translate": [0, "50%"] }));
+        settle(&mut scene);
+        assert_eq!(scene.frame(node).unwrap(), [680., 260., 560., 120.]);
+        // A jump by a fraction of its size before it's laid out starts it from there.
+        let other = scene.create(
+            "box",
+            &serde_json::json!({ "width": 50, "height": 80, "jump": { "translate": [0, "100%"] } }),
+        );
+        scene.append(node, other, None);
+        scene.lay_out();
+        let start = scene.frame(other).unwrap();
+        settle(&mut scene);
+        let end = scene.frame(other).unwrap();
+        assert_eq!(start[1] - end[1], 80., "{start:?} {end:?}");
     }
 
     #[test]
