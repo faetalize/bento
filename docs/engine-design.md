@@ -255,7 +255,9 @@ engine loads.
 Window rules split like binds. Rules that make sense under every engine, like `open-floating`,
 `opacity` or `block-out-from`, are bento's. Rules that belong to a paradigm, like
 `default-column-width` or `is-active-in-column`, are declared by the engine, written in its
-`.kdl` file and checked by `bento validate`, the same as its actions and settings.
+`.kdl` file and checked by `bento validate`, the same as its actions and settings. An engine's
+default window rules are declared in the engine, like its settings' defaults, not written into
+the user's file.
 
 ### Engines own horizontal swipes
 
@@ -469,20 +471,29 @@ Settings only on the page it names, as a shell's does. They can differ per monit
 workspace, like bento's own `layout {}` settings: the engine's file can set them for an `output`
 or a `workspace`, and the engine reads each workspace's settings from the workspace.
 
-The main config picks the engine with `tiling { layout "…" }`. Every engine's file is
-`~/.config/bento/engines/<name>.kdl`, by a built-in engine's name or an engine file's, since the
-config is read before the engine runs: `layout "~/layouts/mine.js"` reads `engines/mine.kdl`. The engine's file holds its `settings {}`, its window rules and its
-`binds {}`; it's the user's, and an engine's author never writes to it.
+The main config picks the engine with `tiling { layout "…" }`. A built-in engine's file is
+`~/.config/bento/engines/<name>.kdl`, by its name, so nothing records it. A custom engine, from a
+file, is a step out of bento's defaults, and its file comes with that choice: the config names it
+next to the engine, `tiling { layout "~/layouts/mine.js" settings="~/.config/bento/engines/mine.kdl" }`.
+The engine's file holds its `settings {}`, its window rules and its `binds {}`; it's the user's,
+and an engine's author never writes to it.
 
 Config files never use `layout-action`: the engine's file names its actions directly, and the
 main config can't bind them at all. `layout-action "name" args...` is only for running an action
 of the running engine from the command line, `bento msg action layout-action ...`.
 
-The first time an engine runs without its file, bento writes a starting one, the way it writes
-the main config on first start: its settings documented, at their defaults, and the engine's
-default window rules. A built-in engine's comes with bento; an engine from a file can ship one
-next to its `.js`, with the same name, which is copied. It has no binds: an engine's default keys
-stay in its declarations.
+An engine's defaults, for its settings, its window rules and its binds, stay in the engine and
+are read from it each time it runs, so a newer engine's defaults reach the user except for what
+the user changed. Nothing is copied: the user's file holds only the user's changes, and a
+built-in engine's file is made with the user's first change.
+
+Switching to a custom engine in bento Settings picks its `.js`, then asks where its settings come
+from. "Start Fresh" makes an empty file in `~/.config/bento/engines/`, named after the engine's
+file, with a number if that name is taken; "Use a Backup…" picks a `.kdl` the user has. Settings
+writes the engine and its file into the config together, and cancelling leaves the engine as it
+was. The Engine page then shows the engine's file and its settings file, each of which can be
+picked again. If a custom engine's settings file is missing, the engine runs on its defaults and
+the Engine page says so.
 
 ### Binds: defaults stay with whoever declares them
 
