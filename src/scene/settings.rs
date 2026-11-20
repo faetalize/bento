@@ -16,8 +16,9 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context as _};
+use niri_config::binds::{Bind, Key};
 use niri_config::edit::{option_properties, option_values, Document};
-use niri_config::binds::{Action, Bind, BoundAction, Key};
+use niri_config::shortcuts;
 use niri_config::{EngineSettings, ShellSettings};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionValue};
 
@@ -178,24 +179,27 @@ impl Settings {
         }
         let mut binds = Vec::new();
         for action in &actions {
-            let Some(text) = &action.bind else { continue };
-            let key: Key = text.parse().map_err(|err| {
-                anyhow!(
-                    "{name} binds its action {:?} to {text:?}, which isn't a key: {err}",
-                    action.name
-                )
-            })?;
-            let theirs = self
-                .binds
-                .iter()
-                .find(|(owner, bind)| owner != name && bind.key.conflicts_with(&key));
-            if let Some((owner, _)) = theirs {
-                bail!(
-                    "{name} binds {text} to its action {:?}, which {owner} binds too",
-                    action.name
-                );
+            for bind in &action.binds {
+                let text = &bind.key;
+                let key: Key = text.parse().map_err(|err| {
+                    anyhow!(
+                        "{name} binds its action {:?} to {text:?}, which isn't a key: {err}",
+                        action.name
+                    )
+                })?;
+                let theirs = self
+                    .binds
+                    .iter()
+                    .find(|(owner, bind)| owner != name && bind.key.conflicts_with(&key));
+                if let Some((owner, _)) = theirs {
+                    bail!(
+                        "{name} binds {text} to its action {:?}, which {owner} binds too",
+                        action.name
+                    );
+                }
+                let shortcut = shortcuts::shell_action(&action.name, &bind.args);
+                binds.push((String::from(name), shortcuts::default_bind(key, shortcut)));
             }
-            binds.push((String::from(name), default_bind(key, &action.name)));
         }
         match self.declared.iter_mut().find(|(n, _)| n == name) {
             Some((_, settings)) => *settings = declared,
@@ -214,6 +218,12 @@ impl Settings {
     /// The binds the running shell's actions have by default.
     pub fn binds(&self) -> Vec<Bind> {
         self.binds.iter().map(|(_, bind)| bind.clone()).collect()
+    }
+
+    /// The actions the running shell declares, in the order they're declared, each with the
+    /// module or shell that declares it.
+    pub fn owned_actions(&self) -> Vec<(String, LayoutEngineAction)> {
+        self.actions.clone()
     }
 
     /// The actions the running shell declares, in the order they're declared.
@@ -347,27 +357,6 @@ impl Settings {
     }
 }
 
-/// The bind an action of the shell's has by default to `key`: run as it's pressed, or, for a key
-/// of modifiers alone, as they're let go with nothing pressed in between, so they still work with
-/// other keys.
-fn default_bind(key: Key, action: &str) -> Bind {
-    let action = Action::ShellAction(String::from(action), Vec::new());
-    Bind {
-        key,
-        action: if key.trigger.is_modifier() {
-            BoundAction::Release(action)
-        } else {
-            BoundAction::Press(action)
-        },
-        repeat: false,
-        pass_through: None,
-        cooldown: None,
-        allow_when_locked: false,
-        allow_inhibiting: true,
-        hotkey_overlay_title: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -438,23 +427,35 @@ mod tests {
     #[test]
     fn an_action_can_have_a_key_by_default() {
         let mut settings = Settings::from_text("");
-        let start = r#"[{ "name": "toggle-start-menu", "args": [], "bind": "Mod" }]"#;
-        let clipboard = r#"[{ "name": "toggle-clipboard", "args": [], "bind": "Mod+V" }]"#;
+        let start = r#"[{ "name": "toggle-start-menu", "args": [], "binds": [{ "key": "Mod" }] }]"#;
+        let clipboard =
+            r#"[{ "name": "toggle-clipboard", "args": [], "binds": [{ "key": "Mod+V" }] }]"#;
         settings.declare("start-menu", "[]", start).unwrap();
         settings.declare("clipboard", "[]", clipboard).unwrap();
         let binds = settings.binds();
+        use niri_config::binds::{Action, BoundAction};
         let shell = |name: &str| Action::ShellAction(String::from(name), Vec::new());
         // Mod alone runs it as it's let go, so Mod still works with other keys.
         assert_eq!(binds[0].key, "Mod".parse().unwrap());
-        assert_eq!(binds[0].action, BoundAction::Release(shell("toggle-start-menu")));
+        assert_eq!(
+            binds[0].action,
+            BoundAction::Release(shell("toggle-start-menu"))
+        );
         assert_eq!(binds[1].key, "Mod+V".parse().unwrap());
-        assert_eq!(binds[1].action, BoundAction::Press(shell("toggle-clipboard")));
+        assert_eq!(
+            binds[1].action,
+            BoundAction::Press(shell("toggle-clipboard"))
+        );
 
         // A key another module binds, or one that isn't a key, is a wrong declaration.
-        let taken = r#"[{ "name": "toggle-launcher", "args": [], "bind": "Mod" }]"#;
+        let taken = r#"[{ "name": "toggle-launcher", "args": [], "binds": [{ "key": "Mod" }] }]"#;
         let err = settings.declare("launcher", "[]", taken).unwrap_err();
-        assert!(format!("{err:#}").contains("start-menu binds too"), "{err:#}");
-        let wrong = r#"[{ "name": "toggle-launcher", "args": [], "bind": "Mod+Nothing" }]"#;
+        assert!(
+            format!("{err:#}").contains("start-menu binds too"),
+            "{err:#}"
+        );
+        let wrong =
+            r#"[{ "name": "toggle-launcher", "args": [], "binds": [{ "key": "Mod+Nothing" }] }]"#;
         assert!(settings.declare("launcher", "[]", wrong).is_err());
         // Loading again, a module's binds are its new ones.
         settings.declare("start-menu", "[]", "[]").unwrap();

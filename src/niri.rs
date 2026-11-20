@@ -2888,7 +2888,11 @@ impl Niri {
 
         let mut hotkey_overlay = HotkeyOverlay::new(config.clone(), mod_key);
         if !config_.hotkey_overlay.skip_at_startup {
-            hotkey_overlay.show();
+            // The engine and the shell aren't running yet: bento's own shortcuts and the user's.
+            let defaults = niri_config::shortcuts::bento_defaults();
+            let binds =
+                niri_config::shortcuts::resolve(&config_.binds.0, &config_.unbound, defaults);
+            hotkey_overlay.show(binds.in_use);
         }
 
         let exit_confirm_dialog = ExitConfirmDialog::new(animation_clock.clone(), config.clone());
@@ -4102,12 +4106,16 @@ impl Niri {
         }
     }
 
-    /// The binds bento's own shell's actions have by default, while it runs.
-    pub fn shell_default_binds(&self) -> Vec<niri_config::binds::Bind> {
-        self.scene
-            .as_ref()
-            .map(|scene| scene.default_binds())
-            .unwrap_or_default()
+    /// Which bind each key runs: the user's binds, with the defaults of bento, the running engine
+    /// and the running shell, as `shortcuts::resolve` settles them.
+    pub fn shortcuts(&self) -> niri_config::shortcuts::Resolved {
+        let mut defaults = niri_config::shortcuts::bento_defaults().to_vec();
+        defaults.extend(crate::layout::tiling::engine::default_binds());
+        if let Some(scene) = &self.scene {
+            defaults.extend(scene.default_binds());
+        }
+        let config = self.config.borrow();
+        niri_config::shortcuts::resolve(&config.binds.0, &config.unbound, &defaults)
     }
 
     /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps. It holds

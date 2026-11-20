@@ -42,17 +42,19 @@ export const meta = {
     api: 2,
     name: "bento",
     description: "Windows on a scrolling grid.",
-    // Every action, bound by name in engines/bento.kdl. A window's stack is the windows covering
+    // Every action, with its default keys. A window's stack is the windows covering
     // the same column of cells, and places are where windows start, counting from the left.
     actions: {
         "focus-left": {
             description: "Focus the window to the left in the focused group, or the nearest window to the left.",
+            bind: ["Mod+Left", "Mod+H", "Mod+WheelScrollLeft", "Mod+Shift+WheelScrollUp"],
         },
         "focus-right": {
             description: "Focus the window to the right in the focused group, or the nearest window to the right.",
+            bind: ["Mod+Right", "Mod+L", "Mod+WheelScrollRight", "Mod+Shift+WheelScrollDown"],
         },
-        "focus-first": { description: "Focus the leftmost window in the row." },
-        "focus-last": { description: "Focus the rightmost window in the row." },
+        "focus-first": { description: "Focus the leftmost window in the row.", bind: "Mod+Home" },
+        "focus-last": { description: "Focus the rightmost window in the row.", bind: "Mod+End" },
         "focus-right-or-first": {
             description: "Focus the nearest window to the right, or the leftmost one in the row.",
         },
@@ -69,9 +71,11 @@ export const meta = {
         },
         "focus-down": {
             description: "Focus the nearest window below, even diagonally.",
+            bind: ["Mod+Down", "Mod+J"],
         },
         "focus-up": {
             description: "Focus the nearest window above, even diagonally.",
+            bind: ["Mod+Up", "Mod+K"],
         },
         "focus-down-or-left": {
             description: "Focus the window right below, or the nearest window to the left.",
@@ -97,15 +101,29 @@ export const meta = {
         },
         "move-left": {
             description: "Move the focused window left in its group, or one cell left, swapping with a window in the way.",
+            bind: [
+                "Mod+Ctrl+Left",
+                "Mod+Ctrl+H",
+                "Mod+Ctrl+WheelScrollLeft",
+                "Mod+Ctrl+Shift+WheelScrollUp",
+            ],
         },
         "move-right": {
             description: "Move the focused window right in its group, or one cell right, swapping with a window in the way.",
+            bind: [
+                "Mod+Ctrl+Right",
+                "Mod+Ctrl+L",
+                "Mod+Ctrl+WheelScrollRight",
+                "Mod+Ctrl+Shift+WheelScrollDown",
+            ],
         },
         "move-first": {
             description: "Move the focused window to the start of its rows, pushing others right.",
+            bind: "Mod+Ctrl+Home",
         },
         "move-last": {
             description: "Move the focused window past the end of the grid in its rows.",
+            bind: "Mod+Ctrl+End",
         },
         "move-to-index": {
             description: "Move the focused window to a place where windows start, from the left.",
@@ -113,50 +131,66 @@ export const meta = {
         },
         "move-down": {
             description: "Move the focused window one cell down.",
+            bind: ["Mod+Ctrl+Down", "Mod+Ctrl+J"],
         },
         "move-up": {
             description: "Move the focused window one cell up.",
+            bind: ["Mod+Ctrl+Up", "Mod+Ctrl+K"],
         },
         "stack-from-right": {
             description: "Stack the window to the right under the focused one.",
+            bind: "Mod+Comma",
         },
         "unstack": {
             description: "Take the focused window out of its stack or its group, to the right.",
+            bind: "Mod+Period",
         },
         "group": {
             description:
                 "Pick the focused window to group, or unpick it. Letting go of the keys held groups the picked windows where the first one is; one picked window leaves its group.",
+            bind: "Mod+W",
         },
-        "center": { description: "Center the focused window in the view." },
+        "center": { description: "Center the focused window in the view.", bind: "Mod+C" },
         "center-visible": {
             description: "Center the windows that are fully in view, together.",
+            bind: "Mod+Ctrl+C",
         },
         "cycle-width": {
             description: "Switch the focused window to the next preset width.",
+            bind: "Mod+R",
         },
         "cycle-width-back": {
             description: "Switch the focused window to the previous preset width.",
+            bind: "Mod+Shift+R",
         },
         "cycle-height": {
             description: "Switch the window to the next preset height.",
+            bind: "Mod+Ctrl+Shift+R",
         },
         "cycle-height-back": {
             description: "Switch the window to the previous preset height.",
         },
         "toggle-full-width": {
             description: "Toggle the focused window between the full view width and its own width.",
+            bind: "Mod+F",
         },
         "set-width": {
             description: "Set or change the focused window's width, in whole cells.",
             args: SIZE,
+            bind: [{ key: "Mod+Minus", args: ["-10%"] }, { key: "Mod+Equal", args: ["+10%"] }],
         },
         "set-height": {
             description: "Set or change the window's height, in whole cells.",
             args: SIZE,
+            bind: [
+                { key: "Mod+Shift+Minus", args: ["-10%"] },
+                { key: "Mod+Shift+Equal", args: ["+10%"] },
+            ],
         },
-        "full-height": { description: "Make the window as tall as the grid." },
+        "full-height": { description: "Make the window as tall as the grid.", bind: "Mod+Ctrl+R" },
         "fill-width": {
             description: "Grow the focused window into the empty cells beside it in view.",
+            bind: "Mod+Ctrl+F",
         },
 
         // Where the grid ends, these go on to the monitor or workspace beside it.
@@ -178,9 +212,11 @@ export const meta = {
         },
         "move-up-or-to-workspace": {
             description: "Move the focused window one cell up, or to the workspace above when it can't.",
+            bind: ["Mod+Ctrl+Shift+Page_Up", "Mod+Ctrl+Shift+I"],
         },
         "move-down-or-to-workspace": {
             description: "Move the focused window one cell down, or to the workspace below when it can't.",
+            bind: ["Mod+Ctrl+Shift+Page_Down", "Mod+Ctrl+Shift+U"],
         },
         "move-to-workspace": {
             description: "Move the focused window, with its group, to a workspace of the focused monitor.",
@@ -191,6 +227,17 @@ export const meta = {
                     description: "An index counting from 1, or a name.",
                 },
             ],
+            bind: [
+                { key: "Mod+Ctrl+Shift+1", args: [1] },
+                { key: "Mod+Ctrl+Shift+2", args: [2] },
+                { key: "Mod+Ctrl+Shift+3", args: [3] },
+                { key: "Mod+Ctrl+Shift+4", args: [4] },
+                { key: "Mod+Ctrl+Shift+5", args: [5] },
+                { key: "Mod+Ctrl+Shift+6", args: [6] },
+                { key: "Mod+Ctrl+Shift+7", args: [7] },
+                { key: "Mod+Ctrl+Shift+8", args: [8] },
+                { key: "Mod+Ctrl+Shift+9", args: [9] },
+            ],
         },
         "move-to-monitor": {
             description: "Move the focused window, with its group, to the active workspace of a monitor.",
@@ -199,12 +246,18 @@ export const meta = {
 
         // Each takes two presses: the first picks the focused window, then focus another window
         // and press again. Pressing again on the same window cancels.
-        "split-h": { description: "Share a window's space with another, side by side." },
-        "split-v": { description: "Share a window's space with another, stacked." },
-        swap: { description: "Swap two windows." },
+        "split-h": {
+            description: "Share a window's space with another, side by side.",
+            bind: "Mod+S",
+        },
+        "split-v": {
+            description: "Share a window's space with another, stacked.",
+            bind: "Mod+Ctrl+S",
+        },
+        swap: { description: "Swap two windows.", bind: "Mod+X" },
         // Also two presses: the first highlights where the window would go, the direction keys
         // move the highlight between seams, and the second press puts it there.
-        stuff: { description: "Squeeze the focused window between two others." },
+        stuff: { description: "Squeeze the focused window between two others.", bind: "Mod+G" },
     },
     settings: {
         gravity: {

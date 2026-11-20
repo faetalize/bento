@@ -288,7 +288,7 @@ export function useModule(
 ) {
   const name = module.name;
   const settings = checkSettings("setting", meta.settings);
-  const actions = checkActions(meta.actions, undefined, { binds: true });
+  const actions = checkActions(meta.actions);
   const declared = native.declare(name, JSON.stringify(settings), JSON.stringify(actions));
   const [values, setValues] = keyed<any>(read(declared, {}));
   settingStores.set(name, setValues);

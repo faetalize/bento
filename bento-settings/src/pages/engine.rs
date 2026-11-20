@@ -763,16 +763,23 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
     let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.actions", &group);
 
+    // With its default keys and the user's, as bento settles which runs each key.
     let config = view.ctx.store.config();
+    let mut defaults = niri_config::shortcuts::bento_defaults().to_vec();
+    defaults.extend(niri_config::shortcuts::declared_binds(
+        &engine.actions,
+        niri_config::shortcuts::engine_action,
+    ));
+    let resolved = niri_config::shortcuts::resolve(&config.binds.0, &config.unbound, &defaults);
     let bound = engine
         .actions
         .iter()
         .filter(|action| {
-            config.binds.0.iter().any(|bind| {
-                [bind.press_action(), bind.release_action()]
-                    .into_iter()
-                    .flatten()
-                    .any(|a| matches!(a, Action::LayoutAction(name, ..) if *name == action.name))
+            resolved.in_use.iter().any(|bind| {
+                matches!(
+                    niri_config::shortcuts::shortcut(bind),
+                    Some(Action::LayoutAction(name, ..)) if *name == action.name
+                )
             })
         })
         .count();

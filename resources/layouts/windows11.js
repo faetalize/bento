@@ -42,32 +42,40 @@ export const meta = {
         "snap-left": {
             description:
                 "Snap the focused window to the left half. From the right half it goes back to its own size, and from the left half to the monitor on the left.",
+            bind: "Mod+Left",
         },
         "snap-right": {
             description:
                 "Snap the focused window to the right half. From the left half it goes back to its own size, and from the right half to the monitor on the right.",
+            bind: "Mod+Right",
         },
         "snap-up": {
             description:
                 "Maximize the focused window, or snap it from a half to the top quarter of that side.",
+            bind: "Mod+Up",
         },
         "snap-down": {
             description:
                 "Restore a maximized window, snap a half to its bottom quarter, or minimize the focused window.",
+            bind: "Mod+Down",
         },
         "switch-windows": {
             description:
                 "Switch between the workspace's windows, most recently used first. Letting go of the keys held picks the highlighted one.",
+            bind: "Alt+Tab",
         },
         "switch-windows-back": {
             description: "Switch between the workspace's windows, from the least recently used.",
+            bind: "Alt+Shift+Tab",
         },
         "show-layouts": {
             description: "Show the snap layouts, to snap the focused window into a zone of one.",
+            bind: "Mod+Z",
         },
         minimize: { description: "Minimize the focused window." },
         "show-desktop": {
             description: "Minimize every window on the workspace, or bring them back.",
+            bind: "Mod+Comma",
         },
         "move-to-monitor-left": {
             description: "Move the focused window to the monitor on the left, keeping its place.",

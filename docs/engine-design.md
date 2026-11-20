@@ -470,9 +470,8 @@ workspace, like bento's own `layout {}` settings: the engine's file can set them
 or a `workspace`, and the engine reads each workspace's settings from the workspace.
 
 The main config picks the engine with `tiling { layout "…" }`. Every engine's file is
-`~/.config/bento/engines/<name>.kdl`, by the name the engine gives itself in `meta.name`, built in
-or loaded from a file: `layout "~/layouts/mine.js"` with `name: "mine"` reads
-`engines/mine.kdl`. The engine's file holds its `settings {}`, its window rules and its
+`~/.config/bento/engines/<name>.kdl`, by a built-in engine's name or an engine file's, since the
+config is read before the engine runs: `layout "~/layouts/mine.js"` reads `engines/mine.kdl`. The engine's file holds its `settings {}`, its window rules and its
 `binds {}`; it's the user's, and an engine's author never writes to it.
 
 Config files never use `layout-action`: the engine's file names its actions directly, and the

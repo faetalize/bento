@@ -30,6 +30,8 @@ const TITLE: &str = "Important Hotkeys";
 pub struct HotkeyOverlay {
     is_open: bool,
     config: Rc<RefCell<Config>>,
+    /// The binds in use, the user's and every declarer's defaults, as it was last shown with.
+    binds: Vec<Bind>,
     mod_key: ModKey,
     buffers: RefCell<HashMap<WeakOutput, RenderedOverlay>>,
 }
@@ -43,12 +45,18 @@ impl HotkeyOverlay {
         Self {
             is_open: false,
             config,
+            binds: Vec::new(),
             mod_key,
             buffers: RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn show(&mut self) -> bool {
+    /// Shows it, for `binds`, the binds in use.
+    pub fn show(&mut self, binds: Vec<Bind>) -> bool {
+        if self.binds != binds {
+            self.binds = binds;
+            self.buffers.borrow_mut().clear();
+        }
         if !self.is_open {
             self.is_open = true;
             true
@@ -102,8 +110,14 @@ impl HotkeyOverlay {
 
         let rendered = buffers.entry(weak).or_insert_with(|| {
             let renderer = renderer.as_gles_renderer();
-            render(renderer, &self.config.borrow(), self.mod_key, scale)
-                .unwrap_or_else(|_| RenderedOverlay { buffer: None })
+            render(
+                renderer,
+                &self.config.borrow(),
+                &self.binds,
+                self.mod_key,
+                scale,
+            )
+            .unwrap_or_else(|_| RenderedOverlay { buffer: None })
         });
         let buffer = rendered.buffer.as_ref()?;
 
@@ -127,13 +141,13 @@ impl HotkeyOverlay {
 
     pub fn a11y_text(&self) -> String {
         let config = self.config.borrow();
-        let actions = collect_actions(&config);
+        let actions = collect_actions(&config, &self.binds);
 
         let mut buf = String::new();
         writeln!(&mut buf, "{TITLE}").unwrap();
 
         for action in actions {
-            let Some((key, action)) = format_bind(&config.binds.0, action) else {
+            let Some((key, action)) = format_bind(&self.binds, action) else {
                 continue;
             };
 
@@ -204,9 +218,7 @@ fn format_bind(binds: &[Bind], action: &Action) -> Option<(Option<Key>, String)>
     Some((key, title))
 }
 
-fn collect_actions(config: &Config) -> Vec<&Action> {
-    let binds = &config.binds.0;
-
+fn collect_actions<'a>(config: &Config, binds: &'a [Bind]) -> Vec<&'a Action> {
     // Collect actions that we want to show.
     let mut actions = vec![&Action::ShowHotkeyOverlay];
 
@@ -303,6 +315,7 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
 fn render(
     renderer: &mut GlesRenderer,
     config: &Config,
+    binds: &[Bind],
     mod_key: ModKey,
     scale: f64,
 ) -> anyhow::Result<RenderedOverlay> {
@@ -318,9 +331,9 @@ fn render(
     // target_size.h -= margin * 2;
     // anyhow::ensure!(target_size.w > 0 && target_size.h > 0);
 
-    let strings = collect_actions(config)
+    let strings = collect_actions(config, binds)
         .into_iter()
-        .filter_map(|action| format_bind(&config.binds.0, action))
+        .filter_map(|action| format_bind(binds, action))
         .map(|(key, action)| {
             let key = key.map(|key| key_name(false, mod_key, &key));
             let key = key.as_deref().unwrap_or("(not bound)");
@@ -862,7 +875,7 @@ mod tests {
         )
         .unwrap();
 
-        let actions = collect_actions(&config);
+        let actions = collect_actions(&config, &config.binds.0);
         assert!(actions.contains(&&Action::Screenshot(true, None)));
         assert!(actions.contains(&&Action::Spawn(vec![String::from("foot")])));
 
@@ -877,7 +890,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(collect_actions(&config).contains(&&Action::ToggleOverview));
+        assert!(collect_actions(&config, &config.binds.0).contains(&&Action::ToggleOverview));
 
         // A release bind with a custom title adds its action to the list.
         let config = Config::parse_mem(
@@ -889,7 +902,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(collect_actions(&config).contains(&&Action::FocusMonitorLeft));
+        assert!(collect_actions(&config, &config.binds.0).contains(&&Action::FocusMonitorLeft));
 
         // Various filtering behavior.
         let config = Config::parse_mem(
@@ -907,7 +920,7 @@ mod tests {
         .unwrap();
 
         let mut snapshot = String::new();
-        for action in collect_actions(&config) {
+        for action in collect_actions(&config, &config.binds.0) {
             if let Action::Spawn(args) = action {
                 snapshot.push_str(&args[0]);
                 snapshot.push('\n');

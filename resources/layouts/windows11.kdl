@@ -28,35 +28,11 @@ settings {
     edge-snap true
 }
 
-binds {
-    // Snap the focused window to the left or right half. Toward the other side it gets its own
-    // size back, and toward the side it's on it goes on to the monitor there.
-    Mod+Left  { snap-left; }
-    Mod+Right { snap-right; }
-
-    // Up maximizes, or from a half snaps to its top quarter. Down restores a maximized window,
-    // snaps a half to its bottom quarter, or minimizes.
-    Mod+Up   { snap-up; }
-    Mod+Down { snap-down; }
-
-    // Switch windows, most recently used first: hold Alt and press Tab to go on, Shift to go
-    // back, and let go of Alt to pick. Escape keeps the window you were on.
-    Alt+Tab       { switch-windows; }
-    Alt+Shift+Tab { switch-windows-back; }
-
-    // Pick a layout and a zone of it for the focused window, then the windows for the other zones.
-    Mod+Z { show-layouts; }
-
-    // Minimize every window on the workspace, or bring them back. In config.kdl, Mod+D opens the
-    // launcher and Mod+M maximizes a window to the screen's edges.
-    Mod+Comma { show-desktop; }
-
-    // Minimize the focused window. Mod+Down does it too, for a window at its own size.
-    // Mod+Shift+M { minimize; }
-
-    // Move the focused window to the monitor beside, keeping its place there. In config.kdl,
-    // Mod+Shift+Left and Right focus the monitor beside, and bento's own move-window-to-monitor
-    // binds on Mod+Shift+Ctrl keep the window's place too.
-    // Mod+Shift+Alt+Ctrl+Left  { move-to-monitor-left; }
-    // Mod+Shift+Alt+Ctrl+Right { move-to-monitor-right; }
-}
+// The engine's shortcuts come with it, on their default keys, and Settings lists them. Your own
+// keys for them go in a binds section here, replacing a shortcut's defaults, and unbind turns one
+// off:
+//
+// binds {
+//     Mod+Shift+Left { snap-left; }
+//     unbind { show-layouts; }
+// }

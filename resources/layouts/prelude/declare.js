@@ -58,30 +58,44 @@ export function checkSettings(what, specs, types = VALUE_TYPES) {
 }
 
 /**
- * Checks actions declared by name, and returns them as bento reads them. A shell's can say the key
- * they're bound to by default, with `binds`; an engine's default binds are in its own file.
+ * Checks actions declared by name, and returns them as bento reads them, with the keys each is
+ * bound to by default as `binds`: a list of `{ key, args }`, from `bind`, which is a key, or a
+ * list of keys and of keys with the arguments they run the action with.
  */
-export function checkActions(actions, types = ARG_TYPES, { binds = false } = {}) {
+export function checkActions(actions, types = ARG_TYPES) {
     if (actions === undefined || actions === null) {
         return [];
     }
     if (typeof actions !== "object" || Array.isArray(actions)) {
         throw new Error("actions are declared as an object, by name");
     }
-    return Object.entries(actions).map(([name, spec]) => {
-        const bind = spec?.bind ?? null;
-        if (bind !== null && !binds) {
-            throw new Error(`action ${name} has a bind: an engine's binds are in its own file`);
+    return Object.entries(actions).map(([name, spec]) => ({
+        name,
+        description: text(spec?.description),
+        args: checkArgs(name, spec?.args, types),
+        binds: checkBinds(name, spec?.bind),
+    }));
+}
+
+/** Checks the keys action `name` is bound to by default, as `bind` gives them. */
+function checkBinds(name, bind) {
+    if (bind === undefined || bind === null) {
+        return [];
+    }
+    const list = Array.isArray(bind) ? bind : [bind];
+    return list.map((one, i) => {
+        const label = `bind ${i + 1} of action ${name}`;
+        if (typeof one === "string") {
+            return { key: one, args: [] };
         }
-        if (bind !== null && typeof bind !== "string") {
-            throw new Error(`the bind of action ${name} must be a key, like "Mod+V"`);
+        if (one === null || typeof one !== "object" || typeof one.key !== "string") {
+            throw new Error(`${label} must be a key, like "Mod+V", or { key, args }`);
         }
-        return {
-            name,
-            description: text(spec?.description),
-            args: checkArgs(name, spec?.args, types),
-            ...(binds ? { bind } : {}),
-        };
+        const args = one.args ?? [];
+        if (!Array.isArray(args) || args.some((arg) => !["string", "number", "boolean"].includes(typeof arg))) {
+            throw new Error(`the args of ${label} must be a list of strings, numbers and booleans`);
+        }
+        return { key: one.key, args };
     });
 }
 

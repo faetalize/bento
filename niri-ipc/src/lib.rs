@@ -1192,10 +1192,21 @@ pub struct LayoutEngineAction {
     pub description: Option<String>,
     /// The action's arguments, in order.
     pub args: Vec<LayoutEngineActionArg>,
-    /// The key a shell's module binds it to by default while it runs, as a bind's key is
-    /// written, like `Mod+V`. Engines' default binds are in their files instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bind: Option<String>,
+    /// The keys it's bound to by default, while whoever declares it runs, each with the
+    /// arguments it runs the action with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<LayoutEngineBind>,
+}
+
+/// A key an action is bound to by default.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct LayoutEngineBind {
+    /// The key, as a bind writes it, like `Mod+V`.
+    pub key: String,
+    /// The arguments it runs the action with, in order.
+    #[serde(default)]
+    pub args: Vec<LayoutEngineOptionValue>,
 }
 
 /// An argument of a layout engine action.

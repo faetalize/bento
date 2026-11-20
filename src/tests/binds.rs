@@ -94,6 +94,11 @@ fn parse(keymap: &Keymap, input: &str) -> Vec<Op> {
 
 fn set_up(config: &str) -> (Fixture, ClientId, WlSurface) {
     let mut config = Config::parse_mem(config).unwrap();
+    // These are about how the config's binds behave: bento's own shortcuts are turned off, as
+    // `unbind` turns them off, so their default keys reach the surface.
+    let defaults = niri_config::shortcuts::bento_defaults();
+    let off = defaults.iter().filter_map(niri_config::shortcuts::shortcut);
+    config.unbound.extend(off.cloned());
 
     for bind in &mut config.binds.0 {
         let actions = match &mut bind.action {

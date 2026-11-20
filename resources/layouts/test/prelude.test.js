@@ -46,6 +46,7 @@ test("load checks the module and describes the engine", () => {
                             { name: "to", type: "workspace" },
                             { name: "on", type: "monitor", default: "DP-1" },
                         ],
+                        bind: ["Mod+G", { key: "Mod+Shift+G", args: [2, "DP-2"] }],
                     },
                 },
                 settings: {
@@ -68,6 +69,11 @@ test("load checks the module and describes the engine", () => {
             ["on", "monitor", "DP-1"],
         ],
     );
+    // Its default keys, each with the arguments it runs the action with.
+    assert.deepEqual(meta.actions[0].binds, [
+        { key: "Mod+G", args: [] },
+        { key: "Mod+Shift+G", args: [2, "DP-2"] },
+    ]);
     assert.deepEqual(
         meta.settings.map((o) => [o.name, o.type, o.list]),
         [
@@ -95,8 +101,9 @@ test("load refuses engines that don't fit", () => {
     // Engines and shells declare settings the same way.
     assert.throws(load({ api: 2, name: "x", options: {} }), /meta\.settings/);
     assert.throws(load({ api: 2, name: "x", settings: { o: { type: "number", page: 1 } } }), /`page` of setting o/);
-    // An engine's default binds are in its own file; a shell's actions say theirs.
-    assert.throws(load({ api: 2, name: "x", actions: { a: { bind: "Mod+A" } } }), /its own file/);
+    // A default bind is a key, or a key with the arguments it runs the action with.
+    assert.throws(load({ api: 2, name: "x", actions: { a: { bind: 3 } } }), /must be a key/);
+    assert.throws(load({ api: 2, name: "x", actions: { a: { bind: [{ key: "Mod+A", args: [{}] }] } } }), /args of bind 1/);
     // Workspaces and monitors are API 2 types.
     assert.throws(
         load({ api: 1, name: "x", actions: { a: { args: [{ name: "n", type: "workspace" }] } } }),

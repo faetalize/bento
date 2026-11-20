@@ -16,9 +16,9 @@ use niri_config::{
     resolve_gradient, Color, EngineSettings, OutputName, Tiling, TilingLayout, TilingOption,
 };
 use niri_ipc::{
-    LayoutEngineAction, LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOption,
-    LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource, LayoutEngineWindowRule,
-    SizeChange,
+    LayoutEngineAction, LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineBind,
+    LayoutEngineOption, LayoutEngineOptionType, LayoutEngineOptionValue, LayoutEngineSource,
+    LayoutEngineWindowRule, SizeChange,
 };
 use rquickjs::loader::{BuiltinLoader, BuiltinResolver, ImportAttributes, Resolver};
 use rquickjs::{CatchResultExt as _, Context, Ctx, Function, Module, Object, Persistent, Runtime};
@@ -167,7 +167,7 @@ struct ActionMeta {
     description: Option<String>,
     args: Vec<ArgMeta>,
     #[serde(default)]
-    bind: Option<String>,
+    binds: Vec<LayoutEngineBind>,
 }
 
 #[derive(Deserialize)]
@@ -216,7 +216,7 @@ fn deserialize_actions<'de, D: Deserializer<'de>>(
         name: action.name,
         description: action.description,
         args: action.args.into_iter().map(arg).collect(),
-        bind: action.bind,
+        binds: action.binds,
     });
     Ok(actions.collect())
 }
@@ -760,6 +760,19 @@ pub fn minimize_enabled() -> bool {
 /// Metadata of the current layout.
 pub fn meta() -> Option<LayoutMeta> {
     ENGINE.with_borrow(|engine| engine.as_ref().map(|engine| engine.meta.clone()))
+}
+
+/// The binds the running engine's actions have by default, from its declarations.
+pub fn default_binds() -> Vec<niri_config::binds::Bind> {
+    ENGINE.with_borrow(|engine| {
+        let Some(engine) = engine.as_ref() else {
+            return Vec::new();
+        };
+        niri_config::shortcuts::declared_binds(
+            &engine.meta.actions,
+            niri_config::shortcuts::engine_action,
+        )
+    })
 }
 
 /// Arguments that the running engine declares for action `name`.

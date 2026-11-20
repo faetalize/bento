@@ -874,7 +874,8 @@ fn print_shell(shell: &bento_ipc::Shell) {
         println!("No settings.");
     }
     println!();
-    print_actions(&shell.actions);
+    let actions: Vec<_> = shell.actions.iter().map(|a| a.action.clone()).collect();
+    print_actions(&actions);
     if !shell.unused.is_empty() {
         println!();
         println!(
@@ -910,9 +911,17 @@ fn print_actions(actions: &[LayoutEngineAction]) {
                 usage.push_str(&format!(" [{name}]"));
             }
         }
-        match &action.bind {
-            Some(bind) => println!("  {usage}  ({bind} by default)"),
-            None => println!("  {usage}"),
+        let keys: Vec<String> = action
+            .binds
+            .iter()
+            .map(|bind| match bind.args.as_slice() {
+                [] => bind.key.clone(),
+                args => format!("{} with {}", bind.key, serde_json::to_string(args).unwrap()),
+            })
+            .collect();
+        match keys.as_slice() {
+            [] => println!("  {usage}"),
+            keys => println!("  {usage}  ({} by default)", keys.join(", ")),
         }
         if let Some(description) = &action.description {
             println!("    {description}");

@@ -7,7 +7,7 @@ use knuffel::Decode as _;
 use niri_ipc::LayoutEngineGradient;
 
 use crate::appearance::{Color, Gradient, GradientInterpolation, GradientRelativeTo};
-use crate::binds::{Binds, Key};
+use crate::binds::Binds;
 use crate::utils::{expand_home_path, MergeWith};
 use crate::window_rule::Match;
 use crate::{Config, CurrentFile, Includes, OutputName};
@@ -279,18 +279,21 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for Tiling {
     }
 }
 
-/// The file with the engine's settings and binds: `engines/<name>.kdl` next to the main config for
-/// a built-in engine, or the engine file with a `.kdl` extension.
+/// The user's file for the engine's settings, window rules and binds: `engines/<name>.kdl` next to
+/// the main config, by the built-in engine's name or the engine file's.
 pub fn engine_config_path(config_path: &Path, layout: &TilingLayout) -> PathBuf {
     engine_config_path_in(config_path.parent().unwrap_or(Path::new("")), layout)
 }
 
-/// The engine's file, with built-in engines' files in `engines/` under `dir`.
+/// The engine's file, in `engines/` under `dir`.
 pub fn engine_config_path_in(dir: &Path, layout: &TilingLayout) -> PathBuf {
-    match layout {
-        TilingLayout::BuiltIn(name) => dir.join("engines").join(format!("{name}.kdl")),
-        TilingLayout::File(path) => path.with_extension("kdl"),
-    }
+    let name = match layout {
+        TilingLayout::BuiltIn(name) => name.clone(),
+        TilingLayout::File(path) => path
+            .file_stem()
+            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+    };
+    dir.join("engines").join(format!("{name}.kdl"))
 }
 
 /// The default file of a built-in engine, with its binds and settings.
@@ -309,15 +312,26 @@ const DEFAULT_ENGINE_CONFIGS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Writes the default file of the built-in engine in `layout` if it has none yet, the way bento
-/// writes the default config on first start. From then on the file is the user's. Returns whether
-/// it wrote one.
+/// Writes the starting file of the engine in `layout` if it has none yet, the way bento writes the
+/// default config on first start: a built-in engine's from bento, and an engine file's from the
+/// `.kdl` its author ships next to it, if any. From then on the file is the user's. Returns
+/// whether it wrote one.
 pub fn create_engine_config(dir: &Path, layout: &TilingLayout) -> bool {
-    let TilingLayout::BuiltIn(name) = layout else {
-        return false;
-    };
-    let Some((_, text)) = DEFAULT_ENGINE_CONFIGS.iter().find(|(n, _)| n == name) else {
-        return false;
+    let shipped;
+    let (name, text) = match layout {
+        TilingLayout::BuiltIn(name) => {
+            let Some((_, text)) = DEFAULT_ENGINE_CONFIGS.iter().find(|(n, _)| n == name) else {
+                return false;
+            };
+            (name.clone(), *text)
+        }
+        TilingLayout::File(path) => {
+            let Ok(text) = std::fs::read_to_string(path.with_extension("kdl")) else {
+                return false;
+            };
+            shipped = text;
+            (path.to_string_lossy().into_owned(), shipped.as_str())
+        }
     };
     let path = engine_config_path_in(dir, layout);
     if path.exists() {
@@ -412,25 +426,13 @@ where
                     config.borrow_mut().tiling.window_rules.push(rule);
                 }
                 "binds" => {
+                    let unbound = crate::binds::decode_unbinds(node, ctx);
                     let part = Binds::decode_node(node, ctx)?;
                     let file = ctx.get::<CurrentFile>().unwrap().0.clone();
                     let mut config = config.borrow_mut();
-                    let config = &mut *config;
-                    // The engine's file loads only while its engine runs, so it's the narrower
-                    // layer: its binds take over keys the main config binds too, the way a
-                    // workspace's settings override its output's. Switching engines then never
-                    // fails on a key, and the main config's binds are kept aside to say so.
-                    let taken = |key: &Key| part.0.iter().any(|new| new.key.conflicts_with(key));
-                    let (taken_over, kept) = std::mem::take(&mut config.binds.0)
-                        .into_iter()
-                        .partition(|bind: &crate::binds::Bind| taken(&bind.key));
-                    config.binds.0 = kept;
-                    config.taken_over = Binds(taken_over);
-                    let (taken_files, kept_files) = std::mem::take(&mut config.bind_files.0)
-                        .into_iter()
-                        .partition(|(key, _)| taken(key));
-                    config.bind_files.0 = kept_files;
-                    config.taken_over_files = crate::BindFiles(taken_files);
+                    // Kept with the main config's: which runs a key both bind is for
+                    // `shortcuts::resolve`, by who declares their actions.
+                    config.unbound.extend(unbound);
                     let files = part.0.iter().map(|bind| (bind.key, file.clone()));
                     config.bind_files.0.extend(files);
                     config.binds.0.extend(part.0);
@@ -1196,13 +1198,9 @@ mod tests {
             let main = main.replace(r#"layout "bento""#, &format!("layout {name:?}"));
             let config = Config::parse_mem_with_engine(&main, engine)
                 .unwrap_or_else(|err| panic!("{name}: {:?}", miette::Report::new(err)));
-            let engine_binds = config
-                .binds
-                .0
-                .iter()
-                .filter(|bind| matches!(bind.press_action(), Some(Action::LayoutAction(..))));
-            // How many is the engine's business; none means its binds didn't load.
-            assert!(engine_binds.count() > 0, "{name}");
+            // An engine's default keys are in its declarations: its starting file, and the main
+            // config's, have none.
+            assert!(config.binds.0.is_empty(), "{name}");
         }
     }
 
@@ -1223,25 +1221,32 @@ mod tests {
     fn the_engines_file_takes_over_a_key_of_the_main_config() {
         let main = binds("Mod+R { spawn \"x\"; }\n    Mod+T { spawn \"y\"; }");
         let config = Config::parse_mem_with_engine(&main, &binds("Mod+R { resize; }")).unwrap();
-        let key: Key = "Mod+R".parse().unwrap();
-        let bound: Vec<_> = config.binds.0.iter().filter(|b| b.key == key).collect();
-        assert_eq!(bound.len(), 1);
+        // Both are kept, each with its file; the engine's runs the key, as the narrower.
+        assert_eq!(config.binds.0.len(), 3);
+        let resolved = crate::shortcuts::resolve(&config.binds.0, &config.unbound, &[]);
+        let key: crate::binds::Key = "Mod+R".parse().unwrap();
+        let bound: Vec<_> = resolved.in_use.iter().filter(|b| b.key == key).collect();
         assert!(matches!(
             bound[0].press_action(),
             Some(Action::LayoutAction(..))
         ));
-        assert_eq!(
-            config.bind_files.get(&key),
-            Some(Path::new("engines/bento.kdl"))
-        );
-        // The main config's bind is kept aside, to say what the engine took over.
-        let taken: Vec<_> = config.taken_over.0.iter().map(|b| b.key).collect();
+        let taken: Vec<_> = resolved.taken_over.iter().map(|t| t.bind.key).collect();
         assert_eq!(taken, [key]);
+    }
+
+    #[test]
+    fn unbind_turns_a_shortcut_off_in_either_file() {
+        let main = binds("unbind { power-off-monitors; }\n    Mod+T { spawn \"y\"; }");
+        let engine = binds("unbind { resize 2; }");
+        let config = Config::parse_mem_with_engine(&main, &engine).unwrap();
+        assert_eq!(config.binds.0.len(), 1);
         assert_eq!(
-            config.taken_over_files.get(&key),
-            Some(Path::new("config.kdl"))
+            config.unbound,
+            [
+                Action::PowerOffMonitors,
+                Action::LayoutAction(String::from("resize"), vec![TilingOption::Number(2.)], None),
+            ]
         );
-        assert_eq!(config.binds.0.len(), 2);
     }
 
     #[test]

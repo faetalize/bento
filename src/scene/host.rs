@@ -419,7 +419,13 @@ impl SceneHost {
                 .into_iter()
                 .map(|(name, settings)| bento_ipc::ShellSettings { name, settings })
                 .collect(),
-            actions: settings.as_ref().map(|s| s.actions()).unwrap_or_default(),
+            actions: settings
+                .as_ref()
+                .map(|s| s.owned_actions())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(module, action)| bento_ipc::ShellAction { module, action })
+                .collect(),
             unused,
         }
     }
@@ -1585,7 +1591,11 @@ mod tests {
         assert!(info.unused.is_empty());
         // The start menu's shortcut is the start menu's own action, not bento's, on Mod alone
         // by default.
-        let actions: Vec<&str> = info.actions.iter().map(|a| a.name.as_str()).collect();
+        let actions: Vec<&str> = info
+            .actions
+            .iter()
+            .map(|a| a.action.name.as_str())
+            .collect();
         assert!(actions.contains(&"toggle-start-menu"), "{actions:?}");
         assert!(!actions.contains(&"toggle-launcher"), "{actions:?}");
         let binds = host.default_binds();
@@ -1593,7 +1603,10 @@ mod tests {
         let start = start.and_then(|bind| bind.release_action());
         assert_eq!(
             start,
-            Some(&niri_config::Action::ShellAction(String::from("toggle-start-menu"), Vec::new()))
+            Some(&niri_config::Action::ShellAction(
+                String::from("toggle-start-menu"),
+                Vec::new()
+            ))
         );
     }
 
@@ -1608,7 +1621,13 @@ mod tests {
         let places = |host: &mut SceneHost, now: &mut Instant| {
             host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
             settle(host, now);
-            let heading = host.shell.as_ref().unwrap().scene.borrow().find("DP-1", "All apps");
+            let heading = host
+                .shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .find("DP-1", "All apps");
             let button = middle_of(host, "DP-1", "ph-squares-four-symbolic");
             host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
             settle(host, now);
@@ -1618,7 +1637,10 @@ mod tests {
         // On a taskbar in the middle, around the button.
         let (menu, button) = places(&mut host, &mut now);
         let middle = menu - 24. + 336.;
-        assert!((middle - button).abs() < 40., "menu {menu}, button {button}");
+        assert!(
+            (middle - button).abs() < 40.,
+            "menu {menu}, button {button}"
+        );
 
         // On one to the left, from the button's left edge, not in the middle of the output.
         settings
@@ -1808,7 +1830,10 @@ mod tests {
             look(&mut host, &mut now);
         }
         // It comes out over the clipboard's button, at the right of the taskbar.
-        let astray: Vec<_> = seen.iter().filter(|([x, _, w, _], _, _)| x + w < 1700.).collect();
+        let astray: Vec<_> = seen
+            .iter()
+            .filter(|([x, _, w, _], _, _)| x + w < 1700.)
+            .collect();
         assert!(astray.is_empty(), "glass away from the button: {astray:?}");
         // Closed, every one of them goes in the end; open, one is left.
         settle(&mut host, &mut now);
@@ -1817,7 +1842,10 @@ mod tests {
             .into_iter()
             .flat_map(|band| scene.draw("DP-1", band))
             .collect();
-        let left: Vec<_> = glass_of(&items).into_iter().filter(|p| p.0[2] < 1920.).collect();
+        let left: Vec<_> = glass_of(&items)
+            .into_iter()
+            .filter(|p| p.0[2] < 1920.)
+            .collect();
         assert!(left.len() <= 1, "{left:?}");
         drop(scene);
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
@@ -1837,7 +1865,9 @@ mod tests {
                     .into_iter()
                     .flat_map(|band| scene.draw("DP-1", band))
                     .collect();
-                let menu = glass_of(&items).into_iter().find(|piece| piece.0[2] < 1920.);
+                let menu = glass_of(&items)
+                    .into_iter()
+                    .find(|piece| piece.0[2] < 1920.);
                 seen.push(menu);
             }
             seen
@@ -1846,21 +1876,34 @@ mod tests {
             let shown: Vec<GlassPiece> = seen.iter().flatten().copied().collect();
             // At its whole width and full strength, coming out of the taskbar's edge, 2px over
             // it, as if from behind it.
-            assert!(shown.iter().all(|(_, _, opacity)| *opacity > 0.99), "{shown:?}");
-            assert!(shown.iter().all(|([_, _, w, _], _, _)| *w == 672.), "{shown:?}");
             assert!(
-                shown.iter().all(|([_, y, _, h], _, _)| (1032. - (y + h) - 2.).abs() < 0.5),
+                shown.iter().all(|(_, _, opacity)| *opacity > 0.99),
                 "{shown:?}"
             );
             assert!(
-                shown.iter().any(|([_, _, _, h], _, _)| *h > 1. && *h < 300.),
+                shown.iter().all(|([_, _, w, _], _, _)| *w == 672.),
+                "{shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .all(|([_, y, _, h], _, _)| (1032. - (y + h) - 2.).abs() < 0.5),
+                "{shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .any(|([_, _, _, h], _, _)| *h > 1. && *h < 300.),
                 "it's there at its size at once: {shown:?}"
             );
         };
         host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
         let coming = frames(&mut host, &mut now);
         grows(&coming);
-        assert!(coming.last().unwrap().is_some_and(|([_, _, _, h], _, _)| h > 500.));
+        assert!(coming
+            .last()
+            .unwrap()
+            .is_some_and(|([_, _, _, h], _, _)| h > 500.));
 
         host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
         let going = frames(&mut host, &mut now);
@@ -3297,7 +3340,9 @@ mod tests {
         run(&mut host, "idle", 0., 30);
         for round in ["cold", "warm"] {
             println!("--- {round}");
-            let e = timed(&mut || host.shell_action("toggle-launcher", &[], Some(String::from("DP-1"))));
+            let e = timed(&mut || {
+                host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")))
+            });
             run(&mut host, "launcher opens", e, 40);
             for key in ["f", "i", "r"] {
                 let e = timed(&mut || type_keys(&mut host, &[key]));

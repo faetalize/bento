@@ -41,10 +41,16 @@ export const meta = {
     // niri's layout actions, all of which this engine handles like niri does. Each workspace has
     // its own strip, and the actions that cross a strip's edge go to the next monitor or workspace.
     actions: {
-        "focus-column-left": { description: "Focus the column to the left." },
-        "focus-column-right": { description: "Focus the column to the right." },
-        "focus-column-first": { description: "Focus the first column." },
-        "focus-column-last": { description: "Focus the last column." },
+        "focus-column-left": {
+            description: "Focus the column to the left.",
+            bind: ["Mod+Left", "Mod+H", "Mod+WheelScrollLeft", "Mod+Shift+WheelScrollUp"],
+        },
+        "focus-column-right": {
+            description: "Focus the column to the right.",
+            bind: ["Mod+Right", "Mod+L", "Mod+WheelScrollRight", "Mod+Shift+WheelScrollDown"],
+        },
+        "focus-column-first": { description: "Focus the first column.", bind: "Mod+Home" },
+        "focus-column-last": { description: "Focus the last column.", bind: "Mod+End" },
         "focus-column-right-or-first": {
             description: "Focus the column to the right, or the first one from the last one.",
         },
@@ -62,8 +68,14 @@ export const meta = {
             description: "Focus a window in the focused column by its index.",
             args: INDEX,
         },
-        "focus-window-down": { description: "Focus the window below in the column." },
-        "focus-window-up": { description: "Focus the window above in the column." },
+        "focus-window-down": {
+            description: "Focus the window below in the column.",
+            bind: ["Mod+Down", "Mod+J"],
+        },
+        "focus-window-up": {
+            description: "Focus the window above in the column.",
+            bind: ["Mod+Up", "Mod+K"],
+        },
         "focus-window-or-monitor-down": {
             description: "Focus the window below, or the monitor below from the bottom window.",
         },
@@ -96,8 +108,24 @@ export const meta = {
         "focus-window-up-or-bottom": {
             description: "Focus the window above, or the bottom window from the top one.",
         },
-        "move-column-left": { description: "Move the focused column to the left." },
-        "move-column-right": { description: "Move the focused column to the right." },
+        "move-column-left": {
+            description: "Move the focused column to the left.",
+            bind: [
+                "Mod+Ctrl+Left",
+                "Mod+Ctrl+H",
+                "Mod+Ctrl+WheelScrollLeft",
+                "Mod+Ctrl+Shift+WheelScrollUp",
+            ],
+        },
+        "move-column-right": {
+            description: "Move the focused column to the right.",
+            bind: [
+                "Mod+Ctrl+Right",
+                "Mod+Ctrl+L",
+                "Mod+Ctrl+WheelScrollRight",
+                "Mod+Ctrl+Shift+WheelScrollDown",
+            ],
+        },
         "move-column-left-or-to-monitor-left": {
             description: "Move the focused column to the left, or to the monitor to the left from the first place.",
             args: [FOCUS],
@@ -106,8 +134,14 @@ export const meta = {
             description: "Move the focused column to the right, or to the monitor to the right from the last place.",
             args: [FOCUS],
         },
-        "move-column-to-first": { description: "Move the focused column to the start." },
-        "move-column-to-last": { description: "Move the focused column to the end." },
+        "move-column-to-first": {
+            description: "Move the focused column to the start.",
+            bind: "Mod+Ctrl+Home",
+        },
+        "move-column-to-last": {
+            description: "Move the focused column to the end.",
+            bind: "Mod+Ctrl+End",
+        },
         "move-column-to-index": {
             description: "Move the focused column to an index.",
             args: INDEX,
@@ -122,14 +156,27 @@ export const meta = {
                 },
                 FOCUS,
             ],
+            bind: [
+                { key: "Mod+Ctrl+Shift+1", args: [1] },
+                { key: "Mod+Ctrl+Shift+2", args: [2] },
+                { key: "Mod+Ctrl+Shift+3", args: [3] },
+                { key: "Mod+Ctrl+Shift+4", args: [4] },
+                { key: "Mod+Ctrl+Shift+5", args: [5] },
+                { key: "Mod+Ctrl+Shift+6", args: [6] },
+                { key: "Mod+Ctrl+Shift+7", args: [7] },
+                { key: "Mod+Ctrl+Shift+8", args: [8] },
+                { key: "Mod+Ctrl+Shift+9", args: [9] },
+            ],
         },
         "move-column-to-workspace-down": {
             description: "Move the focused column to the workspace below.",
             args: [FOCUS],
+            bind: ["Mod+Ctrl+Shift+Page_Down", "Mod+Ctrl+Shift+U"],
         },
         "move-column-to-workspace-up": {
             description: "Move the focused column to the workspace above.",
             args: [FOCUS],
+            bind: ["Mod+Ctrl+Shift+Page_Up", "Mod+Ctrl+Shift+I"],
         },
         "move-column-to-monitor": {
             description: "Move the focused column to a monitor's active workspace.",
@@ -159,8 +206,14 @@ export const meta = {
             description: "Move the focused column to the next monitor.",
             args: [FOCUS],
         },
-        "move-window-down": { description: "Move the focused window down in its column." },
-        "move-window-up": { description: "Move the focused window up in its column." },
+        "move-window-down": {
+            description: "Move the focused window down in its column.",
+            bind: ["Mod+Ctrl+Down", "Mod+Ctrl+J"],
+        },
+        "move-window-up": {
+            description: "Move the focused window up in its column.",
+            bind: ["Mod+Ctrl+Up", "Mod+Ctrl+K"],
+        },
         "move-window-down-or-to-workspace-down": {
             description: "Move the focused window down in its column, or to the workspace below from the bottom.",
             args: [FOCUS],
@@ -171,15 +224,19 @@ export const meta = {
         },
         "consume-or-expel-window-left": {
             description: "Put the focused window into the column to the left, or take it out of its column to the left.",
+            bind: "Mod+BracketLeft",
         },
         "consume-or-expel-window-right": {
             description: "Put the focused window into the column to the right, or take it out of its column to the right.",
+            bind: "Mod+BracketRight",
         },
         "consume-window-into-column": {
             description: "Put the first window of the column to the right into the focused column.",
+            bind: "Mod+Comma",
         },
         "expel-window-from-column": {
             description: "Take the bottom window of the focused column out into a column of its own.",
+            bind: "Mod+Period",
         },
         "swap-window-left": {
             description: "Swap the focused window with the one in the column to the left.",
@@ -189,21 +246,25 @@ export const meta = {
         },
         "toggle-column-tabbed-display": {
             description: "Switch the focused column between tabs and stacked windows.",
+            bind: "Mod+W",
         },
         "set-column-display": {
             description: "Show the focused column's windows as tabs or stacked.",
             args: [{ name: "display", type: "choice", choices: ["normal", "tabbed"] }],
         },
-        "center-column": { description: "Center the focused column in the view." },
+        "center-column": { description: "Center the focused column in the view.", bind: "Mod+C" },
         "center-window": { description: "Center the window's column, if it's the focused one." },
         "center-visible-columns": {
             description: "Center the columns that are fully in view, together.",
+            bind: "Mod+Ctrl+C",
         },
         "switch-preset-column-width": {
             description: "Switch the focused column to the next preset width.",
+            bind: "Mod+R",
         },
         "switch-preset-column-width-back": {
             description: "Switch the focused column to the previous preset width.",
+            bind: "Mod+Shift+R",
         },
         "switch-preset-window-width": {
             description: "Switch the window's column to the next preset width.",
@@ -213,24 +274,35 @@ export const meta = {
         },
         "switch-preset-window-height": {
             description: "Switch the window to the next preset height.",
+            bind: "Mod+Ctrl+Shift+R",
         },
         "switch-preset-window-height-back": {
             description: "Switch the window to the previous preset height.",
         },
         "maximize-column": {
             description: "Toggle the focused column between the full view width and its own width.",
+            bind: "Mod+F",
         },
         "set-column-width": {
             description: "Set or change the focused column's width.",
             args: SIZE,
+            bind: [{ key: "Mod+Minus", args: ["-10%"] }, { key: "Mod+Equal", args: ["+10%"] }],
         },
         "set-window-width": { description: "Set or change the window's column width.", args: SIZE },
-        "set-window-height": { description: "Set or change the window's height.", args: SIZE },
+        "set-window-height": {
+            description: "Set or change the window's height.", args: SIZE,
+            bind: [
+                { key: "Mod+Shift+Minus", args: ["-10%"] },
+                { key: "Mod+Shift+Equal", args: ["+10%"] },
+            ],
+        },
         "reset-window-height": {
             description: "Give the window back its automatic height in its column.",
+            bind: "Mod+Ctrl+R",
         },
         "expand-column-to-available-width": {
             description: "Widen the focused column into the space other fully visible columns leave.",
+            bind: "Mod+Ctrl+F",
         },
     },
     settings: {

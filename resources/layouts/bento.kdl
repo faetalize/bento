@@ -1,4 +1,4 @@
-// Settings and binds for the bento engine, loaded only while it runs. bento copies this file to
+// Settings for the bento engine, loaded only while it runs. bento copies this file to
 // ~/.config/bento/engines/bento.kdl the first time the engine runs without one; from then on
 // it's yours to edit.
 //
@@ -70,122 +70,11 @@ settings {
 //     default-height "50%"
 // }
 
-binds {
-    // Focus the nearest window in a direction, even diagonally.
-    Mod+Left  { focus-left; }
-    Mod+Down  { focus-down; }
-    Mod+Up    { focus-up; }
-    Mod+Right { focus-right; }
-    Mod+H     { focus-left; }
-    Mod+J     { focus-down; }
-    Mod+K     { focus-up; }
-    Mod+L     { focus-right; }
-
-    // Move the focused window one cell, swapping with a window in the way.
-    Mod+Ctrl+Left  { move-left; }
-    Mod+Ctrl+Down  { move-down; }
-    Mod+Ctrl+Up    { move-up; }
-    Mod+Ctrl+Right { move-right; }
-    Mod+Ctrl+H     { move-left; }
-    Mod+Ctrl+J     { move-down; }
-    Mod+Ctrl+K     { move-up; }
-    Mod+Ctrl+L     { move-right; }
-
-    // The leftmost and rightmost windows in the row.
-    Mod+Home { focus-first; }
-    Mod+End  { focus-last; }
-    Mod+Ctrl+Home { move-first; }
-    Mod+Ctrl+End  { move-last; }
-
-    Mod+WheelScrollRight      { focus-right; }
-    Mod+WheelScrollLeft       { focus-left; }
-    Mod+Ctrl+WheelScrollRight { move-right; }
-    Mod+Ctrl+WheelScrollLeft  { move-left; }
-
-    // Usually scrolling up and down with Shift in applications results in
-    // horizontal scrolling; these binds replicate that.
-    Mod+Shift+WheelScrollDown      { focus-right; }
-    Mod+Shift+WheelScrollUp        { focus-left; }
-    Mod+Ctrl+Shift+WheelScrollDown { move-right; }
-    Mod+Ctrl+Shift+WheelScrollUp   { move-left; }
-
-    // Stack the window to the right under the focused one.
-    Mod+Comma  { stack-from-right; }
-    // Take the focused window out of its stack or its group, to the right.
-    Mod+Period { unstack; }
-
-    // Cycle the focused window through the preset widths, and back.
-    Mod+R { cycle-width; }
-    Mod+Shift+R { cycle-width-back; }
-
-    // Cycle through the preset heights, or make the window as tall as the grid.
-    Mod+Ctrl+Shift+R { cycle-height; }
-    Mod+Ctrl+R { full-height; }
-
-    // Toggle the focused window between the full view width and its own width.
-    Mod+F { toggle-full-width; }
-
-    // Grow the focused window into the empty cells beside it.
-    Mod+Ctrl+F { fill-width; }
-
-    Mod+C { center; }
-
-    // Center the windows that are fully in view, together.
-    Mod+Ctrl+C { center-visible; }
-
-    // Change the focused window's size, in whole cells.
-    Mod+Minus { set-width "-10%"; }
-    Mod+Equal { set-width "+10%"; }
-    Mod+Shift+Minus { set-height "-10%"; }
-    Mod+Shift+Equal { set-height "+10%"; }
-
-    // While holding Mod, each press picks the focused window, or unpicks it; letting go of Mod
-    // groups the picked windows where the first one is. Picking one window of a group alone
-    // takes it out.
-    Mod+W { group; }
-
-    // Actions on two windows. Each takes two presses: the first picks the focused window, then
-    // focus another window and press again.
-    // Share a window's space with another, side by side or stacked.
-    Mod+S      { split-h; }
-    Mod+Ctrl+S { split-v; }
-    // Swap two windows.
-    Mod+X { swap; }
-
-    // Squeeze the focused window between two others, or into a group between two of its
-    // windows. It shows the places it can go, one picked; focusing in a direction picks another,
-    // and pressing again puts it there.
-    Mod+G { stuff; }
-
-    // These go on like the focus actions above, and where the grid ends, on to the monitor to
-    // the left or right, or the workspace above or below. To use them, bind them to your focus
-    // keys instead of the actions above.
-    // Mod+Left  { focus-left-or-monitor; }
-    // Mod+Down  { focus-down-or-workspace; }
-    // Mod+Up    { focus-up-or-workspace; }
-    // Mod+Right { focus-right-or-monitor; }
-
-    // Move the focused window, with its group, down or up in the grid, and to the workspace below
-    // or above once it can't. The binds on Ctrl and Page_Down or Page_Up in config.kdl move one
-    // window to another workspace.
-    Mod+Ctrl+Shift+Page_Down { move-down-or-to-workspace; }
-    Mod+Ctrl+Shift+Page_Up   { move-up-or-to-workspace; }
-    Mod+Ctrl+Shift+U         { move-down-or-to-workspace; }
-    Mod+Ctrl+Shift+I         { move-up-or-to-workspace; }
-
-    // Move it to a workspace of the focused monitor by its number.
-    Mod+Ctrl+Shift+1 { move-to-workspace 1; }
-    Mod+Ctrl+Shift+2 { move-to-workspace 2; }
-    Mod+Ctrl+Shift+3 { move-to-workspace 3; }
-    Mod+Ctrl+Shift+4 { move-to-workspace 4; }
-    Mod+Ctrl+Shift+5 { move-to-workspace 5; }
-    Mod+Ctrl+Shift+6 { move-to-workspace 6; }
-    Mod+Ctrl+Shift+7 { move-to-workspace 7; }
-    Mod+Ctrl+Shift+8 { move-to-workspace 8; }
-    Mod+Ctrl+Shift+9 { move-to-workspace 9; }
-
-    // Move it to the monitor on the left once it can't move left in the grid, or to a monitor by
-    // its name.
-    // Mod+Alt+Shift+Ctrl+Left { move-left-or-to-monitor; }
-    // Mod+Alt+Shift+Ctrl+D    { move-to-monitor "DP-2"; }
-}
+// The engine's shortcuts come with it, on their default keys, and Settings lists them. Your own
+// keys for them go in a binds section here, replacing a shortcut's defaults, and unbind turns one
+// off:
+//
+// binds {
+//     Mod+Shift+Left { focus-left; }
+//     unbind { swap; }
+// }

@@ -1243,10 +1243,11 @@ impl Scene {
             // for a box with a positioning area, which it gives a box with nothing in it none of.
             // A box left empty by what was out of its flow would keep it on the list, and taffy
             // would read it once it's gone. With an area, it's emptied.
-            out.oof_positioning_area.get_or_insert(taffy::OofPositioningArea {
-                size: out.size,
-                offset: taffy::Point::ZERO,
-            });
+            out.oof_positioning_area
+                .get_or_insert(taffy::OofPositioningArea {
+                    size: out.size,
+                    offset: taffy::Point::ZERO,
+                });
             out
         });
         let laid = self

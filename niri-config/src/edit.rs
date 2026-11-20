@@ -15,6 +15,7 @@ use std::fmt::Write as _;
 use knuffel::ast;
 use knuffel::span::Span;
 
+use crate::binds::UNBIND;
 use crate::Key;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,7 +296,8 @@ impl BindNode {
 /// pressed in between, since run as they're pressed it would run whenever they start another
 /// shortcut. It's written and read as a `release` section.
 fn modifiers_alone(key: &str) -> bool {
-    key.parse::<Key>().is_ok_and(|key| key.trigger.is_modifier())
+    key.parse::<Key>()
+        .is_ok_and(|key| key.trigger.is_modifier())
 }
 
 impl Document {
@@ -305,7 +307,55 @@ impl Document {
             .expect("edits keep the document valid");
         let sections = doc.nodes.iter().filter(|node| &**node.node_name == "binds");
         let binds = sections.flat_map(|section| section.children.iter().flat_map(|c| c.iter()));
-        binds.map(bind_node).collect()
+        binds
+            .filter(|node| &**node.node_name != UNBIND)
+            .map(bind_node)
+            .collect()
+    }
+
+    /// The shortcuts the document's `binds` sections turn off with `unbind`, as written.
+    pub fn unbinds(&self) -> Vec<ActionNode> {
+        let doc = knuffel::parse_ast::<Span>("config.kdl", &self.text)
+            .expect("edits keep the document valid");
+        let sections = doc.nodes.iter().filter(|node| &**node.node_name == "binds");
+        let nodes = sections.flat_map(|section| section.children.iter().flat_map(|c| c.iter()));
+        nodes
+            .filter(|node| &**node.node_name == UNBIND)
+            .filter_map(|node| match children(node).as_slice() {
+                [action] => Some(action_node(action)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Turns the shortcut `action` off, with an `unbind` in the last `binds` section, or a new one.
+    pub fn add_unbind(&mut self, action: &ActionNode) {
+        if self.unbinds().contains(action) {
+            return;
+        }
+        let text = format!("{UNBIND} {{ {}; }}", action.text());
+        self.add_bind_line(&text);
+    }
+
+    /// Takes away the `unbind` of `action`, as written. Returns whether there was one.
+    pub fn remove_unbind(&mut self, action: &ActionNode) -> bool {
+        let doc = knuffel::parse_ast::<Span>("config.kdl", &self.text)
+            .expect("edits keep the document valid");
+        let nodes = self.nodes();
+        let sections = doc.nodes.iter().zip(&nodes);
+        for (section, located) in sections.filter(|(node, _)| &**node.node_name == "binds") {
+            let nodes = section.children.iter().flat_map(|c| c.iter());
+            for (child, at) in nodes.zip(&located.children) {
+                let found = &**child.node_name == UNBIND
+                    && matches!(children(child).as_slice(), [one] if action_node(one) == *action);
+                if found {
+                    let (start, end) = removal_range(&self.text, at);
+                    self.text.replace_range(start..end, "");
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Replaces the bind for `key`, however the file spells it, or adds it to the last `binds`
@@ -319,9 +369,14 @@ impl Document {
             return;
         }
 
+        self.add_bind_line(&text);
+    }
+
+    /// Adds `text` as the last line of the last `binds` section, or of a new one.
+    fn add_bind_line(&mut self, text: &str) {
         let nodes = self.nodes();
         match nodes.iter().rfind(|node| node.name == "binds") {
-            Some(section) => self.insert_line(section, &text),
+            Some(section) => self.insert_line(section, text),
             None => {
                 if !self.text.is_empty() && !self.text.ends_with('\n') {
                     self.text.push('\n');
@@ -415,9 +470,9 @@ fn children(node: &ast::SpannedNode<Span>) -> Vec<&ast::SpannedNode<Span>> {
     node.children.iter().flat_map(|c| c.iter()).collect()
 }
 
-fn bind_node(node: &ast::SpannedNode<Span>) -> BindNode {
-    let key = node.node_name.to_string();
-    let action_node = |action: &ast::SpannedNode<Span>| ActionNode {
+/// An action node as written.
+fn action_node(action: &ast::SpannedNode<Span>) -> ActionNode {
+    ActionNode {
         name: action.node_name.to_string(),
         args: action
             .arguments
@@ -425,7 +480,11 @@ fn bind_node(node: &ast::SpannedNode<Span>) -> BindNode {
             .filter_map(|v| value(&v.literal))
             .collect(),
         properties: properties(action),
-    };
+    }
+}
+
+fn bind_node(node: &ast::SpannedNode<Span>) -> BindNode {
+    let key = node.node_name.to_string();
     let action = match children(node).as_slice() {
         [action] if !matches!(&**action.node_name, "press" | "release") => {
             Some(action_node(action))
@@ -795,18 +854,52 @@ mod tests {
     }
 
     #[test]
+    fn unbinds_are_read_added_and_taken_away_apart_from_binds() {
+        let text =
+            "binds {\n    Mod+T { spawn \"foot\"; }\n    unbind { power-off-monitors; }\n}\n";
+        let mut doc = Document::parse(text.to_owned()).unwrap();
+        // They aren't binds.
+        assert_eq!(doc.binds().len(), 1);
+        let off = |name: &str, args: Vec<Value>| ActionNode {
+            name: name.to_owned(),
+            args,
+            properties: Vec::new(),
+        };
+        assert_eq!(doc.unbinds(), [off("power-off-monitors", Vec::new())]);
+        let start = off(
+            "shell-action",
+            vec![Value::Str(String::from("toggle-start-menu"))],
+        );
+        doc.add_unbind(&start);
+        assert_eq!(
+            doc.text(),
+            "binds {\n    Mod+T { spawn \"foot\"; }\n    unbind { power-off-monitors; }\n    unbind { shell-action \"toggle-start-menu\"; }\n}\n"
+        );
+        assert!(doc.remove_unbind(&off("power-off-monitors", Vec::new())));
+        assert!(!doc.remove_unbind(&off("power-off-monitors", Vec::new())));
+        assert_eq!(doc.unbinds(), [start]);
+        Document::parse(doc.text().to_owned()).expect("still valid");
+    }
+
+    #[test]
     fn a_bind_of_modifiers_alone_runs_as_they_are_let_go() {
         // Run as it's pressed, it would run whenever the modifier starts another shortcut.
         let out = edit("binds {\n}\n", |doc| {
             doc.set_bind(&key("Mod"), &spawn("Mod", "menu"))
         });
-        assert_eq!(out, "binds {\n    Mod { release { spawn \"menu\"; }; }\n}\n");
+        assert_eq!(
+            out,
+            "binds {\n    Mod { release { spawn \"menu\"; }; }\n}\n"
+        );
         // And it reads back as its action, to change.
         let binds = Document::parse(out).unwrap().binds();
         assert_eq!(binds[0].action.as_ref().unwrap().text(), "spawn \"menu\"");
         // A key with more than modifiers keeps its sections as they are.
         let text = "binds {\n    Mod+Q { release { close-window; }; }\n}\n";
-        assert_eq!(Document::parse(text.to_owned()).unwrap().binds()[0].action, None);
+        assert_eq!(
+            Document::parse(text.to_owned()).unwrap().binds()[0].action,
+            None
+        );
     }
 
     #[test]

@@ -260,11 +260,22 @@ pub struct Shell {
     /// The settings of the shell and of each module it uses that declares any, in the order
     /// they're loaded: a module's are shared by every shell that has it.
     pub settings: Vec<ShellSettings>,
-    /// The actions the shell and its modules declare, which binds run with `shell-action`.
-    pub actions: Vec<LayoutEngineAction>,
+    /// The actions the shell and its modules declare, which binds run with `shell-action`, each
+    /// with who declares it.
+    pub actions: Vec<ShellAction>,
     /// What the settings file sets that nothing running declares, as `name` for a whole block or
     /// `name.setting`. It stays in the file, for a shell that declares it.
     pub unused: Vec<String>,
+}
+
+/// An action a module of the shell, or the shell, declares.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct ShellAction {
+    /// The module's name, or the shell's, by its file's name, like `start-menu`.
+    pub module: String,
+    #[serde(flatten)]
+    /// The action, as an engine's is declared.
+    pub action: LayoutEngineAction,
 }
 
 /// Where the shell bento draws comes from.

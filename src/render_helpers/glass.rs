@@ -733,7 +733,10 @@ mod tests {
         assert_eq!(glass.thickness, 0.);
         assert_eq!(glass.reflection, 0.);
         assert_eq!(glass.pointer_light, 0.);
-        assert!(glass.lights.iter().all(Option::is_none), "it catches the light");
+        assert!(
+            glass.lights.iter().all(Option::is_none),
+            "it catches the light"
+        );
         assert_eq!(glass.pattern_depth, 0.);
         assert_eq!(glass.color.a, 0., "it's tinted");
         assert!(!glass.follow_accent);

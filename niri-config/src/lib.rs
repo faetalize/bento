@@ -43,6 +43,7 @@ pub mod layout;
 pub mod misc;
 pub mod output;
 pub mod recent_windows;
+pub mod shortcuts;
 pub mod tiling;
 pub mod utils;
 pub mod window_rule;
@@ -120,13 +121,12 @@ pub struct Config {
     pub xwayland_satellite: XwaylandSatellite,
     pub window_rules: Vec<WindowRule>,
     pub layer_rules: Vec<LayerRule>,
+    /// The user's binds, from the main config and the running engine's file. Which of them are in
+    /// use, with the defaults of whoever declares their actions, is [`shortcuts::resolve`]'s.
     pub binds: Binds,
     pub bind_files: BindFiles,
-    /// The main config's binds whose keys the running engine's file binds too, which its binds
-    /// take over while it runs.
-    pub taken_over: Binds,
-    /// The files `taken_over`'s binds are written in.
-    pub taken_over_files: BindFiles,
+    /// The shortcuts the user turned off with `unbind`, from the main config and the engine's file.
+    pub unbound: Vec<Action>,
     pub switch_events: SwitchBinds,
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
@@ -292,6 +292,8 @@ where
 
                 // Single-part sections.
                 "binds" => {
+                    let unbound = binds::decode_unbinds(node, ctx);
+                    config.borrow_mut().unbound.extend(unbound);
                     let part = Binds::decode_node(node, ctx)?;
 
                     // We replace conflicting binds, rather than error, to support the use-case
@@ -2902,10 +2904,7 @@ mod tests {
                 ],
             ),
             bind_files: BindFiles(16),
-            taken_over: Binds(
-                [],
-            ),
-            taken_over_files: BindFiles(0),
+            unbound: [],
             switch_events: SwitchBinds {
                 lid_open: None,
                 lid_close: None,
@@ -3244,9 +3243,6 @@ mod tests {
         +            script: None,
         +        },
         +    ),
-
-        -    bind_files: BindFiles(0),
-        +    bind_files: BindFiles(107),
         "#,
         );
     }

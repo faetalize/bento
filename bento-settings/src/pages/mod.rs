@@ -18,6 +18,7 @@ mod migrate;
 mod planned;
 mod preview;
 mod shell;
+mod shortcut_list;
 pub mod shortcuts;
 mod system;
 mod theme;

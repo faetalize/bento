@@ -477,7 +477,7 @@ fn action(name: &str, description: &str, args: Vec<Arg>) -> Declaration {
         name: String::from(name),
         description: Some(String::from(description)),
         args,
-        bind: None,
+        binds: Vec::new(),
     }
 }
 

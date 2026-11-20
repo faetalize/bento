@@ -1,25 +1,27 @@
-//! Shortcuts: every bind in one list, bento's actions, the running engine's and the running
-//! shell's together, and a dialog to add or change one. A shell's action is bound as
-//! `shell-action "name" args…`, and shows by its own name.
+//! Shortcuts: every shortcut, bento's, the running engine's and the running shell's, in sections
+//! by who declares them, each with its keys, and dialogs to change one or to add one.
 //!
-//! Binds to an action the running engine declares go in the engine's own file, and every other
-//! bind in the main config; the page doesn't show which. Binds from included files are shown but
-//! can't be changed here, since those files often belong to something else, like a shell that
-//! writes them.
+//! A shortcut is an action with its arguments, with any number of keys. Its defaults stay with
+//! whoever declares it; what the page writes is only what differs: keys of the user's own, in the
+//! main config, or the engine's file for the engine's shortcuts, and `unbind` for one turned off.
+//! What the page lists and what a change writes is `shortcut_list`'s. Binds from included files are
+//! shown but can't be changed here, since those files often belong to something else, like a shell
+//! that writes them.
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::glib::translate::FromGlib;
 use gtk::{gdk, gio, glib};
 use niri_config::input::ModKey;
-use niri_config::{Action, Key, Modifiers, TilingLayout, Trigger};
+use niri_config::shortcuts::Declarer;
+use niri_config::{Key, Modifiers, Trigger};
 use niri_ipc::{LayoutEngineAction, LayoutEngineActionArgType as ArgType};
 
+use super::shortcut_list::{self, Change, Section, Shortcut, Source, Sources, SHELL_ACTION};
 use crate::ipc;
-use crate::kdl::{ActionNode, BindNode, Document, Value};
+use crate::kdl::{ActionNode, BindNode, Value};
 use crate::model::Category;
 use crate::page::PageContext;
 use crate::store::{File, Store};
@@ -31,339 +33,120 @@ pub fn category() -> Category {
         .search_item("shortcuts.list", "Shortcuts", &["add shortcut", "reset"])
 }
 
-/// An action to bind: bento's own, or one the running engine or shell declares.
-#[derive(Clone)]
-struct Choice {
-    action: LayoutEngineAction,
-    engine: bool,
-    /// Whether the running shell declares it, so a bind writes it with `shell-action`.
-    shell: bool,
-    /// A bind's own action that isn't offered, like one of an engine that isn't running, which
-    /// is written back as it is.
-    kept: Option<ActionNode>,
-}
-
-impl Choice {
-    fn title(&self) -> String {
-        title(&self.action)
-    }
-
-    /// What tells it apart from the others, as [`action_key`] gives it for a bind.
-    fn key(&self) -> String {
-        if self.shell {
-            format!("{SHELL_ACTION} {}", self.action.name)
-        } else {
-            self.action.name.clone()
-        }
-    }
-}
-
-/// How binds write the shell's actions: `shell-action "name" args…`.
-const SHELL_ACTION: &str = "shell-action";
-
-/// The name of the shell's action that `action` runs, if it runs one.
-fn shell_action_name(action: &ActionNode) -> Option<&str> {
-    match action.args.first() {
-        Some(Value::Str(name)) if action.name == SHELL_ACTION => Some(name),
-        _ => None,
-    }
-}
-
-/// What tells a bind's action apart from others, as [`Choice::key`] gives it.
-fn action_key(action: &ActionNode) -> String {
-    match shell_action_name(action) {
-        Some(name) => format!("{SHELL_ACTION} {name}"),
-        None => action.name.clone(),
-    }
-}
-
-/// A bind's shell action as the shell declares it, by its own name with its own arguments.
-fn unwrapped(action: &ActionNode) -> ActionNode {
-    match shell_action_name(action) {
-        Some(name) => ActionNode {
-            name: String::from(name),
-            args: action.args[1..].to_vec(),
-            properties: action.properties.clone(),
-        },
-        None => action.clone(),
-    }
-}
-
-fn title(action: &LayoutEngineAction) -> String {
-    let description = action.description.as_deref().unwrap_or(&action.name);
-    description.trim_end_matches('.').to_owned()
-}
-
-/// bento's actions, then the running engine's.
-fn choices() -> Vec<Choice> {
-    let native = niri_config::actions::native_actions().into_iter();
-    let mut choices: Vec<Choice> = native
-        .map(|action| Choice {
-            action,
-            engine: false,
-            shell: false,
-            kept: None,
+/// What the page lists from, as it is now.
+fn sources(store: &Store) -> Sources {
+    let config = store.config();
+    let engine = ipc::layout_engine().ok().map(|e| (e.name, e.actions));
+    let shell = ipc::shell()
+        .map(|s| {
+            s.actions
+                .into_iter()
+                .map(|a| (a.module, a.action))
+                .collect()
         })
-        .collect();
-    if let Ok(engine) = ipc::layout_engine() {
-        choices.extend(engine.actions.into_iter().map(|action| Choice {
-            action,
-            engine: true,
-            shell: false,
-            kept: None,
-        }));
+        .unwrap_or_default();
+    let engine_path = store.engine_path();
+    Sources {
+        native: niri_config::actions::native_actions(),
+        engine,
+        shell,
+        main: shortcut_list::read(store.config_path()),
+        engine_file: engine_path
+            .exists()
+            .then(|| shortcut_list::read(&engine_path)),
+        main_path: store.config_path().to_owned(),
+        engine_path,
+        binds: config.binds.0.clone(),
+        bind_files: config.bind_files.clone(),
+        unbound: config.unbound.clone(),
     }
-    if let Ok(shell) = ipc::shell() {
-        choices.extend(shell.actions.into_iter().map(|action| Choice {
-            action,
-            engine: false,
-            shell: true,
-            kept: None,
-        }));
-    }
-    choices
 }
 
-/// Which of `choices` a bind with `action` starts on. An action that isn't one of them gets a
-/// choice of its own that keeps it as it is, rather than the bind becoming the first action.
-fn picked_choice(choices: &mut Vec<Choice>, action: Option<&ActionNode>) -> usize {
-    let Some(action) = action else { return 0 };
-    let key = action_key(action);
-    if let Some(at) = choices.iter().position(|c| c.key() == key) {
-        return at;
+/// The title of a section of the page.
+fn section_title(section: &Section) -> String {
+    match section {
+        Section::Bento => String::from("bento"),
+        Section::Engine(name) => format!("{} Engine", crate::page::title_from(name)),
+        Section::Module(name) => crate::page::title_from(name),
     }
-    choices.push(Choice {
-        action: LayoutEngineAction {
-            name: action.name.clone(),
-            description: Some(format!("{} (as written)", action.text())),
-            args: Vec::new(),
-            bind: None,
-        },
-        engine: false,
-        shell: false,
-        kept: Some(action.clone()),
+}
+
+/// Who declares a shortcut, as a note says it.
+fn whose(declarer: Declarer) -> &'static str {
+    match declarer {
+        Declarer::Bento => "bento's",
+        Declarer::Engine => "the engine's",
+        Declarer::Shell => "the shell's",
+    }
+}
+
+/// Writes `change` to `shortcut`, in the main config and in the engine's file.
+fn apply(store: &Store, shortcut: &Shortcut, change: Change) {
+    let id = format!("shortcuts.{}", shortcut.node.text());
+    let (one, other) = (shortcut.clone(), change.clone());
+    store.edit_in(File::Main, &id, move |doc| {
+        shortcut_list::apply(doc, &one, &other, false)
     });
-    choices.len() - 1
-}
-
-/// The action `choice` writes, with its arguments from `fields`.
-fn chosen_action(choice: &Choice, fields: &[Field]) -> Result<ActionNode, String> {
-    match &choice.kept {
-        Some(kept) => Ok(kept.clone()),
-        None if choice.shell => {
-            let mut action = action_node(&choice.action, fields)?;
-            action.args.insert(0, Value::Str(action.name));
-            action.name = String::from(SHELL_ACTION);
-            Ok(action)
-        }
-        None => action_node(&choice.action, fields),
+    if store.engine_path().exists() || shortcut.file() == File::Engine {
+        let one = shortcut.clone();
+        store.edit_in(File::Engine, &id, move |doc| {
+            shortcut_list::apply(doc, &one, &change, true)
+        });
     }
 }
 
-/// A bind as the page shows it.
-struct Entry {
-    key: Key,
-    /// Where it's written: the main config, the engine's file, or `None` for an included file.
-    file: Option<File>,
-    /// The included file it comes from.
-    include: Option<PathBuf>,
-    /// How its file writes it, for binds in the main config or the engine's file.
-    node: Option<BindNode>,
-    /// The action's name, from the file or the parsed config.
-    action: String,
-    /// Whose shortcut takes its key over, while the engine or the shell runs: the engine's file
-    /// binds it too, or one of the shell's actions has it by default.
-    taken_over: Option<TakenBy>,
-    /// Whether it's one of the shell's actions' own, by default, written in no file.
-    default: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum TakenBy {
-    Engine,
-    Shell,
-}
-
-/// The keys the running shell's actions have by default, with the actions' names, for those the
-/// config doesn't bind itself: a bind of the action's own replaces its default.
-fn shell_defaults(
-    actions: &[LayoutEngineAction],
-    config: &niri_config::Config,
-) -> Vec<(Key, String, String)> {
-    let binds = config.binds.0.iter().chain(&config.taken_over.0);
-    let bound: Vec<&str> = binds
-        .flat_map(|bind| [bind.press_action(), bind.release_action()])
-        .flatten()
-        .filter_map(|action| match action {
-            Action::ShellAction(name, _) => Some(name.as_str()),
-            _ => None,
-        })
-        .collect();
-    actions
+/// The binds `shortcut`'s keys are written as, its user ones as they are.
+fn binds_of(shortcut: &Shortcut) -> Vec<BindNode> {
+    shortcut
+        .keys
         .iter()
-        .filter(|action| !bound.contains(&action.name.as_str()))
-        .filter_map(|action| {
-            let text = action.bind.clone()?;
-            Some((text.parse().ok()?, text, action.name.clone()))
+        .filter(|k| !matches!(k.source, Source::Include(_)))
+        .map(|k| {
+            k.bind.clone().unwrap_or_else(|| BindNode {
+                key: k.text.clone(),
+                properties: Vec::new(),
+                action: Some(shortcut.node.clone()),
+            })
         })
         .collect()
 }
 
-fn entries(store: &Store) -> Vec<Entry> {
-    let config = store.config();
-    let main = store.config_path().to_owned();
-    let engine = store.engine_path();
-    let main_binds = read_binds(&main);
-    let engine_binds = read_binds(&engine);
-
-    let mut entries = Vec::new();
-    let active = config
-        .binds
-        .0
-        .iter()
-        .map(|bind| (bind, &config.bind_files, false));
-    let taken = config
-        .taken_over
-        .0
-        .iter()
-        .map(|bind| (bind, &config.taken_over_files, true));
-    let actions = ipc::shell().map(|shell| shell.actions).unwrap_or_default();
-    let defaults = shell_defaults(&actions, &config);
-    for (bind, files, by_engine) in active.chain(taken) {
-        let path = files.get(&bind.key).map(Path::to_owned);
-        let (file, nodes) = match &path {
-            Some(path) if *path == main => (Some(File::Main), &main_binds),
-            Some(path) if *path == engine => (Some(File::Engine), &engine_binds),
-            _ => (None, &Vec::new()),
-        };
-        let node = nodes
-            .iter()
-            .find(|node| parse_key(&node.key) == Some(bind.key));
-        let action = match node.and_then(|node| node.action.as_ref()) {
-            Some(action) => action_key(action),
-            None => bind.press_action().map_or_else(String::new, action_name),
-        };
-        entries.push(Entry {
-            key: bind.key,
-            file,
-            include: if file.is_none() { path } else { None },
-            node: node.cloned(),
-            action,
-            taken_over: if by_engine {
-                Some(TakenBy::Engine)
-            } else if defaults.iter().any(|(key, ..)| key.conflicts_with(&bind.key)) {
-                Some(TakenBy::Shell)
-            } else {
-                None
-            },
-            default: false,
-        });
-    }
-    entries.extend(
-        defaults
-            .into_iter()
-            .map(|(key, text, name)| default_entry(key, text, name)),
-    );
-    entries
-}
-
-/// The row of a key one of the shell's actions has by default, with the bind the config would
-/// have for it: changed, that's written to the config, which replaces the default.
-fn default_entry(key: Key, text: String, name: String) -> Entry {
-    let action = ActionNode {
-        name: String::from(SHELL_ACTION),
-        args: vec![Value::Str(name.clone())],
-        properties: Vec::new(),
-    };
-    Entry {
-        key,
-        file: None,
-        include: None,
-        node: Some(BindNode {
-            key: text,
-            properties: Vec::new(),
-            action: Some(action),
-        }),
-        action: format!("{SHELL_ACTION} {name}"),
-        taken_over: None,
-        default: true,
-    }
-}
-
-/// Whether a row's shortcut can be changed on the page: one in the main config or the engine's
-/// file, or one of the shell's defaults.
-fn editable(entry: &Entry) -> bool {
-    // A shortcut the engine took over is changed through the engine's, which has its key.
-    entry.taken_over.is_none()
-        && (entry.file.is_some() || entry.default)
-        && entry.node.as_ref().is_some_and(|n| n.action.is_some())
-}
-
-fn read_binds(path: &Path) -> Vec<BindNode> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    Document::parse(text)
-        .map(|doc| doc.binds())
-        .unwrap_or_default()
-}
-
-fn parse_key(text: &str) -> Option<Key> {
-    text.parse().ok()
-}
-
-/// Name of a parsed action as configs write it, like `FocusMonitorLeft` as `focus-monitor-left`,
-/// and a shell's as [`action_key`] gives it.
-fn action_name(action: &Action) -> String {
-    match action {
-        Action::LayoutAction(name, ..) => return name.clone(),
-        Action::ShellAction(name, _) => return format!("{SHELL_ACTION} {name}"),
-        _ => (),
-    }
-    // `Debug` starts with the variant name.
-    let debug = format!("{action:?}");
-    let variant = debug.split(['(', ' ', '{']).next().unwrap_or_default();
-    let mut name = String::new();
-    for (i, c) in variant.chars().enumerate() {
-        if c.is_ascii_uppercase() {
-            if i > 0 {
-                name.push('-');
-            }
-            name.push(c.to_ascii_lowercase());
-        } else {
-            name.push(c);
-        }
-    }
-    name
-}
+/// Where a dialog's way to show its keys again is kept, for what it shows to call.
+type ShowSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 struct View {
     ctx: PageContext,
-    group: adw::PreferencesGroup,
     search: gtk::SearchEntry,
-    /// Each bind's row, with the words search matches it on.
-    rows: RefCell<Vec<(gtk::Widget, String)>>,
+    /// The sections' groups, made again on each refresh.
+    sections: gtk::Box,
+    /// Each shortcut's row and its section's group, with the words search matches it on.
+    rows: RefCell<Vec<(gtk::Widget, adw::PreferencesGroup, String)>>,
     /// Shown when the search matches nothing.
-    empty: adw::ActionRow,
+    empty: adw::PreferencesGroup,
 }
 
 fn build(ctx: &PageContext) -> gtk::Widget {
-    let group = adw::PreferencesGroup::builder().title("Shortcuts").build();
-    ctx.anchor("shortcuts.list", &group);
+    let header = adw::PreferencesGroup::builder().title("Shortcuts").build();
+    ctx.anchor("shortcuts.list", &header);
     let search = gtk::SearchEntry::builder()
         .placeholder_text("Search shortcuts")
         .build();
-    let empty = adw::ActionRow::builder()
-        .title("No Matching Shortcuts")
-        .css_classes(["dim-label"])
-        .visible(false)
-        .build();
-    group.add(&empty);
+    let empty = adw::PreferencesGroup::new();
+    empty.add(
+        &adw::ActionRow::builder()
+            .title("No Matching Shortcuts")
+            .css_classes(["dim-label"])
+            .build(),
+    );
+    empty.set_visible(false);
+    let sections = gtk::Box::new(gtk::Orientation::Vertical, 24);
 
     let view = Rc::new(View {
         ctx: ctx.clone(),
-        group: group.clone(),
         search: search.clone(),
+        sections: sections.clone(),
         rows: RefCell::new(Vec::new()),
-        empty,
+        empty: empty.clone(),
     });
     let weak = Rc::downgrade(&view);
     search.connect_search_changed(move |_| {
@@ -386,10 +169,10 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         .build();
     buttons.append(&reset);
     buttons.append(&add);
-    group.set_header_suffix(Some(&buttons));
+    header.set_header_suffix(Some(&buttons));
 
     let ctx = view.ctx.clone();
-    add.connect_clicked(move |button| open(&ctx, button, Edit::New));
+    add.connect_clicked(move |button| open_new(&ctx, button));
     let ctx = view.ctx.clone();
     reset.connect_clicked(move |button| reset_all(&ctx, button));
 
@@ -402,71 +185,112 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     });
 
     let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    column.append(&header);
     column.append(&search);
-    column.append(&group);
+    column.append(&empty);
+    column.append(&sections);
     crate::page::keep_alive(&column, view);
     column.upcast()
 }
 
-/// Shows the rows that have every word of the search.
+/// Shows the rows that have every word of the search, and the sections that have any.
 fn filter(view: &View) {
     let query = view.search.text().to_lowercase();
     let words: Vec<&str> = query.split_whitespace().collect();
-    let mut any = false;
-    for (row, text) in view.rows.borrow().iter() {
+    let mut shown: Vec<adw::PreferencesGroup> = Vec::new();
+    for (row, group, text) in view.rows.borrow().iter() {
         let visible = words.iter().all(|word| text.contains(word));
         row.set_visible(visible);
-        any |= visible;
+        if visible && !shown.contains(group) {
+            shown.push(group.clone());
+        }
     }
-    view.empty.set_visible(!any);
+    let mut child = view.sections.first_child();
+    while let Some(widget) = child {
+        let group = widget.clone().downcast::<adw::PreferencesGroup>().ok();
+        widget.set_visible(group.is_some_and(|g| shown.contains(&g)));
+        child = widget.next_sibling();
+    }
+    view.empty.set_visible(shown.is_empty());
 }
 
 fn refresh(view: &Rc<View>) {
-    for (row, _) in view.rows.take() {
-        view.group.remove(&row);
+    while let Some(child) = view.sections.first_child() {
+        view.sections.remove(&child);
     }
-    let choices = choices();
     let mod_key = mod_key(&view.ctx.store);
     let mut rows = Vec::new();
-    for entry in entries(&view.ctx.store) {
-        let choice = choices.iter().find(|c| c.key() == entry.action);
-        let title = choice.map_or_else(|| entry.action.clone(), Choice::title);
+    let mut groups: Vec<(Section, adw::PreferencesGroup)> = Vec::new();
+    for shortcut in shortcut_list::shortcuts(&sources(&view.ctx.store)) {
+        let group = match groups.iter().find(|(s, _)| *s == shortcut.section) {
+            Some((_, group)) => group.clone(),
+            None => {
+                let title = section_title(&shortcut.section);
+                let group = adw::PreferencesGroup::builder().title(&title).build();
+                view.sections.append(&group);
+                groups.push((shortcut.section.clone(), group.clone()));
+                group
+            }
+        };
+        let title = shortcut.title();
         let row = adw::ActionRow::builder()
             .use_markup(false)
             .title(&title)
             .build();
-        let args = entry.node.as_ref().and_then(|node| node.action.as_ref());
-        // A shell's action shows by its own name, with its own arguments.
-        let args = args.map(|a| unwrapped(a).arguments()).unwrap_or_default();
-        let subtitle = match (&entry.include, &entry.node) {
-            _ if entry.taken_over == Some(TakenBy::Engine) => {
-                String::from("Not in use: the engine's shortcut takes this key")
-            }
-            _ if entry.taken_over == Some(TakenBy::Shell) => {
-                String::from("Not in use: the shell's shortcut takes this key")
-            }
-            _ if entry.default => String::from("The shell's default"),
-            (Some(path), _) => format!("From {}", crate::store::tilde(path)),
-            (None, Some(node)) if node.action.is_none() => {
-                String::from("Press and release actions, set in the config file")
-            }
-            _ => args,
-        };
-        if !subtitle.is_empty() {
-            row.set_subtitle(&subtitle);
+        let mut notes = Vec::new();
+        let args = shortcut.arguments();
+        if !args.is_empty() {
+            notes.push(args);
         }
-        row.add_suffix(&shortcut_label(&entry.key, mod_key));
+        for key in &shortcut.keys {
+            if let Source::Include(path) = &key.source {
+                notes.push(format!("From {}", crate::store::tilde(path)));
+            }
+            if let Some(by) = key.taken {
+                notes.push(format!(
+                    "{} not in use: {} shortcut takes it",
+                    key_label(&key.key, mod_key),
+                    whose(by)
+                ));
+            }
+        }
+        if !notes.is_empty() {
+            row.set_subtitle(&notes.join("\n"));
+        }
+        let keys = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        keys.set_valign(gtk::Align::Center);
+        for key in &shortcut.keys {
+            let label = shortcut_label(&key.key, mod_key);
+            if key.taken.is_some() {
+                label.add_css_class("dim-label");
+            }
+            keys.append(&label);
+        }
+        if shortcut.keys.is_empty() {
+            keys.append(&dim_label("Disabled"));
+        }
+        row.add_suffix(&keys);
 
-        if editable(&entry) {
+        if shortcut.editable() {
             row.set_activatable(true);
             row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
             let ctx = view.ctx.clone();
-            let key = entry.key;
-            row.connect_activated(move |row| open(&ctx, row, Edit::Existing(key)));
+            let one = shortcut.clone();
+            row.connect_activated(move |row| open_shortcut(&ctx, row, one.clone()));
         }
-        view.group.add(&row);
-        let text = format!("{title} {subtitle} {}", key_label(&entry.key, mod_key));
-        rows.push((row.upcast(), text.to_lowercase()));
+        group.add(&row);
+        let key_words: Vec<String> = shortcut
+            .keys
+            .iter()
+            .map(|k| key_label(&k.key, mod_key))
+            .collect();
+        let text = format!(
+            "{title} {} {} {}",
+            row.subtitle().unwrap_or_default(),
+            key_words.join(" "),
+            section_title(&shortcut.section)
+        );
+        rows.push((row.upcast(), group, text.to_lowercase()));
     }
     view.rows.replace(rows);
     filter(view);
@@ -477,40 +301,446 @@ fn mod_key(store: &Store) -> Modifiers {
     config.input.mod_key.unwrap_or(ModKey::Super).to_modifiers()
 }
 
-/// What the dialog changes.
-pub enum Edit {
-    New,
-    /// The shortcut on this key.
-    Existing(Key),
+/// The shortcut other than `except` that runs `key` now, if any.
+fn running(store: &Store, key: &Key, except: &niri_config::Action) -> Option<Shortcut> {
+    let list = shortcut_list::shortcuts(&sources(store));
+    list.into_iter().find(|s| {
+        s.action != *except
+            && s.keys
+                .iter()
+                .any(|k| k.taken.is_none() && k.key.conflicts_with(key))
+    })
 }
 
-/// Opens the dialog to add a shortcut or change one.
-pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
-    let existing = match &edit {
-        // The one in use, over one whose key it took.
-        Edit::Existing(key) => entries(&ctx.store)
-            .into_iter()
-            .filter(|e| e.key == *key)
-            .min_by_key(|e| e.taken_over.is_some()),
-        Edit::New => None,
-    };
-    let node = existing.as_ref().and_then(|e| e.node.clone());
-    let mut choices = choices();
-    let picked = picked_choice(&mut choices, node.as_ref().and_then(|n| n.action.as_ref()));
-    let choices = Rc::new(choices);
+/// Asks before taking `key` from `other`, the shortcut that runs it now, and calls `then` with
+/// whether to go on. Taking it leaves `other` its other keys, or turns it off.
+fn take_key(
+    ctx: &PageContext,
+    parent: &impl IsA<gtk::Widget>,
+    key: Key,
+    other: Shortcut,
+    then: impl Fn(Option<(Shortcut, Key)>) + 'static,
+) {
+    if !other.editable() {
+        let alert = adw::AlertDialog::new(
+            Some("Shortcut Taken"),
+            Some(&format!(
+                "It runs “{}”, from a file that can't be changed here.",
+                other.title()
+            )),
+        );
+        alert.add_response("close", "Close");
+        alert.present(Some(parent));
+        return;
+    }
+    let alert = adw::AlertDialog::new(
+        Some("Replace Shortcut?"),
+        Some(&format!("This key runs “{}”.", other.title())),
+    );
+    alert.add_response("cancel", "Cancel");
+    alert.add_response("replace", "Replace");
+    alert.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
+    alert.set_default_response(Some("cancel"));
+    let _ = ctx;
+    alert.choose(Some(parent), gio::Cancellable::NONE, move |response| {
+        if response == "replace" {
+            then(Some((other.clone(), key)));
+        }
+    });
+}
 
-    let dialog = adw::Dialog::builder()
-        .title(if existing.is_some() {
-            "Edit Shortcut"
-        } else {
-            "Add Shortcut"
+/// Takes `key` off `other`: its other keys stay, and with none left it's turned off.
+fn give_up(store: &Store, other: &Shortcut, key: Key) {
+    let rest: Vec<BindNode> = binds_of(other)
+        .into_iter()
+        .filter(|b| {
+            b.key
+                .parse::<Key>()
+                .map_or(true, |k| !k.conflicts_with(&key))
         })
+        .collect();
+    let change = if rest.is_empty() {
+        Change::Disable
+    } else {
+        Change::Keys(rest)
+    };
+    apply(store, other, change);
+}
+
+/// The dialog of one shortcut: its keys, each to take off, one more to record, and turning it off
+/// or putting back its defaults.
+fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Shortcut) {
+    let mod_key = mod_key(&ctx.store);
+    let dialog = adw::Dialog::builder()
+        .title(shortcut.title())
+        .content_width(480)
+        .build();
+    let page = adw::PreferencesPage::new();
+    let keys: Rc<RefCell<Vec<BindNode>>> = Rc::new(RefCell::new(binds_of(&shortcut)));
+    // Keys taken from other shortcuts on saving.
+    let taken: Rc<RefCell<Vec<(Shortcut, Key)>>> = Rc::default();
+
+    let keys_group = adw::PreferencesGroup::builder().title("Keys").build();
+    if !shortcut.arguments().is_empty() {
+        keys_group.set_description(Some(&shortcut.arguments()));
+    }
+    page.add(&keys_group);
+    let shown: Rc<RefCell<Vec<gtk::Widget>>> = Rc::default();
+    let recording = Rc::new(Recording::default());
+    let record_row = adw::ActionRow::builder()
+        .title("Add Key")
+        .subtitle("Backspace turns the shortcut off")
+        .build();
+    let record = gtk::Button::builder()
+        .label("Record…")
+        .valign(gtk::Align::Center)
+        .build();
+    record_row.add_suffix(&record);
+
+    // The key rows, made again as keys come and go.
+    let show: Rc<dyn Fn()> = {
+        let (keys, shown, keys_group) = (keys.clone(), shown.clone(), keys_group.clone());
+        let record_row = record_row.clone();
+        let show_slot: ShowSlot = Rc::default();
+        let slot = show_slot.clone();
+        let f: Rc<dyn Fn()> = Rc::new(move || {
+            for row in shown.take() {
+                keys_group.remove(&row);
+            }
+            keys_group.remove(&record_row);
+            let mut rows = Vec::new();
+            let list = keys.borrow().clone();
+            if list.is_empty() {
+                let row = adw::ActionRow::builder().title("Disabled").build();
+                row.add_css_class("dim-label");
+                keys_group.add(&row);
+                rows.push(row.upcast());
+            }
+            for (i, bind) in list.iter().enumerate() {
+                let Ok(key) = bind.key.parse::<Key>() else {
+                    continue;
+                };
+                let row = adw::ActionRow::new();
+                row.add_prefix(&shortcut_label(&key, mod_key));
+                let remove = gtk::Button::builder()
+                    .icon_name("user-trash-symbolic")
+                    .tooltip_text("Remove Key")
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build();
+                let (keys, slot) = (keys.clone(), slot.clone());
+                remove.connect_clicked(move |_| {
+                    keys.borrow_mut().remove(i);
+                    if let Some(show) = slot.borrow().clone() {
+                        show();
+                    }
+                });
+                row.add_suffix(&remove);
+                keys_group.add(&row);
+                rows.push(row.upcast());
+            }
+            keys_group.add(&record_row);
+            shown.replace(rows);
+        });
+        show_slot.replace(Some(f.clone()));
+        f
+    };
+    show();
+
+    {
+        let (ctx, keys, taken, show) = (ctx.clone(), keys.clone(), taken.clone(), show.clone());
+        let (recording, dialog_widget, one) = (recording.clone(), dialog.clone(), shortcut.clone());
+        record.connect_clicked(move |button| {
+            button.set_label("Press a shortcut…");
+            let button = button.clone();
+            let (ctx, keys, taken, show, dialog) = (
+                ctx.clone(),
+                keys.clone(),
+                taken.clone(),
+                show.clone(),
+                dialog_widget.clone(),
+            );
+            let one = one.clone();
+            recording.start(&dialog_widget, mod_key, move |recorded| {
+                button.set_label("Record…");
+                let Some(text) = recorded else { return };
+                // Backspace alone turns the shortcut off, as in GNOME's shortcuts.
+                if text == "BackSpace" {
+                    apply(&ctx.store, &one, Change::Disable);
+                    dialog.close();
+                    return;
+                }
+                let Some(key) = parse_key(&text) else {
+                    ctx.toast("That shortcut can't be bound");
+                    return;
+                };
+                if keys.borrow().iter().any(|b| b.key == text) {
+                    return;
+                }
+                let bind = BindNode {
+                    key: text,
+                    properties: Vec::new(),
+                    action: Some(one.node.clone()),
+                };
+                let add = {
+                    let (keys, taken, show) = (keys.clone(), taken.clone(), show.clone());
+                    move |take: Option<(Shortcut, Key)>| {
+                        taken.borrow_mut().extend(take);
+                        keys.borrow_mut().push(bind.clone());
+                        show();
+                    }
+                };
+                match running(&ctx.store, &key, &one.action) {
+                    Some(other) => take_key(&ctx, &dialog, key, other, add),
+                    None => add(None),
+                }
+            });
+        });
+    }
+
+    let advanced_group = adw::PreferencesGroup::new();
+    let first = shortcut.keys.iter().find_map(|k| k.bind.as_ref());
+    let advanced = Advanced::new(first);
+    advanced_group.add(&advanced.expander);
+    page.add(&advanced_group);
+
+    // Turning it off, putting back its defaults, or removing one of the user's own.
+    let buttons = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .halign(gtk::Align::Center)
+        .build();
+    let button = |label: &str, destructive: bool| {
+        let classes: &[&str] = if destructive {
+            &["pill", "destructive-action"]
+        } else {
+            &["pill"]
+        };
+        gtk::Button::builder()
+            .label(label)
+            .css_classes(classes)
+            .build()
+    };
+    let mut any = false;
+    let has_defaults = !shortcut.defaults.is_empty();
+    if shortcut.changed() && has_defaults {
+        let reset = button("Reset to Default", false);
+        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), shortcut.clone());
+        reset.connect_clicked(move |_| {
+            apply(&ctx.store, &one, Change::Reset);
+            dialog.close();
+        });
+        buttons.append(&reset);
+        any = true;
+    }
+    if has_defaults && !shortcut.disabled {
+        let disable = button("Disable", true);
+        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), shortcut.clone());
+        disable.connect_clicked(move |_| {
+            apply(&ctx.store, &one, Change::Disable);
+            dialog.close();
+        });
+        buttons.append(&disable);
+        any = true;
+    }
+    if !has_defaults && shortcut.changed() {
+        let remove = button("Remove Shortcut", true);
+        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), shortcut.clone());
+        remove.connect_clicked(move |_| {
+            apply(&ctx.store, &one, Change::Reset);
+            dialog.close();
+        });
+        buttons.append(&remove);
+        any = true;
+    }
+    if any {
+        let group = adw::PreferencesGroup::new();
+        group.add(&buttons);
+        page.add(&group);
+    }
+
+    let header = adw::HeaderBar::builder()
+        .show_start_title_buttons(false)
+        .show_end_title_buttons(false)
+        .build();
+    let cancel = gtk::Button::with_label("Cancel");
+    let save = gtk::Button::builder()
+        .label("Save")
+        .css_classes(["suggested-action"])
+        .build();
+    header.pack_start(&cancel);
+    header.pack_end(&save);
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&page));
+    dialog.set_child(Some(&toolbar));
+
+    let dialog_ = dialog.clone();
+    cancel.connect_clicked(move |_| {
+        dialog_.close();
+    });
+    let recording_ = recording.clone();
+    dialog.connect_closed(move |_| recording_.stop());
+
+    let (ctx, dialog_) = (ctx.clone(), dialog.clone());
+    save.connect_clicked(move |_| {
+        for (other, key) in taken.take() {
+            give_up(&ctx.store, &other, key);
+        }
+        let properties = advanced.properties();
+        let binds: Vec<BindNode> = keys
+            .borrow()
+            .iter()
+            .map(|b| BindNode {
+                properties: properties.clone(),
+                ..b.clone()
+            })
+            .collect();
+        apply(&ctx.store, &shortcut, Change::Keys(binds));
+        dialog_.close();
+    });
+
+    dialog.present(Some(parent));
+}
+
+/// An action to bind: bento's own, or one the running engine or shell declares.
+#[derive(Clone)]
+struct Choice {
+    action: LayoutEngineAction,
+    declarer: Declarer,
+    section: Section,
+}
+
+impl Choice {
+    fn title(&self) -> String {
+        let description = self
+            .action
+            .description
+            .as_deref()
+            .unwrap_or(&self.action.name);
+        description.trim_end_matches('.').to_owned()
+    }
+}
+
+/// bento's actions, then the running engine's, then the running shell's.
+fn choices() -> Vec<Choice> {
+    let native = niri_config::actions::native_actions().into_iter();
+    let mut choices: Vec<Choice> = native
+        .map(|action| Choice {
+            action,
+            declarer: Declarer::Bento,
+            section: Section::Bento,
+        })
+        .collect();
+    if let Ok(engine) = ipc::layout_engine() {
+        let name = engine.name.clone();
+        choices.extend(engine.actions.into_iter().map(|action| Choice {
+            action,
+            declarer: Declarer::Engine,
+            section: Section::Engine(name.clone()),
+        }));
+    }
+    if let Ok(shell) = ipc::shell() {
+        choices.extend(shell.actions.into_iter().map(|a| Choice {
+            action: a.action,
+            declarer: Declarer::Shell,
+            section: Section::Module(a.module),
+        }));
+    }
+    choices
+}
+
+/// The action `choice` writes, with its arguments from `fields`.
+fn chosen_action(choice: &Choice, fields: &[Field]) -> Result<ActionNode, String> {
+    let mut action = action_node(&choice.action, fields)?;
+    if choice.declarer == Declarer::Shell {
+        action.args.insert(0, Value::Str(action.name));
+        action.name = String::from(SHELL_ACTION);
+    }
+    Ok(action)
+}
+
+/// The action picker's model: the choices' titles in sections by who declares them, with a
+/// heading for each. Each item is the section's title, then the choice's, apart by `\u{1f}`.
+fn picker(
+    choices: &[Choice],
+) -> (
+    gtk::SortListModel,
+    gtk::SignalListItemFactory,
+    gtk::SignalListItemFactory,
+) {
+    let items: Vec<String> = choices
+        .iter()
+        .map(|c| format!("{}\u{1f}{}", section_title(&c.section), c.title()))
+        .collect();
+    let list = gtk::StringList::new(&items.iter().map(String::as_str).collect::<Vec<_>>());
+    let section = |item: &glib::Object| {
+        let text = item.downcast_ref::<gtk::StringObject>().map(|s| s.string());
+        text.map(|t| t.split('\u{1f}').next().unwrap_or_default().to_owned())
+            .unwrap_or_default()
+    };
+    // The choices come grouped already: the sorter only says where a section starts.
+    let order: Vec<String> = choices.iter().map(|c| section_title(&c.section)).collect();
+    let sorter = gtk::CustomSorter::new(move |a, b| {
+        let at = |s: String| order.iter().position(|o| *o == s).unwrap_or(usize::MAX);
+        at(section(a)).cmp(&at(section(b))).into()
+    });
+    let model = gtk::SortListModel::new(Some(list), None::<gtk::Sorter>);
+    model.set_section_sorter(Some(&sorter));
+
+    let label_factory = |part: usize, heading: bool| {
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(move |_, item| {
+            let label = gtk::Label::builder().xalign(0.).build();
+            if heading {
+                label.add_css_class("heading");
+                label.add_css_class("dim-label");
+            }
+            if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
+                item.set_child(Some(&label));
+            } else if let Some(item) = item.downcast_ref::<gtk::ListHeader>() {
+                item.set_child(Some(&label));
+            }
+        });
+        factory.connect_bind(move |_, item| {
+            let (object, child) = if let Some(item) = item.downcast_ref::<gtk::ListItem>() {
+                (item.item(), item.child())
+            } else if let Some(item) = item.downcast_ref::<gtk::ListHeader>() {
+                (item.item(), item.child())
+            } else {
+                return;
+            };
+            let text = object
+                .and_downcast::<gtk::StringObject>()
+                .map(|s| {
+                    s.string()
+                        .split('\u{1f}')
+                        .nth(part)
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+                .unwrap_or_default();
+            if let Some(label) = child.and_downcast::<gtk::Label>() {
+                label.set_label(&text);
+            }
+        });
+        factory
+    };
+    (model, label_factory(1, false), label_factory(0, true))
+}
+
+/// The dialog to add a shortcut: its key, then the action and its arguments. A shortcut that's
+/// there already gets the key besides its others.
+fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
+    let choices = Rc::new(choices());
+    let dialog = adw::Dialog::builder()
+        .title("Add Shortcut")
         .content_width(480)
         .build();
     let page = adw::PreferencesPage::new();
 
     // The key.
-    let key = Rc::new(RefCell::new(node.as_ref().map(|n| n.key.clone())));
+    let key: Rc<RefCell<Option<String>>> = Rc::default();
     let key_group = adw::PreferencesGroup::new();
     let key_row = adw::ActionRow::builder().title("Shortcut").build();
     let key_view = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -524,8 +754,7 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     page.add(&key_group);
     let mod_key = mod_key(&ctx.store);
     let show_key = {
-        let key = key.clone();
-        let key_view = key_view.clone();
+        let (key, key_view) = (key.clone(), key_view.clone());
         move || {
             while let Some(child) = key_view.first_child() {
                 key_view.remove(&child);
@@ -557,17 +786,17 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
         });
     }
 
-    // The action.
+    // The action, in sections by who declares it, found by any word of its title.
     let action_group = adw::PreferencesGroup::new();
-    let titles: Vec<String> = choices.iter().map(Choice::title).collect();
-    let model = gtk::StringList::new(&titles.iter().map(String::as_str).collect::<Vec<_>>());
+    let (model, factory, header_factory) = picker(&choices);
     let action_row = adw::ComboRow::builder()
         .title("Action")
         .model(&model)
+        .factory(&factory)
         .enable_search(true)
-        // Titles are found by any word in them, like "start" in "Show or hide the start menu".
         .search_match_mode(gtk::StringFilterMatchMode::Substring)
         .build();
+    action_row.set_header_factory(Some(&header_factory));
     action_row.set_expression(Some(gtk::PropertyExpression::new(
         gtk::StringObject::static_type(),
         None::<gtk::Expression>,
@@ -576,14 +805,10 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     action_group.add(&action_row);
     page.add(&action_group);
 
-    action_row.set_selected(picked as u32);
-
-    // The action's arguments, rebuilt when the action changes.
+    // The action's arguments, made again when the action changes.
     let args_group = adw::PreferencesGroup::builder().title("Arguments").build();
     page.add(&args_group);
     let fields: Rc<RefCell<Vec<Field>>> = Rc::default();
-    // A shell's action is filled in as the shell declares it.
-    let existing_action = node.as_ref().and_then(|n| n.action.as_ref()).map(unwrapped);
     let show_args = {
         let (choices, fields, args_group) = (choices.clone(), fields.clone(), args_group.clone());
         let action_row = action_row.clone();
@@ -594,15 +819,10 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
             let Some(choice) = choices.get(action_row.selected() as usize) else {
                 return;
             };
-            // Keep the values the bind has, when it's the same action.
-            let current = existing_action
-                .as_ref()
-                .filter(|action| action.name == choice.action.name);
             let mut new = Vec::new();
-            // Where each positional argument is in the bind; properties have names instead.
             let mut position = 0;
             for arg in &choice.action.args {
-                let field = Field::new(arg, current, position);
+                let field = Field::new(arg, None, position);
                 if !arg.property {
                     position += 1;
                 }
@@ -616,62 +836,18 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     show_args();
     action_row.connect_selected_notify(move |_| show_args());
 
-    // Settings most people never need.
     let advanced_group = adw::PreferencesGroup::new();
-    let advanced = Advanced::new(node.as_ref());
+    let advanced = Advanced::new(None);
     advanced_group.add(&advanced.expander);
     page.add(&advanced_group);
 
-    // Removing it and putting back the default.
-    if let Some(existing) = &existing {
-        let group = adw::PreferencesGroup::new();
-        let buttons = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .halign(gtk::Align::Center)
-            .build();
-        let action = existing.node.as_ref().and_then(|n| n.action.as_ref());
-        let default = action.and_then(|action| default_bind(&ctx.store, existing.key, action));
-        if let (Some((default, file)), Some(from)) = (default, existing.file) {
-            let reset = gtk::Button::builder()
-                .label("Reset to Default")
-                .css_classes(["pill"])
-                .build();
-            let (ctx, dialog, key) = (ctx.clone(), dialog.clone(), existing.key);
-            reset.connect_clicked(move |_| {
-                let Some(default_key) = parse_key(&default.key) else {
-                    return;
-                };
-                let from = Some((key, from));
-                save_bind(&ctx, &dialog, default_key, default.clone(), file, from);
-            });
-            buttons.append(&reset);
-        }
-        // One of the shell's defaults isn't in any file to remove it from: it's replaced instead.
-        if let Some(file) = existing.file {
-            let delete = gtk::Button::builder()
-                .label("Remove Shortcut")
-                .css_classes(["pill", "destructive-action"])
-                .build();
-            let (ctx_, dialog_, key) = (ctx.clone(), dialog.clone(), existing.key);
-            delete.connect_clicked(move |_| {
-                remove(&ctx_.store, file, key);
-                dialog_.close();
-            });
-            buttons.append(&delete);
-        }
-        group.add(&buttons);
-        page.add(&group);
-    }
-
-    // The header: cancel and save.
     let header = adw::HeaderBar::builder()
         .show_start_title_buttons(false)
         .show_end_title_buttons(false)
         .build();
     let cancel = gtk::Button::with_label("Cancel");
     let save = gtk::Button::builder()
-        .label(if existing.is_some() { "Save" } else { "Add" })
+        .label("Add")
         .css_classes(["suggested-action"])
         .build();
     header.pack_start(&cancel);
@@ -703,192 +879,65 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
             ctx.toast("Pick an action first");
             return;
         };
-        let action = match chosen_action(choice, &fields.borrow()) {
-            Ok(action) => action,
+        let node = match chosen_action(choice, &fields.borrow()) {
+            Ok(node) => node,
             Err(message) => {
                 ctx.toast(&message);
                 return;
             }
         };
-        let bind = BindNode {
+        let engine = choice.declarer == Declarer::Engine;
+        let Some(action) = shortcut_list::parse(&node, engine) else {
+            ctx.toast("That action can't be bound");
+            return;
+        };
+        // The shortcut it is, if it's listed already, with the new key besides its others.
+        let list = shortcut_list::shortcuts(&sources(&ctx.store));
+        let shortcut = list
+            .into_iter()
+            .find(|s| s.action == action)
+            .unwrap_or_else(|| Shortcut {
+                section: choice.section.clone(),
+                declarer: choice.declarer,
+                action: action.clone(),
+                node: node.clone(),
+                declaration: Some(choice.action.clone()),
+                defaults: Vec::new(),
+                keys: Vec::new(),
+                disabled: false,
+            });
+        let mut binds = binds_of(&shortcut);
+        binds.push(BindNode {
             key: key_text,
             properties: advanced.properties(),
-            action: Some(action),
+            action: Some(node),
+        });
+        let commit = {
+            let (ctx, dialog) = (ctx.clone(), dialog_.clone());
+            move |take: Option<(Shortcut, Key)>| {
+                if let Some((other, key)) = &take {
+                    give_up(&ctx.store, other, *key);
+                }
+                apply(&ctx.store, &shortcut, Change::Keys(binds.clone()));
+                dialog.close();
+            }
         };
-        // A kept action stays in the file it's in.
-        let kept_in = choice
-            .kept
-            .as_ref()
-            .and(existing.as_ref().and_then(|e| e.file));
-        let file = match kept_in {
-            Some(file) => file,
-            None if choice.engine => File::Engine,
-            None => File::Main,
-        };
-        let from = existing
-            .as_ref()
-            .and_then(|e| e.file.map(|file| (e.key, file)));
-        save_bind(&ctx, &dialog_, parsed, bind, file, from);
+        match running(&ctx.store, &parsed, &action) {
+            Some(other) => take_key(&ctx, &dialog_, parsed, other, commit),
+            None => commit(None),
+        }
     });
 
     dialog.present(Some(parent));
-}
-
-/// Saves a bind, asking first when its key is already taken by another one.
-fn save_bind(
-    ctx: &PageContext,
-    dialog: &adw::Dialog,
-    key: Key,
-    bind: BindNode,
-    file: File,
-    from: Option<(Key, File)>,
-) {
-    // A shortcut the engine took over isn't in use, so it doesn't take the key, and nor does the
-    // shell's default for the action being bound, which this replaces.
-    let action = bind.action.as_ref().map(action_key);
-    let taken = entries(&ctx.store).into_iter().find(|e| {
-        e.taken_over.is_none()
-            && e.key.conflicts_with(&key)
-            && from.is_none_or(|(old, _)| old != e.key)
-            && !(e.default && Some(&e.action) == action.as_ref())
-    });
-
-    let commit = {
-        let (ctx, dialog) = (ctx.clone(), dialog.clone());
-        move |replace: Option<(Key, File)>| {
-            if let Some((taken, taken_file)) = replace {
-                remove(&ctx.store, taken_file, taken);
-            }
-            match from {
-                // In the same file, the bind changes where it is.
-                Some((old, old_file)) if old_file == file => {
-                    write(&ctx.store, file, old, bind.clone());
-                }
-                Some((old, old_file)) => {
-                    remove(&ctx.store, old_file, old);
-                    write(&ctx.store, file, key, bind.clone());
-                }
-                None => write(&ctx.store, file, key, bind.clone()),
-            }
-            dialog.close();
-        }
-    };
-
-    let Some(taken) = taken else {
-        commit(None);
-        return;
-    };
-    let choices = choices();
-    let title = choices
-        .iter()
-        .find(|c| c.action.name == taken.action)
-        .map_or_else(|| taken.action.clone(), Choice::title);
-    if taken.default {
-        let alert = adw::AlertDialog::new(
-            Some("Shortcut Taken"),
-            Some(&format!(
-                "The shell has it for “{title}”, and keeps it while it runs. Give that a shortcut \
-                 of its own first."
-            )),
-        );
-        alert.add_response("close", "Close");
-        alert.present(Some(dialog));
-        return;
-    }
-    let Some(taken_file) = taken.file else {
-        let file = taken
-            .include
-            .as_deref()
-            .map(crate::store::tilde)
-            .unwrap_or_default();
-        let alert = adw::AlertDialog::new(
-            Some("Shortcut Taken"),
-            Some(&format!(
-                "It's set to “{title}” in {file}, which can't be changed here."
-            )),
-        );
-        alert.add_response("close", "Close");
-        alert.present(Some(dialog));
-        return;
-    };
-    let alert = adw::AlertDialog::new(
-        Some("Replace Shortcut?"),
-        Some(&format!("This shortcut is set to “{title}”.")),
-    );
-    alert.add_response("cancel", "Cancel");
-    alert.add_response("replace", "Replace");
-    alert.set_response_appearance("replace", adw::ResponseAppearance::Destructive);
-    alert.set_default_response(Some("cancel"));
-    alert.choose(Some(dialog), gio::Cancellable::NONE, move |response| {
-        if response == "replace" {
-            commit(Some((taken.key, taken_file)));
-        }
-    });
-}
-
-/// Writes `bind` in place of the one on `key`, or adds it.
-fn write(store: &Store, file: File, key: Key, bind: BindNode) {
-    let id = format!("binds.{file:?}.{}", bind.key);
-    store.edit_in(file, &id, move |doc| doc.set_bind(&key, &bind));
-}
-
-fn remove(store: &Store, file: File, key: Key) {
-    let id = format!("binds.{file:?}.remove.{key:?}");
-    store.edit_in(file, &id, move |doc| {
-        doc.remove_bind(&key);
-    });
-}
-
-/// The shipped bind for `action`, and the file it belongs in, when the bind on `key` differs from
-/// it. Like GNOME's shortcuts, resetting puts the action back on its default key.
-fn default_bind(store: &Store, key: Key, action: &ActionNode) -> Option<(BindNode, File)> {
-    let main = Document::parse(niri_config::DEFAULT_CONFIG.to_owned()).ok()?;
-    let main = main.binds().into_iter().map(|bind| (bind, File::Main));
-    let engine = engine_defaults(store)
-        .map(|doc| doc.binds())
-        .unwrap_or_default();
-    let engine = engine.into_iter().map(|bind| (bind, File::Engine));
-    let defaults: Vec<_> = main
-        .chain(engine)
-        .filter(|(bind, _)| bind.action.as_ref() == Some(action))
-        .collect();
-    let current = entries(store);
-    // An action can have several default keys, like Mod+Left and Mod+H.
-    if let Some(on_key) = defaults
-        .iter()
-        .find(|(b, _)| parse_key(&b.key) == Some(key))
-    {
-        // Same key: only reset what differs, like its properties.
-        let node = current
-            .iter()
-            .find(|e| e.key == key)
-            .and_then(|e| e.node.as_ref());
-        return (node != Some(&on_key.0)).then(|| on_key.clone());
-    }
-    let free = |(bind, _): &&(BindNode, File)| {
-        let default_key = parse_key(&bind.key);
-        !current.iter().any(|e| Some(e.key) == default_key)
-    };
-    defaults.iter().find(free).or(defaults.first()).cloned()
-}
-
-/// The running built-in engine's default file.
-fn engine_defaults(store: &Store) -> Option<Document> {
-    let layout = store.config().tiling.layout.clone();
-    let TilingLayout::BuiltIn(name) = layout else {
-        return None;
-    };
-    let text = niri_config::default_engine_config(&name)?;
-    Document::parse(text.to_owned()).ok()
 }
 
 fn reset_all(ctx: &PageContext, parent: &gtk::Button) {
     let alert = adw::AlertDialog::new(
         Some("Reset All Shortcuts?"),
         Some(
-            "Every shortcut goes back to the one bento ships, in the config and in the file of \
-             a layout engine bento ships. Shortcuts from included files and from an engine of \
-             your own stay as they are.",
+            "Every shortcut goes back to its default keys: the keys of your own and the \
+             shortcuts you turned off are taken out of the config and the engine's file. \
+             Shortcuts from included files stay as they are.",
         ),
     );
     alert.add_response("cancel", "Cancel");
@@ -900,18 +949,25 @@ fn reset_all(ctx: &PageContext, parent: &gtk::Button) {
         if response != "reset" {
             return;
         }
-        let main = Document::parse(niri_config::DEFAULT_CONFIG.to_owned()).ok();
-        if let Some(section) = main.and_then(|doc| doc.binds_section()) {
-            ctx.store.edit_in(File::Main, "binds.reset", move |doc| {
-                doc.replace_binds(&section)
-            });
-        }
-        if let Some(section) = engine_defaults(&ctx.store).and_then(|doc| doc.binds_section()) {
-            ctx.store.edit_in(File::Engine, "binds.reset", move |doc| {
-                doc.replace_binds(&section)
-            });
+        let clear = |doc: &mut crate::kdl::Document| {
+            for bind in doc.binds() {
+                if let Ok(key) = bind.key.parse::<Key>() {
+                    doc.remove_bind(&key);
+                }
+            }
+            for node in doc.unbinds() {
+                doc.remove_unbind(&node);
+            }
+        };
+        ctx.store.edit_in(File::Main, "binds.reset", clear);
+        if ctx.store.engine_path().exists() {
+            ctx.store.edit_in(File::Engine, "binds.reset", clear);
         }
     });
+}
+
+fn parse_key(text: &str) -> Option<Key> {
+    text.parse().ok()
 }
 
 /// A row for one of an action's arguments.
@@ -1548,120 +1604,7 @@ fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use super::*;
-    use crate::store::on_own_context;
-
-    #[test]
-    fn a_binds_action_that_isnt_offered_is_kept_as_it_is() {
-        // An engine's action, while that engine isn't the one running.
-        let action = ActionNode {
-            name: String::from("swap-halves"),
-            args: vec![Value::Str(String::from("left"))],
-            properties: Vec::new(),
-        };
-        let mut choices: Vec<Choice> = niri_config::actions::native_actions()
-            .into_iter()
-            .map(|action| Choice {
-                action,
-                engine: false,
-                shell: false,
-                kept: None,
-            })
-            .collect();
-        let picked = picked_choice(&mut choices, Some(&action));
-        assert_eq!(choices[picked].action.name, "swap-halves");
-        assert_eq!(chosen_action(&choices[picked], &[]), Ok(action));
-    }
-
-    #[test]
-    fn the_shells_default_keys_show_until_the_config_binds_their_actions() {
-        let action = |name: &str, bind: &str| LayoutEngineAction {
-            name: String::from(name),
-            description: None,
-            args: Vec::new(),
-            bind: Some(String::from(bind)),
-        };
-        let actions = [action("toggle-start-menu", "Mod"), action("toggle-clipboard", "Mod+V")];
-        let config = niri_config::Config::parse_mem(
-            "binds {\n    Mod+Shift+V { shell-action \"toggle-clipboard\"; }\n}",
-        )
-        .unwrap();
-        let defaults = shell_defaults(&actions, &config);
-        let start = (
-            "Mod".parse().unwrap(),
-            String::from("Mod"),
-            String::from("toggle-start-menu"),
-        );
-        assert_eq!(defaults, std::slice::from_ref(&start));
-
-        // It can be changed like any other, from what the shell gives it.
-        let (key, text, name) = start;
-        let entry = default_entry(key, text, name);
-        assert!(editable(&entry), "a default key can't be changed");
-        let action = entry.node.as_ref().and_then(|n| n.action.as_ref()).unwrap();
-        assert_eq!(action_key(action), "shell-action toggle-start-menu");
-        assert_eq!(entry.node.unwrap().key, "Mod");
-    }
-
-    #[test]
-    fn a_shells_action_is_bound_with_shell_action_and_shown_by_its_name() {
-        let switch = LayoutEngineAction {
-            name: String::from("switch-audio-output"),
-            description: Some(String::from("Switch the sound to the next pinned output.")),
-            args: Vec::new(),
-            bind: None,
-        };
-        let mut choices = vec![Choice {
-            action: switch,
-            engine: false,
-            shell: true,
-            kept: None,
-        }];
-        let bound = ActionNode {
-            name: String::from("shell-action"),
-            args: vec![Value::Str(String::from("switch-audio-output"))],
-            properties: Vec::new(),
-        };
-        assert_eq!(picked_choice(&mut choices, Some(&bound)), 0);
-        assert_eq!(chosen_action(&choices[0], &[]), Ok(bound.clone()));
-        assert_eq!(unwrapped(&bound).name, "switch-audio-output");
-    }
-
-    fn close_window() -> ActionNode {
-        ActionNode {
-            name: String::from("close-window"),
-            args: Vec::new(),
-            properties: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn resetting_puts_the_action_back_on_its_default_key() {
-        on_own_context(|| {
-            let dir =
-                std::env::temp_dir().join(format!("bento-settings-reset-{}", std::process::id()));
-            fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("config.kdl");
-
-            let moved = "binds {\n    Mod+Ctrl+Y repeat=false { close-window; }\n}\n";
-            fs::write(&path, moved).unwrap();
-            let store = Store::load_from(path.clone());
-            let key = parse_key("Mod+Ctrl+Y").unwrap();
-            let (bind, file) = default_bind(&store, key, &close_window()).unwrap();
-            assert_eq!((bind.key.as_str(), file), ("Mod+Q", File::Main));
-
-            // Already on its default key, as shipped: nothing to reset.
-            let shipped = "binds {\n    Mod+Q repeat=false { close-window; }\n}\n";
-            fs::write(&path, shipped).unwrap();
-            let store = Store::load_from(path);
-            let key = parse_key("Mod+Q").unwrap();
-            assert_eq!(default_bind(&store, key, &close_window()), None);
-
-            fs::remove_dir_all(&dir).unwrap();
-        });
-    }
 
     #[test]
     fn keys_are_written_like_configs_write_them() {
