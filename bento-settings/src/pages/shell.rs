@@ -93,7 +93,7 @@ fn refresh(view: &Rc<View>) {
     while let Some(child) = view.column.first_child() {
         view.column.remove(&child);
     }
-    view.column.append(&choice_group(view));
+    view.column.append(&choice_group(view, shape.2.as_deref()));
     match &shell {
         Ok(shell) => {
             if let Some(error) = &shell.error {
@@ -112,9 +112,6 @@ fn refresh(view: &Rc<View>) {
             let settings = crate::pages::placed(&view.ctx, "shell");
             view.ctx.anchor("shell.settings", &settings);
             view.column.append(&settings);
-            if let Some(summary) = &shape.2 {
-                view.column.append(&shortcuts_group(view, summary));
-            }
             if !shell.unused.is_empty() {
                 view.column.append(&problem_group(
                     "Not Used",
@@ -167,9 +164,7 @@ fn shortcuts_summary(ctx: &PageContext, shell: &Shell) -> Option<String> {
 }
 
 /// The shell's shortcuts summed up, with a link to the Shortcuts page, which lists them by module.
-fn shortcuts_group(view: &Rc<View>, summary: &str) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    view.ctx.anchor("shell.actions", &group);
+fn shortcuts_row(view: &Rc<View>, summary: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .use_markup(false)
         .title("Shortcuts")
@@ -180,8 +175,8 @@ fn shortcuts_group(view: &Rc<View>, summary: &str) -> adw::PreferencesGroup {
     row.connect_activated(|row| {
         let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
     });
-    group.add(&row);
-    group
+    view.ctx.anchor("shell.actions", &row);
+    row
 }
 
 fn set_script(ctx: &PageContext, script: String) {
@@ -190,7 +185,8 @@ fn set_script(ctx: &PageContext, script: String) {
     });
 }
 
-fn choice_group(view: &Rc<View>) -> adw::PreferencesGroup {
+/// The shell chosen, its file, and its shortcuts summed up last, when it has any.
+fn choice_group(view: &Rc<View>, shortcuts: Option<&str>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     view.ctx.anchor("shell.choice", &group);
 
@@ -273,6 +269,9 @@ fn choice_group(view: &Rc<View>) -> adw::PreferencesGroup {
             });
             group.add(&row);
         }
+    }
+    if let Some(summary) = shortcuts {
+        group.add(&shortcuts_row(view, summary));
     }
     group
 }

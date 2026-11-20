@@ -141,7 +141,6 @@ fn refresh(view: &Rc<View>) {
             let settings = crate::pages::placed(&view.ctx, "engine");
             view.ctx.anchor("engine.settings", &settings);
             view.column.append(&settings);
-            view.column.append(&shortcuts_group(view, engine));
         }
         Err(err) => view.column.append(&offline_group(view, err)),
     }
@@ -162,6 +161,7 @@ const BUILT_IN: &[(&str, &str)] = &[
     ("windows11", "Windows 11"),
 ];
 
+/// The engine chosen, its file, and the running engine's shortcuts summed up last.
 fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.choice", &group);
@@ -221,6 +221,9 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
             }
         });
         group.add(&row);
+    }
+    if let Some(engine) = running {
+        group.add(&shortcuts_row(view, engine));
     }
     group
 }
@@ -759,10 +762,7 @@ fn summarize(value: &OptionValue) -> String {
 
 /// How many actions the engine has and how many have a shortcut, with a link to the Shortcuts page,
 /// which lists them with bento's own.
-fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    view.ctx.anchor("engine.actions", &group);
-
+fn shortcuts_row(view: &Rc<View>, engine: &LayoutEngine) -> adw::ActionRow {
     // With its default keys and the user's, as bento settles which runs each key.
     let config = view.ctx.store.config();
     let mut defaults = niri_config::shortcuts::bento_defaults().to_vec();
@@ -797,8 +797,8 @@ fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGr
     row.connect_activated(|row| {
         let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
     });
-    group.add(&row);
-    group
+    view.ctx.anchor("engine.actions", &row);
+    row
 }
 
 /// Says why the configured engine isn't running, when bento runs the fallback one instead.
