@@ -19,7 +19,9 @@ use niri_config::shortcuts::Declarer;
 use niri_config::{Key, Modifiers, Trigger};
 use niri_ipc::{LayoutEngineAction, LayoutEngineActionArgType as ArgType};
 
-use super::shortcut_list::{self, Change, Section, Shortcut, Source, Sources, SHELL_ACTION};
+use super::shortcut_list::{
+    self, binds_of, Change, Section, Shortcut, Source, Sources, SHELL_ACTION,
+};
 use crate::ipc;
 use crate::kdl::{ActionNode, BindNode, Value};
 use crate::model::Category;
@@ -93,22 +95,6 @@ fn apply(store: &Store, shortcut: &Shortcut, change: Change) {
             shortcut_list::apply(doc, &one, &change, true)
         });
     }
-}
-
-/// The binds `shortcut`'s keys are written as, its user ones as they are.
-fn binds_of(shortcut: &Shortcut) -> Vec<BindNode> {
-    shortcut
-        .keys
-        .iter()
-        .filter(|k| !matches!(k.source, Source::Include(_)))
-        .map(|k| {
-            k.bind.clone().unwrap_or_else(|| BindNode {
-                key: k.text.clone(),
-                properties: Vec::new(),
-                action: Some(shortcut.node.clone()),
-            })
-        })
-        .collect()
 }
 
 /// Where a dialog's way to show its keys again is kept, for what it shows to call.

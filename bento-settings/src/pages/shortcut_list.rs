@@ -84,8 +84,8 @@ pub struct Shortcut {
     pub node: ActionNode,
     /// The action's declaration, for its title and arguments.
     pub declaration: Option<LayoutEngineAction>,
-    /// Its default keys, as written.
-    pub defaults: Vec<String>,
+    /// Its default binds, with their settings.
+    pub defaults: Vec<BindNode>,
     /// The keys it has: the user's own if any, or else its defaults, unless it's turned off.
     pub keys: Vec<ShortcutKey>,
     /// Whether it's turned off with `unbind`.
@@ -249,7 +249,7 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
     };
 
     // Defaults: bento's, as it writes them, then the engine's and the shell's declarations.
-    let mut defaults: Vec<(usize, String)> = Vec::new();
+    let mut defaults: Vec<(usize, BindNode)> = Vec::new();
     let bento = Document::parse(String::from(shortcuts::DEFAULT_BINDS)).expect("valid");
     for bind in bento.binds() {
         let Some(node) = bind.action.clone() else {
@@ -258,8 +258,14 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
         let Some(action) = parse(&node, false) else {
             continue;
         };
-        let i = at(&mut list, action, node);
-        defaults.push((i, bind.key));
+        let i = at(&mut list, action, node.clone());
+        defaults.push((
+            i,
+            BindNode {
+                action: Some(node),
+                ..bind
+            },
+        ));
     }
     let declared = src
         .engine
@@ -273,12 +279,19 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
                 Declarer::Shell => shortcuts::shell_action(&decl.name, &bind.args),
                 _ => shortcuts::engine_action(&decl.name, &bind.args),
             };
-            let i = at(&mut list, action, node);
-            defaults.push((i, bind.key.clone()));
+            let i = at(&mut list, action, node.clone());
+            defaults.push((
+                i,
+                BindNode {
+                    key: bind.key.clone(),
+                    properties: Vec::new(),
+                    action: Some(node),
+                },
+            ));
         }
     }
-    for (i, key) in &defaults {
-        list[*i].defaults.push(key.clone());
+    for (i, bind) in defaults {
+        list[i].defaults.push(bind);
     }
 
     // Every action that needs no arguments has a row, bound or not.
@@ -407,12 +420,12 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
             shortcut
                 .defaults
                 .iter()
-                .filter_map(|text| {
+                .filter_map(|bind| {
                     Some(ShortcutKey {
-                        key: text.parse().ok()?,
-                        text: text.clone(),
+                        key: bind.key.parse().ok()?,
+                        text: bind.key.clone(),
                         source: Source::Default,
-                        bind: None,
+                        bind: Some(bind.clone()),
                         taken: None,
                     })
                 })
@@ -497,14 +510,19 @@ pub fn apply(doc: &mut Document, shortcut: &Shortcut, change: &Change, engine: b
         Change::Reset => (),
         Change::Disable => doc.add_unbind(&shortcut.node),
         Change::Keys(binds) => {
-            let mut texts: Vec<&str> = binds.iter().map(|b| b.key.as_str()).collect();
-            let mut defaults: Vec<&str> = shortcut.defaults.iter().map(String::as_str).collect();
-            texts.sort_unstable();
-            defaults.sort_unstable();
-            let plain = binds.iter().all(|b| b.properties.is_empty());
+            // The defaults as they are, chords and settings alike, are written as nothing.
+            let same = |a: &BindNode, b: &BindNode| {
+                a.key == b.key
+                    && a.properties.len() == b.properties.len()
+                    && a.properties.iter().all(|p| b.properties.contains(p))
+            };
+            let at_defaults = binds.len() == shortcut.defaults.len()
+                && binds
+                    .iter()
+                    .all(|b| shortcut.defaults.iter().any(|d| same(b, d)));
             if binds.is_empty() && !shortcut.defaults.is_empty() {
                 doc.add_unbind(&shortcut.node);
-            } else if texts != defaults || !plain {
+            } else if !at_defaults {
                 for bind in binds {
                     if let Ok(key) = bind.key.parse::<Key>() {
                         doc.set_bind(&key, bind);
@@ -513,6 +531,22 @@ pub fn apply(doc: &mut Document, shortcut: &Shortcut, change: &Change, engine: b
             }
         }
     }
+}
+
+/// The binds `shortcut`'s keys are written as, its user ones as they are.
+pub fn binds_of(shortcut: &Shortcut) -> Vec<BindNode> {
+    shortcut
+        .keys
+        .iter()
+        .filter(|k| !matches!(k.source, Source::Include(_)))
+        .map(|k| {
+            k.bind.clone().unwrap_or_else(|| BindNode {
+                key: k.text.clone(),
+                properties: Vec::new(),
+                action: Some(shortcut.node.clone()),
+            })
+        })
+        .collect()
 }
 
 /// The file `path` is, as the page reads it.
@@ -567,12 +601,38 @@ mod tests {
     }
 
     #[test]
+    fn a_default_binds_settings_stay_when_its_action_gets_another_chord() {
+        let list = shortcuts(&sources(""));
+        let volume = list
+            .iter()
+            .find(|s| s.keys.iter().any(|k| k.text == "XF86AudioRaiseVolume"))
+            .unwrap();
+        let mut binds = binds_of(volume);
+        binds.push(BindNode {
+            key: String::from("F9"),
+            properties: Vec::new(),
+            action: Some(volume.node.clone()),
+        });
+        let mut doc = Document::parse(String::new()).unwrap();
+        apply(&mut doc, volume, &Change::Keys(binds), false);
+        let written = doc.binds();
+        let raise = written
+            .iter()
+            .find(|b| b.key == "XF86AudioRaiseVolume")
+            .unwrap();
+        assert!(raise
+            .properties
+            .contains(&(String::from("allow-when-locked"), Value::Bool(true))));
+    }
+
+    #[test]
     fn shortcuts_have_their_defaults_until_the_user_changes_them() {
         let main = "binds {\n    F1 { spawn \"alacritty\"; }\n    F2 { spawn \"alacritty\"; }\n    unbind { shell-action \"toggle-start-menu\"; }\n}\n";
         let list = shortcuts(&sources(main));
         // bento's default terminal, now on F1 and F2 instead of its own key.
         let terminal = find(&list, "spawn \"alacritty\"");
-        assert_eq!(terminal.defaults, ["Mod+T"]);
+        let defaults: Vec<&str> = terminal.defaults.iter().map(|b| b.key.as_str()).collect();
+        assert_eq!(defaults, ["Mod+T"]);
         let keys: Vec<&str> = terminal.keys.iter().map(|k| k.text.as_str()).collect();
         assert_eq!(keys, ["F1", "F2"]);
         assert!(terminal.changed());
@@ -601,14 +661,23 @@ mod tests {
             properties: Vec::new(),
             action: Some(terminal.node.clone()),
         };
-        // Back on its default key: nothing's written for it.
+        // Back on its default bind, settings and all: nothing's written for it.
+        apply(
+            &mut doc,
+            &terminal,
+            &Change::Keys(terminal.defaults.clone()),
+            false,
+        );
+        assert!(doc.binds().is_empty() && doc.unbinds().is_empty());
+        // Its default chord without the default's settings is a bind of its own.
         apply(
             &mut doc,
             &terminal,
             &Change::Keys(vec![bind("Mod+T")]),
             false,
         );
-        assert!(doc.binds().is_empty() && doc.unbinds().is_empty());
+        let keys: Vec<String> = doc.binds().into_iter().map(|b| b.key).collect();
+        assert_eq!(keys, ["Mod+T"]);
         // Off, then reset.
         apply(&mut doc, &terminal, &Change::Disable, false);
         assert_eq!(doc.unbinds(), std::slice::from_ref(&terminal.node));
