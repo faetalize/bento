@@ -27,7 +27,6 @@ export const meta = {
     height: {
       type: "number",
       default: 48,
-      description: "How tall the taskbar is, in pixels.",
       page: "shell",
       group: "Taskbar",
     },
