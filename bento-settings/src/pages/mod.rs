@@ -9,6 +9,7 @@ pub mod binds;
 mod blur;
 mod blur_live;
 mod blur_preview;
+mod chord_line;
 mod control_center;
 mod declared;
 mod engine;

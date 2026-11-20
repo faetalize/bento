@@ -127,6 +127,8 @@ struct View {
     ctx: PageContext,
     search: gtk::SearchEntry,
     tabs: Vec<TabView>,
+    /// What the page lists now, in the rows' order, for a row to open its dialog by its index.
+    entries: RefCell<Vec<Entry>>,
     /// Each action's row, its section's group and its tab, with the words search matches it on.
     rows: RefCell<Vec<(gtk::Widget, adw::PreferencesGroup, Tab, String)>>,
 }
@@ -194,8 +196,22 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         ctx: ctx.clone(),
         search: search.clone(),
         tabs,
+        entries: RefCell::new(Vec::new()),
         rows: RefCell::new(Vec::new()),
     });
+    // A row opens its entry's dialog through `binds.open`, with the entry's index.
+    let actions = gio::SimpleActionGroup::new();
+    let open = gio::SimpleAction::new("open", Some(glib::VariantTy::UINT32));
+    let weak = Rc::downgrade(&view);
+    open.connect_activate(move |_, index| {
+        let Some(view) = weak.upgrade() else { return };
+        let index = index.and_then(|i| i.get::<u32>()).unwrap_or(u32::MAX) as usize;
+        let entry = view.entries.borrow().get(index).cloned();
+        if let Some(entry) = entry {
+            open_entry(&view.ctx, &view.search, entry);
+        }
+    });
+    actions.add_action(&open);
     let weak = Rc::downgrade(&view);
     search.connect_search_changed(move |_| {
         if let Some(view) = weak.upgrade() {
@@ -237,6 +253,7 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     column.append(&search);
     column.append(&switcher);
     column.append(&stack);
+    column.insert_action_group("binds", Some(&actions));
     crate::page::keep_alive(&column, view);
     column.upcast()
 }
@@ -288,9 +305,10 @@ fn refresh(view: &Rc<View>) {
         }
     }
     let mod_key = mod_key(&view.ctx.store);
+    let entries = bind_list::entries(&sources(&view.ctx.store));
     let mut rows = Vec::new();
     let mut groups: Vec<(Section, adw::PreferencesGroup)> = Vec::new();
-    for entry in bind_list::entries(&sources(&view.ctx.store)) {
+    for (i, entry) in entries.iter().enumerate() {
         let tab = entry.section.tab();
         let group = match groups.iter().find(|(s, _)| *s == entry.section) {
             Some((_, group)) => group.clone(),
@@ -305,11 +323,8 @@ fn refresh(view: &Rc<View>) {
                 group
             }
         };
+
         let title = entry.title();
-        let row = adw::ActionRow::builder()
-            .use_markup(false)
-            .title(&title)
-            .build();
         let mut notes = Vec::new();
         let args = entry.arguments();
         if !args.is_empty() {
@@ -327,37 +342,30 @@ fn refresh(view: &Rc<View>) {
                 ));
             }
         }
-        if !notes.is_empty() {
-            row.set_subtitle(&notes.join("\n"));
-        }
-        // The chords, a comma after each but the last, so one reads apart from the next.
-        let keys = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        keys.set_valign(gtk::Align::Center);
-        for (i, key) in entry.binds.iter().enumerate() {
-            let label = chord_label(&key.key, mod_key);
-            if key.taken.is_some() {
-                label.add_css_class("dim-label");
-            }
-            let chord = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-            chord.append(&label);
-            if i + 1 < entry.binds.len() {
-                chord.append(&dim_label(","));
-            }
-            keys.append(&chord);
-        }
-        if entry.binds.is_empty() {
-            keys.append(&dim_label("Disabled"));
-        }
-        row.add_suffix(&keys);
-
+        let chords: Vec<gtk::Widget> = entry
+            .binds
+            .iter()
+            .map(|key| {
+                let label = chord_label(&key.key, mod_key);
+                if key.taken.is_some() {
+                    label.add_css_class("dim-label");
+                }
+                label
+            })
+            .collect();
+        let row = entry_row(&title, &notes.join("\n"), chords);
         if entry.editable() {
             row.set_activatable(true);
-            row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-            let ctx = view.ctx.clone();
-            let one = entry.clone();
-            row.connect_activated(move |row| open_entry(&ctx, row, one.clone()));
+            row.set_action_name(Some("binds.open"));
+            row.set_action_target_value(Some(&(i as u32).to_variant()));
+            let arrow = gtk::Image::from_icon_name("go-next-symbolic");
+            arrow.set_valign(gtk::Align::Center);
+            if let Some(content) = row.child().and_downcast::<gtk::Box>() {
+                content.append(&arrow);
+            }
         }
         group.add(&row);
+
         let key_words: Vec<String> = entry
             .binds
             .iter()
@@ -365,14 +373,68 @@ fn refresh(view: &Rc<View>) {
             .collect();
         let text = format!(
             "{title} {} {} {}",
-            row.subtitle().unwrap_or_default(),
+            notes.join(" "),
             key_words.join(" "),
             section_title(&entry.section)
         );
         rows.push((row.upcast(), group, tab, text.to_lowercase()));
     }
+    view.entries.replace(entries);
     view.rows.replace(rows);
     filter(view);
+}
+
+/// A row of the list: the action's title, its notes, and below them its chords on a line of
+/// their own, a dot between each, or "Disabled".
+fn entry_row(title: &str, notes: &str, chords: Vec<gtk::Widget>) -> adw::PreferencesRow {
+    let text = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .hexpand(true)
+        .valign(gtk::Align::Center)
+        .build();
+    let title_label = gtk::Label::builder()
+        .label(title)
+        .xalign(0.)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .css_classes(["title"])
+        .build();
+    text.append(&title_label);
+    if !notes.is_empty() {
+        text.append(
+            &gtk::Label::builder()
+                .label(notes)
+                .xalign(0.)
+                .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
+                .css_classes(["subtitle", "dim-label", "caption"])
+                .build(),
+        );
+    }
+    if chords.is_empty() {
+        let disabled = dim_label("Disabled");
+        disabled.set_halign(gtk::Align::Start);
+        text.append(&disabled);
+    } else {
+        text.append(&super::chord_line::ChordLine::new(chords));
+    }
+
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    content.append(&text);
+    let row = adw::PreferencesRow::builder()
+        .title(title)
+        .activatable(false)
+        .build();
+    row.set_child(Some(&content));
+    row
 }
 
 fn mod_key(store: &Store) -> Modifiers {
