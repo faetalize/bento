@@ -1754,6 +1754,12 @@ fn shown_modifiers(key: &Key, mod_key: Modifiers) -> (Modifiers, gdk::ModifierTy
         modifiers.remove(Modifiers::COMPOSITOR);
         modifiers |= mod_key;
     }
+    // A modifier pressed alone is the key itself, not one held with it.
+    match key.trigger {
+        Trigger::CompositorMod => modifiers.remove(mod_key),
+        Trigger::Modifier(modifier) => modifiers.remove(modifier.to_modifiers()),
+        _ => (),
+    }
     let mut mask = gdk::ModifierType::empty();
     for (modifier, gdk_modifier) in [
         (Modifiers::CTRL, gdk::ModifierType::CONTROL_MASK),
@@ -1871,7 +1877,46 @@ fn chord_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+
+    #[test]
+    fn a_change_to_a_bind_of_the_main_config_is_saved_beside_an_engine_file() {
+        crate::store::on_own_context(|| {
+            let dir =
+                std::env::temp_dir().join(format!("bento-settings-binds-{}", std::process::id()));
+            fs::create_dir_all(dir.join("engines")).unwrap();
+            let config_path = dir.join("config.kdl");
+            fs::write(&config_path, "tiling {\n    layout \"niri\"\n}\n").unwrap();
+            // The engine has a file of its own, as it does once it has run.
+            fs::write(dir.join("engines").join("niri.kdl"), "").unwrap();
+
+            let store = Store::load_from(config_path.clone());
+            let list = bind_list::entries(&sources(&store));
+            let entry = list
+                .iter()
+                .find(|e| e.node.text() == "power-off-monitors")
+                .unwrap();
+            let bind = BindNode {
+                key: String::from("Mod+F9"),
+                properties: Vec::new(),
+                action: Some(entry.node.clone()),
+            };
+            apply(&store, entry, Change::Keys(vec![bind]));
+            store.flush();
+
+            let written = fs::read_to_string(&config_path).unwrap();
+            fs::remove_dir_all(&dir).unwrap();
+            assert!(written.contains("Mod+F9"), "{written}");
+        });
+    }
+
+    #[test]
+    fn a_modifier_alone_is_named_once() {
+        let key: Key = "Mod".parse().unwrap();
+        assert_eq!(key_label(&key, Modifiers::SUPER), "Super");
+    }
 
     #[test]
     fn keys_are_written_like_configs_write_them() {

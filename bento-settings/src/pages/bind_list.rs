@@ -801,6 +801,66 @@ mod tests {
     }
 
     #[test]
+    fn a_shell_action_without_binds_takes_one() {
+        let pinned = || (String::from("sound"), decl("switch-audio-output", &[]));
+        let mut src = sources("");
+        src.shell.push(pinned());
+        let list = entries(&src);
+        let switch = find(&list, "shell-action \"switch-audio-output\"");
+        assert!(switch.binds.is_empty());
+        let mut binds = binds_of(switch);
+        binds.push(BindNode {
+            key: String::from("Mod+F9"),
+            properties: Vec::new(),
+            action: Some(switch.node.clone()),
+        });
+        let mut doc = Document::parse(String::new()).unwrap();
+        apply(&mut doc, switch, &Change::Keys(binds), false);
+
+        let mut src = sources(doc.text());
+        src.shell.push(pinned());
+        let list = entries(&src);
+        let keys: Vec<&str> = find(&list, "shell-action \"switch-audio-output\"")
+            .binds
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect();
+        assert_eq!(keys, ["Mod+F9"], "{}", doc.text());
+    }
+
+    #[test]
+    fn a_chord_taken_from_a_bind_of_ones_own_moves_to_the_other_action() {
+        let main = "binds {\n    Mod+Shift+F1 { spawn \"switcher\"; }\n}\n";
+        let sound = || (String::from("sound"), decl("switch-audio-output", &[]));
+        let mut src = sources(main);
+        src.shell.push(sound());
+        let list = entries(&src);
+        let spawn = find(&list, "spawn \"switcher\"").clone();
+        let switch = find(&list, "shell-action \"switch-audio-output\"").clone();
+        let mut doc = src.main;
+        // The chord off the program, which has no other, then onto the sound switch.
+        apply(&mut doc, &spawn, &Change::Disable, false);
+        let bind = BindNode {
+            key: String::from("Mod+Shift+F1"),
+            properties: Vec::new(),
+            action: Some(switch.node.clone()),
+        };
+        apply(&mut doc, &switch, &Change::Keys(vec![bind]), false);
+
+        let config = Config::parse_mem(doc.text());
+        assert!(config.is_ok(), "{}\n{:?}", doc.text(), config.err());
+        let mut src = sources(doc.text());
+        src.shell.push(sound());
+        let list = entries(&src);
+        let keys: Vec<&str> = find(&list, "shell-action \"switch-audio-output\"")
+            .binds
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect();
+        assert_eq!(keys, ["Mod+Shift+F1"], "{}", doc.text());
+    }
+
+    #[test]
     fn a_chord_another_action_takes_says_whose() {
         // The user's Mod+V for bento loses to the clipboard module's default.
         let mut src = sources("binds {\n    Mod+V { spawn \"paste\"; }\n}\n");

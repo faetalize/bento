@@ -156,10 +156,12 @@ impl Store {
         self.edit_in(File::Main, key, f);
     }
 
-    /// Queues a change like [`Store::edit`], to `file`.
+    /// Queues a change like [`Store::edit`], to `file`. It replaces an older change of the same
+    /// `key` to the same file only: one change can write both files under one key, like a bind's
+    /// to the config and the engine's file.
     pub fn edit_in(&self, file: File, key: &str, f: impl FnOnce(&mut Document) + Send + 'static) {
         let mut queued = self.0.queued.borrow_mut();
-        queued.retain(|edit| edit.key != key);
+        queued.retain(|edit| edit.key != key || edit.file != file);
         queued.push(Edit {
             key: key.to_owned(),
             file,
