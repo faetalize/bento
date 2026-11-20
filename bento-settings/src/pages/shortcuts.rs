@@ -186,7 +186,10 @@ enum TakenBy {
 
 /// The keys the running shell's actions have by default, with the actions' names, for those the
 /// config doesn't bind itself: a bind of the action's own replaces its default.
-fn shell_defaults(actions: &[LayoutEngineAction], config: &niri_config::Config) -> Vec<(Key, String)> {
+fn shell_defaults(
+    actions: &[LayoutEngineAction],
+    config: &niri_config::Config,
+) -> Vec<(Key, String, String)> {
     let binds = config.binds.0.iter().chain(&config.taken_over.0);
     let bound: Vec<&str> = binds
         .flat_map(|bind| [bind.press_action(), bind.release_action()])
@@ -199,7 +202,10 @@ fn shell_defaults(actions: &[LayoutEngineAction], config: &niri_config::Config) 
     actions
         .iter()
         .filter(|action| !bound.contains(&action.name.as_str()))
-        .filter_map(|action| Some((action.bind.as_deref()?.parse().ok()?, action.name.clone())))
+        .filter_map(|action| {
+            let text = action.bind.clone()?;
+            Some((text.parse().ok()?, text, action.name.clone()))
+        })
         .collect()
 }
 
@@ -245,7 +251,7 @@ fn entries(store: &Store) -> Vec<Entry> {
             action,
             taken_over: if by_engine {
                 Some(TakenBy::Engine)
-            } else if defaults.iter().any(|(key, _)| key.conflicts_with(&bind.key)) {
+            } else if defaults.iter().any(|(key, ..)| key.conflicts_with(&bind.key)) {
                 Some(TakenBy::Shell)
             } else {
                 None
@@ -253,16 +259,44 @@ fn entries(store: &Store) -> Vec<Entry> {
             default: false,
         });
     }
-    entries.extend(defaults.into_iter().map(|(key, name)| Entry {
+    entries.extend(
+        defaults
+            .into_iter()
+            .map(|(key, text, name)| default_entry(key, text, name)),
+    );
+    entries
+}
+
+/// The row of a key one of the shell's actions has by default, with the bind the config would
+/// have for it: changed, that's written to the config, which replaces the default.
+fn default_entry(key: Key, text: String, name: String) -> Entry {
+    let action = ActionNode {
+        name: String::from(SHELL_ACTION),
+        args: vec![Value::Str(name.clone())],
+        properties: Vec::new(),
+    };
+    Entry {
         key,
         file: None,
         include: None,
-        node: None,
+        node: Some(BindNode {
+            key: text,
+            properties: Vec::new(),
+            action: Some(action),
+        }),
         action: format!("{SHELL_ACTION} {name}"),
         taken_over: None,
         default: true,
-    }));
-    entries
+    }
+}
+
+/// Whether a row's shortcut can be changed on the page: one in the main config or the engine's
+/// file, or one of the shell's defaults.
+fn editable(entry: &Entry) -> bool {
+    // A shortcut the engine took over is changed through the engine's, which has its key.
+    entry.taken_over.is_none()
+        && (entry.file.is_some() || entry.default)
+        && entry.node.as_ref().is_some_and(|n| n.action.is_some())
 }
 
 fn read_binds(path: &Path) -> Vec<BindNode> {
@@ -423,11 +457,7 @@ fn refresh(view: &Rc<View>) {
         }
         row.add_suffix(&shortcut_label(&entry.key, mod_key));
 
-        // A shortcut the engine took over is changed through the engine's, which has its key.
-        let editable = entry.taken_over.is_none()
-            && entry.file.is_some()
-            && entry.node.as_ref().is_some_and(|n| n.action.is_some());
-        if editable {
+        if editable(&entry) {
             row.set_activatable(true);
             row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
             let ctx = view.ctx.clone();
@@ -457,7 +487,11 @@ pub enum Edit {
 /// Opens the dialog to add a shortcut or change one.
 pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
     let existing = match &edit {
-        Edit::Existing(key) => entries(&ctx.store).into_iter().find(|e| e.key == *key),
+        // The one in use, over one whose key it took.
+        Edit::Existing(key) => entries(&ctx.store)
+            .into_iter()
+            .filter(|e| e.key == *key)
+            .min_by_key(|e| e.taken_over.is_some()),
         Edit::New => None,
     };
     let node = existing.as_ref().and_then(|e| e.node.clone());
@@ -531,6 +565,8 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
         .title("Action")
         .model(&model)
         .enable_search(true)
+        // Titles are found by any word in them, like "start" in "Show or hide the start menu".
+        .search_match_mode(gtk::StringFilterMatchMode::Substring)
         .build();
     action_row.set_expression(Some(gtk::PropertyExpression::new(
         gtk::StringObject::static_type(),
@@ -611,18 +647,19 @@ pub fn open(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, edit: Edit) {
             });
             buttons.append(&reset);
         }
-        let delete = gtk::Button::builder()
-            .label("Remove Shortcut")
-            .css_classes(["pill", "destructive-action"])
-            .build();
-        let (ctx_, dialog_, key, file) = (ctx.clone(), dialog.clone(), existing.key, existing.file);
-        delete.connect_clicked(move |_| {
-            if let Some(file) = file {
+        // One of the shell's defaults isn't in any file to remove it from: it's replaced instead.
+        if let Some(file) = existing.file {
+            let delete = gtk::Button::builder()
+                .label("Remove Shortcut")
+                .css_classes(["pill", "destructive-action"])
+                .build();
+            let (ctx_, dialog_, key) = (ctx.clone(), dialog.clone(), existing.key);
+            delete.connect_clicked(move |_| {
                 remove(&ctx_.store, file, key);
-            }
-            dialog_.close();
-        });
-        buttons.append(&delete);
+                dialog_.close();
+            });
+            buttons.append(&delete);
+        }
         group.add(&buttons);
         page.add(&group);
     }
@@ -706,9 +743,14 @@ fn save_bind(
     file: File,
     from: Option<(Key, File)>,
 ) {
-    // A shortcut the engine took over isn't in use, so it doesn't take the key.
+    // A shortcut the engine took over isn't in use, so it doesn't take the key, and nor does the
+    // shell's default for the action being bound, which this replaces.
+    let action = bind.action.as_ref().map(action_key);
     let taken = entries(&ctx.store).into_iter().find(|e| {
-        e.taken_over.is_none() && e.key.conflicts_with(&key) && from.is_none_or(|(old, _)| old != e.key)
+        e.taken_over.is_none()
+            && e.key.conflicts_with(&key)
+            && from.is_none_or(|(old, _)| old != e.key)
+            && !(e.default && Some(&e.action) == action.as_ref())
     });
 
     let commit = {
@@ -741,6 +783,18 @@ fn save_bind(
         .iter()
         .find(|c| c.action.name == taken.action)
         .map_or_else(|| taken.action.clone(), Choice::title);
+    if taken.default {
+        let alert = adw::AlertDialog::new(
+            Some("Shortcut Taken"),
+            Some(&format!(
+                "The shell has it for “{title}”, and keeps it while it runs. Give that a shortcut \
+                 of its own first."
+            )),
+        );
+        alert.add_response("close", "Close");
+        alert.present(Some(dialog));
+        return;
+    }
     let Some(taken_file) = taken.file else {
         let file = taken
             .include
@@ -1535,10 +1589,20 @@ mod tests {
         )
         .unwrap();
         let defaults = shell_defaults(&actions, &config);
-        assert_eq!(
-            defaults,
-            [("Mod".parse().unwrap(), String::from("toggle-start-menu"))]
+        let start = (
+            "Mod".parse().unwrap(),
+            String::from("Mod"),
+            String::from("toggle-start-menu"),
         );
+        assert_eq!(defaults, std::slice::from_ref(&start));
+
+        // It can be changed like any other, from what the shell gives it.
+        let (key, text, name) = start;
+        let entry = default_entry(key, text, name);
+        assert!(editable(&entry), "a default key can't be changed");
+        let action = entry.node.as_ref().and_then(|n| n.action.as_ref()).unwrap();
+        assert_eq!(action_key(action), "shell-action toggle-start-menu");
+        assert_eq!(entry.node.unwrap().key, "Mod");
     }
 
     #[test]

@@ -282,9 +282,20 @@ impl BindNode {
             .action
             .as_ref()
             .map_or_else(String::new, ActionNode::text);
-        write!(out, " {{ {action}; }}").unwrap();
+        if modifiers_alone(&self.key) {
+            write!(out, " {{ release {{ {action}; }}; }}").unwrap();
+        } else {
+            write!(out, " {{ {action}; }}").unwrap();
+        }
         out
     }
+}
+
+/// Whether `key` is modifiers alone, like `Mod`: its bind runs as they're let go with nothing
+/// pressed in between, since run as they're pressed it would run whenever they start another
+/// shortcut. It's written and read as a `release` section.
+fn modifiers_alone(key: &str) -> bool {
+    key.parse::<Key>().is_ok_and(|key| key.trigger.is_modifier())
 }
 
 impl Document {
@@ -400,22 +411,36 @@ impl Document {
     }
 }
 
+fn children(node: &ast::SpannedNode<Span>) -> Vec<&ast::SpannedNode<Span>> {
+    node.children.iter().flat_map(|c| c.iter()).collect()
+}
+
 fn bind_node(node: &ast::SpannedNode<Span>) -> BindNode {
-    let children: Vec<_> = node.children.iter().flat_map(|c| c.iter()).collect();
-    let action = match children.as_slice() {
-        [action] if !matches!(&**action.node_name, "press" | "release") => Some(ActionNode {
-            name: action.node_name.to_string(),
-            args: action
-                .arguments
-                .iter()
-                .filter_map(|v| value(&v.literal))
-                .collect(),
-            properties: properties(action),
-        }),
+    let key = node.node_name.to_string();
+    let action_node = |action: &ast::SpannedNode<Span>| ActionNode {
+        name: action.node_name.to_string(),
+        args: action
+            .arguments
+            .iter()
+            .filter_map(|v| value(&v.literal))
+            .collect(),
+        properties: properties(action),
+    };
+    let action = match children(node).as_slice() {
+        [action] if !matches!(&**action.node_name, "press" | "release") => {
+            Some(action_node(action))
+        }
+        // Modifiers alone run their action as they're let go.
+        [release] if &**release.node_name == "release" && modifiers_alone(&key) => {
+            match children(release).as_slice() {
+                [action] => Some(action_node(action)),
+                _ => None,
+            }
+        }
         _ => None,
     };
     BindNode {
-        key: node.node_name.to_string(),
+        key,
         properties: properties(node),
         action,
     }
@@ -767,6 +792,21 @@ mod tests {
         assert_eq!(binds[0].action.as_ref().unwrap().text(), "spawn \"foot\"");
         assert_eq!(binds[1].action.as_ref().unwrap().args, [Value::Int(2)]);
         assert_eq!(binds[2].action, None);
+    }
+
+    #[test]
+    fn a_bind_of_modifiers_alone_runs_as_they_are_let_go() {
+        // Run as it's pressed, it would run whenever the modifier starts another shortcut.
+        let out = edit("binds {\n}\n", |doc| {
+            doc.set_bind(&key("Mod"), &spawn("Mod", "menu"))
+        });
+        assert_eq!(out, "binds {\n    Mod { release { spawn \"menu\"; }; }\n}\n");
+        // And it reads back as its action, to change.
+        let binds = Document::parse(out).unwrap().binds();
+        assert_eq!(binds[0].action.as_ref().unwrap().text(), "spawn \"menu\"");
+        // A key with more than modifiers keeps its sections as they are.
+        let text = "binds {\n    Mod+Q { release { close-window; }; }\n}\n";
+        assert_eq!(Document::parse(text.to_owned()).unwrap().binds()[0].action, None);
     }
 
     #[test]
