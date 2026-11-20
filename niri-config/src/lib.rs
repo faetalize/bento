@@ -31,6 +31,7 @@ pub mod macros;
 pub mod actions;
 pub mod animations;
 pub mod appearance;
+pub mod bind_set;
 pub mod binds;
 pub mod convert;
 pub mod debug;
@@ -43,7 +44,6 @@ pub mod layout;
 pub mod misc;
 pub mod output;
 pub mod recent_windows;
-pub mod shortcuts;
 pub mod tiling;
 pub mod utils;
 pub mod window_rule;
@@ -122,10 +122,10 @@ pub struct Config {
     pub window_rules: Vec<WindowRule>,
     pub layer_rules: Vec<LayerRule>,
     /// The user's binds, from the main config and the running engine's file. Which of them are in
-    /// use, with the defaults of whoever declares their actions, is [`shortcuts::resolve`]'s.
+    /// use, with the defaults of whoever declares their actions, is [`bind_set::resolve`]'s.
     pub binds: Binds,
     pub bind_files: BindFiles,
-    /// The shortcuts the user turned off with `unbind`, from the main config and the engine's file.
+    /// The actions the user turned off with `unbind`, from the main config and the engine's file.
     pub unbound: Vec<Action>,
     pub switch_events: SwitchBinds,
     pub debug: Debug,

@@ -768,9 +768,9 @@ pub fn default_binds() -> Vec<niri_config::binds::Bind> {
         let Some(engine) = engine.as_ref() else {
             return Vec::new();
         };
-        niri_config::shortcuts::declared_binds(
+        niri_config::bind_set::declared_binds(
             &engine.meta.actions,
-            niri_config::shortcuts::engine_action,
+            niri_config::bind_set::engine_action,
         )
     })
 }

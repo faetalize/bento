@@ -336,10 +336,15 @@ fn connect(ui: &Rc<Ui>, window: &adw::ApplicationWindow) {
 
 impl Ui {
     /// Opens the page with this id. Returns false if there's none.
+    /// Opens a page by its id, or a place on it as `page#anchor`, like `binds#binds.engine`.
     pub fn open_page(self: &Rc<Self>, id: &str) -> bool {
+        let (id, anchor) = match id.split_once('#') {
+            Some((id, anchor)) => (id, Some(anchor.to_owned())),
+            None => (id, None),
+        };
         match self.categories.iter().position(|c| c.id == id) {
             Some(idx) => {
-                self.show(idx, None);
+                self.show(idx, anchor);
                 true
             }
             None => false,
@@ -438,8 +443,16 @@ impl Ui {
     }
 }
 
-/// Scrolls a widget into view and flashes it, opening the expander row it's in first.
+/// Scrolls a widget into view and flashes it, showing the stack page it's on, like a tab, and
+/// opening the expander row it's in first.
 fn reveal(widget: &gtk::Widget) {
+    let mut child = widget.clone();
+    while let Some(parent) = child.parent() {
+        if let Some(stack) = parent.downcast_ref::<gtk::Stack>() {
+            stack.set_visible_child(&child);
+        }
+        child = parent;
+    }
     let expander = widget
         .parent()
         .and_then(|parent| parent.ancestor(adw::ExpanderRow::static_type()))

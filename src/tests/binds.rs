@@ -96,8 +96,8 @@ fn set_up(config: &str) -> (Fixture, ClientId, WlSurface) {
     let mut config = Config::parse_mem(config).unwrap();
     // These are about how the config's binds behave: bento's own shortcuts are turned off, as
     // `unbind` turns them off, so their default keys reach the surface.
-    let defaults = niri_config::shortcuts::bento_defaults();
-    let off = defaults.iter().filter_map(niri_config::shortcuts::shortcut);
+    let defaults = niri_config::bind_set::bento_defaults();
+    let off = defaults.iter().filter_map(niri_config::bind_set::action_of);
     config.unbound.extend(off.cloned());
 
     for bind in &mut config.binds.0 {

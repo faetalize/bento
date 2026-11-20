@@ -28,7 +28,7 @@ struct View {
     ctx: PageContext,
     column: gtk::Box,
     /// The configured shell, the running one with its setting values left out, and how many of
-    /// its actions have a shortcut. The page is rebuilt only when this changes; the settings'
+    /// its actions have a bind. The page is rebuilt only when this changes; the settings'
     /// rows keep themselves up to date.
     shown: RefCell<Option<Shape>>,
 }
@@ -36,10 +36,10 @@ struct View {
 type Shape = (ShellScript, Result<Shell, String>, Option<String>);
 
 fn shape(ctx: &PageContext, shell: &Result<Shell, String>) -> Shape {
-    let shortcuts = shell
+    let binds = shell
         .as_ref()
         .ok()
-        .and_then(|shell| shortcuts_summary(ctx, shell));
+        .and_then(|shell| binds_summary(ctx, shell));
     let shell = shell.clone().map(|mut shell| {
         for block in &mut shell.settings {
             for setting in &mut block.settings {
@@ -48,7 +48,7 @@ fn shape(ctx: &PageContext, shell: &Result<Shell, String>) -> Shape {
         }
         shell
     });
-    (script(ctx), shell, shortcuts)
+    (script(ctx), shell, binds)
 }
 
 fn script(ctx: &PageContext) -> ShellScript {
@@ -130,27 +130,27 @@ fn refresh(view: &Rc<View>) {
     view.shown.replace(Some(shape));
 }
 
-/// How many actions the shell and its modules have and how many have a shortcut, or nothing when
+/// How many actions the shell and its modules have and how many have a bind, or nothing when
 /// they have none.
-fn shortcuts_summary(ctx: &PageContext, shell: &Shell) -> Option<String> {
+fn binds_summary(ctx: &PageContext, shell: &Shell) -> Option<String> {
     if shell.actions.is_empty() {
         return None;
     }
-    // With its default keys and the user's, as bento settles which runs each key.
+    // With its default binds and the user's, as bento settles which runs each chord.
     let config = ctx.store.config();
     let declared: Vec<_> = shell.actions.iter().map(|a| a.action.clone()).collect();
-    let mut defaults = niri_config::shortcuts::bento_defaults().to_vec();
-    defaults.extend(niri_config::shortcuts::declared_binds(
+    let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
+    defaults.extend(niri_config::bind_set::declared_binds(
         &declared,
-        niri_config::shortcuts::shell_action,
+        niri_config::bind_set::shell_action,
     ));
-    let resolved = niri_config::shortcuts::resolve(&config.binds.0, &config.unbound, &defaults);
+    let resolved = niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &defaults);
     let bound = declared
         .iter()
         .filter(|action| {
             resolved.in_use.iter().any(|bind| {
                 matches!(
-                    niri_config::shortcuts::shortcut(bind),
+                    niri_config::bind_set::action_of(bind),
                     Some(Action::ShellAction(name, ..)) if *name == action.name
                 )
             })
@@ -158,22 +158,23 @@ fn shortcuts_summary(ctx: &PageContext, shell: &Shell) -> Option<String> {
         .count();
     let total = declared.len();
     Some(format!(
-        "This shell has {total} {}, {bound} with a shortcut",
+        "This shell has {total} {}, {bound} with a bind",
         if total == 1 { "action" } else { "actions" }
     ))
 }
 
-/// The shell's shortcuts summed up, with a link to the Shortcuts page, which lists them by module.
-fn shortcuts_row(view: &Rc<View>, summary: &str) -> adw::ActionRow {
+/// The shell's binds summed up, with a link to the Binds page's Shell tab, which lists them by
+/// module.
+fn binds_row(view: &Rc<View>, summary: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .use_markup(false)
-        .title("Shortcuts")
+        .title("Binds")
         .subtitle(summary)
         .activatable(true)
         .build();
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     row.connect_activated(|row| {
-        let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
+        let _ = row.activate_action("win.open-page", Some(&"binds#binds.shell".to_variant()));
     });
     view.ctx.anchor("shell.actions", &row);
     row
@@ -185,8 +186,8 @@ fn set_script(ctx: &PageContext, script: String) {
     });
 }
 
-/// The shell chosen, its file, and its shortcuts summed up last, when it has any.
-fn choice_group(view: &Rc<View>, shortcuts: Option<&str>) -> adw::PreferencesGroup {
+/// The shell chosen, its file, and its binds summed up last, when it has any actions.
+fn choice_group(view: &Rc<View>, binds: Option<&str>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     view.ctx.anchor("shell.choice", &group);
 
@@ -270,8 +271,8 @@ fn choice_group(view: &Rc<View>, shortcuts: Option<&str>) -> adw::PreferencesGro
             group.add(&row);
         }
     }
-    if let Some(summary) = shortcuts {
-        group.add(&shortcuts_row(view, summary));
+    if let Some(summary) = binds {
+        group.add(&binds_row(view, summary));
     }
     group
 }

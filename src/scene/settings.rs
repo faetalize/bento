@@ -16,9 +16,9 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context as _};
+use niri_config::bind_set;
 use niri_config::binds::{Bind, Key};
 use niri_config::edit::{option_properties, option_values, Document};
-use niri_config::shortcuts;
 use niri_config::{EngineSettings, ShellSettings};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionValue};
 
@@ -197,8 +197,8 @@ impl Settings {
                         action.name
                     );
                 }
-                let shortcut = shortcuts::shell_action(&action.name, &bind.args);
-                binds.push((String::from(name), shortcuts::default_bind(key, shortcut)));
+                let runs = bind_set::shell_action(&action.name, &bind.args);
+                binds.push((String::from(name), bind_set::default_bind(key, runs)));
             }
         }
         match self.declared.iter_mut().find(|(n, _)| n == name) {

@@ -431,7 +431,7 @@ where
                     let file = ctx.get::<CurrentFile>().unwrap().0.clone();
                     let mut config = config.borrow_mut();
                     // Kept with the main config's: which runs a key both bind is for
-                    // `shortcuts::resolve`, by who declares their actions.
+                    // `bind_set::resolve`, by who declares their actions.
                     config.unbound.extend(unbound);
                     let files = part.0.iter().map(|bind| (bind.key, file.clone()));
                     config.bind_files.0.extend(files);
@@ -1223,7 +1223,7 @@ mod tests {
         let config = Config::parse_mem_with_engine(&main, &binds("Mod+R { resize; }")).unwrap();
         // Both are kept, each with its file; the engine's runs the key, as the narrower.
         assert_eq!(config.binds.0.len(), 3);
-        let resolved = crate::shortcuts::resolve(&config.binds.0, &config.unbound, &[]);
+        let resolved = crate::bind_set::resolve(&config.binds.0, &config.unbound, &[]);
         let key: crate::binds::Key = "Mod+R".parse().unwrap();
         let bound: Vec<_> = resolved.in_use.iter().filter(|b| b.key == key).collect();
         assert!(matches!(
@@ -1235,7 +1235,7 @@ mod tests {
     }
 
     #[test]
-    fn unbind_turns_a_shortcut_off_in_either_file() {
+    fn unbind_turns_an_action_off_in_either_file() {
         let main = binds("unbind { power-off-monitors; }\n    Mod+T { spawn \"y\"; }");
         let engine = binds("unbind { resize 2; }");
         let config = Config::parse_mem_with_engine(&main, &engine).unwrap();

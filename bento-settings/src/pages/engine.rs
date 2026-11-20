@@ -58,7 +58,7 @@ pub fn category() -> Category {
         )
         .search_item(
             "engine.actions",
-            "Engine Shortcuts",
+            "Engine Binds",
             &["layout-action", "actions", "binds", "keybinds"],
         )
         .search_item(
@@ -161,7 +161,7 @@ const BUILT_IN: &[(&str, &str)] = &[
     ("windows11", "Windows 11"),
 ];
 
-/// The engine chosen, its file, and the running engine's shortcuts summed up last.
+/// The engine chosen, its file, and the running engine's binds summed up last.
 fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.choice", &group);
@@ -223,7 +223,7 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
         group.add(&row);
     }
     if let Some(engine) = running {
-        group.add(&shortcuts_row(view, engine));
+        group.add(&binds_row(view, engine));
     }
     group
 }
@@ -760,24 +760,24 @@ fn summarize(value: &OptionValue) -> String {
     }
 }
 
-/// How many actions the engine has and how many have a shortcut, with a link to the Shortcuts page,
-/// which lists them with bento's own.
-fn shortcuts_row(view: &Rc<View>, engine: &LayoutEngine) -> adw::ActionRow {
-    // With its default keys and the user's, as bento settles which runs each key.
+/// How many actions the engine has and how many have a bind, with a link to the Binds page's
+/// Engine tab, which lists them.
+fn binds_row(view: &Rc<View>, engine: &LayoutEngine) -> adw::ActionRow {
+    // With its default binds and the user's, as bento settles which runs each chord.
     let config = view.ctx.store.config();
-    let mut defaults = niri_config::shortcuts::bento_defaults().to_vec();
-    defaults.extend(niri_config::shortcuts::declared_binds(
+    let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
+    defaults.extend(niri_config::bind_set::declared_binds(
         &engine.actions,
-        niri_config::shortcuts::engine_action,
+        niri_config::bind_set::engine_action,
     ));
-    let resolved = niri_config::shortcuts::resolve(&config.binds.0, &config.unbound, &defaults);
+    let resolved = niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &defaults);
     let bound = engine
         .actions
         .iter()
         .filter(|action| {
             resolved.in_use.iter().any(|bind| {
                 matches!(
-                    niri_config::shortcuts::shortcut(bind),
+                    niri_config::bind_set::action_of(bind),
                     Some(Action::LayoutAction(name, ..)) if *name == action.name
                 )
             })
@@ -786,16 +786,16 @@ fn shortcuts_row(view: &Rc<View>, engine: &LayoutEngine) -> adw::ActionRow {
     let total = engine.actions.len();
     let row = adw::ActionRow::builder()
         .use_markup(false)
-        .title("Shortcuts")
+        .title("Binds")
         .subtitle(format!(
-            "This engine has {total} {}, {bound} with a shortcut",
+            "This engine has {total} {}, {bound} with a bind",
             if total == 1 { "action" } else { "actions" }
         ))
         .activatable(true)
         .build();
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     row.connect_activated(|row| {
-        let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
+        let _ = row.activate_action("win.open-page", Some(&"binds#binds.engine".to_variant()));
     });
     view.ctx.anchor("engine.actions", &row);
     row

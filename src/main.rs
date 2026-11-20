@@ -113,22 +113,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         anyhow::anyhow!("the layout engine doesn't match the config").into(),
                     );
                 }
-                // Which keys another shortcut takes over, with bento's and the engine's defaults:
+                // Which chords another action takes over, with bento's and the engine's defaults:
                 // no shell runs here, so the shell's aren't known.
                 let mod_key = config.input.mod_key.unwrap_or(niri_config::ModKey::Super);
-                let mut defaults = niri_config::shortcuts::bento_defaults().to_vec();
+                let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
                 defaults.extend(niri::layout::tiling::engine::default_binds());
                 let resolved =
-                    niri_config::shortcuts::resolve(&config.binds.0, &config.unbound, &defaults);
+                    niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &defaults);
                 for taken in &resolved.taken_over {
                     let key = niri::ui::hotkey_overlay::key_name(false, mod_key, &taken.bind.key);
                     let whose = if taken.default { "default" } else { "bind" };
                     let by = match taken.by {
-                        niri_config::shortcuts::Declarer::Bento => "bento's",
-                        niri_config::shortcuts::Declarer::Engine => "the engine's",
-                        niri_config::shortcuts::Declarer::Shell => "the shell's",
+                        niri_config::bind_set::Declarer::Bento => "bento's",
+                        niri_config::bind_set::Declarer::Engine => "the engine's",
+                        niri_config::bind_set::Declarer::Shell => "the shell's",
                     };
-                    info!("{key}: {by} shortcut takes it over from a {whose}");
+                    info!("{key}: {by} bind takes it over from a {whose}");
                 }
                 info!("config is valid");
                 return Ok(());

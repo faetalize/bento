@@ -1,12 +1,13 @@
-//! Shortcuts: every shortcut, bento's, the running engine's and the running shell's, in sections
-//! by who declares them, each with its keys, and dialogs to change one or to add one.
+//! Binds: every action, bento's, the running engine's and the running shell's, in tabs by who
+//! declares them, each with its binds, and dialogs to change an action's binds or to add one.
 //!
-//! A shortcut is an action with its arguments, with any number of keys. Its defaults stay with
-//! whoever declares it; what the page writes is only what differs: keys of the user's own, in the
-//! main config, or the engine's file for the engine's shortcuts, and `unbind` for one turned off.
-//! What the page lists and what a change writes is `shortcut_list`'s. Binds from included files are
-//! shown but can't be changed here, since those files often belong to something else, like a shell
-//! that writes them.
+//! An action is what a bind runs, with its arguments; a bind is a chord that runs it, with
+//! settings of its own. A chord runs at most one action, and an action has any number of binds.
+//! Defaults stay with whoever declares the action; what the page writes is only what differs:
+//! binds of the user's own, in the main config, or the engine's file for the engine's actions, and
+//! `unbind` for an action turned off. What the page lists and what a change writes is
+//! `bind_list`'s. Binds from included files are shown but can't be changed here, since those files
+//! often belong to something else, like a shell that writes them.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -14,13 +15,13 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib::translate::FromGlib;
 use gtk::{gdk, gio, glib};
+use niri_config::bind_set::Declarer;
 use niri_config::input::ModKey;
-use niri_config::shortcuts::Declarer;
 use niri_config::{Key, Modifiers, Trigger};
 use niri_ipc::{LayoutEngineAction, LayoutEngineActionArgType as ArgType};
 
-use super::shortcut_list::{
-    self, binds_of, Change, Section, Shortcut, Source, Sources, SHELL_ACTION,
+use super::bind_list::{
+    self, binds_of, general_group, Change, Entry, Section, Source, Sources, Tab, SHELL_ACTION,
 };
 use crate::ipc;
 use crate::kdl::{ActionNode, BindNode, Value};
@@ -29,10 +30,22 @@ use crate::page::PageContext;
 use crate::store::{File, Store};
 
 pub fn category() -> Category {
-    Category::custom("shortcuts", "Shortcuts", build)
+    Category::custom("binds", "Binds", build)
         .icon("ph-command-symbolic")
-        .keywords(&["binds", "keybinds", "hotkeys", "keyboard", "keys"])
-        .search_item("shortcuts.list", "Shortcuts", &["add shortcut", "reset"])
+        .keywords(&[
+            "shortcuts",
+            "keybinds",
+            "hotkeys",
+            "keyboard",
+            "keys",
+            "chords",
+        ])
+        .search_item("binds.list", "Binds", &["add bind", "reset", "actions"])
+}
+
+/// The anchor of `tab`, which links to the page open it on.
+pub fn tab_anchor(tab: Tab) -> String {
+    format!("binds.{}", tab.name())
 }
 
 /// What the page lists from, as it is now.
@@ -52,10 +65,8 @@ fn sources(store: &Store) -> Sources {
         native: niri_config::actions::native_actions(),
         engine,
         shell,
-        main: shortcut_list::read(store.config_path()),
-        engine_file: engine_path
-            .exists()
-            .then(|| shortcut_list::read(&engine_path)),
+        main: bind_list::read(store.config_path()),
+        engine_file: engine_path.exists().then(|| bind_list::read(&engine_path)),
         main_path: store.config_path().to_owned(),
         engine_path,
         binds: config.binds.0.clone(),
@@ -67,13 +78,13 @@ fn sources(store: &Store) -> Sources {
 /// The title of a section of the page.
 fn section_title(section: &Section) -> String {
     match section {
-        Section::Bento => String::from("bento"),
+        Section::General(group) => String::from(*group),
         Section::Engine(name) => format!("{} Engine", crate::page::title_from(name)),
         Section::Module(name) => crate::page::title_from(name),
     }
 }
 
-/// Who declares a shortcut, as a note says it.
+/// Who declares an action, as a note says it.
 fn whose(declarer: Declarer) -> &'static str {
     match declarer {
         Declarer::Bento => "bento's",
@@ -82,57 +93,108 @@ fn whose(declarer: Declarer) -> &'static str {
     }
 }
 
-/// Writes `change` to `shortcut`, in the main config and in the engine's file.
-fn apply(store: &Store, shortcut: &Shortcut, change: Change) {
-    let id = format!("shortcuts.{}", shortcut.node.text());
-    let (one, other) = (shortcut.clone(), change.clone());
+/// Writes `change` to `entry`, in the main config and in the engine's file.
+fn apply(store: &Store, entry: &Entry, change: Change) {
+    let id = format!("binds.{}", entry.node.text());
+    let (one, other) = (entry.clone(), change.clone());
     store.edit_in(File::Main, &id, move |doc| {
-        shortcut_list::apply(doc, &one, &other, false)
+        bind_list::apply(doc, &one, &other, false)
     });
-    if store.engine_path().exists() || shortcut.file() == File::Engine {
-        let one = shortcut.clone();
+    if store.engine_path().exists() || entry.file() == File::Engine {
+        let one = entry.clone();
         store.edit_in(File::Engine, &id, move |doc| {
-            shortcut_list::apply(doc, &one, &change, true)
+            bind_list::apply(doc, &one, &change, true)
         });
     }
 }
 
-/// Where a dialog's way to show its keys again is kept, for what it shows to call.
+/// Where a dialog's way to show its binds again is kept, for what it shows to call.
 type ShowSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
+/// A tab of the page: its toggle with the count of actions it shows, and its groups.
+struct TabView {
+    tab: Tab,
+    toggle: adw::Toggle,
+    count: gtk::Label,
+    /// The sections' groups, made again on each refresh.
+    sections: gtk::Box,
+    /// Shown when the tab lists nothing, or the search matches nothing in it.
+    empty: adw::PreferencesGroup,
+    empty_row: adw::ActionRow,
+}
 
 struct View {
     ctx: PageContext,
     search: gtk::SearchEntry,
-    /// The sections' groups, made again on each refresh.
-    sections: gtk::Box,
-    /// Each shortcut's row and its section's group, with the words search matches it on.
-    rows: RefCell<Vec<(gtk::Widget, adw::PreferencesGroup, String)>>,
-    /// Shown when the search matches nothing.
-    empty: adw::PreferencesGroup,
+    tabs: Vec<TabView>,
+    /// Each action's row, its section's group and its tab, with the words search matches it on.
+    rows: RefCell<Vec<(gtk::Widget, adw::PreferencesGroup, Tab, String)>>,
 }
 
 fn build(ctx: &PageContext) -> gtk::Widget {
-    let header = adw::PreferencesGroup::builder().title("Shortcuts").build();
-    ctx.anchor("shortcuts.list", &header);
+    let header = adw::PreferencesGroup::builder().title("Binds").build();
+    ctx.anchor("binds.list", &header);
     let search = gtk::SearchEntry::builder()
-        .placeholder_text("Search shortcuts")
+        .placeholder_text("Search binds")
         .build();
-    let empty = adw::PreferencesGroup::new();
-    empty.add(
-        &adw::ActionRow::builder()
-            .title("No Matching Shortcuts")
+
+    // The tabs, as a toggle group over a stack, each toggle with its count.
+    let switcher = adw::ToggleGroup::builder().homogeneous(true).build();
+    let stack = gtk::Stack::builder()
+        .vhomogeneous(false)
+        .transition_type(gtk::StackTransitionType::Crossfade)
+        .build();
+    let mut tabs = Vec::new();
+    for tab in Tab::ALL {
+        let count = gtk::Label::builder()
+            .css_classes(["dim-label", "numeric"])
+            .build();
+        let label = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .halign(gtk::Align::Center)
+            .build();
+        label.append(&gtk::Label::new(Some(tab.title())));
+        label.append(&count);
+        let toggle = adw::Toggle::builder()
+            .name(tab.name())
+            .child(&label)
+            .build();
+        switcher.add(toggle.clone());
+
+        let empty_row = adw::ActionRow::builder()
+            .title("No Matching Binds")
             .css_classes(["dim-label"])
-            .build(),
-    );
-    empty.set_visible(false);
-    let sections = gtk::Box::new(gtk::Orientation::Vertical, 24);
+            .build();
+        let empty = adw::PreferencesGroup::new();
+        empty.add(&empty_row);
+        let sections = gtk::Box::new(gtk::Orientation::Vertical, 24);
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 24);
+        page.append(&empty);
+        page.append(&sections);
+        stack.add_named(&page, Some(tab.name()));
+        ctx.anchor(&tab_anchor(tab), &page);
+        tabs.push(TabView {
+            tab,
+            toggle,
+            count,
+            sections,
+            empty,
+            empty_row,
+        });
+    }
+    switcher
+        .bind_property("active-name", &stack, "visible-child-name")
+        .bidirectional()
+        .sync_create()
+        .build();
+    switcher.set_active_name(Some(Tab::General.name()));
 
     let view = Rc::new(View {
         ctx: ctx.clone(),
         search: search.clone(),
-        sections: sections.clone(),
+        tabs,
         rows: RefCell::new(Vec::new()),
-        empty: empty.clone(),
     });
     let weak = Rc::downgrade(&view);
     search.connect_search_changed(move |_| {
@@ -149,7 +211,7 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         .build();
     let add = gtk::Button::builder()
         .icon_name("list-add-symbolic")
-        .tooltip_text("Add Shortcut")
+        .tooltip_text("Add Bind")
         .valign(gtk::Align::Center)
         .css_classes(["flat"])
         .build();
@@ -173,68 +235,93 @@ fn build(ctx: &PageContext) -> gtk::Widget {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 12);
     column.append(&header);
     column.append(&search);
-    column.append(&empty);
-    column.append(&sections);
+    column.append(&switcher);
+    column.append(&stack);
     crate::page::keep_alive(&column, view);
     column.upcast()
 }
 
-/// Shows the rows that have every word of the search, and the sections that have any.
+/// Shows the rows that have every word of the search, in every tab, and the sections that have
+/// any. Each tab's count follows what it shows, and a tab with nothing is greyed out; the tab
+/// shown stays.
 fn filter(view: &View) {
     let query = view.search.text().to_lowercase();
     let words: Vec<&str> = query.split_whitespace().collect();
     let mut shown: Vec<adw::PreferencesGroup> = Vec::new();
-    for (row, group, text) in view.rows.borrow().iter() {
+    let mut counts = [0usize; 3];
+    for (row, group, tab, text) in view.rows.borrow().iter() {
         let visible = words.iter().all(|word| text.contains(word));
         row.set_visible(visible);
-        if visible && !shown.contains(group) {
-            shown.push(group.clone());
+        if visible {
+            counts[Tab::ALL.iter().position(|t| t == tab).unwrap_or(0)] += 1;
+            if !shown.contains(group) {
+                shown.push(group.clone());
+            }
         }
     }
-    let mut child = view.sections.first_child();
-    while let Some(widget) = child {
-        let group = widget.clone().downcast::<adw::PreferencesGroup>().ok();
-        widget.set_visible(group.is_some_and(|g| shown.contains(&g)));
-        child = widget.next_sibling();
+    for (tab, count) in view.tabs.iter().zip(counts) {
+        let mut child = tab.sections.first_child();
+        while let Some(widget) = child {
+            let group = widget.clone().downcast::<adw::PreferencesGroup>().ok();
+            widget.set_visible(group.is_some_and(|g| shown.contains(&g)));
+            child = widget.next_sibling();
+        }
+        tab.count.set_label(&count.to_string());
+        tab.toggle.set_enabled(count > 0);
+        tab.empty.set_visible(count == 0);
+        tab.empty_row.set_title(if !words.is_empty() {
+            "No Matching Binds"
+        } else {
+            match tab.tab {
+                Tab::General => "No Actions",
+                Tab::Engine => "The Engine Isn't Running",
+                Tab::Shell => "No Shell Actions",
+            }
+        });
     }
-    view.empty.set_visible(shown.is_empty());
 }
 
 fn refresh(view: &Rc<View>) {
-    while let Some(child) = view.sections.first_child() {
-        view.sections.remove(&child);
+    for tab in &view.tabs {
+        while let Some(child) = tab.sections.first_child() {
+            tab.sections.remove(&child);
+        }
     }
     let mod_key = mod_key(&view.ctx.store);
     let mut rows = Vec::new();
     let mut groups: Vec<(Section, adw::PreferencesGroup)> = Vec::new();
-    for shortcut in shortcut_list::shortcuts(&sources(&view.ctx.store)) {
-        let group = match groups.iter().find(|(s, _)| *s == shortcut.section) {
+    for entry in bind_list::entries(&sources(&view.ctx.store)) {
+        let tab = entry.section.tab();
+        let group = match groups.iter().find(|(s, _)| *s == entry.section) {
             Some((_, group)) => group.clone(),
             None => {
-                let title = section_title(&shortcut.section);
-                let group = adw::PreferencesGroup::builder().title(&title).build();
-                view.sections.append(&group);
-                groups.push((shortcut.section.clone(), group.clone()));
+                let group = adw::PreferencesGroup::builder()
+                    .title(section_title(&entry.section))
+                    .build();
+                if let Some(tab_view) = view.tabs.iter().find(|t| t.tab == tab) {
+                    tab_view.sections.append(&group);
+                }
+                groups.push((entry.section.clone(), group.clone()));
                 group
             }
         };
-        let title = shortcut.title();
+        let title = entry.title();
         let row = adw::ActionRow::builder()
             .use_markup(false)
             .title(&title)
             .build();
         let mut notes = Vec::new();
-        let args = shortcut.arguments();
+        let args = entry.arguments();
         if !args.is_empty() {
             notes.push(args);
         }
-        for key in &shortcut.keys {
+        for key in &entry.binds {
             if let Source::Include(path) = &key.source {
                 notes.push(format!("From {}", crate::store::tilde(path)));
             }
             if let Some(by) = key.taken {
                 notes.push(format!(
-                    "{} not in use: {} shortcut takes it",
+                    "{} not in use: {} bind takes it",
                     key_label(&key.key, mod_key),
                     whose(by)
                 ));
@@ -245,28 +332,28 @@ fn refresh(view: &Rc<View>) {
         }
         let keys = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         keys.set_valign(gtk::Align::Center);
-        for key in &shortcut.keys {
-            let label = shortcut_label(&key.key, mod_key);
+        for key in &entry.binds {
+            let label = chord_label(&key.key, mod_key);
             if key.taken.is_some() {
                 label.add_css_class("dim-label");
             }
             keys.append(&label);
         }
-        if shortcut.keys.is_empty() {
+        if entry.binds.is_empty() {
             keys.append(&dim_label("Disabled"));
         }
         row.add_suffix(&keys);
 
-        if shortcut.editable() {
+        if entry.editable() {
             row.set_activatable(true);
             row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
             let ctx = view.ctx.clone();
-            let one = shortcut.clone();
-            row.connect_activated(move |row| open_shortcut(&ctx, row, one.clone()));
+            let one = entry.clone();
+            row.connect_activated(move |row| open_entry(&ctx, row, one.clone()));
         }
         group.add(&row);
-        let key_words: Vec<String> = shortcut
-            .keys
+        let key_words: Vec<String> = entry
+            .binds
             .iter()
             .map(|k| key_label(&k.key, mod_key))
             .collect();
@@ -274,9 +361,9 @@ fn refresh(view: &Rc<View>) {
             "{title} {} {} {}",
             row.subtitle().unwrap_or_default(),
             key_words.join(" "),
-            section_title(&shortcut.section)
+            section_title(&entry.section)
         );
-        rows.push((row.upcast(), group, text.to_lowercase()));
+        rows.push((row.upcast(), group, tab, text.to_lowercase()));
     }
     view.rows.replace(rows);
     filter(view);
@@ -287,29 +374,29 @@ fn mod_key(store: &Store) -> Modifiers {
     config.input.mod_key.unwrap_or(ModKey::Super).to_modifiers()
 }
 
-/// The shortcut other than `except` that runs `key` now, if any.
-fn running(store: &Store, key: &Key, except: &niri_config::Action) -> Option<Shortcut> {
-    let list = shortcut_list::shortcuts(&sources(store));
+/// The entry other than `except`'s whose bind runs the chord `key` now, if any.
+fn running(store: &Store, key: &Key, except: &niri_config::Action) -> Option<Entry> {
+    let list = bind_list::entries(&sources(store));
     list.into_iter().find(|s| {
         s.action != *except
-            && s.keys
+            && s.binds
                 .iter()
                 .any(|k| k.taken.is_none() && k.key.conflicts_with(key))
     })
 }
 
-/// Asks before taking `key` from `other`, the shortcut that runs it now, and calls `then` with
-/// whether to go on. Taking it leaves `other` its other keys, or turns it off.
+/// Asks before taking the chord `key` from `other`, the entry whose bind runs it now, and calls
+/// `then` with whether to go on. Taking it leaves `other` its other binds, or turns it off.
 fn take_key(
     ctx: &PageContext,
     parent: &impl IsA<gtk::Widget>,
     key: Key,
-    other: Shortcut,
-    then: impl Fn(Option<(Shortcut, Key)>) + 'static,
+    other: Entry,
+    then: impl Fn(Option<(Entry, Key)>) + 'static,
 ) {
     if !other.editable() {
         let alert = adw::AlertDialog::new(
-            Some("Shortcut Taken"),
+            Some("Chord Taken"),
             Some(&format!(
                 "It runs “{}”, from a file that can't be changed here.",
                 other.title()
@@ -320,8 +407,8 @@ fn take_key(
         return;
     }
     let alert = adw::AlertDialog::new(
-        Some("Replace Shortcut?"),
-        Some(&format!("This key runs “{}”.", other.title())),
+        Some("Replace Bind?"),
+        Some(&format!("This chord runs “{}”.", other.title())),
     );
     alert.add_response("cancel", "Cancel");
     alert.add_response("replace", "Replace");
@@ -335,8 +422,8 @@ fn take_key(
     });
 }
 
-/// Takes `key` off `other`: its other keys stay, and with none left it's turned off.
-fn give_up(store: &Store, other: &Shortcut, key: Key) {
+/// Takes the chord `key` off `other`: its other binds stay, and with none left it's turned off.
+fn give_up(store: &Store, other: &Entry, key: Key) {
     let rest: Vec<BindNode> = binds_of(other)
         .into_iter()
         .filter(|b| {
@@ -353,29 +440,34 @@ fn give_up(store: &Store, other: &Shortcut, key: Key) {
     apply(store, other, change);
 }
 
-/// The dialog of one shortcut: its keys, each to take off, one more to record, and turning it off
-/// or putting back its defaults.
-fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Shortcut) {
+/// The dialog of one entry: its binds, each with its settings and to take off, one more to
+/// record, and turning the action off or putting back its defaults.
+fn open_entry(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, entry: Entry) {
     let mod_key = mod_key(&ctx.store);
     let dialog = adw::Dialog::builder()
-        .title(shortcut.title())
+        .title(entry.title())
         .content_width(480)
         .build();
     let page = adw::PreferencesPage::new();
-    let keys: Rc<RefCell<Vec<BindNode>>> = Rc::new(RefCell::new(binds_of(&shortcut)));
-    // Keys taken from other shortcuts on saving.
-    let taken: Rc<RefCell<Vec<(Shortcut, Key)>>> = Rc::default();
+    let binds: Rc<RefCell<Vec<EditedBind>>> = Rc::new(RefCell::new(
+        binds_of(&entry)
+            .into_iter()
+            .map(|node| EditedBind::new(node, mod_key))
+            .collect(),
+    ));
+    // Chords taken from other actions on saving.
+    let taken: Rc<RefCell<Vec<(Entry, Key)>>> = Rc::default();
 
-    let keys_group = adw::PreferencesGroup::builder().title("Keys").build();
-    if !shortcut.arguments().is_empty() {
-        keys_group.set_description(Some(&shortcut.arguments()));
+    let binds_group = adw::PreferencesGroup::builder().title("Binds").build();
+    if !entry.arguments().is_empty() {
+        binds_group.set_description(Some(&entry.arguments()));
     }
-    page.add(&keys_group);
+    page.add(&binds_group);
     let shown: Rc<RefCell<Vec<gtk::Widget>>> = Rc::default();
     let recording = Rc::new(Recording::default());
     let record_row = adw::ActionRow::builder()
-        .title("Add Key")
-        .subtitle("Backspace turns the shortcut off")
+        .title("Add Bind")
+        .subtitle("Backspace turns the action off")
         .build();
     let record = gtk::Button::builder()
         .label("Record…")
@@ -383,49 +475,38 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
         .build();
     record_row.add_suffix(&record);
 
-    // The key rows, made again as keys come and go.
+    // The bind rows, each with its settings, put back in order as binds come and go.
     let show: Rc<dyn Fn()> = {
-        let (keys, shown, keys_group) = (keys.clone(), shown.clone(), keys_group.clone());
+        let (binds, shown, binds_group) = (binds.clone(), shown.clone(), binds_group.clone());
         let record_row = record_row.clone();
         let show_slot: ShowSlot = Rc::default();
         let slot = show_slot.clone();
         let f: Rc<dyn Fn()> = Rc::new(move || {
             for row in shown.take() {
-                keys_group.remove(&row);
+                binds_group.remove(&row);
             }
-            keys_group.remove(&record_row);
-            let mut rows = Vec::new();
-            let list = keys.borrow().clone();
-            if list.is_empty() {
+            binds_group.remove(&record_row);
+            let mut rows: Vec<gtk::Widget> = Vec::new();
+            if binds.borrow().is_empty() {
                 let row = adw::ActionRow::builder().title("Disabled").build();
                 row.add_css_class("dim-label");
-                keys_group.add(&row);
+                binds_group.add(&row);
                 rows.push(row.upcast());
             }
-            for (i, bind) in list.iter().enumerate() {
-                let Ok(key) = bind.key.parse::<Key>() else {
-                    continue;
-                };
-                let row = adw::ActionRow::new();
-                row.add_prefix(&shortcut_label(&key, mod_key));
-                let remove = gtk::Button::builder()
-                    .icon_name("user-trash-symbolic")
-                    .tooltip_text("Remove Key")
-                    .valign(gtk::Align::Center)
-                    .css_classes(["flat"])
-                    .build();
-                let (keys, slot) = (keys.clone(), slot.clone());
-                remove.connect_clicked(move |_| {
-                    keys.borrow_mut().remove(i);
-                    if let Some(show) = slot.borrow().clone() {
-                        show();
-                    }
-                });
-                row.add_suffix(&remove);
-                keys_group.add(&row);
-                rows.push(row.upcast());
+            for bind in binds.borrow().iter() {
+                if !bind.connected.replace(true) {
+                    let (binds, slot, row) = (binds.clone(), slot.clone(), bind.row.clone());
+                    bind.remove.connect_clicked(move |_| {
+                        binds.borrow_mut().retain(|b| b.row != row);
+                        if let Some(show) = slot.borrow().clone() {
+                            show();
+                        }
+                    });
+                }
+                binds_group.add(&bind.row);
+                rows.push(bind.row.clone().upcast());
             }
-            keys_group.add(&record_row);
+            binds_group.add(&record_row);
             shown.replace(rows);
         });
         show_slot.replace(Some(f.clone()));
@@ -434,14 +515,14 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
     show();
 
     {
-        let (ctx, keys, taken, show) = (ctx.clone(), keys.clone(), taken.clone(), show.clone());
-        let (recording, dialog_widget, one) = (recording.clone(), dialog.clone(), shortcut.clone());
+        let (ctx, binds, taken, show) = (ctx.clone(), binds.clone(), taken.clone(), show.clone());
+        let (recording, dialog_widget, one) = (recording.clone(), dialog.clone(), entry.clone());
         record.connect_clicked(move |button| {
-            button.set_label("Press a shortcut…");
+            button.set_label("Press a chord…");
             let button = button.clone();
-            let (ctx, keys, taken, show, dialog) = (
+            let (ctx, binds, taken, show, dialog) = (
                 ctx.clone(),
-                keys.clone(),
+                binds.clone(),
                 taken.clone(),
                 show.clone(),
                 dialog_widget.clone(),
@@ -450,29 +531,31 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
             recording.start(&dialog_widget, mod_key, move |recorded| {
                 button.set_label("Record…");
                 let Some(text) = recorded else { return };
-                // Backspace alone turns the shortcut off, as in GNOME's shortcuts.
+                // Backspace alone turns the action off, as in GNOME's shortcuts.
                 if text == "BackSpace" {
                     apply(&ctx.store, &one, Change::Disable);
                     dialog.close();
                     return;
                 }
                 let Some(key) = parse_key(&text) else {
-                    ctx.toast("That shortcut can't be bound");
+                    ctx.toast("That chord can't be bound");
                     return;
                 };
-                if keys.borrow().iter().any(|b| b.key == text) {
+                if binds.borrow().iter().any(|b| b.node.key == text) {
                     return;
                 }
-                let bind = BindNode {
+                let node = BindNode {
                     key: text,
                     properties: Vec::new(),
                     action: Some(one.node.clone()),
                 };
                 let add = {
-                    let (keys, taken, show) = (keys.clone(), taken.clone(), show.clone());
-                    move |take: Option<(Shortcut, Key)>| {
+                    let (binds, taken, show) = (binds.clone(), taken.clone(), show.clone());
+                    move |take: Option<(Entry, Key)>| {
                         taken.borrow_mut().extend(take);
-                        keys.borrow_mut().push(bind.clone());
+                        binds
+                            .borrow_mut()
+                            .push(EditedBind::new(node.clone(), mod_key));
                         show();
                     }
                 };
@@ -483,12 +566,6 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
             });
         });
     }
-
-    let advanced_group = adw::PreferencesGroup::new();
-    let first = shortcut.keys.iter().find_map(|k| k.bind.as_ref());
-    let advanced = Advanced::new(first);
-    advanced_group.add(&advanced.expander);
-    page.add(&advanced_group);
 
     // Turning it off, putting back its defaults, or removing one of the user's own.
     let buttons = gtk::Box::builder()
@@ -508,10 +585,10 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
             .build()
     };
     let mut any = false;
-    let has_defaults = !shortcut.defaults.is_empty();
-    if shortcut.changed() && has_defaults {
+    let has_defaults = !entry.defaults.is_empty();
+    if entry.changed() && has_defaults {
         let reset = button("Reset to Default", false);
-        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), shortcut.clone());
+        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), entry.clone());
         reset.connect_clicked(move |_| {
             apply(&ctx.store, &one, Change::Reset);
             dialog.close();
@@ -519,9 +596,9 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
         buttons.append(&reset);
         any = true;
     }
-    if has_defaults && !shortcut.disabled {
+    if has_defaults && !entry.disabled {
         let disable = button("Disable", true);
-        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), shortcut.clone());
+        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), entry.clone());
         disable.connect_clicked(move |_| {
             apply(&ctx.store, &one, Change::Disable);
             dialog.close();
@@ -529,9 +606,9 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
         buttons.append(&disable);
         any = true;
     }
-    if !has_defaults && shortcut.changed() {
-        let remove = button("Remove Shortcut", true);
-        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), shortcut.clone());
+    if !has_defaults && entry.changed() {
+        let remove = button("Remove Binds", true);
+        let (ctx, dialog, one) = (ctx.clone(), dialog.clone(), entry.clone());
         remove.connect_clicked(move |_| {
             apply(&ctx.store, &one, Change::Reset);
             dialog.close();
@@ -573,20 +650,66 @@ fn open_shortcut(ctx: &PageContext, parent: &impl IsA<gtk::Widget>, shortcut: Sh
         for (other, key) in taken.take() {
             give_up(&ctx.store, &other, key);
         }
-        let properties = advanced.properties();
-        let binds: Vec<BindNode> = keys
-            .borrow()
-            .iter()
-            .map(|b| BindNode {
-                properties: properties.clone(),
-                ..b.clone()
-            })
-            .collect();
-        apply(&ctx.store, &shortcut, Change::Keys(binds));
+        let binds: Vec<BindNode> = binds.borrow().iter().map(EditedBind::written).collect();
+        apply(&ctx.store, &entry, Change::Keys(binds));
         dialog_.close();
     });
 
     dialog.present(Some(parent));
+}
+
+/// A bind in an action's dialog: as it's written, its settings, and its row, which shows its chord
+/// and opens to its settings.
+struct EditedBind {
+    node: BindNode,
+    settings: Rc<BindSettings>,
+    row: adw::ExpanderRow,
+    remove: gtk::Button,
+    /// Whether `remove` is connected yet.
+    connected: Cell<bool>,
+}
+
+impl EditedBind {
+    fn new(node: BindNode, mod_key: Modifiers) -> Self {
+        let settings = Rc::new(BindSettings::new(&node.properties));
+        let row = adw::ExpanderRow::builder().use_markup(false).build();
+        match node.key.parse::<Key>() {
+            Ok(key) => row.add_prefix(&chord_label(&key, mod_key)),
+            Err(_) => row.set_title(&node.key),
+        }
+        for settings_row in settings.rows() {
+            row.add_row(&settings_row);
+        }
+        row.set_subtitle(&settings.summary());
+        let (weak, row_) = (Rc::downgrade(&settings), row.downgrade());
+        settings.connect_changed(move || {
+            if let (Some(settings), Some(row)) = (weak.upgrade(), row_.upgrade()) {
+                row.set_subtitle(&settings.summary());
+            }
+        });
+        let remove = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Remove Bind")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        row.add_suffix(&remove);
+        Self {
+            node,
+            settings,
+            row,
+            remove,
+            connected: Cell::new(false),
+        }
+    }
+
+    /// The bind as it's written now, with its settings.
+    fn written(&self) -> BindNode {
+        BindNode {
+            properties: self.settings.properties(),
+            ..self.node.clone()
+        }
+    }
 }
 
 /// An action to bind: bento's own, or one the running engine or shell declares.
@@ -608,16 +731,24 @@ impl Choice {
     }
 }
 
-/// bento's actions, then the running engine's, then the running shell's.
+/// bento's actions by their groups, then the running engine's, then the running shell's.
 fn choices() -> Vec<Choice> {
+    // bento's in the General tab's groups, without `shell-action`: the shell's actions are
+    // picked under their modules.
     let native = niri_config::actions::native_actions().into_iter();
     let mut choices: Vec<Choice> = native
+        .filter(|action| action.name != SHELL_ACTION)
         .map(|action| Choice {
+            section: Section::General(general_group(&action.name)),
             action,
             declarer: Declarer::Bento,
-            section: Section::Bento,
         })
         .collect();
+    let order = |c: &Choice| match c.section {
+        Section::General(group) => bind_list::GENERAL_GROUPS.iter().position(|g| *g == group),
+        _ => None,
+    };
+    choices.sort_by_key(order);
     if let Ok(engine) = ipc::layout_engine() {
         let name = engine.name.clone();
         choices.extend(engine.actions.into_iter().map(|action| Choice {
@@ -715,20 +846,20 @@ fn picker(
     (model, label_factory(1, false), label_factory(0, true))
 }
 
-/// The dialog to add a shortcut: its key, then the action and its arguments. A shortcut that's
-/// there already gets the key besides its others.
+/// The dialog to add a bind: its chord, the action and its arguments, and the bind's settings.
+/// An action that's listed already gets the bind besides its others.
 fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
     let choices = Rc::new(choices());
     let dialog = adw::Dialog::builder()
-        .title("Add Shortcut")
+        .title("Add Bind")
         .content_width(480)
         .build();
     let page = adw::PreferencesPage::new();
 
-    // The key.
+    // The chord.
     let key: Rc<RefCell<Option<String>>> = Rc::default();
     let key_group = adw::PreferencesGroup::new();
-    let key_row = adw::ActionRow::builder().title("Shortcut").build();
+    let key_row = adw::ActionRow::builder().title("Chord").build();
     let key_view = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let record = gtk::Button::builder()
         .label("Record…")
@@ -746,7 +877,7 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
                 key_view.remove(&child);
             }
             match key.borrow().as_deref().and_then(parse_key) {
-                Some(parsed) => key_view.append(&shortcut_label(&parsed, mod_key)),
+                Some(parsed) => key_view.append(&chord_label(&parsed, mod_key)),
                 None => key_view.append(&dim_label("Not Set")),
             }
         }
@@ -761,7 +892,7 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
             while let Some(child) = key_view.first_child() {
                 key_view.remove(&child);
             }
-            key_view.append(&dim_label("Press a shortcut…"));
+            key_view.append(&dim_label("Press a chord…"));
             let (key, show_key) = (key.clone(), show_key.clone());
             recording.start(&dialog_widget, mod_key, move |recorded| {
                 if let Some(recorded) = recorded {
@@ -822,10 +953,14 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
     show_args();
     action_row.connect_selected_notify(move |_| show_args());
 
-    let advanced_group = adw::PreferencesGroup::new();
-    let advanced = Advanced::new(None);
-    advanced_group.add(&advanced.expander);
-    page.add(&advanced_group);
+    let settings_group = adw::PreferencesGroup::new();
+    let settings = BindSettings::new(&[]);
+    let expander = adw::ExpanderRow::builder().title("Bind Settings").build();
+    for row in settings.rows() {
+        expander.add_row(&row);
+    }
+    settings_group.add(&expander);
+    page.add(&settings_group);
 
     let header = adw::HeaderBar::builder()
         .show_start_title_buttons(false)
@@ -854,11 +989,11 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
     let dialog_ = dialog.clone();
     save.connect_clicked(move |_| {
         let Some(key_text) = key.borrow().clone() else {
-            ctx.toast("Record a shortcut first");
+            ctx.toast("Record a chord first");
             return;
         };
         let Some(parsed) = parse_key(&key_text) else {
-            ctx.toast("That shortcut can't be bound");
+            ctx.toast("That chord can't be bound");
             return;
         };
         let Some(choice) = choices.get(action_row.selected() as usize) else {
@@ -873,38 +1008,38 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
             }
         };
         let engine = choice.declarer == Declarer::Engine;
-        let Some(action) = shortcut_list::parse(&node, engine) else {
+        let Some(action) = bind_list::parse(&node, engine) else {
             ctx.toast("That action can't be bound");
             return;
         };
-        // The shortcut it is, if it's listed already, with the new key besides its others.
-        let list = shortcut_list::shortcuts(&sources(&ctx.store));
-        let shortcut = list
+        // The entry it joins, if it's listed already, with the new bind besides its others.
+        let list = bind_list::entries(&sources(&ctx.store));
+        let entry = list
             .into_iter()
             .find(|s| s.action == action)
-            .unwrap_or_else(|| Shortcut {
+            .unwrap_or_else(|| Entry {
                 section: choice.section.clone(),
                 declarer: choice.declarer,
                 action: action.clone(),
                 node: node.clone(),
                 declaration: Some(choice.action.clone()),
                 defaults: Vec::new(),
-                keys: Vec::new(),
+                binds: Vec::new(),
                 disabled: false,
             });
-        let mut binds = binds_of(&shortcut);
+        let mut binds = binds_of(&entry);
         binds.push(BindNode {
             key: key_text,
-            properties: advanced.properties(),
+            properties: settings.properties(),
             action: Some(node),
         });
         let commit = {
             let (ctx, dialog) = (ctx.clone(), dialog_.clone());
-            move |take: Option<(Shortcut, Key)>| {
+            move |take: Option<(Entry, Key)>| {
                 if let Some((other, key)) = &take {
                     give_up(&ctx.store, other, *key);
                 }
-                apply(&ctx.store, &shortcut, Change::Keys(binds.clone()));
+                apply(&ctx.store, &entry, Change::Keys(binds.clone()));
                 dialog.close();
             }
         };
@@ -919,11 +1054,11 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
 
 fn reset_all(ctx: &PageContext, parent: &gtk::Button) {
     let alert = adw::AlertDialog::new(
-        Some("Reset All Shortcuts?"),
+        Some("Reset All Binds?"),
         Some(
-            "Every shortcut goes back to its default keys: the keys of your own and the \
-             shortcuts you turned off are taken out of the config and the engine's file. \
-             Shortcuts from included files stay as they are.",
+            "Every action goes back to its default binds: the binds of your own and the \
+             actions you turned off are taken out of the config and the engine's file. \
+             Binds from included files stay as they are.",
         ),
     );
     alert.add_response("cancel", "Cancel");
@@ -1172,21 +1307,20 @@ fn action_node(action: &LayoutEngineAction, fields: &[Field]) -> Result<ActionNo
     Ok(node)
 }
 
-/// A bind's own settings, under "Advanced".
-struct Advanced {
-    expander: adw::ExpanderRow,
+/// A bind's own settings, as rows: shown under their bind in an action's dialog, and under "Bind
+/// Settings" when adding one.
+struct BindSettings {
     repeat: adw::SwitchRow,
     cooldown: adw::SpinRow,
     when_locked: adw::SwitchRow,
     inhibiting: adw::SwitchRow,
     title: adw::EntryRow,
-    /// Properties the dialog doesn't show, kept as they are.
+    /// Properties the rows don't show, kept as they are.
     other: Vec<(String, Value)>,
 }
 
-impl Advanced {
-    fn new(node: Option<&BindNode>) -> Self {
-        let props: Vec<(String, Value)> = node.map(|n| n.properties.clone()).unwrap_or_default();
+impl BindSettings {
+    fn new(props: &[(String, Value)]) -> Self {
         let get = |name: &str| {
             props
                 .iter()
@@ -1218,21 +1352,10 @@ impl Advanced {
             .active(flag("allow-inhibiting", true))
             .build();
         let title = adw::EntryRow::builder()
-            .title("Title in the Shortcut Overlay")
+            .title("Title in the Bind Overlay")
             .build();
         if let Some(Value::Str(text)) = get("hotkey-overlay-title") {
             title.set_text(&text);
-        }
-
-        let expander = adw::ExpanderRow::builder().title("Advanced").build();
-        for row in [
-            repeat.upcast_ref::<gtk::Widget>(),
-            cooldown.upcast_ref(),
-            when_locked.upcast_ref(),
-            inhibiting.upcast_ref(),
-            title.upcast_ref(),
-        ] {
-            expander.add_row(row);
         }
 
         let shown = [
@@ -1248,7 +1371,6 @@ impl Advanced {
             .cloned()
             .collect();
         Self {
-            expander,
             repeat,
             cooldown,
             when_locked,
@@ -1256,6 +1378,51 @@ impl Advanced {
             title,
             other,
         }
+    }
+
+    fn rows(&self) -> [gtk::Widget; 5] {
+        [
+            self.repeat.clone().upcast(),
+            self.cooldown.clone().upcast(),
+            self.when_locked.clone().upcast(),
+            self.inhibiting.clone().upcast(),
+            self.title.clone().upcast(),
+        ]
+    }
+
+    /// Calls `f` whenever one of the settings changes.
+    fn connect_changed(&self, f: impl Fn() + 'static) {
+        let f = Rc::new(f);
+        for switch in [&self.repeat, &self.when_locked, &self.inhibiting] {
+            let f = f.clone();
+            switch.connect_active_notify(move |_| f());
+        }
+        let f_ = f.clone();
+        self.cooldown.connect_value_notify(move |_| f_());
+        self.title.connect_changed(move |_| f());
+    }
+
+    /// What differs from the defaults, as a row's subtitle says it, like "Works when locked".
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.repeat.is_active() {
+            parts.push(String::from("Doesn't repeat"));
+        }
+        let cooldown = self.cooldown.value() as i64;
+        if cooldown > 0 {
+            parts.push(format!("{cooldown} ms cooldown"));
+        }
+        if self.when_locked.is_active() {
+            parts.push(String::from("Works when locked"));
+        }
+        if !self.inhibiting.is_active() {
+            parts.push(String::from("Apps can't take it"));
+        }
+        let title = self.title.text();
+        if !title.is_empty() {
+            parts.push(format!("“{title}”"));
+        }
+        parts.join(", ")
     }
 
     /// The properties to write: only the ones away from their defaults, and the others as they
@@ -1287,8 +1454,8 @@ impl Advanced {
     }
 }
 
-/// Recording a shortcut: keys, and clicks and scrolls with modifiers held. While it records, the
-/// window inhibits bento's shortcuts, so keys bento has bound reach it instead of running.
+/// Recording a chord: keys, and clicks and scrolls with modifiers held. While it records, the
+/// window inhibits bento's binds, so chords bento has bound reach it instead of running.
 #[derive(Default)]
 struct Recording {
     controllers: RefCell<Vec<(gtk::Widget, gtk::EventController)>>,
@@ -1399,7 +1566,7 @@ impl Recording {
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
         let finish_ = finish.clone();
         click.connect_pressed(move |gesture, _, _, _| {
-            // Without modifiers it's a click on the dialog, not a shortcut.
+            // Without modifiers it's a click on the dialog, not a chord.
             let mods = modifiers(gesture.current_event_state());
             if mods.is_empty() {
                 return;
@@ -1426,7 +1593,7 @@ impl Recording {
             controllers.push((widget.clone(), controller));
         }
 
-        // The dialog sits inside the app's window, so that's the one to inhibit shortcuts on.
+        // The dialog sits inside the app's window, so that's the one to inhibit binds on.
         let toplevel = widget
             .native()
             .and_then(|native| native.surface())
@@ -1564,8 +1731,8 @@ fn key_label(key: &Key, mod_key: Modifiers) -> String {
     text
 }
 
-/// Draws a bind's keys as keycaps, with the compositor's Mod key spelled out.
-fn shortcut_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
+/// Draws a chord as keycaps, with the compositor's Mod key spelled out.
+fn chord_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
     let Some(gdk_key) = gdk_key(key.trigger) else {
         // Mouse buttons and scrolling have no keycap; spell them the way the config does.
         return dim_label(&key_label(key, mod_key)).upcast();

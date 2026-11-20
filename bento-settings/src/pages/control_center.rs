@@ -42,7 +42,7 @@ pub fn category() -> Category {
                 )
                 .search_item(
                     "shell.actions",
-                    "Shell Shortcuts",
+                    "Shell Binds",
                     &["shell-action", "actions", "binds", "keybinds"],
                 ),
         )

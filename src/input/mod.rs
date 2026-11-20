@@ -712,7 +712,7 @@ impl State {
                 let engine_info =
                     (engine_grabbed || is_searching).then(|| engine_grab::key_info(&keysym));
                 let res = {
-                    let shortcuts = this.niri.shortcuts().in_use;
+                    let shortcuts = this.niri.resolved_binds().in_use;
                     let config = this.niri.config.borrow();
                     let bindings = make_binds_iter(
                         &config,
@@ -1687,7 +1687,7 @@ impl State {
                 self.niri.queue_redraw_all();
             }
             Action::ShowHotkeyOverlay => {
-                let binds = self.niri.shortcuts().in_use;
+                let binds = self.niri.resolved_binds().in_use;
                 if self.niri.hotkey_overlay.show(binds) {
                     self.niri.queue_redraw_all();
 
@@ -2450,7 +2450,7 @@ impl State {
     ) -> Option<Bind> {
         let modifiers = modifiers_from_state(mods);
 
-        let shortcuts = self.niri.shortcuts().in_use;
+        let shortcuts = self.niri.resolved_binds().in_use;
         let config = self.niri.config.borrow();
         let bindings = make_binds_iter(
             &config,
@@ -5296,7 +5296,7 @@ fn make_binds_iter<'a>(
     mods: Modifiers,
 ) -> impl Iterator<Item = &'a Bind> + Clone {
     // The user's binds and every declarer's defaults, one bind for each key, as
-    // `shortcuts::resolve` gives them; not while the MRU is open.
+    // `bind_set::resolve` gives them; not while the MRU is open.
     let general_binds = (!mru.is_open()).then_some(shortcuts.iter());
     let general_binds = general_binds.into_iter().flatten();
 
@@ -5332,13 +5332,13 @@ mod tests {
         let shell = |name: &str| Action::ShellAction(String::from(name), Vec::new());
         let config = "binds {\n    Mod+V { spawn \"paste\"; }\n}";
         let config = std::rc::Rc::new(std::cell::RefCell::new(Config::parse_mem(config).unwrap()));
-        let clipboard = niri_config::shortcuts::default_bind(
+        let clipboard = niri_config::bind_set::default_bind(
             "Mod+V".parse().unwrap(),
             shell("toggle-clipboard"),
         );
         let resolved = {
             let config = config.borrow();
-            niri_config::shortcuts::resolve(&config.binds.0, &config.unbound, &[clipboard])
+            niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &[clipboard])
         };
         let clock = crate::animation::Clock::default();
         let screenshot_ui = ScreenshotUi::new(clock, config.clone());

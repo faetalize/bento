@@ -41,12 +41,12 @@ pub fn native_actions() -> Vec<Declaration> {
         action("toggle-touchpad", "Turn the touchpad off or on.", vec![]),
         action(
             "toggle-keyboard-shortcuts-inhibit",
-            "Let the focused window take bento's shortcuts, or stop letting it.",
+            "Let the focused window take bento's binds, or stop letting it.",
             vec![],
         ),
         action(
             "show-hotkey-overlay",
-            "Show the important shortcuts.",
+            "Show the important binds.",
             vec![],
         ),
         action(

@@ -1,17 +1,19 @@
-//! The shortcuts the Shortcuts page lists, and what changing one writes.
+//! What the Binds page lists, and what changing it writes.
 //!
-//! A shortcut is an action with its arguments, and has any number of keys. Its default keys stay
-//! with whoever declares the action: bento, the running engine or a module of the running shell.
-//! The user's files hold only what changed: keys of one's own for a shortcut, which replace its
-//! defaults, in the main config, or the engine's file for the engine's shortcuts, and the
-//! shortcuts turned off with `unbind`. Shortcuts are told apart by their parsed action, so a bind
-//! written by hand matches its default however it's spelled.
+//! An action is what a bind runs, with its arguments and options. A bind is a chord that runs an
+//! action, with settings of its own; a chord runs at most one action, and an action has any number
+//! of binds. The page lists entries: an action with its binds. An action's default binds stay
+//! with whoever declares it: bento, the running engine or a module of the running shell. The
+//! user's files hold only what changed: binds of one's own for an action, which replace its
+//! defaults, in the main config, or the engine's file for the engine's actions, and the actions
+//! turned off with `unbind`. Actions are told apart by their parsed form, so a bind written by
+//! hand matches its default however it's spelled.
 
 use std::path::{Path, PathBuf};
 
+use niri_config::bind_set::{self, Declarer};
 use niri_config::binds::parse_action;
 use niri_config::binds::Bind;
-use niri_config::shortcuts::{self, Declarer};
 use niri_config::{Action, BindFiles, Key};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOptionValue};
 
@@ -35,21 +37,110 @@ pub struct Sources {
     /// The parsed config's binds, those of included files too, with their files.
     pub binds: Vec<Bind>,
     pub bind_files: BindFiles,
-    /// Every shortcut the config turns off.
+    /// Every action the config turns off.
     pub unbound: Vec<Action>,
 }
 
-/// Where a shortcut is listed.
+/// The tab of the page an action is listed in, by who declares it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    General,
+    Engine,
+    Shell,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 3] = [Tab::General, Tab::Engine, Tab::Shell];
+
+    /// Its name, for links to it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Tab::General => "general",
+            Tab::Engine => "engine",
+            Tab::Shell => "shell",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Tab::General => "General",
+            Tab::Engine => "Engine",
+            Tab::Shell => "Shell",
+        }
+    }
+}
+
+/// The groups of bento's own actions on the General tab, in their order.
+pub const GENERAL_GROUPS: &[&str] = &[
+    "Windows",
+    "Floating Windows",
+    "Window Groups",
+    "Workspaces",
+    "Monitors",
+    "Screenshots & Casting",
+    "Input",
+    "Launchers",
+    "System",
+    "Debug",
+    "Other",
+];
+
+/// The General tab's group for bento's action `name`, by what it does.
+pub fn general_group(name: &str) -> &'static str {
+    let has = |part: &str| name.contains(part);
+    if has("debug") {
+        "Debug"
+    } else if has("floating") || has("tiling") {
+        "Floating Windows"
+    } else if name.starts_with("group-window") || name == "ungroup-window" {
+        "Window Groups"
+    } else if has("monitor") {
+        "Monitors"
+    } else if has("workspace") || has("overview") {
+        "Workspaces"
+    } else if name.starts_with("screenshot") || has("cast") {
+        "Screenshots & Casting"
+    } else if matches!(name, "spawn" | "spawn-sh") {
+        "Launchers"
+    } else if matches!(
+        name,
+        "switch-layout" | "toggle-touchpad" | "toggle-keyboard-shortcuts-inhibit"
+    ) {
+        "Input"
+    } else if has("window") {
+        "Windows"
+    } else if matches!(
+        name,
+        "quit" | "suspend" | "change-vt" | "show-hotkey-overlay" | "do-screen-transition"
+    ) {
+        "System"
+    } else {
+        "Other"
+    }
+}
+
+/// Where an action is listed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Section {
-    Bento,
+    /// bento's own, in a group of the General tab, like "Windows".
+    General(&'static str),
     /// The running engine's, by its name.
     Engine(String),
     /// A module of the running shell's, by its name.
     Module(String),
 }
 
-/// Where a key of a shortcut comes from.
+impl Section {
+    pub fn tab(&self) -> Tab {
+        match self {
+            Section::General(_) => Tab::General,
+            Section::Engine(_) => Tab::Engine,
+            Section::Module(_) => Tab::Shell,
+        }
+    }
+}
+
+/// Where a bind of an entry comes from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Source {
     /// Whoever declares the action.
@@ -63,19 +154,19 @@ pub enum Source {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ShortcutKey {
+pub struct EntryBind {
     pub key: Key,
     /// As written, like `Mod+T`.
     pub text: String,
     pub source: Source,
     /// The bind as its file writes it, for the user's.
     pub bind: Option<BindNode>,
-    /// Who declares the shortcut that took this key, if another did.
+    /// Who declares the action that took this bind's chord, if another did.
     pub taken: Option<Declarer>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Shortcut {
+pub struct Entry {
     pub section: Section,
     pub declarer: Declarer,
     /// What tells it apart from others.
@@ -86,26 +177,26 @@ pub struct Shortcut {
     pub declaration: Option<LayoutEngineAction>,
     /// Its default binds, with their settings.
     pub defaults: Vec<BindNode>,
-    /// The keys it has: the user's own if any, or else its defaults, unless it's turned off.
-    pub keys: Vec<ShortcutKey>,
+    /// The binds it has: the user's own if any, or else its defaults, unless it's turned off.
+    pub binds: Vec<EntryBind>,
     /// Whether it's turned off with `unbind`.
     pub disabled: bool,
 }
 
-impl Shortcut {
+impl Entry {
     /// Whether the user wrote anything for it.
     pub fn changed(&self) -> bool {
         self.disabled
             || self
-                .keys
+                .binds
                 .iter()
                 .any(|k| matches!(k.source, Source::Main | Source::Engine))
     }
 
-    /// Whether its keys can be changed on the page: none of them is from an included file, and
+    /// Whether its binds can be changed on the page: none of them is from an included file, and
     /// none is written with press and release actions.
     pub fn editable(&self) -> bool {
-        self.keys.iter().all(|k| match k.source {
+        self.binds.iter().all(|k| match k.source {
             Source::Default => true,
             Source::Include(_) => false,
             Source::Main | Source::Engine => k.bind.as_ref().is_some_and(|b| b.action.is_some()),
@@ -193,9 +284,10 @@ fn takes_arguments(decl: &LayoutEngineAction) -> bool {
         .any(|arg| arg.r#type.is_some() && arg.default.is_none() && !arg.optional && !arg.property)
 }
 
-/// The shortcuts to list, in sections: bento's, the engine's, then each module's.
-pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
-    let mut list: Vec<Shortcut> = Vec::new();
+/// The actions to list, each with its binds, in sections: bento's by their General groups, the
+/// engine's, then each module's.
+pub fn entries(src: &Sources) -> Vec<Entry> {
+    let mut list: Vec<Entry> = Vec::new();
     let engine_name = src.engine.as_ref().map(|(name, _)| name.clone());
     let module_of = |name: &str| {
         src.shell
@@ -203,8 +295,8 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
             .find(|(_, a)| a.name == name)
             .map(|(m, _)| m.clone())
     };
-    let section_of = |declarer: Declarer, action: &Action| match declarer {
-        Declarer::Bento => Section::Bento,
+    let section_of = |declarer: Declarer, action: &Action, name: &str| match declarer {
+        Declarer::Bento => Section::General(general_group(name)),
         Declarer::Engine => Section::Engine(engine_name.clone().unwrap_or_default()),
         Declarer::Shell => {
             let name = match action {
@@ -228,21 +320,21 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
                 .map(|(_, a)| a.clone()),
         }
     };
-    // The shortcut for `action`, made if it isn't listed yet.
-    let at = |list: &mut Vec<Shortcut>, action: Action, node: ActionNode| -> usize {
+    // The entry for `action`, made if it isn't listed yet.
+    let at = |list: &mut Vec<Entry>, action: Action, node: ActionNode| -> usize {
         if let Some(i) = list.iter().position(|s| s.action == action) {
             return i;
         }
-        let declarer = shortcuts::declarer(&action);
+        let declarer = bind_set::declarer(&action);
         let name = unwrapped(&node).name;
-        list.push(Shortcut {
-            section: section_of(declarer, &action),
+        list.push(Entry {
+            section: section_of(declarer, &action, &name),
             declarer,
             declaration: declaration(declarer, &name),
             action,
             node,
             defaults: Vec::new(),
-            keys: Vec::new(),
+            binds: Vec::new(),
             disabled: false,
         });
         list.len() - 1
@@ -250,7 +342,7 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
 
     // Defaults: bento's, as it writes them, then the engine's and the shell's declarations.
     let mut defaults: Vec<(usize, BindNode)> = Vec::new();
-    let bento = Document::parse(String::from(shortcuts::DEFAULT_BINDS)).expect("valid");
+    let bento = Document::parse(String::from(bind_set::DEFAULT_BINDS)).expect("valid");
     for bind in bento.binds() {
         let Some(node) = bind.action.clone() else {
             continue;
@@ -276,8 +368,8 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
         for bind in &decl.binds {
             let node = action_node(declarer, &decl.name, &bind.args);
             let action = match declarer {
-                Declarer::Shell => shortcuts::shell_action(&decl.name, &bind.args),
-                _ => shortcuts::engine_action(&decl.name, &bind.args),
+                Declarer::Shell => bind_set::shell_action(&decl.name, &bind.args),
+                _ => bind_set::engine_action(&decl.name, &bind.args),
             };
             let i = at(&mut list, action, node.clone());
             defaults.push((
@@ -312,8 +404,8 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
         let node = action_node(declarer, &decl.name, &[]);
         let action = match declarer {
             Declarer::Bento => parse(&node, false),
-            Declarer::Engine => Some(shortcuts::engine_action(&decl.name, &[])),
-            Declarer::Shell => Some(shortcuts::shell_action(&decl.name, &[])),
+            Declarer::Engine => Some(bind_set::engine_action(&decl.name, &[])),
+            Declarer::Shell => Some(bind_set::shell_action(&decl.name, &[])),
         };
         if let Some(action) = action {
             at(&mut list, action, node);
@@ -321,7 +413,7 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
     }
 
     // The user's binds, from the main config and the engine's file.
-    let mut user: Vec<(usize, ShortcutKey)> = Vec::new();
+    let mut user: Vec<(usize, EntryBind)> = Vec::new();
     let files = [
         (Some(&src.main), Source::Main, false),
         (src.engine_file.as_ref(), Source::Engine, true),
@@ -339,7 +431,7 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
                     .binds
                     .iter()
                     .find(|b| b.key == key)
-                    .and_then(shortcuts::shortcut)
+                    .and_then(bind_set::action_of)
                     .map(|a| {
                         (
                             a.clone(),
@@ -355,14 +447,14 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
                 continue;
             };
             let i = at(&mut list, action, node);
-            let shortcut_key = ShortcutKey {
+            let entry_bind = EntryBind {
                 key,
                 text: bind.key.clone(),
                 source: source.clone(),
                 bind: Some(bind),
                 taken: None,
             };
-            user.push((i, shortcut_key));
+            user.push((i, entry_bind));
         }
     }
     // Binds of included files, which the page shows but doesn't change.
@@ -373,7 +465,7 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
         if path == src.main_path || path == src.engine_path {
             continue;
         }
-        let Some(action) = shortcuts::shortcut(bind) else {
+        let Some(action) = bind_set::action_of(bind) else {
             continue;
         };
         let node = ActionNode {
@@ -384,7 +476,7 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
         let i = at(&mut list, action.clone(), node);
         user.push((
             i,
-            ShortcutKey {
+            EntryBind {
                 key: bind.key,
                 text: format!("{:?}", bind.key),
                 source: Source::Include(path.to_path_buf()),
@@ -405,23 +497,23 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
         }
     }
 
-    // A shortcut's keys: the user's own replace its defaults.
-    for (i, shortcut) in list.iter_mut().enumerate() {
-        let own: Vec<ShortcutKey> = user
+    // An entry's binds: the user's own replace its defaults.
+    for (i, entry) in list.iter_mut().enumerate() {
+        let own: Vec<EntryBind> = user
             .iter()
             .filter(|(j, _)| *j == i)
             .map(|(_, k)| k.clone())
             .collect();
-        shortcut.keys = if !own.is_empty() {
+        entry.binds = if !own.is_empty() {
             own
-        } else if shortcut.disabled {
+        } else if entry.disabled {
             Vec::new()
         } else {
-            shortcut
+            entry
                 .defaults
                 .iter()
                 .filter_map(|bind| {
-                    Some(ShortcutKey {
+                    Some(EntryBind {
                         key: bind.key.parse().ok()?,
                         text: bind.key.clone(),
                         source: Source::Default,
@@ -433,37 +525,37 @@ pub fn shortcuts(src: &Sources) -> Vec<Shortcut> {
         };
     }
 
-    // Which keys another shortcut takes, as bento settles it.
-    let mut all_defaults = shortcuts::bento_defaults().to_vec();
+    // Which chords another action takes, as bento settles it.
+    let mut all_defaults = bind_set::bento_defaults().to_vec();
     if let Some((_, actions)) = &src.engine {
-        all_defaults.extend(shortcuts::declared_binds(actions, shortcuts::engine_action));
+        all_defaults.extend(bind_set::declared_binds(actions, bind_set::engine_action));
     }
     let shell: Vec<LayoutEngineAction> = src.shell.iter().map(|(_, a)| a.clone()).collect();
-    all_defaults.extend(shortcuts::declared_binds(&shell, shortcuts::shell_action));
-    let resolved = shortcuts::resolve(&src.binds, &src.unbound, &all_defaults);
+    all_defaults.extend(bind_set::declared_binds(&shell, bind_set::shell_action));
+    let resolved = bind_set::resolve(&src.binds, &src.unbound, &all_defaults);
     for taken in &resolved.taken_over {
-        let Some(action) = shortcuts::shortcut(&taken.bind) else {
+        let Some(action) = bind_set::action_of(&taken.bind) else {
             continue;
         };
-        let Some(shortcut) = list.iter_mut().find(|s| s.action == *action) else {
+        let Some(entry) = list.iter_mut().find(|s| s.action == *action) else {
             continue;
         };
-        for key in shortcut.keys.iter_mut().filter(|k| k.key == taken.bind.key) {
+        for key in entry.binds.iter_mut().filter(|k| k.key == taken.bind.key) {
             key.taken = Some(taken.by);
         }
     }
 
     // bento's first, then the engine's, then each module's, in the order they come.
     list.sort_by_key(|s| match s.section {
-        Section::Bento => 0,
-        Section::Engine(_) => 1,
-        Section::Module(_) => 2,
+        Section::General(group) => GENERAL_GROUPS.iter().position(|g| *g == group).unwrap_or(0),
+        Section::Engine(_) => GENERAL_GROUPS.len(),
+        Section::Module(_) => GENERAL_GROUPS.len() + 1,
     });
     list
 }
 
-/// The keys of the user's own for `shortcut` taken away, from both files, with its `unbind`.
-fn forget(doc: &mut Document, shortcut: &Shortcut, engine: bool) {
+/// The binds of the user's own for `entry` taken away, from both files, with its `unbind`.
+fn forget(doc: &mut Document, entry: &Entry, engine: bool) {
     let keys: Vec<Key> = doc
         .binds()
         .into_iter()
@@ -471,7 +563,7 @@ fn forget(doc: &mut Document, shortcut: &Shortcut, engine: bool) {
             bind.action
                 .as_ref()
                 .and_then(|node| parse(node, engine))
-                .is_some_and(|a| a == shortcut.action)
+                .is_some_and(|a| a == entry.action)
         })
         .filter_map(|bind| bind.key.parse().ok())
         .collect();
@@ -481,17 +573,17 @@ fn forget(doc: &mut Document, shortcut: &Shortcut, engine: bool) {
     let off: Vec<ActionNode> = doc
         .unbinds()
         .into_iter()
-        .filter(|node| parse(node, engine).is_some_and(|a| a == shortcut.action))
+        .filter(|node| parse(node, engine).is_some_and(|a| a == entry.action))
         .collect();
     for node in off {
         doc.remove_unbind(&node);
     }
 }
 
-/// What a change to `shortcut` does to the main config, and to the engine's file with `engine`.
+/// What a change to `entry` does to the main config, and to the engine's file with `engine`.
 #[derive(Debug, Clone)]
 pub enum Change {
-    /// Its keys become these binds; the defaults, with no properties, are written as nothing.
+    /// Its binds become these; the defaults as they are, settings and all, are written as nothing.
     Keys(Vec<BindNode>),
     /// It's turned off.
     Disable,
@@ -499,16 +591,16 @@ pub enum Change {
     Reset,
 }
 
-/// Applies `change` to `shortcut` in `doc`, the main config, or the engine's file with `engine`.
-pub fn apply(doc: &mut Document, shortcut: &Shortcut, change: &Change, engine: bool) {
-    forget(doc, shortcut, engine);
-    let mine = (shortcut.file() == crate::store::File::Engine) == engine;
+/// Applies `change` to `entry` in `doc`, the main config, or the engine's file with `engine`.
+pub fn apply(doc: &mut Document, entry: &Entry, change: &Change, engine: bool) {
+    forget(doc, entry, engine);
+    let mine = (entry.file() == crate::store::File::Engine) == engine;
     if !mine {
         return;
     }
     match change {
         Change::Reset => (),
-        Change::Disable => doc.add_unbind(&shortcut.node),
+        Change::Disable => doc.add_unbind(&entry.node),
         Change::Keys(binds) => {
             // The defaults as they are, chords and settings alike, are written as nothing.
             let same = |a: &BindNode, b: &BindNode| {
@@ -516,12 +608,12 @@ pub fn apply(doc: &mut Document, shortcut: &Shortcut, change: &Change, engine: b
                     && a.properties.len() == b.properties.len()
                     && a.properties.iter().all(|p| b.properties.contains(p))
             };
-            let at_defaults = binds.len() == shortcut.defaults.len()
+            let at_defaults = binds.len() == entry.defaults.len()
                 && binds
                     .iter()
-                    .all(|b| shortcut.defaults.iter().any(|d| same(b, d)));
-            if binds.is_empty() && !shortcut.defaults.is_empty() {
-                doc.add_unbind(&shortcut.node);
+                    .all(|b| entry.defaults.iter().any(|d| same(b, d)));
+            if binds.is_empty() && !entry.defaults.is_empty() {
+                doc.add_unbind(&entry.node);
             } else if !at_defaults {
                 for bind in binds {
                     if let Ok(key) = bind.key.parse::<Key>() {
@@ -533,17 +625,17 @@ pub fn apply(doc: &mut Document, shortcut: &Shortcut, change: &Change, engine: b
     }
 }
 
-/// The binds `shortcut`'s keys are written as, its user ones as they are.
-pub fn binds_of(shortcut: &Shortcut) -> Vec<BindNode> {
-    shortcut
-        .keys
+/// `entry`'s binds as they're written, its defaults with their settings and the user's as they are.
+pub fn binds_of(entry: &Entry) -> Vec<BindNode> {
+    entry
+        .binds
         .iter()
         .filter(|k| !matches!(k.source, Source::Include(_)))
         .map(|k| {
             k.bind.clone().unwrap_or_else(|| BindNode {
                 key: k.text.clone(),
                 properties: Vec::new(),
-                action: Some(shortcut.node.clone()),
+                action: Some(entry.node.clone()),
             })
         })
         .collect()
@@ -596,16 +688,26 @@ mod tests {
         }
     }
 
-    fn find<'a>(list: &'a [Shortcut], node: &str) -> &'a Shortcut {
+    fn find<'a>(list: &'a [Entry], node: &str) -> &'a Entry {
         list.iter().find(|s| s.node.text() == node).unwrap()
     }
 
     #[test]
+    fn every_action_of_bentos_has_a_general_group() {
+        let ungrouped: Vec<String> = niri_config::actions::native_actions()
+            .into_iter()
+            .map(|a| a.name)
+            .filter(|name| name != SHELL_ACTION && general_group(name) == "Other")
+            .collect();
+        assert!(ungrouped.is_empty(), "{ungrouped:?}");
+    }
+
+    #[test]
     fn a_default_binds_settings_stay_when_its_action_gets_another_chord() {
-        let list = shortcuts(&sources(""));
+        let list = entries(&sources(""));
         let volume = list
             .iter()
-            .find(|s| s.keys.iter().any(|k| k.text == "XF86AudioRaiseVolume"))
+            .find(|s| s.binds.iter().any(|k| k.text == "XF86AudioRaiseVolume"))
             .unwrap();
         let mut binds = binds_of(volume);
         binds.push(BindNode {
@@ -626,34 +728,34 @@ mod tests {
     }
 
     #[test]
-    fn shortcuts_have_their_defaults_until_the_user_changes_them() {
+    fn actions_have_their_default_binds_until_the_user_changes_them() {
         let main = "binds {\n    F1 { spawn \"alacritty\"; }\n    F2 { spawn \"alacritty\"; }\n    unbind { shell-action \"toggle-start-menu\"; }\n}\n";
-        let list = shortcuts(&sources(main));
-        // bento's default terminal, now on F1 and F2 instead of its own key.
+        let list = entries(&sources(main));
+        // bento's default terminal, now on F1 and F2 instead of its own chord.
         let terminal = find(&list, "spawn \"alacritty\"");
         let defaults: Vec<&str> = terminal.defaults.iter().map(|b| b.key.as_str()).collect();
         assert_eq!(defaults, ["Mod+T"]);
-        let keys: Vec<&str> = terminal.keys.iter().map(|k| k.text.as_str()).collect();
+        let keys: Vec<&str> = terminal.binds.iter().map(|k| k.text.as_str()).collect();
         assert_eq!(keys, ["F1", "F2"]);
         assert!(terminal.changed());
         // The engine's and the shell's, by their sections.
         let swap = find(&list, "swap");
         assert_eq!(swap.section, Section::Engine(String::from("bento")));
-        assert_eq!(swap.keys[0].source, Source::Default);
+        assert_eq!(swap.binds[0].source, Source::Default);
         let start = find(&list, "shell-action \"toggle-start-menu\"");
         assert_eq!(start.section, Section::Module(String::from("start-menu")));
-        assert!(start.disabled && start.keys.is_empty());
+        assert!(start.disabled && start.binds.is_empty());
         // An action that takes no arguments is listed even unbound.
         let fullscreen = find(&list, "fullscreen-window");
-        assert!(fullscreen.keys.iter().all(|k| k.source == Source::Default));
+        assert!(fullscreen.binds.iter().all(|k| k.source == Source::Default));
         assert!(!find(&list, "toggle-debug-tint").changed());
     }
 
     #[test]
-    fn changing_a_shortcut_writes_only_what_differs_from_its_defaults() {
+    fn changing_an_action_writes_only_what_differs_from_its_defaults() {
         let main = "binds {\n    F1 { spawn \"alacritty\"; }\n}\n";
         let src = sources(main);
-        let list = shortcuts(&src);
+        let list = entries(&src);
         let terminal = find(&list, "spawn \"alacritty\"").clone();
         let mut doc = src.main;
         let bind = |key: &str| BindNode {
@@ -683,10 +785,10 @@ mod tests {
         assert_eq!(doc.unbinds(), std::slice::from_ref(&terminal.node));
         apply(&mut doc, &terminal, &Change::Reset, false);
         assert!(doc.unbinds().is_empty());
-        // No keys at all is turning it off.
+        // No binds at all is turning it off.
         apply(&mut doc, &terminal, &Change::Keys(Vec::new()), false);
         assert_eq!(doc.unbinds(), std::slice::from_ref(&terminal.node));
-        // Two keys of its own.
+        // Two binds of its own.
         apply(
             &mut doc,
             &terminal,
@@ -699,18 +801,18 @@ mod tests {
     }
 
     #[test]
-    fn a_key_another_shortcut_takes_says_whose() {
+    fn a_chord_another_action_takes_says_whose() {
         // The user's Mod+V for bento loses to the clipboard module's default.
         let mut src = sources("binds {\n    Mod+V { spawn \"paste\"; }\n}\n");
         src.shell.push((
             String::from("clipboard"),
             decl("toggle-clipboard", &["Mod+V"]),
         ));
-        let list = shortcuts(&src);
+        let list = entries(&src);
         let paste = find(&list, "spawn \"paste\"");
-        assert_eq!(paste.keys[0].taken, Some(Declarer::Shell));
+        assert_eq!(paste.binds[0].taken, Some(Declarer::Shell));
         assert_eq!(
-            find(&list, "shell-action \"toggle-clipboard\"").keys[0].taken,
+            find(&list, "shell-action \"toggle-clipboard\"").binds[0].taken,
             None
         );
     }

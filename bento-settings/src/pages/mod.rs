@@ -4,6 +4,8 @@
 mod about;
 mod account;
 mod appearance;
+mod bind_list;
+pub mod binds;
 mod blur;
 mod blur_live;
 mod blur_preview;
@@ -18,8 +20,6 @@ mod migrate;
 mod planned;
 mod preview;
 mod shell;
-mod shortcut_list;
-pub mod shortcuts;
 mod system;
 mod theme;
 mod title_buttons;
@@ -50,7 +50,7 @@ pub fn sections() -> Vec<Section> {
                 input::mouse(),
                 input::touchpad(),
                 planned::gestures(),
-                shortcuts::category(),
+                binds::category(),
             ],
         ),
         Section::new(

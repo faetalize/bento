@@ -1,11 +1,13 @@
-//! Shortcuts: which bind each key runs.
+//! The set of binds: which action each chord runs.
 //!
-//! A shortcut is an action with its arguments. Its default keys stay with whoever declares the
-//! action: bento ships its own, and engines and shell modules declare theirs. The user's config
-//! holds only what changed: keys of one's own for a shortcut, which replace its defaults, and
-//! shortcuts turned off with `unbind`. When two shortcuts claim one key, it goes to the narrowest
-//! declarer, a shell module's, then the engine's, then bento's, since the narrower one is only
-//! there while it runs; within one declarer, the user's binds come before its defaults.
+//! An action is what a bind runs, with its arguments; a bind is a chord that runs it, with
+//! settings of its own. In the set a chord runs at most one action, and an action has any number
+//! of binds. An action's default binds stay with whoever declares it: bento ships its own, and
+//! engines and shell modules declare theirs. The user's config holds only what changed: binds of
+//! one's own for an action, which replace its defaults, and actions turned off with `unbind`. When
+//! binds of different declarers claim one chord, it goes to the narrowest declarer, a shell
+//! module's, then the engine's, then bento's, since the narrower one is only there while it runs;
+//! within one declarer, the user's binds come before its defaults.
 
 use std::sync::OnceLock;
 
@@ -34,8 +36,8 @@ pub fn declarer(action: &Action) -> Declarer {
     }
 }
 
-/// The shortcut `bind` runs: its action, or its press action when it has both.
-pub fn shortcut(bind: &Bind) -> Option<&Action> {
+/// The action `bind` runs: its action, or its press action when it has both.
+pub fn action_of(bind: &Bind) -> Option<&Action> {
     bind.press_action().or(bind.release_action())
 }
 
@@ -54,7 +56,7 @@ pub const DEFAULT_BINDS: &str = include_str!("../../resources/default-binds.kdl"
 
 /// A bind `action` has by default on `key`, as a bind written in a config has it: run as it's
 /// pressed, and again while it's held, or, for a key of modifiers alone, as they're let go with
-/// nothing pressed in between, so they still start other shortcuts.
+/// nothing pressed in between, so they still start other binds.
 pub fn default_bind(key: Key, action: Action) -> Bind {
     Bind {
         key,
@@ -139,27 +141,27 @@ pub struct TakenOver {
     pub bind: Bind,
     /// Whether it's a default, rather than the user's.
     pub default: bool,
-    /// Who declares the shortcut that took its key.
+    /// Who declares the action that took its chord.
     pub by: Declarer,
 }
 
-/// Which bind each key runs, from the user's binds, the shortcuts the user turned off, and the
+/// Which bind each chord runs, from the user's binds, the actions the user turned off, and the
 /// defaults of whoever declares their actions.
 pub fn resolve(user: &[Bind], unbound: &[Action], defaults: &[Bind]) -> Resolved {
     let mut resolved = Resolved::default();
     let of = |binds: &'_ [Bind], declarer_: Declarer| -> Vec<Bind> {
         binds
             .iter()
-            .filter(|bind| shortcut(bind).map(declarer) == Some(declarer_))
+            .filter(|bind| action_of(bind).map(declarer) == Some(declarer_))
             .cloned()
             .collect()
     };
     for layer in [Declarer::Shell, Declarer::Engine, Declarer::Bento] {
         let users = of(user, layer);
-        // Keys of the user's own for a shortcut replace all of its defaults.
-        let changed: Vec<&Action> = users.iter().filter_map(shortcut).collect();
+        // Binds of the user's own for an action replace all of its defaults.
+        let changed: Vec<&Action> = users.iter().filter_map(action_of).collect();
         let kept = of(defaults, layer).into_iter().filter(|bind| {
-            shortcut(bind)
+            action_of(bind)
                 .is_some_and(|action| !changed.contains(&action) && !unbound.contains(action))
         });
         // The user's later binds come before earlier ones, as a later bind replaces an earlier
@@ -177,7 +179,7 @@ pub fn resolve(user: &[Bind], unbound: &[Action], defaults: &[Bind]) -> Resolved
                 .find(|other| other.key.conflicts_with(&bind.key));
             match taker {
                 Some(taker) => {
-                    let by = shortcut(taker).map_or(Declarer::Bento, declarer);
+                    let by = action_of(taker).map_or(Declarer::Bento, declarer);
                     resolved.taken_over.push(TakenOver { bind, default, by });
                 }
                 None => resolved.in_use.push(bind),
@@ -215,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shortcut_has_its_defaults_until_the_user_gives_it_keys_or_turns_it_off() {
+    fn an_action_has_its_default_binds_until_the_user_gives_it_binds_or_turns_it_off() {
         let defaults = [
             bind("Mod+T", spawn("alacritty")),
             bind("Mod+Shift+P", Action::PowerOffMonitors),
@@ -230,7 +232,7 @@ mod tests {
         let in_use: Vec<(Key, Action)> = resolved
             .in_use
             .iter()
-            .map(|b| (b.key, shortcut(b).unwrap().clone()))
+            .map(|b| (b.key, action_of(b).unwrap().clone()))
             .collect();
         assert_eq!(
             in_use,
@@ -256,13 +258,13 @@ mod tests {
         let in_use: Vec<Action> = resolved
             .in_use
             .iter()
-            .map(|b| shortcut(b).unwrap().clone())
+            .map(|b| action_of(b).unwrap().clone())
             .collect();
         assert_eq!(in_use, [shell("toggle-clipboard"), engine("group")]);
         let taken: Vec<(Action, bool, Declarer)> = resolved
             .taken_over
             .iter()
-            .map(|t| (shortcut(&t.bind).unwrap().clone(), t.default, t.by))
+            .map(|t| (action_of(&t.bind).unwrap().clone(), t.default, t.by))
             .collect();
         assert_eq!(
             taken,
@@ -279,7 +281,7 @@ mod tests {
         let user = [bind("Mod+V", spawn("paste"))];
         let resolved = resolve(&user, &[], &defaults);
         assert_eq!(keys(&resolved.in_use).len(), 1);
-        assert_eq!(shortcut(&resolved.in_use[0]), Some(&spawn("paste")));
+        assert_eq!(action_of(&resolved.in_use[0]), Some(&spawn("paste")));
         assert!(resolved.taken_over[0].default);
     }
 
@@ -303,7 +305,7 @@ mod tests {
         }];
         let binds = declared_binds(&declared, engine_action);
         assert_eq!(
-            shortcut(&binds[0]),
+            action_of(&binds[0]),
             Some(&Action::LayoutAction(
                 String::from("move-to-workspace"),
                 vec![TilingOption::Number(1.)],
@@ -318,6 +320,6 @@ mod tests {
         assert!(defaults.len() > 50);
         assert!(defaults
             .iter()
-            .all(|b| shortcut(b).map(declarer) == Some(Declarer::Bento)));
+            .all(|b| action_of(b).map(declarer) == Some(Declarer::Bento)));
     }
 }

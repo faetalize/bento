@@ -8,12 +8,17 @@ pub fn category() -> Category {
             Group::untitled()
                 .setting(
                     Setting::switch(
-                        "Show Shortcuts at Login",
+                        "Show Binds at Login",
                         "hotkey-overlay.skip-at-startup",
                         |c| c.hotkey_overlay.skip_at_startup,
                     )
                     .inverted()
-                    .keywords(&["hotkey overlay", "keybinds", "cheat sheet"]),
+                    .keywords(&[
+                        "hotkey overlay",
+                        "keybinds",
+                        "shortcuts",
+                        "cheat sheet",
+                    ]),
                 )
                 .setting(
                     Setting::switch(
