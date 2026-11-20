@@ -330,14 +330,20 @@ fn refresh(view: &Rc<View>) {
         if !notes.is_empty() {
             row.set_subtitle(&notes.join("\n"));
         }
-        let keys = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        // The chords, a comma after each but the last, so one reads apart from the next.
+        let keys = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         keys.set_valign(gtk::Align::Center);
-        for key in &entry.binds {
+        for (i, key) in entry.binds.iter().enumerate() {
             let label = chord_label(&key.key, mod_key);
             if key.taken.is_some() {
                 label.add_css_class("dim-label");
             }
-            keys.append(&label);
+            let chord = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+            chord.append(&label);
+            if i + 1 < entry.binds.len() {
+                chord.append(&dim_label(","));
+            }
+            keys.append(&chord);
         }
         if entry.binds.is_empty() {
             keys.append(&dim_label("Disabled"));
@@ -1714,7 +1720,7 @@ fn key_label(key: &Key, mod_key: Modifiers) -> String {
     if let Some(gdk_key) = gdk_key(key.trigger) {
         return gtk::accelerator_get_label(gdk_key, mask).to_string();
     }
-    // Mouse buttons and scrolling have no keycap; spell them the way the config does.
+    // Mouse buttons, scrolling and modifiers alone have no key of their own.
     let mut text = String::new();
     for (modifier, name) in [
         (Modifiers::SUPER, "Super"),
@@ -1727,30 +1733,76 @@ fn key_label(key: &Key, mod_key: Modifiers) -> String {
             text.push('+');
         }
     }
-    text.push_str(&format!("{:?}", key.trigger));
+    text.push_str(&trigger_name(key.trigger, mod_key));
     text
+}
+
+/// What a trigger with no key of its own is called: a mouse button, a scroll, a modifier alone.
+fn trigger_name(trigger: Trigger, mod_key: Modifiers) -> String {
+    let modifier = |m: Modifiers| {
+        [
+            (Modifiers::SUPER, "Super"),
+            (Modifiers::CTRL, "Ctrl"),
+            (Modifiers::ALT, "Alt"),
+            (Modifiers::SHIFT, "Shift"),
+            (Modifiers::ISO_LEVEL3_SHIFT, "AltGr"),
+            (Modifiers::ISO_LEVEL5_SHIFT, "Level 5 Shift"),
+        ]
+        .into_iter()
+        .find(|(flag, _)| m.contains(*flag))
+        .map_or("Mod", |(_, name)| name)
+    };
+    let name = match trigger {
+        Trigger::Keysym(keysym) => return format!("{keysym:?}"),
+        Trigger::CompositorMod => modifier(mod_key),
+        Trigger::Modifier(key) => modifier(key.to_modifiers()),
+        Trigger::MouseLeft => "Left Click",
+        Trigger::MouseRight => "Right Click",
+        Trigger::MouseMiddle => "Middle Click",
+        Trigger::MouseBack => "Back Button",
+        Trigger::MouseForward => "Forward Button",
+        Trigger::WheelScrollDown => "Scroll Down",
+        Trigger::WheelScrollUp => "Scroll Up",
+        Trigger::WheelScrollLeft => "Scroll Left",
+        Trigger::WheelScrollRight => "Scroll Right",
+        Trigger::TouchpadScrollDown => "Touchpad Scroll Down",
+        Trigger::TouchpadScrollUp => "Touchpad Scroll Up",
+        Trigger::TouchpadScrollLeft => "Touchpad Scroll Left",
+        Trigger::TouchpadScrollRight => "Touchpad Scroll Right",
+        Trigger::TabletStylusButton1 => "Stylus Button 1",
+        Trigger::TabletStylusButton2 => "Stylus Button 2",
+        Trigger::TabletStylusButton3 => "Stylus Button 3",
+    };
+    String::from(name)
 }
 
 /// Draws a chord as keycaps, with the compositor's Mod key spelled out.
 fn chord_label(key: &Key, mod_key: Modifiers) -> gtk::Widget {
-    let Some(gdk_key) = gdk_key(key.trigger) else {
-        // Mouse buttons and scrolling have no keycap; spell them the way the config does.
-        return dim_label(&key_label(key, mod_key)).upcast();
-    };
     let (_, mask) = shown_modifiers(key, mod_key);
+    // A trigger with no key of its own, like a scroll, is drawn on a stand-in key's keycap, so
+    // it looks like the rest: Super, then Scroll Down.
+    let (gdk_key, name) = match gdk_key(key.trigger) {
+        Some(gdk_key) => (gdk_key, None),
+        None => (gdk::Key::a, Some(trigger_name(key.trigger, mod_key))),
+    };
     let label = gtk::ShortcutLabel::new(&gtk::accelerator_name(gdk_key, mask));
     label.set_valign(gtk::Align::Center);
     // The keycaps read on their own; hide the "+" GTK puts between them. If GTK ever draws
     // them differently, the worst case is that the "+" shows again.
+    let mut last = None;
     let mut child = label.first_child();
     while let Some(widget) = child {
-        if widget
-            .downcast_ref::<gtk::Label>()
-            .is_some_and(|l| l.label() == "+")
-        {
-            widget.set_visible(false);
+        if let Some(text) = widget.downcast_ref::<gtk::Label>() {
+            if text.label() == "+" {
+                widget.set_visible(false);
+            } else {
+                last = Some(text.clone());
+            }
         }
         child = widget.next_sibling();
+    }
+    if let (Some(name), Some(last)) = (name, last) {
+        last.set_label(&name);
     }
     label.upcast()
 }
