@@ -4102,6 +4102,14 @@ impl Niri {
         }
     }
 
+    /// The binds bento's own shell's actions have by default, while it runs.
+    pub fn shell_default_binds(&self) -> Vec<niri_config::binds::Bind> {
+        self.scene
+            .as_ref()
+            .map(|scene| scene.default_binds())
+            .unwrap_or_default()
+    }
+
     /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps. It holds
     /// it from what's below it: the windows and the layers under the overlay one.
     pub fn shell_holds_keyboard(&self) -> bool {

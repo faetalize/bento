@@ -57,19 +57,32 @@ export function checkSettings(what, specs, types = VALUE_TYPES) {
     });
 }
 
-/** Checks actions declared by name, and returns them as bento reads them. */
-export function checkActions(actions, types = ARG_TYPES) {
+/**
+ * Checks actions declared by name, and returns them as bento reads them. A shell's can say the key
+ * they're bound to by default, with `binds`; an engine's default binds are in its own file.
+ */
+export function checkActions(actions, types = ARG_TYPES, { binds = false } = {}) {
     if (actions === undefined || actions === null) {
         return [];
     }
     if (typeof actions !== "object" || Array.isArray(actions)) {
         throw new Error("actions are declared as an object, by name");
     }
-    return Object.entries(actions).map(([name, spec]) => ({
-        name,
-        description: text(spec?.description),
-        args: checkArgs(name, spec?.args, types),
-    }));
+    return Object.entries(actions).map(([name, spec]) => {
+        const bind = spec?.bind ?? null;
+        if (bind !== null && !binds) {
+            throw new Error(`action ${name} has a bind: an engine's binds are in its own file`);
+        }
+        if (bind !== null && typeof bind !== "string") {
+            throw new Error(`the bind of action ${name} must be a key, like "Mod+V"`);
+        }
+        return {
+            name,
+            description: text(spec?.description),
+            args: checkArgs(name, spec?.args, types),
+            ...(binds ? { bind } : {}),
+        };
+    });
 }
 
 /**

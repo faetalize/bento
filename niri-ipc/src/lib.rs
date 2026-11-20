@@ -1192,6 +1192,10 @@ pub struct LayoutEngineAction {
     pub description: Option<String>,
     /// The action's arguments, in order.
     pub args: Vec<LayoutEngineActionArg>,
+    /// The key a shell's module binds it to by default while it runs, as a bind's key is
+    /// written, like `Mod+V`. Engines' default binds are in their files instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
 }
 
 /// An argument of a layout engine action.

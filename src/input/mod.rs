@@ -713,8 +713,10 @@ impl State {
                     (engine_grabbed || is_searching).then(|| engine_grab::key_info(&keysym));
                 let res = {
                     let config = this.niri.config.borrow();
+                    let defaults = this.niri.shell_default_binds();
                     let bindings = make_binds_iter(
                         &config,
+                        &defaults,
                         &this.niri.screenshot_ui,
                         &mut this.niri.window_mru_ui,
                         this.niri.keyboard_focus.is_overview(),
@@ -2448,8 +2450,10 @@ impl State {
         let modifiers = modifiers_from_state(mods);
 
         let config = self.niri.config.borrow();
+        let defaults = self.niri.shell_default_binds();
         let bindings = make_binds_iter(
             &config,
+            &defaults,
             &self.niri.screenshot_ui,
             &mut self.niri.window_mru_ui,
             self.niri.keyboard_focus.is_overview(),
@@ -5279,11 +5283,34 @@ fn hardcoded_overview_binds<'a>() -> impl Iterator<Item = &'a Bind> + Clone {
     BINDS.iter()
 }
 
+/// The shell's default binds that are in use: those of actions the config doesn't bind itself, as
+/// a bind of the action's own replaces its default.
+fn shell_binds_in_use<'a>(
+    defaults: &'a [Bind],
+    config: &'a Config,
+) -> impl Iterator<Item = &'a Bind> + Clone {
+    fn shell_action(bind: &Bind) -> Option<&str> {
+        let actions = [bind.press_action(), bind.release_action()];
+        actions.into_iter().flatten().find_map(|action| match action {
+            Action::ShellAction(name, _) => Some(name.as_str()),
+            _ => None,
+        })
+    }
+    let bound = move |name: &str| {
+        let binds = config.binds.0.iter().chain(&config.taken_over.0);
+        binds.filter_map(shell_action).any(|bound| bound == name)
+    };
+    defaults
+        .iter()
+        .filter(move |bind| shell_action(bind).is_none_or(|name| !bound(name)))
+}
+
 /// Returns an iterator over bindings.
 ///
 /// Includes dynamically populated bindings like the MRU UI.
 fn make_binds_iter<'a>(
     config: &'a Config,
+    shell_defaults: &'a [Bind],
     screenshot_ui: &'a ScreenshotUi,
     mru: &'a mut WindowMruUi,
     overview_focused: bool,
@@ -5294,6 +5321,12 @@ fn make_binds_iter<'a>(
     // Figure out the binds to use depending on whether the MRU is enabled and/or open.
     let general_binds = (!mru.is_open()).then_some(general_binds);
     let general_binds = general_binds.into_iter().flatten();
+
+    // The shell's default binds take keys over from the config's, as an engine's file does.
+    let shell_binds = (!mru.is_open())
+        .then(|| shell_binds_in_use(shell_defaults, config))
+        .into_iter()
+        .flatten();
 
     let mru_binds =
         (config.recent_windows.on || mru.is_open()).then_some(config.recent_windows.binds.iter());
@@ -5310,8 +5343,9 @@ fn make_binds_iter<'a>(
         .into_iter()
         .flatten();
 
-    // The precedence is screenshot UI, then general, then MRU binds.
+    // The precedence is screenshot UI, then the shell's, then general, then MRU binds.
     screenshot_binds
+        .chain(shell_binds)
         .chain(general_binds)
         .chain(mru_binds)
         .chain(mru_open_binds)
@@ -5321,6 +5355,47 @@ fn make_binds_iter<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shells_default_binds_take_keys_over_until_the_config_binds_their_action() {
+        let shell = |name: &str| Action::ShellAction(String::from(name), Vec::new());
+        let clipboard = Bind {
+            key: "Mod+V".parse().unwrap(),
+            action: BoundAction::Press(shell("toggle-clipboard")),
+            repeat: false,
+            pass_through: None,
+            cooldown: None,
+            allow_when_locked: false,
+            allow_inhibiting: true,
+            hotkey_overlay_title: None,
+        };
+        let defaults = [clipboard];
+        let bound = |config: &str| {
+            let config = std::rc::Rc::new(std::cell::RefCell::new(Config::parse_mem(config).unwrap()));
+            let clock = crate::animation::Clock::default();
+            let screenshot_ui = ScreenshotUi::new(clock, config.clone());
+            let mut mru = WindowMruUi::new(config.clone());
+            let config = config.borrow();
+            let mods = Modifiers::empty();
+            let binds = make_binds_iter(&config, &defaults, &screenshot_ui, &mut mru, false, mods);
+            let held = ModifiersState {
+                logo: true,
+                ..Default::default()
+            };
+            find_configured_bind(binds, ModKey::Super, Trigger::Keysym(Keysym::v), held)
+                .and_then(|bind| bind.press_action().cloned())
+        };
+
+        // The shell's bind takes Mod+V over from the config's.
+        let config = "binds {\n    Mod+V { spawn \"paste\"; }\n}";
+        assert_eq!(bound(config), Some(shell("toggle-clipboard")));
+        // Binding the action itself replaces its default, and the key is the config's again.
+        let config = r#"binds {
+            Mod+V { spawn "paste"; }
+            Mod+Shift+V { shell-action "toggle-clipboard"; }
+        }"#;
+        assert_eq!(bound(config), Some(Action::Spawn(vec![String::from("paste")])));
+    }
 
     const CLOSE_KEYSYM: Keysym = Keysym::q;
     const CLOSE_KEY_CODE: Keycode = Keycode::new(CLOSE_KEYSYM.raw());

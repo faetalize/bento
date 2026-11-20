@@ -9,7 +9,10 @@ import { AppRow, appSearch, preloadIcons, start } from "bento:modules/apps";
 
 export const meta = {
   actions: {
-    "toggle-launcher": { description: "Show or hide the launcher on the focused output." },
+    "toggle-launcher": {
+      description: "Show or hide the launcher on the focused output.",
+      bind: "Mod+D",
+    },
   },
 } satisfies Meta;
 

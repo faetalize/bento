@@ -668,6 +668,11 @@ declare module "bento" {
     description?: string;
     /** Its arguments, in order. */
     args?: readonly ActionArg[];
+    /** The key it's bound to while the module runs, written as a bind's key in bento's config,
+     * like `"Mod+V"`; a key of modifiers alone, like `"Mod"`, runs it when they're let go with
+     * nothing pressed in between. It takes the key over from a bind in the config, the way an
+     * engine's binds do, and a bind of its own in the config replaces it. */
+    bind?: string;
   }
 
   /** What a module or shell says about itself. */

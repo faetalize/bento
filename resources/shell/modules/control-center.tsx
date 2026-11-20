@@ -409,6 +409,7 @@ export const meta = {
   actions: {
     "toggle-clipboard": {
       description: "Show or hide the clipboard's history.",
+      bind: "Mod+V",
     },
   },
 } satisfies Meta;

@@ -137,6 +137,7 @@ fn picked_choice(choices: &mut Vec<Choice>, action: Option<&ActionNode>) -> usiz
             name: action.name.clone(),
             description: Some(format!("{} (as written)", action.text())),
             args: Vec::new(),
+            bind: None,
         },
         engine: false,
         shell: false,
@@ -170,8 +171,36 @@ struct Entry {
     node: Option<BindNode>,
     /// The action's name, from the file or the parsed config.
     action: String,
-    /// Whether the engine's file binds its key too, and so takes it over while the engine runs.
-    taken_over: bool,
+    /// Whose shortcut takes its key over, while the engine or the shell runs: the engine's file
+    /// binds it too, or one of the shell's actions has it by default.
+    taken_over: Option<TakenBy>,
+    /// Whether it's one of the shell's actions' own, by default, written in no file.
+    default: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TakenBy {
+    Engine,
+    Shell,
+}
+
+/// The keys the running shell's actions have by default, with the actions' names, for those the
+/// config doesn't bind itself: a bind of the action's own replaces its default.
+fn shell_defaults(actions: &[LayoutEngineAction], config: &niri_config::Config) -> Vec<(Key, String)> {
+    let binds = config.binds.0.iter().chain(&config.taken_over.0);
+    let bound: Vec<&str> = binds
+        .flat_map(|bind| [bind.press_action(), bind.release_action()])
+        .flatten()
+        .filter_map(|action| match action {
+            Action::ShellAction(name, _) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    actions
+        .iter()
+        .filter(|action| !bound.contains(&action.name.as_str()))
+        .filter_map(|action| Some((action.bind.as_deref()?.parse().ok()?, action.name.clone())))
+        .collect()
 }
 
 fn entries(store: &Store) -> Vec<Entry> {
@@ -192,7 +221,9 @@ fn entries(store: &Store) -> Vec<Entry> {
         .0
         .iter()
         .map(|bind| (bind, &config.taken_over_files, true));
-    for (bind, files, taken_over) in active.chain(taken) {
+    let actions = ipc::shell().map(|shell| shell.actions).unwrap_or_default();
+    let defaults = shell_defaults(&actions, &config);
+    for (bind, files, by_engine) in active.chain(taken) {
         let path = files.get(&bind.key).map(Path::to_owned);
         let (file, nodes) = match &path {
             Some(path) if *path == main => (Some(File::Main), &main_binds),
@@ -212,9 +243,25 @@ fn entries(store: &Store) -> Vec<Entry> {
             include: if file.is_none() { path } else { None },
             node: node.cloned(),
             action,
-            taken_over,
+            taken_over: if by_engine {
+                Some(TakenBy::Engine)
+            } else if defaults.iter().any(|(key, _)| key.conflicts_with(&bind.key)) {
+                Some(TakenBy::Shell)
+            } else {
+                None
+            },
+            default: false,
         });
     }
+    entries.extend(defaults.into_iter().map(|(key, name)| Entry {
+        key,
+        file: None,
+        include: None,
+        node: None,
+        action: format!("{SHELL_ACTION} {name}"),
+        taken_over: None,
+        default: true,
+    }));
     entries
 }
 
@@ -358,9 +405,13 @@ fn refresh(view: &Rc<View>) {
         // A shell's action shows by its own name, with its own arguments.
         let args = args.map(|a| unwrapped(a).arguments()).unwrap_or_default();
         let subtitle = match (&entry.include, &entry.node) {
-            _ if entry.taken_over => {
+            _ if entry.taken_over == Some(TakenBy::Engine) => {
                 String::from("Not in use: the engine's shortcut takes this key")
             }
+            _ if entry.taken_over == Some(TakenBy::Shell) => {
+                String::from("Not in use: the shell's shortcut takes this key")
+            }
+            _ if entry.default => String::from("The shell's default"),
             (Some(path), _) => format!("From {}", crate::store::tilde(path)),
             (None, Some(node)) if node.action.is_none() => {
                 String::from("Press and release actions, set in the config file")
@@ -373,7 +424,7 @@ fn refresh(view: &Rc<View>) {
         row.add_suffix(&shortcut_label(&entry.key, mod_key));
 
         // A shortcut the engine took over is changed through the engine's, which has its key.
-        let editable = !entry.taken_over
+        let editable = entry.taken_over.is_none()
             && entry.file.is_some()
             && entry.node.as_ref().is_some_and(|n| n.action.is_some());
         if editable {
@@ -657,7 +708,7 @@ fn save_bind(
 ) {
     // A shortcut the engine took over isn't in use, so it doesn't take the key.
     let taken = entries(&ctx.store).into_iter().find(|e| {
-        !e.taken_over && e.key.conflicts_with(&key) && from.is_none_or(|(old, _)| old != e.key)
+        e.taken_over.is_none() && e.key.conflicts_with(&key) && from.is_none_or(|(old, _)| old != e.key)
     });
 
     let commit = {
@@ -1471,11 +1522,32 @@ mod tests {
     }
 
     #[test]
+    fn the_shells_default_keys_show_until_the_config_binds_their_actions() {
+        let action = |name: &str, bind: &str| LayoutEngineAction {
+            name: String::from(name),
+            description: None,
+            args: Vec::new(),
+            bind: Some(String::from(bind)),
+        };
+        let actions = [action("toggle-start-menu", "Mod"), action("toggle-clipboard", "Mod+V")];
+        let config = niri_config::Config::parse_mem(
+            "binds {\n    Mod+Shift+V { shell-action \"toggle-clipboard\"; }\n}",
+        )
+        .unwrap();
+        let defaults = shell_defaults(&actions, &config);
+        assert_eq!(
+            defaults,
+            [("Mod".parse().unwrap(), String::from("toggle-start-menu"))]
+        );
+    }
+
+    #[test]
     fn a_shells_action_is_bound_with_shell_action_and_shown_by_its_name() {
         let switch = LayoutEngineAction {
             name: String::from("switch-audio-output"),
             description: Some(String::from("Switch the sound to the next pinned output.")),
             args: Vec::new(),
+            bind: None,
         };
         let mut choices = vec![Choice {
             action: switch,

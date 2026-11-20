@@ -910,7 +910,10 @@ fn print_actions(actions: &[LayoutEngineAction]) {
                 usage.push_str(&format!(" [{name}]"));
             }
         }
-        println!("  {usage}");
+        match &action.bind {
+            Some(bind) => println!("  {usage}  ({bind} by default)"),
+            None => println!("  {usage}"),
+        }
         if let Some(description) = &action.description {
             println!("    {description}");
         }

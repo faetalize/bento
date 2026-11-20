@@ -501,6 +501,12 @@ impl SceneHost {
             .unwrap_or_default()
     }
 
+    /// The binds the running shell's actions have by default.
+    pub fn default_binds(&self) -> Vec<niri_config::binds::Bind> {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        settings.map(|s| s.binds()).unwrap_or_default()
+    }
+
     /// Whether the pointer is over the shell.
     pub fn pointer_over(&self) -> bool {
         self.pointer.is_some()
@@ -1558,10 +1564,18 @@ mod tests {
         assert!(names.contains(&"windows"), "{names:?}");
         assert!(names.contains(&"taskbar"), "{names:?}");
         assert!(info.unused.is_empty());
-        // The start menu's shortcut is the start menu's own action, not bento's.
+        // The start menu's shortcut is the start menu's own action, not bento's, on Mod alone
+        // by default.
         let actions: Vec<&str> = info.actions.iter().map(|a| a.name.as_str()).collect();
         assert!(actions.contains(&"toggle-start-menu"), "{actions:?}");
         assert!(!actions.contains(&"toggle-launcher"), "{actions:?}");
+        let binds = host.default_binds();
+        let start = binds.iter().find(|bind| bind.key == "Mod".parse().unwrap());
+        let start = start.and_then(|bind| bind.release_action());
+        assert_eq!(
+            start,
+            Some(&niri_config::Action::ShellAction(String::from("toggle-start-menu"), Vec::new()))
+        );
     }
 
     #[test]

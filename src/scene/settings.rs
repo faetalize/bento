@@ -7,12 +7,17 @@
 //! loading again. A module can write its own, as when an app is pinned. Settings that nothing
 //! declares stay in the file: bento says so rather than failing, so that switching shells loses
 //! nothing.
+//!
+//! An action can say the key it's bound to by default. The binds are bento's while the module
+//! runs: they take keys over from the main config, as an engine's file does, and a bind of the
+//! action's own in the config replaces its default.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context as _};
 use niri_config::edit::{option_properties, option_values, Document};
+use niri_config::binds::{Action, Bind, BoundAction, Key};
 use niri_config::{EngineSettings, ShellSettings};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionValue};
 
@@ -37,6 +42,9 @@ pub struct Settings {
     declared: Vec<(String, Vec<SettingMeta>)>,
     /// The actions each declares, with the name of the module or shell that does.
     actions: Vec<(String, LayoutEngineAction)>,
+    /// The binds their actions have by default, with the name of the module or shell whose they
+    /// are.
+    binds: Vec<(String, Bind)>,
     /// What a test writes to the file, which reads as a change.
     #[cfg(test)]
     written: Option<String>,
@@ -126,6 +134,7 @@ impl Settings {
     pub fn forget_declarations(&mut self) {
         self.declared.clear();
         self.actions.clear();
+        self.binds.clear();
     }
 
     /// Takes what module or shell `name` declares, its settings and actions as the JSON arrays
@@ -167,6 +176,27 @@ impl Settings {
                 );
             }
         }
+        let mut binds = Vec::new();
+        for action in &actions {
+            let Some(text) = &action.bind else { continue };
+            let key: Key = text.parse().map_err(|err| {
+                anyhow!(
+                    "{name} binds its action {:?} to {text:?}, which isn't a key: {err}",
+                    action.name
+                )
+            })?;
+            let theirs = self
+                .binds
+                .iter()
+                .find(|(owner, bind)| owner != name && bind.key.conflicts_with(&key));
+            if let Some((owner, _)) = theirs {
+                bail!(
+                    "{name} binds {text} to its action {:?}, which {owner} binds too",
+                    action.name
+                );
+            }
+            binds.push((String::from(name), default_bind(key, &action.name)));
+        }
         match self.declared.iter_mut().find(|(n, _)| n == name) {
             Some((_, settings)) => *settings = declared,
             None => self.declared.push((String::from(name), declared)),
@@ -176,7 +206,14 @@ impl Settings {
             .into_iter()
             .map(|action| (String::from(name), action));
         self.actions.extend(owned);
+        self.binds.retain(|(owner, _)| owner != name);
+        self.binds.extend(binds);
         Ok(self.values(name))
+    }
+
+    /// The binds the running shell's actions have by default.
+    pub fn binds(&self) -> Vec<Bind> {
+        self.binds.iter().map(|(_, bind)| bind.clone()).collect()
     }
 
     /// The actions the running shell declares, in the order they're declared.
@@ -310,6 +347,27 @@ impl Settings {
     }
 }
 
+/// The bind an action of the shell's has by default to `key`: run as it's pressed, or, for a key
+/// of modifiers alone, as they're let go with nothing pressed in between, so they still work with
+/// other keys.
+fn default_bind(key: Key, action: &str) -> Bind {
+    let action = Action::ShellAction(String::from(action), Vec::new());
+    Bind {
+        key,
+        action: if key.trigger.is_modifier() {
+            BoundAction::Release(action)
+        } else {
+            BoundAction::Press(action)
+        },
+        repeat: false,
+        pass_through: None,
+        cooldown: None,
+        allow_when_locked: false,
+        allow_inhibiting: true,
+        hotkey_overlay_title: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -375,6 +433,32 @@ mod tests {
         assert!(format!("{err:#}").contains("sound declares too"), "{err:#}");
         let native = r#"[{ "name": "close-window", "args": [] }]"#;
         assert!(settings.declare("mixer", "[]", native).is_err());
+    }
+
+    #[test]
+    fn an_action_can_have_a_key_by_default() {
+        let mut settings = Settings::from_text("");
+        let start = r#"[{ "name": "toggle-start-menu", "args": [], "bind": "Mod" }]"#;
+        let clipboard = r#"[{ "name": "toggle-clipboard", "args": [], "bind": "Mod+V" }]"#;
+        settings.declare("start-menu", "[]", start).unwrap();
+        settings.declare("clipboard", "[]", clipboard).unwrap();
+        let binds = settings.binds();
+        let shell = |name: &str| Action::ShellAction(String::from(name), Vec::new());
+        // Mod alone runs it as it's let go, so Mod still works with other keys.
+        assert_eq!(binds[0].key, "Mod".parse().unwrap());
+        assert_eq!(binds[0].action, BoundAction::Release(shell("toggle-start-menu")));
+        assert_eq!(binds[1].key, "Mod+V".parse().unwrap());
+        assert_eq!(binds[1].action, BoundAction::Press(shell("toggle-clipboard")));
+
+        // A key another module binds, or one that isn't a key, is a wrong declaration.
+        let taken = r#"[{ "name": "toggle-launcher", "args": [], "bind": "Mod" }]"#;
+        let err = settings.declare("launcher", "[]", taken).unwrap_err();
+        assert!(format!("{err:#}").contains("start-menu binds too"), "{err:#}");
+        let wrong = r#"[{ "name": "toggle-launcher", "args": [], "bind": "Mod+Nothing" }]"#;
+        assert!(settings.declare("launcher", "[]", wrong).is_err());
+        // Loading again, a module's binds are its new ones.
+        settings.declare("start-menu", "[]", "[]").unwrap();
+        assert_eq!(settings.binds().len(), 1);
     }
 
     #[test]

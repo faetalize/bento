@@ -95,6 +95,8 @@ test("load refuses engines that don't fit", () => {
     // Engines and shells declare settings the same way.
     assert.throws(load({ api: 2, name: "x", options: {} }), /meta\.settings/);
     assert.throws(load({ api: 2, name: "x", settings: { o: { type: "number", page: 1 } } }), /`page` of setting o/);
+    // An engine's default binds are in its own file; a shell's actions say theirs.
+    assert.throws(load({ api: 2, name: "x", actions: { a: { bind: "Mod+A" } } }), /its own file/);
     // Workspaces and monitors are API 2 types.
     assert.throws(
         load({ api: 1, name: "x", actions: { a: { args: [{ name: "n", type: "workspace" }] } } }),

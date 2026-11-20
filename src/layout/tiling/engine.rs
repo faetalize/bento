@@ -166,6 +166,8 @@ struct ActionMeta {
     name: String,
     description: Option<String>,
     args: Vec<ArgMeta>,
+    #[serde(default)]
+    bind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +216,7 @@ fn deserialize_actions<'de, D: Deserializer<'de>>(
         name: action.name,
         description: action.description,
         args: action.args.into_iter().map(arg).collect(),
+        bind: action.bind,
     });
     Ok(actions.collect())
 }
