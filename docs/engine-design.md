@@ -484,12 +484,20 @@ default window rules. A built-in engine's comes with bento; an engine from a fil
 next to its `.js`, with the same name, which is copied. It has no binds: an engine's default keys
 stay in its declarations.
 
-### Shortcuts: defaults stay with whoever declares them
+### Binds: defaults stay with whoever declares them
 
-A shortcut is an action with its arguments, like `spawn "alacritty"` or
-`move-column-to-workspace 1`. Each key runs exactly one shortcut, and a shortcut has any number
-of keys, or none: `F1` and `F2` can both run `spawn "alacritty"`, but one key can't run two
-things. `spawn` with different commands is several shortcuts.
+An action is what a bind runs: one of bento's, the running engine's or a shell module's, with its
+name, its arguments and options, and what it does, like `spawn "alacritty"`, `focus-workspace 1`
+or `quit skip-confirmation=true`. The same name with other arguments is another action.
+
+A bind is a chord that runs an action, with the bind's own settings: `repeat`, `cooldown-ms`,
+`allow-when-locked`, `allow-inhibiting` and `hotkey-overlay-title`. A chord is a key, a mouse
+button or a scroll, with its modifiers.
+
+bento's binds are a set in which each chord runs at most one action, while an action has any
+number of chords, or none: `F1` and `F2` can both run `spawn "alacritty"`, each with settings of
+its own, but one chord can't run two actions. So the chord tells a bind apart, and the set has no
+duplicates: a bind whose chord is taken replaces the bind that has it, or isn't made.
 
 The defaults stay with whoever declares the actions, and the user's files hold only what the user
 changed, as GNOME's keyboard shortcuts do:
@@ -498,8 +506,8 @@ changed, as GNOME's keyboard shortcuts do:
 - an engine's are in its declarations, each action's `bind`;
 - a shell module's are in its declarations, each action's `bind`.
 
-`bind` is one key, or a list. An entry of a list can be a key, or a key with the arguments it runs
-the action with:
+`bind` is one chord, or a list. An entry of a list can be a chord, or a chord with the arguments
+it runs the action with:
 
 ```js
 actions: {
@@ -511,13 +519,13 @@ actions: {
 }
 ```
 
-A key of modifiers alone, like `Mod`, runs its shortcut as they're let go with nothing pressed in
-between, so they still start other shortcuts: in a file it's written with a `release` section.
+A chord of modifiers alone, like `Mod`, runs its action as they're let go with nothing pressed in
+between, so they still start other binds: in a file it's written with a `release` section.
 
-The user's changes go where that declarer's are written: bento's own and the shell's shortcuts in
-the main config's `binds {}`, an engine's in its file's. Giving a shortcut keys of one's own
-replaces all of its default keys. A shortcut that's turned off is written with `unbind`, which
-names it the way a bind writes its action:
+The user's changes go where that declarer's are written: binds of bento's own and the shell's
+actions in the main config's `binds {}`, an engine's in its file's. Giving an action binds of
+one's own replaces all of its default binds. An action that's turned off is written with
+`unbind`, which names it the way a bind writes it:
 
 ```kdl
 binds {
@@ -527,49 +535,60 @@ binds {
 }
 ```
 
-Resetting a shortcut to its default deletes what the user wrote for it: its binds and its
+Resetting an action to its defaults deletes what the user wrote for it: its binds and its
 `unbind`. New defaults in a newer bento, a newer engine or a newer module reach the user, except
-for the shortcuts the user changed.
+for the actions the user changed.
 
-When two shortcuts claim one key, it goes to the narrowest declarer that binds it: a shell
-module's, then the running engine's, then bento's own, since the narrower one is only there
-while it runs. Within one declarer, the user's binds come before its defaults. A key that's taken
-over this way is kept aside, and bento Settings and `bento validate` say which.
+When binds of different declarers claim one chord, it goes to the narrowest declarer that binds
+it: a shell module's, then the running engine's, then bento's own, since the narrower one is only
+there while it runs. Within one declarer, the user's binds come before its defaults. A bind whose
+chord is taken over this way is kept aside, and bento Settings and `bento validate` say which.
 
 ### bento declares its own actions
 
 bento's native actions are declared like an engine's: one table gives each one its name, a
 description and typed arguments, in the same shape as `meta.actions`, and bento's default binds
-ship with it. The Shortcuts page reads it and the engine's and the shell's declarations the same
+ship with it. The Binds page reads it and the engine's and the shell's declarations the same
 way, and the hotkey overlay takes its titles from it.
 
-### Shortcuts can be edited in bento Settings
+### Binds can be edited in bento Settings
 
-The Shortcuts page lists shortcuts, not binds: each row is an action with its arguments, and
-shows its keys, several, or "Disabled". Every action that takes no arguments has a row, bound or
-not, so it can be found and reset. An action that takes arguments, like `spawn` or
-`focus-workspace`, has a row for each set of arguments that has keys, or had them by default, and
-"Add Shortcut" makes a new one.
+The Binds page lists actions, each with its binds: a row per action shows its chords, several,
+or "Disabled". Every action that takes no arguments has a row, bound or not, so it can be found
+and reset. An action that takes arguments, like `spawn` or `focus-workspace`, has a row for each
+set of arguments that has binds, or had them by default.
 
-The rows are in sections by who declares them, in the list and in the add dialog's action picker:
-bento, the running engine, and the shell, with a heading for each module, like "Start Menu" or
-"Clipboard".
+The page has three tabs: General for bento's actions, Engine for the running engine's, and Shell
+for the running shell's. General groups bento's actions by what they do: Windows, Floating
+Windows, Window Groups, Workspaces, Monitors, Screenshots & Casting, Input, Launchers, System and
+Debug. Engine has one group, and Shell a group for each module, like "Start Menu" or
+"Clipboard". Each tab shows how many actions it lists.
 
-A shortcut's dialog lists its keys, each with a way to take it off, and records another one by
-pressing it. While recording, Backspace turns the shortcut off and Escape stops recording. Its
-"Disable" button writes an `unbind`, and "Reset to Default" deletes what the user wrote for it.
-A shortcut the user made, which has no default, is removed instead. "Reset All" puts every
-shortcut back on its defaults.
+The search bar filters every tab at once and stays on the tab shown: each tab's count becomes the
+number of its matches, and a tab with none is greyed out. It matches an action's title, arguments
+and chords.
 
-Taking a key that's already bound says what it does now and offers to replace it, which takes
-the key off the other shortcut, writing an `unbind` if that leaves a default shortcut with none.
+"Add Bind" records a chord and picks the action it runs, with its arguments and the bind's
+settings. Any action can be picked, since any action can take another chord. The picker is in
+the tabs' sections, General, the engine, and a heading for each module, and finds an action by
+any word of its title; the shell's actions are picked under their modules, not as a bare
+`shell-action`. A bind for an action that's listed already joins its row.
 
-A bind's other settings, `repeat`, `cooldown-ms`, `allow-when-locked`, `allow-inhibiting` and
-`hotkey-overlay-title`, can be changed in its edit dialog, under a collapsed "Advanced" section.
-An edit keeps whatever it doesn't change, so settings written by hand survive.
+An action's dialog lists its binds, each with its chord, its own settings and a way to take it
+off, and records another chord by pressing it. While recording, Backspace turns the action off
+and Escape stops recording. "Disable" writes an `unbind`, and "Reset to Default" deletes what the
+user wrote for it. An action the user bound that has no default binds is removed instead. "Reset
+All" puts every action back on its defaults.
 
-While the page records a key, its window inhibits bento's shortcuts through the
-keyboard-shortcuts-inhibit protocol, so bound keys reach it instead of running. Binds with
+Taking a chord that's already bound says what it runs now and offers to replace that bind, which
+writes an `unbind` if that leaves an action with default binds with none.
+
+Each bind's settings are its own: binds of one action can differ in them. A default bind's
+settings come with it, so editing an action keeps them, and an edit keeps whatever it doesn't
+change, so settings written by hand survive.
+
+While the page records a chord, its window inhibits bento's binds through the
+keyboard-shortcuts-inhibit protocol, so bound chords reach it instead of running. Binds with
 `allow-inhibiting=false` still go to bento.
 
 Recording takes mouse and scroll triggers as well as keys: scrolling or clicking with modifiers
@@ -582,12 +601,11 @@ them: an edit in place would be lost when it rewrites the file, and an override 
 config only wins when the `include` comes before its `binds {}`. The parsed config remembers
 which file each bind comes from.
 
-The page has a search bar that matches a shortcut's title, arguments and keys, and the action
-picker finds an action by any word of its title. The Engine page doesn't list shortcuts again: it
-says how many actions the running engine has and how many have a shortcut, and links to the
-Shortcuts page.
+The Engine and Shell pages don't list binds again: the last row of the group that picks the
+engine or the shell says how many actions it has and how many have a bind, and opens the Binds
+page on its tab.
 
 The page lists bento's actions, the running engine's and the running shell's. It can't see the
 actions of engines that aren't running: Settings never runs engine code itself, and learns an
 engine's declarations only from the running one. Switching engines on the Engine page brings up
-that engine's shortcuts.
+that engine's actions.

@@ -6,7 +6,7 @@ what engines draw with them, is bento's and the engines', see `engine-design.md`
 ## The shell is a full desktop shell
 
 The shell is the whole desktop around the workspaces: the panel, the launcher,
-notifications, on-screen indicators like volume, quick settings, the shortcut cheatsheet and
+notifications, on-screen indicators like volume, quick settings, the bind cheatsheet and
 the lock screen. It replaces other shells like Noctalia entirely, rather than living next to
 them.
 
@@ -124,17 +124,17 @@ clock's font or the folders pinned in a start menu, which every shell with that 
 shell for itself, like the height of its taskbar. Every setting declared is the user's: what's
 only the shell's to choose is a prop, not a setting.
 
-An action is something a shortcut can do, like switching to the next pinned sound output, with
-its description and arguments, as an engine's are. A shortcut runs it with
+An action is something a bind can run, like switching to the next pinned sound output, with
+its description and arguments, as an engine's are. A bind runs it with
 `shell-action "name" args…`. The module that declares an action handles it, like the launcher's
 `toggle-launcher` and the start menu's `toggle-start-menu`, so a shell without a launcher has no
 action for one. bento's own list of actions has only what bento does itself. A shell program
 outside bento gets the `shell-action` binds too, by name, and handles the ones it has.
 
-An action can come with keys, like the start menu's Mod alone, the launcher's Mod+D and the
+An action can come with binds, like the start menu's Mod alone, the launcher's Mod+D and the
 clipboard's Mod+V, as engines' actions can: they're bound while the module runs, and the user's
-changes to them go in the main config. How defaults, changes and keys claimed twice work is the
-same for every declarer; see "Shortcuts: defaults stay with whoever declares them" in
+changes to them go in the main config. How defaults, changes and chords claimed twice work is the
+same for every declarer; see "Binds: defaults stay with whoever declares them" in
 `engine-design.md`.
 
 What the user chooses is a setting, and what a shell notes for itself as it's used, like Do Not
@@ -152,7 +152,7 @@ one changing the other. A module can change its own settings, as when an app is 
 
 bento's settings show the running shell's settings and actions, as bento hands it their
 declarations, the way they show the running engine's: the actions with bento's own on the
-Shortcuts page, and a setting only on the page it names, in the group it names, like
+Binds page, in its Shell tab, and a setting only on the page it names, in the group it names, like
 `page: "shell", group: "Taskbar"`. Nothing shows there unless it says so: what's changed where
 it shows, like pinned apps and their order, is kept as a setting all the same, and doesn't
 crowd bento Settings. The pages are bento Settings' own; a declaration picks one of them and
@@ -216,9 +216,9 @@ give them, alone or with a notification of the user's wording once it's done, fo
 none of their own.
 
 A sound output can be pinned. While any are, the right island has a button that switches to the
-next pinned one, as a shortcut can too. Its clipboard button opens the clipboard's history.
+next pinned one, as a bind can too. Its clipboard button opens the clipboard's history.
 
-A shortcut opens an editor for the focused workspace: its name changes as it's typed, and the
+A bind opens an editor for the focused workspace: its name changes as it's typed, and the
 editor takes the name away and puts it back.
 
 ## The unix shell is made of glass
@@ -291,12 +291,12 @@ shell, and gets the shell's commands and events. The shell bento draws can be tu
 config for another one, Noctalia or any other, which bento starts the same way, as the program
 with that private connection. Other programs keep bento's public socket.
 
-## The shortcut cheatsheet
+## The bind cheatsheet
 
-Holding Mod alone for a moment shows a cheatsheet of pinned shortcuts. bento notices the
+Holding Mod alone for a moment shows a cheatsheet of pinned binds. bento notices the
 gesture, since only it sees the keys, and shows the cheatsheet, then hides it when Mod is let
 go or another key is pressed.
 
-Which shortcuts are pinned is bento's, in its config, next to the shortcuts themselves, and
-bento's settings pin and unpin them. The shell gets the pinned shortcuts with their keys and
+Which binds are pinned is bento's, in its config, next to the binds themselves, and
+bento's settings pin and unpin them. The shell gets the pinned binds with their chords and
 descriptions from bento, so they stay the same whichever shell runs.
