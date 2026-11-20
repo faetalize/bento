@@ -457,10 +457,10 @@ the engine to `niri.js`, asks for the user's `config.kdl`, and sets everything u
 
 ### Each engine has its own config file
 
-The main config holds bento's native settings. Each engine's binds and settings live in a `.kdl`
-file of their own, and bento loads the one for the running engine. Switching engines switches
-which file is loaded, so nothing breaks, while validation stays strict against the running
-engine.
+The main config holds bento's native settings. Each engine's settings and the user's own binds
+for its actions live in a `.kdl` file of their own, and bento loads the one for the running
+engine. Switching engines switches which file is loaded, so nothing breaks, while validation
+stays strict against the running engine.
 
 An engine's settings are booleans, numbers, strings, choices, sizes, colours or gradients, as the
 engine declares, and all but gradients can be lists. Engines and shells declare settings and
@@ -469,47 +469,101 @@ Settings only on the page it names, as a shell's does. They can differ per monit
 workspace, like bento's own `layout {}` settings: the engine's file can set them for an `output`
 or a `workspace`, and the engine reads each workspace's settings from the workspace.
 
-A key can be bound in both files. The engine's file only loads while its engine runs, so it's
-the narrower layer, and its bind takes the key over meanwhile, the way a workspace's settings
-override its output's. Switching engines never fails on a key; `bento validate` and bento
-Settings say which keys the running engine takes over.
-
-The main config picks the engine with `tiling { layout "…" }`. A built-in engine's file is
-`~/.config/bento/engines/<name>.kdl`, like `engines/niri.kdl`. An engine from a file has its
-`.kdl` next to the `.js`, with the same name: `layout "~/layouts/mine.js"` loads
-`~/layouts/mine.kdl`. The engine's file holds its `settings {}` and its `binds {}`.
+The main config picks the engine with `tiling { layout "…" }`. Every engine's file is
+`~/.config/bento/engines/<name>.kdl`, by the name the engine gives itself in `meta.name`, built in
+or loaded from a file: `layout "~/layouts/mine.js"` with `name: "mine"` reads
+`engines/mine.kdl`. The engine's file holds its `settings {}`, its window rules and its
+`binds {}`; it's the user's, and an engine's author never writes to it.
 
 Config files never use `layout-action`: the engine's file names its actions directly, and the
 main config can't bind them at all. `layout-action "name" args...` is only for running an action
 of the running engine from the command line, `bento msg action layout-action ...`.
 
-The built-in engines ship a default `.kdl` with their binds and settings, and bento copies it to
-`engines/<name>.kdl` the first time the engine runs without one, the way it writes the default
-main config on first start. From then on the file is the user's, with no fallback to the
-defaults. An engine loaded from a file ships its `.kdl` next to its `.js`.
+The first time an engine runs without its file, bento writes a starting one, the way it writes
+the main config on first start: its settings documented, at their defaults, and the engine's
+default window rules. A built-in engine's comes with bento; an engine from a file can ship one
+next to its `.js`, with the same name, which is copied. It has no binds: an engine's default keys
+stay in its declarations.
 
-bento's default main config binds only actions that work under every engine: spawning,
-workspaces, monitors, screenshots, floating and the like. Binds to actions an engine declares,
-niri's column actions included, are in that engine's default file.
+### Shortcuts: defaults stay with whoever declares them
 
-All the files share one namespace: binding the same key in the main config and in the running
-engine's file is an error, not one quietly winning over the other.
+A shortcut is an action with its arguments, like `spawn "alacritty"` or
+`move-column-to-workspace 1`. Each key runs exactly one shortcut, and a shortcut has any number
+of keys, or none: `F1` and `F2` can both run `spawn "alacritty"`, but one key can't run two
+things. `spawn` with different commands is several shortcuts.
+
+The defaults stay with whoever declares the actions, and the user's files hold only what the user
+changed, as GNOME's keyboard shortcuts do:
+
+- bento's own default binds ship inside bento, with its table of its own actions;
+- an engine's are in its declarations, each action's `bind`;
+- a shell module's are in its declarations, each action's `bind`.
+
+`bind` is one key, or a list. An entry of a list can be a key, or a key with the arguments it runs
+the action with:
+
+```js
+actions: {
+    "set-column-width": {
+        args: [{ name: "change", type: "size" }],
+        bind: [{ key: "Mod+Minus", args: ["-10%"] }, { key: "Mod+Equal", args: ["+10%"] }],
+    },
+    "toggle-start-menu": { bind: "Mod" },
+}
+```
+
+A key of modifiers alone, like `Mod`, runs its shortcut as they're let go with nothing pressed in
+between, so they still start other shortcuts: in a file it's written with a `release` section.
+
+The user's changes go where that declarer's are written: bento's own and the shell's shortcuts in
+the main config's `binds {}`, an engine's in its file's. Giving a shortcut keys of one's own
+replaces all of its default keys. A shortcut that's turned off is written with `unbind`, which
+names it the way a bind writes its action:
+
+```kdl
+binds {
+    Mod+Shift+S { screenshot; }
+    unbind { shell-action "toggle-start-menu"; }
+    unbind { focus-workspace 1; }
+}
+```
+
+Resetting a shortcut to its default deletes what the user wrote for it: its binds and its
+`unbind`. New defaults in a newer bento, a newer engine or a newer module reach the user, except
+for the shortcuts the user changed.
+
+When two shortcuts claim one key, it goes to the narrowest declarer that binds it: a shell
+module's, then the running engine's, then bento's own, since the narrower one is only there
+while it runs. Within one declarer, the user's binds come before its defaults. A key that's taken
+over this way is kept aside, and bento Settings and `bento validate` say which.
 
 ### bento declares its own actions
 
 bento's native actions are declared like an engine's: one table gives each one its name, a
-description and typed arguments, in the same shape as `meta.actions`. The Shortcuts page reads
-it and the engine's declarations the same way, and the hotkey overlay takes its titles from it.
+description and typed arguments, in the same shape as `meta.actions`, and bento's default binds
+ship with it. The Shortcuts page reads it and the engine's and the shell's declarations the same
+way, and the hotkey overlay takes its titles from it.
 
 ### Shortcuts can be edited in bento Settings
 
-The Shortcuts page is for setting shortcuts, not only reading them. It shows one list of
-binds, native and engine ones together, and doesn't show which file a bind lives in. Each bind is
-a key with its action and the action's arguments, so `spawn` with different commands is just
-several binds. Adding a shortcut picks the key, then the action and its arguments.
+The Shortcuts page lists shortcuts, not binds: each row is an action with its arguments, and
+shows its keys, several, or "Disabled". Every action that takes no arguments has a row, bound or
+not, so it can be found and reset. An action that takes arguments, like `spawn` or
+`focus-workspace`, has a row for each set of arguments that has keys, or had them by default, and
+"Add Shortcut" makes a new one.
 
-The app writes each change to the right file: a bind to an action the running engine declares
-goes in the engine's file, and every other bind goes in the main config.
+The rows are in sections by who declares them, in the list and in the add dialog's action picker:
+bento, the running engine, and the shell, with a heading for each module, like "Start Menu" or
+"Clipboard".
+
+A shortcut's dialog lists its keys, each with a way to take it off, and records another one by
+pressing it. While recording, Backspace turns the shortcut off and Escape stops recording. Its
+"Disable" button writes an `unbind`, and "Reset to Default" deletes what the user wrote for it.
+A shortcut the user made, which has no default, is removed instead. "Reset All" puts every
+shortcut back on its defaults.
+
+Taking a key that's already bound says what it does now and offers to replace it, which takes
+the key off the other shortcut, writing an `unbind` if that leaves a default shortcut with none.
 
 A bind's other settings, `repeat`, `cooldown-ms`, `allow-when-locked`, `allow-inhibiting` and
 `hotkey-overlay-title`, can be changed in its edit dialog, under a collapsed "Advanced" section.
@@ -523,26 +577,18 @@ Recording takes mouse and scroll triggers as well as keys: scrolling or clicking
 held records `WheelScroll…`, `TouchpadScroll…` or a mouse button, the way a key press records the
 key.
 
-A new shortcut can take a key that's already bound. The dialog says what the key does now and
-offers to replace it, which removes the old bind from whichever file holds it. A key bound in an
-included file can't be replaced, so the dialog says it's taken and where it comes from.
-
-Restoring defaults works like GNOME's Keyboard Shortcuts: a changed shortcut can be reset on its
-own, which puts its action back on its default key, and "Reset All" puts back the shipped binds
-in the main config and the engine's file. An engine loaded from a file has no shipped defaults
-apart from its own `.kdl`, so only bento's own shortcuts reset under it.
-
 Binds from included files show on the page but can't be changed there, and their rows say which
 file they come from. Those files often belong to something else, like a shell that generates
 them: an edit in place would be lost when it rewrites the file, and an override in the main
 config only wins when the `include` comes before its `binds {}`. The parsed config remembers
 which file each bind comes from.
 
-The page has a search bar that matches a bind's action, arguments and keys. The Engine page
-doesn't list shortcuts again: it says how many actions the running engine has and how many have
-a shortcut, and links to the Shortcuts page. Every action, bound or not, is in the add dialog's
-action picker.
+The page has a search bar that matches a shortcut's title, arguments and keys, and the action
+picker finds an action by any word of its title. The Engine page doesn't list shortcuts again: it
+says how many actions the running engine has and how many have a shortcut, and links to the
+Shortcuts page.
 
-The page lists bento's actions and the running engine's. It can't see the actions of engines that
-aren't running: Settings never runs engine code itself, and learns an engine's declarations only
-from the running one. Switching engines on the Engine page brings up that engine's shortcuts.
+The page lists bento's actions, the running engine's and the running shell's. It can't see the
+actions of engines that aren't running: Settings never runs engine code itself, and learns an
+engine's declarations only from the running one. Switching engines on the Engine page brings up
+that engine's shortcuts.

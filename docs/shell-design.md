@@ -131,11 +131,11 @@ its description and arguments, as an engine's are. A shortcut runs it with
 action for one. bento's own list of actions has only what bento does itself. A shell program
 outside bento gets the `shell-action` binds too, by name, and handles the ones it has.
 
-An action can come with a key, like the start menu's Mod alone, the launcher's Mod+D and the
-clipboard's Mod+V. It's bound while the module runs, the way an engine's file binds keys while
-the engine runs: it takes the key over from a bind in the main config, and bento Settings says
-so. A bind of the action's own in the config replaces its default. A key of modifiers alone runs
-the action as they're let go with nothing pressed in between.
+An action can come with keys, like the start menu's Mod alone, the launcher's Mod+D and the
+clipboard's Mod+V, as engines' actions can: they're bound while the module runs, and the user's
+changes to them go in the main config. How defaults, changes and keys claimed twice work is the
+same for every declarer; see "Shortcuts: defaults stay with whoever declares them" in
+`engine-design.md`.
 
 What the user chooses is a setting, and what a shell notes for itself as it's used, like Do Not
 Disturb or what's been seen, is state. Something the shell writes as it's used and the user chose,
