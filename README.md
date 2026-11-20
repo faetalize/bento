@@ -169,8 +169,25 @@ Bento Settings is a GTK app for changing bento's settings without editing the co
 Run `bento-settings`, or `bento-settings engine` to open a page directly, or `bento-settings --search gaps` to search.
 
 It edits `~/.config/bento/config.kdl` and the layout engine's own file in place, and changes only the values you set, so your comments and layout stay as they are.
-Its Shortcuts page lists every bind, bento's and the engine's, and records new ones by pressing them; binds from included files are shown but left alone.
+Its Shortcuts page lists every shortcut, bento's, the engine's and the shell's, in sections by who has it, each with its keys: it records new ones by pressing them, turns a shortcut off, and resets it to its defaults. Binds from included files are shown but left alone.
 It checks every change with bento's own parser before saving, and bento applies it right away.
+
+### Shortcuts
+
+Shortcuts come with whoever has them: bento's own with bento, an engine's with the engine, and the shell's with its modules, each on its default keys, and <kbd>Mod</kbd><kbd>Shift</kbd><kbd>/</kbd> shows the important ones.
+Your `binds {}` holds only what you change: keys you give a shortcut replace its default ones, and `unbind` turns one off, naming it the way a bind writes its action.
+
+```kdl
+binds {
+    Mod+Return { spawn "foot"; }
+    unbind { power-off-monitors; }
+    unbind { shell-action "toggle-start-menu"; }
+}
+```
+
+The engine's shortcuts are changed in its own file the same way, see [Layout engines](#layout-engines).
+A key two shortcuts claim goes to the shell's, then the engine's, then bento's, since those are only there while they run; `bento validate` and Settings say which keys are taken.
+Settings → Shortcuts does all of this, and resets a shortcut to its defaults.
 
 ### Wallpaper
 
@@ -259,11 +276,11 @@ taskbar {
 }
 ```
 
-Actions are what a shortcut does, which a bind runs by name with `shell-action`, with what the action takes after its name. Settings → Shortcuts lists the running shell's with bento's own and the engine's:
+Actions are what a shortcut does, which a bind runs by name with `shell-action`, with what the action takes after its name. Some come with keys, like the start menu's `toggle-start-menu` on Mod alone and the clipboard's `toggle-clipboard` on Mod+V. Settings → Shortcuts lists the running shell's with bento's own and the engine's, and keys of your own replace a shortcut's:
 
 ```kdl
 binds {
-    Mod+V { shell-action "toggle-clipboard"; }
+    Mod+Shift+V { shell-action "toggle-clipboard"; }
 }
 ```
 
@@ -322,7 +339,7 @@ The clipboard's button opens its history, and so does the shell's `toggle-clipbo
 
 Notifications show their actions as buttons, and a click on one does its default action. The app gets an activation token with it, so it can bring its window forward.
 
-The shell's `edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. None of these actions is bound by default; Settings → Shortcuts binds them.
+The shell's `edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. These have no keys by default; Settings → Shortcuts gives them some.
 
 A rule can pick the other material for some windows or surfaces:
 
@@ -402,14 +419,10 @@ tiling {
 
 Engines aren't interchangeable presets.
 Each one defines how the workspace works, with actions of its own.
-So each engine has a config file of its own for its settings and its binds, loaded only while that engine runs:
+So each engine has a config file of its own for its settings, its window rules and your keys for its actions, loaded only while that engine runs: `engines/<name>.kdl` next to the config, by the built-in engine's name or the engine file's, so `~/.config/bento/engines/bento.kdl`, or `engines/spiral.kdl` for the one above.
 
-- `engines/bento.kdl`, `engines/niri.kdl` and `engines/windows11.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
-- the engine file's path with `.kdl` instead of `.js` for an engine file, so `~/.config/bento/layouts/spiral.kdl` for the one above.
-
-The first time a built-in engine runs without its file, bento writes its defaults there, with binds for moving around and resizing windows; from then on the file is yours.
+The first time an engine runs without its file, bento writes a starting one there, with its settings at their defaults; for an engine file, that's the `.kdl` its author ships next to it, if any. From then on the file is yours.
 Switching engines switches which file is loaded, so nothing breaks.
-A key bound in both the config and the engine's file runs the engine's bind while that engine runs, and the config's under the others; `bento validate` lists the keys an engine takes over, and bento Settings shows the config's shortcut as not in use.
 
 When the engine file changes, bento reloads it, just like the config.
 Engines can keep their state across reloads, so your windows stay where they are while you work on an engine.
@@ -494,13 +507,13 @@ Where several rules match a window, later ones win, as in the main config.
 
 Moving around and resizing tiled windows is the engine's: each engine has its own actions, named for what they do in it.
 The `niri` engine has niri's, like `focus-column-left` or `consume-or-expel-window-left`, and the `bento` engine has its own, like `focus-left` or `stack-from-right`.
-Bind them in the engine's file by name, followed by any arguments:
+They come with keys of their own, and keys of yours go in the engine's file, by the action's name, followed by any arguments:
 
 ```kdl
 // ~/.config/bento/engines/bento.kdl
 binds {
-    Mod+H { focus-left; }
-    Mod+Minus { set-width "-10%"; }
+    Mod+Shift+H { focus-left; }
+    unbind { swap; }
 }
 ```
 
@@ -605,6 +618,8 @@ An action that takes arguments says which, in order, so that bento can check bin
     ],
 },
 ```
+
+An action's `bind` gives its default keys: a key, or a list of keys and of keys with the arguments they run it with, like `bind: ["Mod+R", { key: "Mod+Minus", args: ["-10%"] }]`.
 
 Argument types are `boolean`, `number`, `string`, `choice` (one of `choices`), `size`, `workspace` and `monitor`.
 A size is written like `"50%"`, `"+10%"` or `"800"` and reaches the engine as `{ op, value, unit }`.
@@ -742,7 +757,7 @@ Where the grid ends, actions go on to the monitor or workspace beside it:
 
 Focus goes along with what moves.
 bento's own `move-window-to-workspace` actions move one window and leave its group.
-The engine's file binds the moves on `Mod+Ctrl+Shift`, which the main config leaves free, and has the focus actions as examples to bind on your focus keys.
+The moves are on `Mod+Ctrl+Shift` by default, which bento's own shortcuts leave free.
 
 ## The niri engine
 
@@ -765,7 +780,7 @@ It differs in these ways:
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
 - **Actions that cross an edge take the whole column.**
   `focus-column-or-monitor-left`, `focus-window-or-workspace-down`, `move-column-to-workspace`, `move-column-to-monitor-left` and the rest of niri's go on to the monitor or workspace beside, and a trailing `false`, like `move-column-to-workspace 2 false`, keeps the focus where it is, as niri's `focus=false` does.
-  The engine's file binds the moves to another workspace on `Mod+Ctrl+Shift`, and has the moves to another monitor as examples: bento's own binds for moving one window use the keys niri uses for them.
+  The moves to another workspace are on `Mod+Ctrl+Shift` by default: bento's own shortcuts for moving one window use the keys niri uses for them.
 - **Tabbed columns are groups.**
   A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` settings.
   Stacked columns stay the engine's own.
