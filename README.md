@@ -169,13 +169,15 @@ Bento Settings is a GTK app for changing bento's settings without editing the co
 Run `bento-settings`, or `bento-settings engine` to open a page directly, or `bento-settings --search gaps` to search.
 
 It edits `~/.config/bento/config.kdl` and the layout engine's own file in place, and changes only the values you set, so your comments and layout stay as they are.
-Its Shortcuts page lists every shortcut, bento's, the engine's and the shell's, in sections by who has it, each with its keys: it records new ones by pressing them, turns a shortcut off, and resets it to its defaults. Binds from included files are shown but left alone.
+Its Binds page lists every action, bento's, the engine's and the shell's, in General, Engine and Shell tabs, each with its binds: it records new chords by pressing them, gives each bind its own settings, turns an action off, and resets it to its defaults. Search filters every tab at once, and each tab counts what it shows. Binds from included files are shown but left alone.
 It checks every change with bento's own parser before saving, and bento applies it right away.
 
-### Shortcuts
+### Binds
 
-Shortcuts come with whoever has them: bento's own with bento, an engine's with the engine, and the shell's with its modules, each on its default keys, and <kbd>Mod</kbd><kbd>Shift</kbd><kbd>/</kbd> shows the important ones.
-Your `binds {}` holds only what you change: keys you give a shortcut replace its default ones, and `unbind` turns one off, naming it the way a bind writes its action.
+A bind is a chord, like <kbd>Mod</kbd><kbd>T</kbd>, that runs an action, like `spawn "foot"`, with settings of its own, like working on the lock screen.
+A chord runs one action, and an action can have any number of binds.
+Actions come with default binds from whoever has them: bento's own with bento, an engine's with the engine, and the shell's with its modules, and <kbd>Mod</kbd><kbd>Shift</kbd><kbd>/</kbd> shows the important ones.
+Your `binds {}` holds only what you change: binds you give an action replace its default ones, and `unbind` turns one off, naming the action the way a bind writes it.
 
 ```kdl
 binds {
@@ -185,9 +187,9 @@ binds {
 }
 ```
 
-The engine's shortcuts are changed in its own file the same way, see [Layout engines](#layout-engines).
-A key two shortcuts claim goes to the shell's, then the engine's, then bento's, since those are only there while they run; `bento validate` and Settings say which keys are taken.
-Settings → Shortcuts does all of this, and resets a shortcut to its defaults.
+The engine's binds are changed in its own file the same way, see [Layout engines](#layout-engines).
+A chord binds of different owners claim goes to the shell's, then the engine's, then bento's, since those are only there while they run; `bento validate` and Settings say which chords are taken.
+Settings → Binds does all of this, and resets an action to its defaults.
 
 ### Wallpaper
 
@@ -276,7 +278,7 @@ taskbar {
 }
 ```
 
-Actions are what a shortcut does, which a bind runs by name with `shell-action`, with what the action takes after its name. Some come with keys, like the start menu's `toggle-start-menu` on Mod alone and the clipboard's `toggle-clipboard` on Mod+V. Settings → Shortcuts lists the running shell's with bento's own and the engine's, and keys of your own replace a shortcut's:
+Actions are what a bind runs, by name with `shell-action`, with what the action takes after its name. Some come with binds, like the start menu's `toggle-start-menu` on Mod alone and the clipboard's `toggle-clipboard` on Mod+V. Settings → Binds lists the running shell's in its Shell tab, by module, and binds of your own replace an action's:
 
 ```kdl
 binds {
@@ -331,7 +333,7 @@ The right island has three parts, with a faint line between each: the tray, quic
 
 The tray shows the status icons pinned to it, and the rest behind a chevron. A right click on an icon opens its app's menu, which pins the icon to the tray or takes it off.
 
-A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and the shell's `switch-audio-output` does the same from a shortcut.
+A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and the shell's `switch-audio-output` does the same from a bind.
 
 When the volume changes elsewhere, by a volume key or a headset's knob, its level grows out of nothing at the bottom middle of the screen for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
 
@@ -339,7 +341,7 @@ The clipboard's button opens its history, and so does the shell's `toggle-clipbo
 
 Notifications show their actions as buttons, and a click on one does its default action. The app gets an activation token with it, so it can bring its window forward.
 
-The shell's `edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. These have no keys by default; Settings → Shortcuts gives them some.
+The shell's `edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. These have no binds by default; Settings → Binds gives them some.
 
 A rule can pick the other material for some windows or surfaces:
 
@@ -757,7 +759,7 @@ Where the grid ends, actions go on to the monitor or workspace beside it:
 
 Focus goes along with what moves.
 bento's own `move-window-to-workspace` actions move one window and leave its group.
-The moves are on `Mod+Ctrl+Shift` by default, which bento's own shortcuts leave free.
+The moves are on `Mod+Ctrl+Shift` by default, which bento's own binds leave free.
 
 ## The niri engine
 
@@ -780,7 +782,7 @@ It differs in these ways:
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
 - **Actions that cross an edge take the whole column.**
   `focus-column-or-monitor-left`, `focus-window-or-workspace-down`, `move-column-to-workspace`, `move-column-to-monitor-left` and the rest of niri's go on to the monitor or workspace beside, and a trailing `false`, like `move-column-to-workspace 2 false`, keeps the focus where it is, as niri's `focus=false` does.
-  The moves to another workspace are on `Mod+Ctrl+Shift` by default: bento's own shortcuts for moving one window use the keys niri uses for them.
+  The moves to another workspace are on `Mod+Ctrl+Shift` by default: bento's own binds for moving one window use the chords niri uses for them.
 - **Tabbed columns are groups.**
   A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` settings.
   Stacked columns stay the engine's own.
