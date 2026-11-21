@@ -259,7 +259,7 @@ debug {
 }
 ```
 
-bento draws its own shell too, while it's being built: islands of glass along the top of each output. Shells are written in TSX with [Solid](https://www.solidjs.com), with styles as CSS written in objects; bento compiles them itself as it loads them, so there's nothing to install or build. It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
+bento draws its own shell too, while it's being built: islands of glass along the top of each output. Shells are written in TSX with [Solid](https://www.solidjs.com), with styles as CSS written in objects; bento compiles them itself as it loads them, so there's nothing to install or build. It's experimental and off unless turned on, with Use Bento Shell on the Shell page of bento Settings, or in the config:
 
 ```kdl
 shell {

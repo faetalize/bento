@@ -249,8 +249,6 @@ pub enum Input {
 pub struct Setting {
     pub path: &'static str,
     pub title: &'static str,
-    /// What the row says under its title, if anything.
-    pub subtitle: Option<&'static str>,
     pub keywords: &'static [&'static str],
     pub control: Control,
     /// Settings that only matter while this switch is on. The switch becomes an expander row
@@ -269,7 +267,6 @@ impl Setting {
         Self {
             path,
             title,
-            subtitle: None,
             keywords: &[],
             control,
             children: Vec::new(),
@@ -335,11 +332,6 @@ impl Setting {
     }
 
     /// Puts settings under this switch, shown when it's on.
-    pub fn subtitle(mut self, subtitle: &'static str) -> Self {
-        self.subtitle = Some(subtitle);
-        self
-    }
-
     pub fn expands(mut self, children: Vec<Setting>) -> Self {
         assert!(
             matches!(self.control, Control::Switch { .. }),
