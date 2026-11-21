@@ -29,7 +29,7 @@
 //
 // Engines run in a sandbox: there is no file, network or module access, and every call has a
 // time and memory limit. Calls are synchronous, and bento applies what a call changed when it
-// returns. API version 1 engines (`bento-layout-v1.d.ts`) still run, one instance per workspace.
+// returns. bento runs engines for this version of the API only, `api: 2`.
 
 export interface Point {
     x: number;

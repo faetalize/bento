@@ -56,10 +56,6 @@ const PRELUDE_MODULES: &[(&str, &str)] = &[
         "bento:prelude/search.js",
         include_str!("../../../resources/layouts/prelude/search.js"),
     ),
-    (
-        "bento:prelude/v1.js",
-        include_str!("../../../resources/layouts/prelude/v1.js"),
-    ),
 ];
 
 /// Layouts that ship with bento.

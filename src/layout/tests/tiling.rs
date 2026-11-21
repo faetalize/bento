@@ -310,8 +310,8 @@ fn engine_actions_cannot_take_native_names() {
     std::fs::write(
         &path,
         r#"
-        export const meta = { api: 1, name: "clash", actions: { spawn: { description: "x" } } };
-        export default function create(ws) { return {}; }
+        export const meta = { api: 2, name: "clash", actions: { spawn: { description: "x" } } };
+        export default function create(bento) {}
         "#,
     )
     .unwrap();

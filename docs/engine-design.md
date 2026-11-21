@@ -464,10 +464,11 @@ a row is replaced by the fallback engine, which places windows side by side and 
 until its file changes. When a new version of a running engine fails to load, the running one
 stays. The error shows in `bento validate`, `bento msg engine` and bento Settings.
 
-### Old engines keep working for a while
+### Only the current API runs
 
-The object model is a new API version. bento keeps running `api: 1` engines for a while
-alongside it.
+bento runs engines for the current API version only. An engine for another version fails to
+load, and says which version bento runs. Until bento's first release, the API changes without
+keeping old versions or migrating old engines.
 
 ### Moving from niri is a one-off conversion
 

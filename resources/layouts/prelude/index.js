@@ -7,25 +7,22 @@
 // cancelable one was prevented, or the answer to a query. The node test harness in `test/host.js`
 // uses it the same way, so engines behave the same in tests and in bento.
 //
-// See `bento-layout.d.ts` for the API that engines see, and `v1.js` for API 1 engines.
+// See `bento-layout.d.ts` for the API that engines see.
 
 import { BentoEvent, QueryEvent, UnloadEvent, dispatch, listenerCount, response, setErrorSink } from "./events.js";
 import { setGroupIdSource } from "./groups.js";
 import { dispatchPointer } from "./nodes.js";
 import { Session, heldModifiers } from "./objects.js";
-import { ARG_TYPES, ARG_VALUE_TYPES, VALUE_TYPES, checkActions, checkSettings } from "./declare.js";
-import { V1Adapter } from "./v1.js";
+import { ARG_TYPES, VALUE_TYPES, checkActions, checkSettings } from "./declare.js";
 
 export { setGroupIdSource };
 
-const API_VERSIONS = [1, 2];
+/** The version of the API that bento runs engines for. */
+const API_VERSION = 2;
 
 let layoutModule = null;
 let meta = null;
 let session = null;
-let adapter = null;
-
-const V1_VALUE_TYPES = ["boolean", "number", "string"];
 
 /** Sets the engine's module, with its `meta` and default export. Returns the engine's metadata. */
 export function load(module) {
@@ -33,9 +30,10 @@ export function load(module) {
     if (given === null || typeof given !== "object") {
         throw new Error("the layout engine must export `meta`");
     }
-    if (!API_VERSIONS.includes(given.api)) {
+    if (given.api !== API_VERSION) {
         throw new Error(
-            `the layout engine is for API version ${given.api}, bento has versions ${API_VERSIONS.join(" and ")}`,
+            `the layout engine is for API version ${given.api}, and bento runs engines for version ` +
+                `${API_VERSION} only: see bento-layout.d.ts to port it`,
         );
     }
     if (typeof given.name !== "string") {
@@ -44,17 +42,12 @@ export function load(module) {
     if (typeof module.default !== "function") {
         throw new Error("the layout engine must export a default function that creates the engine");
     }
-    const api = given.api;
-    const valueTypes = api === 1 ? V1_VALUE_TYPES : VALUE_TYPES;
-    const argTypes = api === 1 ? ARG_VALUE_TYPES : ARG_TYPES;
-
-    if (api === 2 && given.options !== undefined) {
+    if (given.options !== undefined) {
         throw new Error("`meta.options` is `meta.settings`, as a shell's are");
     }
-    const actions = checkActions(given.actions, argTypes);
-    // API 1 engines call their settings options.
-    const settings = checkSettings("setting", api === 1 ? given.options : given.settings, valueTypes);
-    const windowRules = api === 1 ? [] : checkSettings("window rule", given.windowRules, valueTypes);
+    const actions = checkActions(given.actions, ARG_TYPES);
+    const settings = checkSettings("setting", given.settings, VALUE_TYPES);
+    const windowRules = checkSettings("window rule", given.windowRules, VALUE_TYPES);
     if (given.floating !== undefined && typeof given.floating !== "boolean") {
         throw new Error("`meta.floating` must be a boolean");
     }
@@ -69,11 +62,10 @@ export function load(module) {
     // Action arguments by name, as declared, for the actions as they come.
     meta = { ...given, actions: Object.fromEntries(actions.map((action) => [action.name, action])) };
     session = null;
-    adapter = null;
 
     return JSON.stringify({
         name: given.name,
-        api,
+        api: API_VERSION,
         description: typeof given.description === "string" ? given.description : null,
         actions,
         settings,
@@ -160,27 +152,13 @@ function create(call) {
     const event = call.event;
     session = new Session(meta, event.settings, event.savedState);
     session.setModifiers(event.modifiers);
-    adapter = null;
     // The engine learns about what's there when it looks, not from events. Groups need the windows.
     const { groups, ...sync } = call.sync;
     session.applySync(sync);
 
-    const windows = event.windows.map((info) => {
-        const d = session.addWindow(info);
-        if (meta.api === 1) {
-            d.rect = info.rect ? Object.freeze({ ...info.rect }) : null;
-        }
-        return { d, info };
-    });
+    const windows = event.windows.map((info) => ({ d: session.addWindow(info), info }));
 
     session.groups.apply(groups ?? []);
-
-    if (meta.api === 1) {
-        adapter = new V1Adapter(session, layoutModule);
-        adapter.start();
-        adapter.adopt(windows.map(({ d }) => d.facade));
-        return;
-    }
 
     layoutModule.default(session.bento);
     const focus = session.focusKey();

@@ -665,7 +665,7 @@ In short:
 - **Queries** ask the engine without changing anything, like `newwindowsize`, what size a new window should start at.
 
 bento animates everything an engine changes, so engines only say where things go.
-Engines written for API 1, with `api: 1` and one instance for each workspace, still run for now, see [`bento-layout-v1.d.ts`](resources/layouts/bento-layout-v1.d.ts).
+bento runs engines for API version 2 only, `api: 2` in `meta`. Until bento's first release, the API changes without keeping old versions.
 
 ### Testing layout engines
 
