@@ -666,33 +666,35 @@ test("what's drawn stays above windows that open and get raised", async () => {
     assert.equal(tree.node(last).kind, "box");
 });
 
-// Groups, shown as tabs. A group's frame is the window's place, with the tab strip at its top.
-const UNDER_STRIP = rect(320, 196, 640, 364);
+// Groups, shown as tabs. A window keeps its place in a group, with the tab strip right above it.
 const groupOf = (h, id) => h.groups.find((group) => group.windows.includes(id)) ?? null;
-/** The tab drawn for the window titled `title`. */
-const tabOf = (h, title) => {
+/** The node drawn with `text`, like a tab's title or a button's glyph. */
+const textNode = (h, text) => {
     const tree = h.tree();
-    const text = tree.order().find((node) => tree.node(node).props.text === title);
-    return tree.node(text).parent;
+    return tree.order().find((node) => tree.node(node).props.text === text);
 };
+/** The tab drawn for the window titled `title`. */
+const tabOf = (h, title) => h.tree().node(textNode(h, title)).parent;
+/** Above the window opened first, where its tab strip would go. */
+const ABOVE = { x: 600, y: 140 };
 
-test("a window dropped on another's top band joins it as a tab", async () => {
+test("a window dropped right above another joins it as a tab", async () => {
     const h = await load();
     const a = h.open({ size: SIZE, title: "A" });
     const b = h.open({ size: SIZE, title: "B" });
     const ws = h.activeWorkspace().id;
 
-    // On its body, a window is just dropped there.
-    h.drag(b, ws, [{ x: 600, y: 400 }]);
+    // On its top part, a window is just dropped there.
+    h.drag(b, ws, [{ x: 600, y: 170 }]);
     assert.equal(groupOf(h, b), null);
 
-    // On its top band, the two are a group, the dropped one active, in the other's place.
-    h.drag(b, ws, [{ x: 400, y: 300 }, { x: 600, y: 170 }]);
+    // Above it, the two are a group, the dropped one active, in the other's place.
+    h.drag(b, ws, [{ x: 400, y: 300 }, ABOVE]);
     const group = groupOf(h, b);
     assert.deepEqual(group.windows, [a, b]);
     assert.equal(group.active, b);
-    assert.deepEqual(h.rect(b), UNDER_STRIP);
-    assert.deepEqual(h.rect(a), UNDER_STRIP);
+    assert.deepEqual(h.rect(b), CENTRED);
+    assert.deepEqual(h.rect(a), CENTRED);
     assert.equal(h.windows.get(a).visible, false);
     assert.equal(h.windows.get(b).visible, true);
     assert.equal(h.exposedState().groups[0].tabs, true);
@@ -703,7 +705,7 @@ test("pressing a tab brings its window to the front, and dragging it pulls it ou
     const a = h.open({ size: SIZE, title: "A" });
     const b = h.open({ size: SIZE, title: "B" });
     const ws = h.activeWorkspace().id;
-    h.drag(b, ws, [{ x: 600, y: 170 }]);
+    h.drag(b, ws, [ABOVE]);
 
     h.pointer(tabOf(h, "A"), "pointerdown");
     assert.equal(groupOf(h, a).active, a);
@@ -712,27 +714,66 @@ test("pressing a tab brings its window to the front, and dragging it pulls it ou
     assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
 
     // Pulled out by its tab, it's on its own where it's dropped, and the other shows again.
-    h.drag(a, ws, [{ x: 900, y: 600 }]);
+    h.drag(a, ws, [{ x: 900, y: 650 }]);
     assert.equal(groupOf(h, a), null);
     assert.equal(h.windows.get(b).visible, true);
     assert.deepEqual(h.rect(b), CENTRED);
     assert.deepEqual(h.exposedState().groups, []);
 });
 
-test("a group's active window dragged by its own title bar takes the group along", async () => {
+test("a group moves as one, by its strip or its active window's own title bar", async () => {
     const h = await load();
     const a = h.open({ size: SIZE, title: "A" });
     const b = h.open({ size: SIZE, title: "B" });
     const ws = h.activeWorkspace().id;
-    h.drag(b, ws, [{ x: 600, y: 170 }]);
+    h.drag(b, ws, [ABOVE]);
 
+    // By the window's own title bar.
     h.drag(b, ws, [{ x: 640, y: 400 }]);
-    const group = groupOf(h, b);
+    let group = groupOf(h, b);
     assert.deepEqual(new Set(group.windows), new Set([a, b]));
     assert.equal(group.active, b);
     assert.equal(h.windows.get(a).visible, false);
     assert.deepEqual(h.rect(a), h.rect(b));
-    assert.notDeepEqual(h.rect(b), UNDER_STRIP);
+    assert.notDeepEqual(h.rect(b), CENTRED);
+
+    // By the strip: it moves the active window, and the group follows it, snapping and all.
+    const strip = h.tree().node(tabOf(h, "A")).parent;
+    h.pointer(strip, "pointerdown");
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: b });
+    h.drag(b, ws, [{ x: 5, y: 360 }]);
+    group = groupOf(h, b);
+    assert.deepEqual(new Set(group.windows), new Set([a, b]));
+    assert.deepEqual(h.rect(b), rect(16, 52, 616, 652));
+    assert.deepEqual(h.rect(a), h.rect(b));
+});
+
+test("a group's buttons minimize, maximize and ungroup it", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    const ws = h.activeWorkspace().id;
+    h.drag(b, ws, [ABOVE]);
+
+    // Maximized, the strip is at the top of the working area, the windows under it.
+    h.pointer(h.tree().node(textNode(h, "\u25a1")).parent, "click");
+    assert.deepEqual(h.rect(b), rect(0, 36, 1280, 684));
+    assert.deepEqual(h.rect(a), h.rect(b));
+    h.pointer(h.tree().node(textNode(h, "\u2750")).parent, "click");
+    assert.deepEqual(h.rect(b), CENTRED);
+
+    // Close ungroups: each window on its own, the others a step down and to the right.
+    h.pointer(h.tree().node(textNode(h, "\u2715")).parent, "click");
+    assert.equal(groupOf(h, a), null);
+    assert.equal(h.windows.get(a).visible, true);
+    assert.deepEqual(h.rect(b), CENTRED);
+    assert.deepEqual(h.rect(a), rect(352, 192, 640, 400));
+
+    h.drag(b, ws, [{ x: 650, y: 175 }]);
+    assert.notEqual(groupOf(h, b), null);
+    h.pointer(h.tree().node(textNode(h, "\u2013")).parent, "click");
+    assert.equal(h.windows.get(b).visible, false);
+    assert.equal(h.exposedState().groups[0].tabs, false);
 });
 
 test("bento's own group actions show as tabs too", async () => {

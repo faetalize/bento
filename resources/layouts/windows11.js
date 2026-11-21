@@ -165,6 +165,10 @@ const TAB_INSET = 4;
 const ICON = 16;
 const TAB_TEXT = 18;
 const TAB_DIM = "#ffffff99";
+/** About how wide a button's glyph is drawn. */
+const GLYPH = 10;
+/** What a group's buttons show; close ungroups. */
+const BUTTONS = { minimize: "\u2013", maximize: "\u25a1", restore: "\u2750", close: "\u2715" };
 /** How what's drawn moves and fades: quickly, without overshooting. */
 const MOTION = { duration: 180, curve: "ease-out-cubic" };
 /**
@@ -320,10 +324,23 @@ export default function create(bento) {
         return s.free;
     }
 
-    /** Where a window goes: its frame, under the tab strip when it's in a group. */
+    /** Where a window goes: its frame, with room for the tab strip above when it's in a group. */
     function targetRect(win) {
         const frame = frameRect(win);
         if (frame === null || !inGroup(win) || win.mode === "fullscreen") return frame;
+        return contentUnderStrip(win, frame);
+    }
+
+    /**
+     * A window's place under a tab strip: a free window stays as it is, the strip above it, down
+     * only as far as the strip needs to fit in the working area; a snapped or maximized one
+     * keeps its zone, the strip at the zone's top.
+     */
+    function contentUnderStrip(win, frame) {
+        if (win.mode === "normal" && stateOf(win).zone === null) {
+            const top = win.workspace.tilingArea.y + STRIP;
+            return { ...frame, y: Math.max(frame.y, top) };
+        }
         return { x: frame.x, y: frame.y + STRIP, w: frame.w, h: Math.max(1, frame.h - STRIP) };
     }
 
@@ -1350,26 +1367,29 @@ export default function create(bento) {
         return win.group !== null && win.group.windows.length > 1;
     }
 
-    /** Where the tab strip of a group with `active` goes: the top of its frame. */
-    function stripRect(active) {
-        const frame = frameRect(active);
-        return frame === null ? null : { x: frame.x, y: frame.y, w: frame.w, h: STRIP };
+    /**
+     * Where the tab strip goes above `win`, as its group's active window or as a window others
+     * are dropped on: right above where it is, or where it would be in a group.
+     */
+    function stripRect(win) {
+        const frame = frameRect(win);
+        if (frame === null) return null;
+        const content = contentUnderStrip(win, frame);
+        return { x: content.x, y: content.y - STRIP, w: content.w, h: STRIP };
     }
 
     /**
-     * The window a window dragged with the pointer at `p` would join as a tab: the window under
-     * the pointer, when the pointer is on its top band, or on the tab strip of its group. A window
-     * above another hides the other's band.
+     * The window a window dragged with the pointer at `p` would join as a tab: the one whose
+     * strip, or the space above it where its strip would go, has the pointer. A window drawn
+     * above another covers what it covers of the other's.
      */
     function groupTarget(ws, p, dragged) {
+        const within = (r, q) => r !== null && q.x >= r.x && q.x < r.x + r.w && q.y >= r.y && q.y < r.y + r.h;
         for (const win of ws.windows.slice().reverse()) {
             if (win.id === dragged?.id || !win.visible || win.mode === "fullscreen") continue;
-            const frame = frameRect(win);
-            if (frame === null) continue;
-            const inside =
-                p.x >= frame.x && p.x < frame.x + frame.w && p.y >= frame.y && p.y < frame.y + frame.h;
-            if (!inside) continue;
-            return p.y < frame.y + (inGroup(win) ? STRIP : BAND) ? win : null;
+            const strip = stripRect(win);
+            if (within(strip, p)) return win;
+            if (within(win.rect, p)) return null;
         }
         return null;
     }
@@ -1413,10 +1433,13 @@ export default function create(bento) {
         strips.delete(id);
     }
 
-    /** The tab strip above a group's active window: a tab for each window, the active one lit. */
+    /**
+     * The tab strip above a group's active window: a tab for each window, the active one lit,
+     * and the group's buttons, where the title bar button layout puts window buttons. Dragging
+     * the strip moves the whole group, as dragging a window does, snapping and all.
+     */
     function drawStrip(group) {
         const active = group.active;
-        const ws = active.workspace;
         const rect = stripRect(active);
         if (rect === null || !active.visible || active.mode === "fullscreen") {
             removeStrip(group.id);
@@ -1425,6 +1448,7 @@ export default function create(bento) {
         let strip = strips.get(group.id);
         if (strip === undefined) {
             strip = bento.createNode("box", { interactive: true });
+            strip.addEventListener("pointerdown", (e) => pressStrip(group, strip, e));
             strips.set(group.id, strip);
         }
         for (const child of strip.children.slice()) child.remove();
@@ -1434,17 +1458,28 @@ export default function create(bento) {
             background: PANEL,
             border: { width: 1, color: PANEL_EDGE },
         });
+
+        // The group's buttons, on the side the layout puts them, in its order.
+        const { left, right } = buttonLayout(active.workspace);
+        const size = STRIP - 2 * TAB_INSET;
+        const place = (names, fromRight) =>
+            names.forEach((name, i) => {
+                const x = fromRight
+                    ? rect.x + rect.w - TAB_INSET - (names.length - i) * size
+                    : rect.x + TAB_INSET + i * size;
+                strip.append(button(group, name, { x, y: rect.y + TAB_INSET, w: size, h: size }));
+            });
+        place(left, false);
+        place(right, true);
+
         const windows = group.windows;
-        const room = rect.w - 2 * TAB_INSET - (windows.length - 1) * TAB_GAP;
+        const start = rect.x + TAB_INSET + left.length * size + (left.length > 0 ? TAB_GAP : 0);
+        const end = rect.x + rect.w - TAB_INSET - right.length * size - (right.length > 0 ? TAB_GAP : 0);
+        const room = end - start - (windows.length - 1) * TAB_GAP;
         const w = Math.max(1, Math.min(TAB_MAX, Math.floor(room / windows.length)));
-        const h = STRIP - 2 * TAB_INSET;
+        const h = size;
         windows.forEach((win, i) => {
-            const tab = {
-                x: rect.x + TAB_INSET + i * (w + TAB_GAP),
-                y: rect.y + TAB_INSET,
-                w,
-                h,
-            };
+            const tab = { x: start + i * (w + TAB_GAP), y: rect.y + TAB_INSET, w, h };
             const node = bento.createNode("box", {
                 rect: tab,
                 cornerRadius: RADIUS - 4,
@@ -1452,7 +1487,10 @@ export default function create(bento) {
                 interactive: true,
                 clip: true,
             });
-            node.addEventListener("pointerdown", (e) => pressTab(win, e));
+            node.addEventListener("pointerdown", (e) => {
+                e.stopPropagation();
+                pressTab(win, e);
+            });
             node.append(
                 bento.createNode("image", {
                     rect: { x: tab.x + 8, y: tab.y + (h - ICON) / 2, w: ICON, h: ICON },
@@ -1461,7 +1499,12 @@ export default function create(bento) {
             );
             node.append(
                 bento.createNode("text", {
-                    rect: { x: tab.x + 16 + ICON, y: tab.y + (h - TAB_TEXT) / 2, w: w - 24 - ICON, h: TAB_TEXT },
+                    rect: {
+                        x: tab.x + 16 + ICON,
+                        y: tab.y + (h - TAB_TEXT) / 2,
+                        w: w - 24 - ICON,
+                        h: TAB_TEXT,
+                    },
                     text: win.title ?? win.appId ?? "",
                     font: FONT,
                     color: win === active ? TEXT : TAB_DIM,
@@ -1470,6 +1513,95 @@ export default function create(bento) {
             strip.append(node);
         });
         placeStrip(active, strip);
+    }
+
+    /**
+     * The window buttons of the title bar button layout, on each side, of those a group has:
+     * minimize, maximize, and close, which ungroups. Right side, in that order, when bento
+     * doesn't say.
+     */
+    function buttonLayout(ws) {
+        const given = ws.config.titleButtons ?? null;
+        const known = (names) => (names ?? []).filter((name) => BUTTONS[name] !== undefined);
+        if (given === null) return { left: [], right: ["minimize", "maximize", "close"] };
+        return { left: known(given.left), right: known(given.right) };
+    }
+
+    /** One of a group's buttons, `name` from `BUTTONS`, at `rect`. */
+    function button(group, name, rect) {
+        const node = bento.createNode("box", {
+            rect,
+            cornerRadius: RADIUS - 4,
+            interactive: true,
+        });
+        node.addEventListener("pointerdown", (e) => e.stopPropagation());
+        node.addEventListener("pointerenter", () => node.set({ background: HIGHLIGHT }));
+        node.addEventListener("pointerleave", () => node.set({ background: null }));
+        node.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const active = group.active;
+            if (name === "minimize") minimize(active);
+            else if (name === "maximize") {
+                if (active.mode === "maximized") restore(active);
+                else maximize(active);
+            } else if (name === "close") ungroupAll(group);
+        });
+        const maximized = group.active.mode === "maximized";
+        node.append(
+            bento.createNode("text", {
+                // Text is drawn from its left, so the glyph sits by its width in the middle.
+                rect: {
+                    x: rect.x + (rect.w - GLYPH) / 2,
+                    y: rect.y + (rect.h - TAB_TEXT) / 2,
+                    w: GLYPH + 4,
+                    h: TAB_TEXT,
+                },
+                text: name === "maximize" && maximized ? BUTTONS.restore : BUTTONS[name],
+                font: FONT,
+                color: TEXT,
+            }),
+        );
+        return node;
+    }
+
+    /** A press on the strip itself, not a tab or button: the whole group moves with the pointer. */
+    function pressStrip(group, strip, e) {
+        if (e.button !== 1 || e.target !== strip) return;
+        const active = group.active;
+        active.focus();
+        raise(active);
+        pulled = null;
+        active.beginMove();
+    }
+
+    /**
+     * Ungroups a group's windows, each on its own: the active one stays where it is, and the
+     * others step down and to the right from it, so that each can be seen.
+     */
+    function ungroupAll(group) {
+        const active = group.active;
+        const ws = active.workspace;
+        const from = targetRect(active);
+        let step = 0;
+        for (const win of group.windows) {
+            if (win === active) continue;
+            step += 1;
+            const s = stateOf(win);
+            s.zone = null;
+            if (win.mode !== "normal") win.setMode("normal");
+            const size = s.free ?? from;
+            s.free = reachable(ws, {
+                x: from.x + step * CASCADE_STEP,
+                y: from.y + step * CASCADE_STEP,
+                w: size.w,
+                h: size.h,
+            });
+            win.setData({ free: s.free, zone: s.zone, minimized: false });
+        }
+        group.dissolve();
+        ungrouped(group.id);
+        active.focus();
+        raise(active);
     }
 
     /** Stacks a group's tab strip right above its active window. */
