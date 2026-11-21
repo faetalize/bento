@@ -341,7 +341,13 @@ impl SceneHost {
                 .clone(),
         };
 
-        let mtimes = (String::from(entry), script::mtimes(dir, entry));
+        // A shell of one's own is watched by the files it read, not the folder it's in.
+        let loaded = self
+            .shell
+            .as_ref()
+            .map(|shell| shell.files())
+            .unwrap_or_default();
+        let mtimes = (String::from(entry), script::mtimes(dir, entry, &loaded));
         if self.loaded_mtimes.as_ref() != Some(&mtimes) {
             self.loaded_mtimes = Some(mtimes);
             let mut loaded = Shell::load(outputs, dir, entry, style.clone(), settings.clone());
@@ -360,6 +366,10 @@ impl SceneHost {
                     for notification in &self.notifications {
                         shell.send(notification);
                     }
+                    // What it read is known now: watch those from here on.
+                    let files = shell.files();
+                    self.loaded_mtimes =
+                        Some((String::from(entry), script::mtimes(dir, entry, &files)));
                     self.shell = Some(shell);
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
                     self.sent_workspaces = None;

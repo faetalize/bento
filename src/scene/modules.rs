@@ -48,6 +48,8 @@ pub struct Sources {
     pub user: Option<PathBuf>,
     /// bento's own, read from there where they are, rather than the ones built in.
     pub stock: Option<PathBuf>,
+    /// The files read from disk, for the shell to be loaded again when one changes.
+    pub read: std::cell::RefCell<Vec<PathBuf>>,
 }
 
 impl Sources {
@@ -60,23 +62,25 @@ impl Sources {
         Self {
             user: user.filter(|dir| dir.is_dir()),
             stock: stock.map(Path::to_path_buf),
+            read: std::cell::RefCell::default(),
         }
     }
 
-    /// When each of the shell's files last changed, with the shell starting from `entry`, to
-    /// load them again when one does.
-    pub fn mtimes(&self, entry: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
+    /// When each of the shell's files last changed, with the shell starting from `entry` and
+    /// `loaded` the files it read, to load them again when one does. bento's folders are watched
+    /// whole, since a module put there takes the place of bento's; a shell of one's own can be
+    /// anywhere, like the home folder, so only its file and what it read are.
+    pub fn mtimes(&self, entry: &str, loaded: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
         let mut files = Vec::new();
         for dir in self.user.iter().chain(&self.stock) {
             scripts_in(dir, &mut files);
         }
-        // A shell of one's own can be anywhere, and so can the files next to it.
-        if let Some(dir) = Path::new(entry).parent().filter(|_| entry.starts_with('/')) {
-            if !self.user.as_ref().is_some_and(|user| dir.starts_with(user)) {
-                scripts_in(dir, &mut files);
-            }
+        if entry.starts_with('/') {
+            files.push(PathBuf::from(entry));
         }
+        files.extend(loaded.iter().cloned());
         files.sort();
+        files.dedup();
         files
             .into_iter()
             .map(|path| {
@@ -151,6 +155,7 @@ impl Sources {
         if let Some(path) = name.strip_prefix(STOCK_PREFIX) {
             if let Some(file) = self.stock.as_ref().map(|dir| dir.join(path)) {
                 if file.is_file() {
+                    self.read.borrow_mut().push(file.clone());
                     return std::fs::read_to_string(&file)
                         .with_context(|| format!("error reading {}", file.display()));
                 }
@@ -161,6 +166,7 @@ impl Sources {
                 .map(|(_, source)| String::from(*source))
                 .ok_or_else(|| anyhow!("bento has no {path}"));
         }
+        self.read.borrow_mut().push(PathBuf::from(name));
         std::fs::read_to_string(name).with_context(|| format!("error reading {name}"))
     }
 
@@ -202,14 +208,15 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// The scripts in `dir` and the folders in it.
+/// The scripts in `dir` and the folders in it, without following links to folders, which can lead
+/// back up and round forever.
 fn scripts_in(dir: &Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             if path.file_name().is_some_and(|name| name != "node_modules") {
                 scripts_in(&path, files);
             }
@@ -332,6 +339,36 @@ pub fn module_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shell_of_ones_own_is_watched_by_its_files_not_its_whole_folder() {
+        let dir = std::env::temp_dir().join(format!("bento-shell-watch-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("unrelated")).unwrap();
+        std::fs::write(dir.join("mine.tsx"), "export default () => null;").unwrap();
+        std::fs::write(dir.join("unrelated/other.tsx"), "").unwrap();
+        // Like a home folder, with a link back up that a walk would go round forever.
+        std::os::unix::fs::symlink(&dir, dir.join("unrelated/loop")).unwrap();
+
+        let entry = dir.join("mine.tsx");
+        let paths = |watched: Vec<(PathBuf, Option<SystemTime>)>| -> Vec<PathBuf> {
+            watched.into_iter().map(|(path, _)| path).collect()
+        };
+        let watched = paths(Sources::default().mtimes(entry.to_str().unwrap(), &[]));
+        assert_eq!(watched, std::slice::from_ref(&entry));
+        // With what it read once it's loaded.
+        let next_to = dir.join("unrelated/other.tsx");
+        let loaded = [entry.clone(), next_to.clone()];
+        let watched = paths(Sources::default().mtimes(entry.to_str().unwrap(), &loaded));
+        assert_eq!(watched, [entry.clone(), next_to]);
+        // bento's own folder is watched whole, but not through a link.
+        let sources = Sources {
+            user: Some(dir.clone()),
+            ..Sources::default()
+        };
+        let watched = paths(sources.mtimes("bento:shells/unix", &[]));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(watched, [entry, dir.join("unrelated/other.tsx")]);
+    }
 
     #[test]
     fn every_built_in_script_compiles() {

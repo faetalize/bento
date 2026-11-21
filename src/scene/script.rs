@@ -40,6 +40,8 @@ pub struct Shell {
     dispatch: Persistent<Function<'static>>,
     context: Context,
     _runtime: Runtime,
+    /// Where its files came from, with the ones it read.
+    sources: Rc<Sources>,
 }
 
 impl std::fmt::Debug for Shell {
@@ -48,10 +50,14 @@ impl std::fmt::Debug for Shell {
     }
 }
 
-/// When the shell's files last changed, with bento's own read from `dir` and the shell starting
-/// from `entry`, to load them again.
-pub fn mtimes(dir: Option<&Path>, entry: &str) -> Vec<(PathBuf, Option<SystemTime>)> {
-    Sources::new(dir).mtimes(entry)
+/// When the shell's files last changed, with bento's own read from `dir`, the shell starting
+/// from `entry`, and `loaded` the files it read, to load them again.
+pub fn mtimes(
+    dir: Option<&Path>,
+    entry: &str,
+    loaded: &[PathBuf],
+) -> Vec<(PathBuf, Option<SystemTime>)> {
+    Sources::new(dir).mtimes(entry, loaded)
 }
 
 /// Where what scripts keep between runs is written, like which sound outputs are pinned. Tests
@@ -95,7 +101,9 @@ impl Shell {
         let runtime = Runtime::new().context("error creating the JS runtime")?;
         runtime.set_memory_limit(MEMORY_LIMIT);
         runtime.set_max_stack_size(1024 * 1024);
-        let loader = ScriptLoader { sources };
+        let loader = ScriptLoader {
+            sources: sources.clone(),
+        };
         runtime.set_loader(loader.clone(), loader);
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
@@ -425,7 +433,13 @@ impl Shell {
             dispatch: dispatch?,
             context,
             _runtime: runtime,
+            sources,
         })
+    }
+
+    /// The files it read from disk, to load it again when one changes.
+    pub fn files(&self) -> Vec<PathBuf> {
+        self.sources.read.borrow().clone()
     }
 
     /// Hands the script an event, as JSON: `{ "type": ..., ... }`.
