@@ -17,16 +17,14 @@
 //
 //   export { default } from "bento:shells/unix";
 //
-// `bento:modules/<name>` is bento's module of that name, unless `~/.config/bento/shell/modules/
-// <name>.tsx` is there, which is used in its place everywhere, by bento's own modules too.
-// `bento:stock/modules/<name>` is always bento's own, for a module of one's own to build on. An
-// override exports the same names, with the same props. `bento:shells/<name>` and
-// `bento:stock/shells/<name>` are the same for whole shells.
+// `bento:modules/<name>` is bento's module of that name, and `bento:shells/<name>` bento's shell.
+// Nothing takes their place: a module of one's own is a file of one's own, imported by its path,
+// like `import Clock from "./my-clock"`, and kept up by whoever made it.
 //
 // bento's own shells are `unix`, islands along the top, and `windows`, a taskbar along the
 // bottom. What modules there are, and what each has, an editor shows: bento keeps a copy of its
-// modules, its shells, this file and Solid's types in `~/.local/share/bento/shell/`, and a
-// `tsconfig.json` in `~/.config/bento/shell/` that points an editor there.
+// modules, its shells, this file and Solid's types in `~/.local/share/bento/shell/`, with a
+// `tsconfig.json` there that a shell's own extends: see "The shell" in bento's README.
 //
 // This is the first cut of the API. The scene doesn't have paths, masks, gradients, shadows,
 // blend modes or 3D transforms yet.
@@ -597,8 +595,8 @@ declare module "bento" {
   // A module, or a shell, declares its settings and actions in its `meta`, the same way engines
   // do, and `useModule` hands them to bento. A setting is a typed value that a module declares
   // for what it shows, which every shell with the module shares, or a shell declares for itself.
-  // The user's are in `~/.config/bento/shell/settings.kdl`, a block for each module and shell by
-  // its name, and bento's settings show them:
+  // The user's are in the shell's file, `~/.config/bento/shell.kdl` for bento's own shells, a
+  // block for each module and shell by its name, and bento's settings show them:
   //
   //   taskbar {
   //       pinned "firefox" "org.gnome.Nautilus"
@@ -963,6 +961,4 @@ declare module "bento/jsx-runtime" {
 }
 
 declare module "bento:modules/*";
-declare module "bento:stock/modules/*";
 declare module "bento:shells/*";
-declare module "bento:stock/shells/*";

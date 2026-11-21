@@ -5,14 +5,14 @@
 //!
 //! - `solid-js`: Solid, built in.
 //! - `bento`: bento's API, built in.
-//! - `bento:modules/<name>`: the user's `modules/<name>.tsx` in `~/.config/bento/shell/` if it's
-//!   there, which takes the place of bento's own everywhere, or bento's own;
-//! - `bento:stock/modules/<name>`: always bento's own, to build on;
-//! - `bento:shells/<name>` and `bento:stock/shells/<name>`: the same for whole shells;
-//! - `./file` and `../file`: next to the script that imports it, with or without its extension.
+//! - `bento:modules/<name>` and `bento:shells/<name>`: bento's own module or shell of that name,
+//!   which nothing takes the place of: a module of one's own is a file of one's own, imported by
+//!   its path;
+//! - `./file`, `../file` and `/file`: by path, from the script that imports it, with or without
+//!   its extension.
 //!
 //! Each module's `import.meta.name` is its file's name without the extension, which its settings
-//! are kept by: `taskbar` for bento's taskbar and for a module of one's own in its place.
+//! are kept by: `taskbar` for bento's taskbar.
 //!
 //! bento's own files are built in. To work on them, `debug { shell-scripts }` names a folder that
 //! takes their place file by file: a file there is read in place of the built-in one with its
@@ -44,8 +44,6 @@ const EXTENSIONS: [&str; 4] = ["tsx", "ts", "jsx", "js"];
 /// Where the shell's files are.
 #[derive(Debug, Clone, Default)]
 pub struct Sources {
-    /// The user's: `~/.config/bento/shell/`.
-    pub user: Option<PathBuf>,
     /// bento's own, read from there where they are, rather than the ones built in.
     pub stock: Option<PathBuf>,
     /// The files read from disk, for the shell to be loaded again when one changes.
@@ -54,25 +52,19 @@ pub struct Sources {
 
 impl Sources {
     pub fn new(stock: Option<&Path>) -> Self {
-        let user = if cfg!(test) {
-            None
-        } else {
-            directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("bento/shell"))
-        };
         Self {
-            user: user.filter(|dir| dir.is_dir()),
             stock: stock.map(Path::to_path_buf),
             read: std::cell::RefCell::default(),
         }
     }
 
     /// When each of the shell's files last changed, with the shell starting from `entry` and
-    /// `loaded` the files it read, to load them again when one does. bento's folders are watched
-    /// whole, since a module put there takes the place of bento's; a shell of one's own can be
+    /// `loaded` the files it read, to load them again when one does. The folder `debug {
+    /// shell-scripts }` names for bento's own is watched whole; a shell of one's own can be
     /// anywhere, like the home folder, so only its file and what it read are.
     pub fn mtimes(&self, entry: &str, loaded: &[PathBuf]) -> Vec<(PathBuf, Option<SystemTime>)> {
         let mut files = Vec::new();
-        for dir in self.user.iter().chain(&self.stock) {
+        if let Some(dir) = &self.stock {
             scripts_in(dir, &mut files);
         }
         if entry.starts_with('/') {
@@ -102,14 +94,6 @@ impl Sources {
             _ => (),
         }
         if let Some(rest) = name.strip_prefix("bento:") {
-            if let Some(path) = rest.strip_prefix("stock/") {
-                return stock(path);
-            }
-            if let Some(user) = &self.user {
-                if let Some(path) = with_extension(&user.join(rest)) {
-                    return Ok(path.to_string_lossy().into_owned());
-                }
-            }
             return stock(rest);
         }
         if name.starts_with("./") || name.starts_with("../") {
@@ -360,11 +344,9 @@ mod tests {
         let loaded = [entry.clone(), next_to.clone()];
         let watched = paths(Sources::default().mtimes(entry.to_str().unwrap(), &loaded));
         assert_eq!(watched, [entry.clone(), next_to]);
-        // bento's own folder is watched whole, but not through a link.
-        let sources = Sources {
-            user: Some(dir.clone()),
-            ..Sources::default()
-        };
+        // bento's own, read from a folder to work on them, is watched whole, but not through a
+        // link.
+        let sources = Sources::new(Some(&dir));
         let watched = paths(sources.mtimes("bento:shells/unix", &[]));
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(watched, [entry, dir.join("unrelated/other.tsx")]);

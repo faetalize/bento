@@ -1,7 +1,7 @@
 //! What a shell can use, for editors: bento keeps a copy of its modules, its shells, its API's
-//! types and Solid's in `~/.local/share/bento/shell/`, written again when bento changes, and a
-//! `tsconfig.json` in `~/.config/bento/shell/` that points an editor there. The types are the one
-//! place that says what there is.
+//! types and Solid's in `~/.local/share/bento/shell/`, written again when bento changes, with a
+//! `tsconfig.json` there that a shell's own extends for an editor to know them. Nothing is
+//! written next to the user's files. The types are the one place that says what there is.
 
 use std::path::Path;
 
@@ -12,11 +12,10 @@ use super::modules::STOCK;
 /// Types for editors, bento's and Solid's, by their path under `resources/shell`.
 const TYPES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/shell_types.rs"));
 
-/// The first line of the `tsconfig.json` bento writes. A file without it is the user's, and
-/// bento leaves it alone.
+/// The first line of the `tsconfig.json` bento writes.
 const TSCONFIG_MARK: &str = "// Written by bento";
 
-/// Writes the copy and the `tsconfig.json`, if they aren't the ones this bento writes.
+/// Writes the copy and its `tsconfig.json`, if they aren't the ones this bento writes.
 pub fn write() {
     let Some(dirs) = directories::BaseDirs::new() else {
         return;
@@ -25,9 +24,13 @@ pub fn write() {
     if let Err(err) = write_copy(&copy) {
         warn!("error writing the shell's reference copy: {err:?}");
     }
-    let config = dirs.config_dir().join("bento/shell");
-    if let Err(err) = write_tsconfig(&config, &copy) {
-        warn!("error writing the shell's tsconfig.json: {err:?}");
+    let path = copy.join("tsconfig.json");
+    let text = tsconfig(&copy);
+    if std::fs::read_to_string(&path).is_ok_and(|old| old == text) {
+        return;
+    }
+    if let Err(err) = std::fs::write(&path, text) {
+        warn!("error writing {}: {err:?}", path.display());
     }
 }
 
@@ -98,14 +101,23 @@ fn write_copy(copy: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The `tsconfig.json` for the shell's folder, pointing an editor at `copy`.
+/// The `tsconfig.json` of `copy`, which a shell's own extends for an editor to know bento's API
+/// and modules, including the types with its own files:
+///
+/// ```json
+/// {
+///   "extends": "/home/you/.local/share/bento/shell/tsconfig.json",
+///   "include": ["**/*", "/home/you/.local/share/bento/shell/types"]
+/// }
+/// ```
 fn tsconfig(copy: &Path) -> String {
     let copy = copy.to_string_lossy();
     let json = |s: &str| serde_json::to_string(s).unwrap();
     let at = |rest: &str| json(&format!("{copy}/{rest}"));
     format!(
-        r#"{TSCONFIG_MARK}, for editors to know bento's shell API and modules. bento writes it again
-// as it changes; take this line out to keep it as it is.
+        r#"{TSCONFIG_MARK}, for editors to know bento's shell API and modules, and written again as
+// it changes. A shell's own tsconfig.json extends it, and includes its types with its files:
+// {{ "extends": "{copy}/tsconfig.json", "include": ["**/*", "{copy}/types"] }}
 {{
   "compilerOptions": {{
     "target": "es2023",
@@ -123,13 +135,11 @@ fn tsconfig(copy: &Path) -> String {
       "solid-js/*": [{solid_any}],
       "@solidjs/signals": [{signals}],
       "@solidjs/signals/*": [{signals_any}],
-      "bento:modules/*": ["./modules/*", {modules}],
-      "bento:stock/modules/*": [{modules}],
-      "bento:shells/*": ["./shells/*", {shells}],
-      "bento:stock/shells/*": [{shells}]
+      "bento:modules/*": [{modules}],
+      "bento:shells/*": [{shells}]
     }}
   }},
-  "include": ["**/*", {bento}, {pages}]
+  "include": [{bento}, {pages}]
 }}
 "#,
         solid = at("types/solid-js/index.d.ts"),
@@ -141,20 +151,6 @@ fn tsconfig(copy: &Path) -> String {
         bento = at("types/bento.d.ts"),
         pages = at(PAGES),
     )
-}
-
-fn write_tsconfig(config: &Path, copy: &Path) -> anyhow::Result<()> {
-    let path = config.join("tsconfig.json");
-    let text = tsconfig(copy);
-    match std::fs::read_to_string(&path) {
-        Ok(old) if old == text || !old.starts_with(TSCONFIG_MARK) => return Ok(()),
-        Ok(_) => (),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (),
-        Err(err) => return Err(err).context("error reading it"),
-    }
-    std::fs::create_dir_all(config)?;
-    std::fs::write(&path, text)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -203,10 +199,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             json["compilerOptions"]["paths"]["bento:modules/*"],
-            serde_json::json!([
-                "./modules/*",
-                "/home/someone/.local/share/bento/shell/modules/*"
-            ])
+            serde_json::json!(["/home/someone/.local/share/bento/shell/modules/*"])
         );
     }
 }
