@@ -2477,3 +2477,22 @@ fn redundant_modifier_binds() {
         run("binds { Alt+Alt+Q { release { close-window; }; }; }", input)
     );
 }
+
+#[test]
+fn the_overlay_shown_at_startup_lists_the_engines_binds_once_it_runs() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    assert!(f.niri().hotkey_overlay.is_open());
+    // A turn of bento's loop, as after each event.
+    f.niri_state().refresh_and_flush_clients();
+
+    let binds = f.niri().hotkey_overlay.binds().to_vec();
+    let engine = binds.iter().filter_map(niri_config::bind_set::action_of);
+    let engine: Vec<_> = engine
+        .filter(|action| matches!(action, Action::LayoutAction(..)))
+        .collect();
+    assert!(
+        !engine.is_empty(),
+        "the overlay shows no binds of the engine's"
+    );
+}

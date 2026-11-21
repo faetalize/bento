@@ -65,6 +65,17 @@ impl HotkeyOverlay {
         }
     }
 
+    /// Shows `binds`, the binds in use now, if it's open and they changed, as when it opened at
+    /// startup before the engine and the shell declared theirs. Returns whether it changed.
+    pub fn update(&mut self, binds: Vec<Bind>) -> bool {
+        if !self.is_open || self.binds == binds {
+            return false;
+        }
+        self.binds = binds;
+        self.buffers.borrow_mut().clear();
+        true
+    }
+
     pub fn hide(&mut self) -> bool {
         if self.is_open {
             self.is_open = false;
@@ -76,6 +87,11 @@ impl HotkeyOverlay {
 
     pub fn is_open(&self) -> bool {
         self.is_open
+    }
+
+    /// The binds it shows.
+    pub fn binds(&self) -> &[Bind] {
+        &self.binds
     }
 
     pub fn on_hotkey_config_updated(&mut self, mod_key: ModKey) {

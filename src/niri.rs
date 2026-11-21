@@ -965,6 +965,7 @@ impl State {
         self.niri.refresh_mapped_cast_window_rules();
 
         self.niri.refresh_window_rules();
+        self.niri.refresh_hotkey_overlay();
         self.refresh_ipc_outputs();
         self.run_scene_actions();
         self.ipc_refresh();
@@ -4121,6 +4122,18 @@ impl Niri {
             unbound.extend(scene.unbound());
         }
         niri_config::bind_set::resolve(&user, &unbound, &defaults)
+    }
+
+    /// Keeps the open hotkey overlay showing the binds in use: it can open at startup before the
+    /// engine and the shell have declared theirs.
+    pub fn refresh_hotkey_overlay(&mut self) {
+        if !self.hotkey_overlay.is_open() {
+            return;
+        }
+        let binds = self.resolved_binds().in_use;
+        if self.hotkey_overlay.update(binds) {
+            self.queue_redraw_all();
+        }
     }
 
     /// The file of the shell's settings and binds: bento's own shells share
