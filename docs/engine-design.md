@@ -326,10 +326,25 @@ Moving and resizing a window with the pointer are bento's mechanics, and the eng
 they do. Besides bento's own ways to start them, like dragging with the modifier held, an engine
 can start them itself, like when the title bar it draws is dragged.
 
-An engine whose windows move freely, like `windows11.js`, says so, and bento then drags its
-windows the way it drags floating ones: from the first pixel, opaque, and by the title bar in
-any direction. bento's own view scrolling during a drag is for tiling engines, so it never
-happens under such an engine: the camera stays where the engine puts it.
+A window dragged with the pointer stays the engine's the whole time: it doesn't leave the
+engine while it's carried and come back where it's dropped. bento runs the drag itself, grabbing
+the pointer, showing the cursor and following it across monitors, and tells the engine:
+
+- that a drag of one of its windows began, and where on the window the pointer holds it;
+- each move, with the pointer and the workspace under it;
+- its end, dropped where the pointer is or cancelled.
+
+bento doesn't move the window meanwhile: the engine places it on every move, under the pointer
+or wherever it likes, and draws it as it likes, smaller over a place it would join or faded over
+one it wouldn't. The window keeps its group, its state and its place in the engine's order, and
+the engine moves it to another workspace or monitor when the pointer goes there, since one engine
+sees every workspace. A tiling engine that takes a window out of its layout while it's carried
+does so itself, and so does one that scrolls its view near an edge during a drag: the camera is
+the engine's.
+
+An engine whose windows move freely, like `windows11.js`, says so, and bento then starts its
+drags the way it starts floating windows': from the first pixel, and by the title bar in any
+direction.
 
 An engine can turn off, per window, the border, focus ring and shadow that bento draws around
 it, to draw its own decorations instead.
