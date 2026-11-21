@@ -93,16 +93,18 @@ Which shell runs is chosen the way the engine is: in bento's config, and in bent
 among bento's shells and a file of one's own. bento's own shells aren't edited in place; one is
 duplicated into a file of one's own to start from, saved wherever the user picks, and that file
 is the shell that runs. A shell of one's own lives wherever its author keeps it, and the config
-names its path. One's own modules live in `~/.config/bento/shell/`; a module there takes the
-place of bento's module of its name everywhere, and bento's own stays there to build on. bento
-reloads them when they change, without building anything or logging out. Scripts react to events
+names its path. bento's modules and shells are always bento's own: nothing takes their place. A
+module of one's own is a file of one's own, imported by its path, and its author keeps it up.
+bento's own are worked on from a checkout of bento, which `debug { shell-scripts }` reads in
+place of the built-in ones. bento reloads them when they change, without building anything or logging out. Scripts react to events
 and say where things go; they never run in the per-frame loop. A script that fails leaves the last
 working shell on screen and reports the error.
 
 What a shell can use is found in an editor, from the types alone, with nothing to install: bento
 keeps a copy of its modules, its shells, its API's types and Solid's in
-`~/.local/share/bento/shell/`, written again when bento changes, and a `tsconfig.json` in
-`~/.config/bento/shell/` that points an editor there. Importing completes bento's modules, and
+`~/.local/share/bento/shell/`, written again when bento changes, with a `tsconfig.json` there
+that a shell's own extends. bento writes nothing next to the user's files; Settings points to
+how, when it makes a copy of a shell. Importing completes bento's modules, and
 each module's props and every primitive are documented where they're used. The types are the one
 place that says what there is; nothing else lists it.
 

@@ -270,7 +270,7 @@ shell {
 }
 ```
 
-bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one, saved wherever you like, to start a shell of your own from; bento's own aren't edited in place. Picking a shell of your own there asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/shells/`, and Use a Backup… takes one you have, wherever it is. Either way the config names it next to the shell, and what you set under that shell stays in its file. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
+bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one, saved wherever you like, to start a shell of your own from; bento's own aren't edited in place. Picking a shell of your own there asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/shells/`, and Use a Backup… takes one you have, wherever it is. Either way the config names it next to the shell, and what you set under that shell stays in its file. A shell's default export is its root component. It uses bento's modules with `bento:modules/<name>`, like `bento:modules/clock`, which are always bento's own; a module of your own is a file of your own, imported by its path, like `import Clock from "./my-clock"`, and yours to keep up. bento loads the shell again whenever one of its files changes.
 
 Modules and shells declare their settings and actions in their `meta`, the way engines do, with their defaults. What you change is kept in the shell's file: `~/.config/bento/shell.kdl` for bento's own shells, shared by them, or the one the config names for a shell of your own. It has a block for each module and shell by its name, with its settings, and its binds in a `binds {}` that names its actions directly. Settings show in bento Settings only when they name its page, like the taskbar's height on the Shell page; pins are changed where they are.
 
@@ -291,7 +291,16 @@ clipboard {
 
 A shell program outside bento gets binds too, by name with `shell-action` in the main config's `binds {}`, with what the action takes after its name.
 
-What a shell can use, an editor shows: bento keeps a copy of its modules, its shells and their types in `~/.local/share/bento/shell/`, and a `tsconfig.json` in `~/.config/bento/shell/` that points an editor there. `bento msg shell` prints the running shell's settings and actions.
+What a shell can use, an editor shows: bento keeps a copy of its modules, its shells and their types in `~/.local/share/bento/shell/`, with a `tsconfig.json` there. bento writes nothing next to your files, so for completion, put a `tsconfig.json` next to your shell that extends bento's and includes its types, with your home folder's path:
+
+```json
+{
+  "extends": "/home/you/.local/share/bento/shell/tsconfig.json",
+  "include": ["**/*", "/home/you/.local/share/bento/shell/types"]
+}
+```
+
+`bento msg shell` prints the running shell's settings and actions.
 
 A shell program named with `shell "…"` keeps running alongside it.
 
