@@ -23,7 +23,13 @@ pub fn category() -> Category {
                 Setting::switch("Use Bento Shell", "shell.built-in", |c| {
                     c.shell.as_ref().is_some_and(|shell| shell.built_in())
                 })
-                .keywords(&["bar", "panel", "experimental", "desktop shell", "built-in"]),
+                .keywords(&[
+                    "bar",
+                    "panel",
+                    "experimental",
+                    "desktop shell",
+                    "built-in",
+                ]),
             ),
         )
         .group(

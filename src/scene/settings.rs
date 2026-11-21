@@ -17,10 +17,9 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context as _};
-use niri_config::bind_set;
 use niri_config::binds::{Bind, Key};
 use niri_config::edit::{option_properties, option_values, Document};
-use niri_config::{EngineSettings, ShellSettings};
+use niri_config::{bind_set, EngineSettings, ShellSettings};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionValue};
 
 use crate::layout::tiling::engine::{

@@ -8,8 +8,8 @@
 //! - `bento:modules/<name>` and `bento:shells/<name>`: bento's own module or shell of that name,
 //!   which nothing takes the place of: a module of one's own is a file of one's own, imported by
 //!   its path;
-//! - `./file`, `../file` and `/file`: by path, from the script that imports it, with or without
-//!   its extension.
+//! - `./file`, `../file` and `/file`: by path, from the script that imports it, with or without its
+//!   extension.
 //!
 //! Each module's `import.meta.name` is its file's name without the extension, which its settings
 //! are kept by: `taskbar` for bento's taskbar.

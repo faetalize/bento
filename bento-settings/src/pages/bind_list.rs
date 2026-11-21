@@ -12,8 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use niri_config::bind_set::{self, Declarer};
-use niri_config::binds::Bind;
-use niri_config::binds::{parse_action, BindFile};
+use niri_config::binds::{parse_action, Bind, BindFile};
 use niri_config::{Action, BindFiles, Key};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOptionValue};
 
