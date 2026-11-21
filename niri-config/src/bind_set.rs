@@ -315,6 +315,26 @@ mod tests {
     }
 
     #[test]
+    fn the_default_config_binds_the_launcher_without_taking_the_shells_key() {
+        let config = crate::Config::load_default();
+        let launcher = shell("toggle-launcher");
+        let on_mod_d = |resolved: &Resolved| -> Vec<Action> {
+            let key: Key = "Mod+D".parse().unwrap();
+            let binds = resolved.in_use.iter().filter(|b| b.key == key);
+            binds.filter_map(action_of).cloned().collect()
+        };
+        // A shell program, which declares nothing to bento.
+        let resolved = resolve(&config.binds.0, &config.unbound, bento_defaults());
+        assert_eq!(on_mod_d(&resolved), std::slice::from_ref(&launcher));
+        // bento's own shell, which declares the same action on the same key.
+        let mut defaults = bento_defaults().to_vec();
+        defaults.push(bind("Mod+D", launcher.clone()));
+        let resolved = resolve(&config.binds.0, &config.unbound, &defaults);
+        assert_eq!(on_mod_d(&resolved), [launcher]);
+        assert!(resolved.taken_over.is_empty(), "{:?}", resolved.taken_over);
+    }
+
+    #[test]
     fn bentos_defaults_bind_only_its_own_actions() {
         let defaults = bento_defaults();
         assert!(defaults.len() > 50);

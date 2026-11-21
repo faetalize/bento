@@ -3005,3 +3005,36 @@ fn an_engine_can_ask_to_close_a_window_which_bento_takes_once() {
     assert_eq!(layout.take_closes(), [1]);
     assert_eq!(layout.take_closes(), [] as [usize; 0]);
 }
+
+#[test]
+fn a_window_dropped_between_workspaces_in_the_overview_gets_a_new_one() {
+    // In the overview, above the first workspace is where a new one would go.
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    ops.extend([
+        Op::ToggleOverview,
+        Op::CompleteAnimations,
+        Op::InteractiveMoveBegin {
+            window: 2,
+            output_idx: 1,
+            px: 640.,
+            py: 360.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 2,
+            output_idx: 1,
+            px: 640.,
+            py: 1.,
+        },
+        Op::InteractiveMoveEnd { window: 2 },
+    ]);
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for("niri"), ops);
+
+    let windows_by_workspace: Vec<Vec<usize>> = layout
+        .workspaces()
+        .map(|(_, _, ws)| ws.windows().map(|win| *win.id()).collect())
+        .collect();
+    assert_eq!(windows_by_workspace[0], [2], "{windows_by_workspace:?}");
+    assert_eq!(windows_by_workspace[1], [1], "{windows_by_workspace:?}");
+}

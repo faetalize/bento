@@ -5,9 +5,10 @@
 //! of binds. The page lists entries: an action with its binds. An action's default binds stay
 //! with whoever declares it: bento, the running engine or a module of the running shell. The
 //! user's files hold only what changed: binds of one's own for an action, which replace its
-//! defaults, in the main config, or the engine's file for the engine's actions, and the actions
-//! turned off with `unbind`. Actions are told apart by their parsed form, so a bind written by
-//! hand matches its default however it's spelled.
+//! defaults, and the actions turned off with `unbind`. They're in the main config, the engine's
+//! file for the engine's actions, or the shell's file for the shell's while bento draws its own
+//! shell, and stay in the file they're written in. Actions are told apart by their parsed form, so
+//! a bind written by hand matches its default however it's spelled.
 
 use std::path::{Path, PathBuf};
 
@@ -45,6 +46,23 @@ pub struct Sources {
     /// The shell's file's binds and the actions it turns off, parsed.
     pub shell_binds: Vec<Bind>,
     pub shell_unbound: Vec<Action>,
+    /// Whether bento reads binds for the shell's actions from the shell's file: it does while it
+    /// draws its own shell and the shell has a file, and not for the `bento-shell` program.
+    pub shell_binds_in_file: bool,
+}
+
+impl Sources {
+    /// The file new binds for `declarer`'s actions go in: bento's in the main config, the
+    /// engine's in its file, and the shell's in the shell's file where bento reads them from it,
+    /// or else in the main config.
+    pub fn file_for(&self, declarer: Declarer) -> crate::store::File {
+        match declarer {
+            Declarer::Bento => crate::store::File::Main,
+            Declarer::Engine => crate::store::File::Engine,
+            Declarer::Shell if self.shell_binds_in_file => crate::store::File::ShellSettings,
+            Declarer::Shell => crate::store::File::Main,
+        }
+    }
 }
 
 /// The tab of the page an action is listed in, by who declares it.
@@ -161,6 +179,18 @@ pub enum Source {
     Include(PathBuf),
 }
 
+impl Source {
+    /// The file the page writes it in, if it does.
+    fn file(&self) -> Option<crate::store::File> {
+        match self {
+            Source::Main => Some(crate::store::File::Main),
+            Source::Engine => Some(crate::store::File::Engine),
+            Source::Shell => Some(crate::store::File::ShellSettings),
+            Source::Default | Source::Include(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EntryBind {
     pub key: Key,
@@ -189,6 +219,9 @@ pub struct Entry {
     pub binds: Vec<EntryBind>,
     /// Whether it's turned off with `unbind`.
     pub disabled: bool,
+    /// The file its user binds and `unbind` go in: the one they're written in, or for an action
+    /// the user hasn't changed, the one new binds for its declarer's actions go in.
+    pub file: crate::store::File,
 }
 
 impl Entry {
@@ -211,16 +244,6 @@ impl Entry {
                 k.bind.as_ref().is_some_and(|b| b.action.is_some())
             }
         })
-    }
-
-    /// The file its user binds and `unbind` go in: bento's actions' in the main config, the
-    /// engine's in its file, and the shell's in its block of the shell's file.
-    pub fn file(&self) -> crate::store::File {
-        match self.declarer {
-            Declarer::Bento => crate::store::File::Main,
-            Declarer::Engine => crate::store::File::Engine,
-            Declarer::Shell => crate::store::File::ShellSettings,
-        }
     }
 
     /// The block of the shell's file its binds go in: its module's, or the shell's.
@@ -386,6 +409,7 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
             defaults: Vec::new(),
             binds: Vec::new(),
             disabled: false,
+            file: src.file_for(declarer),
         });
         list.len() - 1
     };
@@ -544,8 +568,9 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
             },
         ));
     }
-    // What's turned off.
-    for (doc, _, file) in user_files(src) {
+    // What's turned off, and where.
+    let mut unbound_in: Vec<(usize, Source)> = Vec::new();
+    for (doc, source, file) in user_files(src) {
         for node in doc.unbinds() {
             let Some(action) = parse(&node, file) else {
                 continue;
@@ -557,16 +582,23 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
             };
             let i = at(&mut list, action, node);
             list[i].disabled = true;
+            unbound_in.push((i, source.clone()));
         }
     }
 
-    // An entry's binds: the user's own replace its defaults.
+    // An entry's binds: the user's own replace its defaults. What the user wrote for it stays in
+    // the file it's written in.
     for (i, entry) in list.iter_mut().enumerate() {
         let own: Vec<EntryBind> = user
             .iter()
             .filter(|(j, _)| *j == i)
             .map(|(_, k)| k.clone())
             .collect();
+        let unbind = unbound_in.iter().filter(|(j, _)| *j == i).map(|(_, s)| s);
+        let written = own.iter().map(|k| &k.source).chain(unbind);
+        if let Some(file) = written.filter_map(Source::file).next() {
+            entry.file = file;
+        }
         entry.binds = if !own.is_empty() {
             own
         } else if entry.disabled {
@@ -663,15 +695,15 @@ pub enum Change {
 }
 
 /// Applies `change` to `entry` in `doc`, a file that names actions as `file` does: what the user
-/// wrote for it is taken out of every file, and the change written in its own, the shell's
-/// actions' in their block of the shell's file.
+/// wrote for it is taken out of every file, and the change written in the entry's file, in the
+/// action's block of the shell's file.
 pub fn apply(doc: &mut Document, entry: &Entry, change: &Change, file: BindFile) {
     use crate::store::File;
     if file == BindFile::Shell {
         for name in doc.block_names() {
             doc.edit_block(&name, |block| forget(block, entry, file));
         }
-        if entry.file() == File::ShellSettings {
+        if entry.file == File::ShellSettings {
             let node = unwrapped(&entry.node);
             doc.edit_block(entry.block(), |block| write(block, entry, &node, change));
         }
@@ -679,8 +711,8 @@ pub fn apply(doc: &mut Document, entry: &Entry, change: &Change, file: BindFile)
     }
     forget(doc, entry, file);
     let mine = match file {
-        BindFile::Main => entry.file() == File::Main,
-        BindFile::Engine => entry.file() == File::Engine,
+        BindFile::Main => entry.file == File::Main,
+        BindFile::Engine => entry.file == File::Engine,
         BindFile::Shell => false,
     };
     if mine {
@@ -791,6 +823,7 @@ mod tests {
             unbound: config.unbound,
             shell_binds: shell_settings.binds.into_iter().map(|(_, b)| b).collect(),
             shell_unbound: shell_settings.unbound.into_iter().map(|(_, a)| a).collect(),
+            shell_binds_in_file: true,
         }
     }
 
@@ -976,6 +1009,49 @@ mod tests {
         apply(&mut shell, &switch, &Change::Disable, BindFile::Shell);
         assert!(shell.text().contains("unbind { switch-audio-output; }"));
         apply(&mut shell, &switch, &Change::Reset, BindFile::Shell);
+        assert_eq!(shell.text(), shell_text);
+    }
+
+    #[test]
+    fn a_shell_actions_binds_stay_in_their_file_and_new_ones_go_where_bento_reads_them() {
+        let sound = || (String::from("sound"), decl("switch-audio-output", &[]));
+        let shell_text = "sound {\n    pinned \"hdmi\"\n}\n";
+        let bind = |switch: &Entry, key: &str| {
+            Change::Keys(vec![BindNode {
+                key: String::from(key),
+                properties: Vec::new(),
+                action: Some(switch.node.clone()),
+            }])
+        };
+        let keys =
+            |doc: &Document| -> Vec<String> { doc.binds().into_iter().map(|b| b.key).collect() };
+
+        // Written in the main config, as for the `bento-shell` program, it's changed there.
+        let main = "binds {\n    Mod+F9 { shell-action \"switch-audio-output\"; }\n}\n";
+        let mut src = sources_with(main, shell_text);
+        src.shell.push(sound());
+        let switch = find(&entries(&src), "shell-action \"switch-audio-output\"").clone();
+        let change = bind(&switch, "Mod+F10");
+        let mut main = src.main;
+        apply(&mut main, &switch, &change, BindFile::Main);
+        let mut shell = Document::parse(String::from(shell_text)).unwrap();
+        apply(&mut shell, &switch, &change, BindFile::Shell);
+        assert_eq!(keys(&main), ["Mod+F10"]);
+        assert!(main.text().contains("shell-action"), "{}", main.text());
+        assert_eq!(shell.text(), shell_text);
+
+        // A new one goes in the main config while bento doesn't draw its own shell, which alone
+        // reads the shell's file.
+        let mut src = sources_with("", shell_text);
+        src.shell.push(sound());
+        src.shell_binds_in_file = false;
+        let switch = find(&entries(&src), "shell-action \"switch-audio-output\"").clone();
+        let change = bind(&switch, "Mod+F9");
+        let mut main = src.main;
+        apply(&mut main, &switch, &change, BindFile::Main);
+        let mut shell = Document::parse(String::from(shell_text)).unwrap();
+        apply(&mut shell, &switch, &change, BindFile::Shell);
+        assert_eq!(keys(&main), ["Mod+F9"]);
         assert_eq!(shell.text(), shell_text);
     }
 

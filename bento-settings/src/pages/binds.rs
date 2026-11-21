@@ -70,6 +70,8 @@ fn sources(store: &Store) -> Sources {
     };
     let shell_file = read_if(&shell_path);
     let shell_settings = store.shell_settings();
+    let built_in = config.shell.as_ref().is_some_and(|shell| shell.built_in());
+    let shell_binds_in_file = built_in && shell_path.is_some();
     Sources {
         native: niri_config::actions::native_actions(),
         engine,
@@ -85,6 +87,7 @@ fn sources(store: &Store) -> Sources {
         unbound: config.unbound.clone(),
         shell_binds: shell_settings.binds.into_iter().map(|(_, b)| b).collect(),
         shell_unbound: shell_settings.unbound.into_iter().map(|(_, a)| a).collect(),
+        shell_binds_in_file,
     }
 }
 
@@ -140,7 +143,7 @@ fn apply(store: &Store, entry: &Entry, change: Change) {
         ),
     ];
     for (file, bind_file, exists) in files {
-        if exists || entry.file() == file {
+        if exists || entry.file == file {
             let (one, change) = (entry.clone(), change.clone());
             store.edit_in(file, &id, move |doc| {
                 bind_list::apply(doc, &one, &change, bind_file)
@@ -1126,7 +1129,8 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
             return;
         };
         // The entry it joins, if it's listed already, with the new bind besides its others.
-        let list = bind_list::entries(&sources(&ctx.store));
+        let src = sources(&ctx.store);
+        let list = bind_list::entries(&src);
         let entry = list
             .into_iter()
             .find(|s| s.action == action)
@@ -1139,6 +1143,7 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
                 defaults: Vec::new(),
                 binds: Vec::new(),
                 disabled: false,
+                file: src.file_for(choice.declarer),
             });
         let mut binds = binds_of(&entry);
         binds.push(BindNode {

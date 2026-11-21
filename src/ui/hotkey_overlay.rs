@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::iter::zip;
 use std::rc::Rc;
 
+use niri_config::bind_set::{declarer, Declarer};
 use niri_config::{Action, Bind, Config, Key, ModKey, Modifiers, Trigger};
 use pangocairo::cairo::{self, ImageSurface};
 use pangocairo::pango::{AttrColor, AttrInt, AttrList, AttrString, FontDescription, Weight};
@@ -27,11 +28,17 @@ const BORDER: i32 = 4;
 const LINE_INTERVAL: i32 = 2;
 const TITLE: &str = "Important Hotkeys";
 
+/// The descriptions the engine and the shell declare for their actions, by who declares each and
+/// its name.
+pub type ActionDescriptions = HashMap<(Declarer, String), String>;
+
 pub struct HotkeyOverlay {
     is_open: bool,
     config: Rc<RefCell<Config>>,
     /// The binds in use, the user's and every declarer's defaults, as it was last shown with.
     binds: Vec<Bind>,
+    /// What the engine's and the shell's actions in `binds` are called.
+    descriptions: Rc<ActionDescriptions>,
     mod_key: ModKey,
     buffers: RefCell<HashMap<WeakOutput, RenderedOverlay>>,
 }
@@ -46,15 +53,18 @@ impl HotkeyOverlay {
             is_open: false,
             config,
             binds: Vec::new(),
+            descriptions: Rc::default(),
             mod_key,
             buffers: RefCell::new(HashMap::new()),
         }
     }
 
-    /// Shows it, for `binds`, the binds in use.
-    pub fn show(&mut self, binds: Vec<Bind>) -> bool {
-        if self.binds != binds {
+    /// Shows it, for `binds`, the binds in use, with `descriptions` of the engine's and the
+    /// shell's actions.
+    pub fn show(&mut self, binds: Vec<Bind>, descriptions: Rc<ActionDescriptions>) -> bool {
+        if self.binds != binds || self.descriptions != descriptions {
             self.binds = binds;
+            self.descriptions = descriptions;
             self.buffers.borrow_mut().clear();
         }
         if !self.is_open {
@@ -67,11 +77,12 @@ impl HotkeyOverlay {
 
     /// Shows `binds`, the binds in use now, if it's open and they changed, as when it opened at
     /// startup before the engine and the shell declared theirs. Returns whether it changed.
-    pub fn update(&mut self, binds: Vec<Bind>) -> bool {
-        if !self.is_open || self.binds == binds {
+    pub fn update(&mut self, binds: Vec<Bind>, descriptions: Rc<ActionDescriptions>) -> bool {
+        if !self.is_open || (self.binds == binds && self.descriptions == descriptions) {
             return false;
         }
         self.binds = binds;
+        self.descriptions = descriptions;
         self.buffers.borrow_mut().clear();
         true
     }
@@ -130,6 +141,7 @@ impl HotkeyOverlay {
                 renderer,
                 &self.config.borrow(),
                 &self.binds,
+                &self.descriptions,
                 self.mod_key,
                 scale,
             )
@@ -163,7 +175,7 @@ impl HotkeyOverlay {
         writeln!(&mut buf, "{TITLE}").unwrap();
 
         for action in actions {
-            let Some((key, action)) = format_bind(&self.binds, action) else {
+            let Some((key, action)) = format_bind(&self.binds, action, &self.descriptions) else {
                 continue;
             };
 
@@ -192,7 +204,11 @@ fn bind_triggers(bind: &Bind, action: &Action) -> bool {
     bind.press_action() == Some(action) || bind.release_action() == Some(action)
 }
 
-fn format_bind(binds: &[Bind], action: &Action) -> Option<(Option<Key>, String)> {
+fn format_bind(
+    binds: &[Bind],
+    action: &Action,
+    descriptions: &ActionDescriptions,
+) -> Option<(Option<Key>, String)> {
     let mut bind_with_non_null = None;
     let mut bind_with_custom_title = None;
     let mut found_null_title = false;
@@ -229,7 +245,7 @@ fn format_bind(binds: &[Bind], action: &Action) -> Option<(Option<Key>, String)>
     } else {
         None
     };
-    let title = title.unwrap_or_else(|| action_name(action));
+    let title = title.unwrap_or_else(|| action_name(action, descriptions));
 
     Some((key, title))
 }
@@ -320,6 +336,27 @@ fn collect_actions<'a>(config: &Config, binds: &'a [Bind]) -> Vec<&'a Action> {
         }
     }
 
+    // The engine's and the shell's actions, one for each name: an action bound with several
+    // arguments, like one for each workspace, shows its first bind.
+    let mut named: Vec<(Declarer, &str)> = Vec::new();
+    for bind in binds {
+        if !bind.key.trigger.is_keyboard() {
+            continue;
+        }
+        let Some(action) = bind_actions(bind).next() else {
+            continue;
+        };
+        let name = match action {
+            Action::LayoutAction(name, _, _) | Action::ShellAction(name, _) => name.as_str(),
+            _ => continue,
+        };
+        let name = (declarer(action), name);
+        if !named.contains(&name) && !actions.contains(&action) {
+            named.push(name);
+            actions.push(action);
+        }
+    }
+
     if config.hotkey_overlay.hide_not_bound {
         // Only keep actions that have been bound
         actions.retain(|&action| binds.iter().any(|bind| bind_triggers(bind, action)))
@@ -332,6 +369,7 @@ fn render(
     renderer: &mut GlesRenderer,
     config: &Config,
     binds: &[Bind],
+    descriptions: &ActionDescriptions,
     mod_key: ModKey,
     scale: f64,
 ) -> anyhow::Result<RenderedOverlay> {
@@ -349,7 +387,7 @@ fn render(
 
     let strings = collect_actions(config, binds)
         .into_iter()
-        .filter_map(|action| format_bind(binds, action))
+        .filter_map(|action| format_bind(binds, action, descriptions))
         .map(|(key, action)| {
             let key = key.map(|key| key_name(false, mod_key, &key));
             let key = key.as_deref().unwrap_or("(not bound)");
@@ -481,8 +519,14 @@ fn render(
     })
 }
 
-fn action_name(action: &Action) -> String {
+fn action_name(action: &Action, descriptions: &ActionDescriptions) -> String {
     match action {
+        // What its declarer says it does, or else its name.
+        Action::LayoutAction(name, _, _) | Action::ShellAction(name, _) => {
+            let description = descriptions.get(&(declarer(action), name.clone()));
+            let description = description.map(|d| d.trim_end_matches('.'));
+            pango::glib::markup_escape_text(description.unwrap_or(name)).into()
+        }
         Action::Quit(_) => String::from("Exit niri"),
         Action::ShowHotkeyOverlay => String::from("Show Important Hotkeys"),
         Action::CloseWindow => String::from("Close Focused Window"),
@@ -641,7 +685,9 @@ mod tests {
     #[track_caller]
     fn check(config: &str, action: Action) -> String {
         let config = Config::parse_mem(config).unwrap();
-        if let Some((key, title)) = format_bind(&config.binds.0, &action) {
+        if let Some((key, title)) =
+            format_bind(&config.binds.0, &action, &ActionDescriptions::new())
+        {
             let key = key.map(|key| key_name(false, ModKey::Super, &key));
             let key = key.as_deref().unwrap_or("(not bound)");
             format!(" {key} : {title}")
@@ -872,6 +918,56 @@ mod tests {
                 Action::Screenshot(true, None),
             ),
             @" Super : Take a Screenshot"
+        );
+    }
+
+    #[test]
+    fn the_engines_and_the_shells_actions_show_once_by_their_descriptions() {
+        use niri_config::bind_set::default_bind;
+        use niri_config::TilingOption;
+
+        let config = Config::default();
+        let engine = |name: &str, args: Vec<TilingOption>| {
+            Action::LayoutAction(String::from(name), args, None)
+        };
+        let launcher = Action::ShellAction(String::from("toggle-launcher"), Vec::new());
+        let binds = vec![
+            default_bind("Mod+D".parse().unwrap(), launcher),
+            default_bind(
+                "Mod+1".parse().unwrap(),
+                engine("focus-workspace", vec![TilingOption::Number(1.)]),
+            ),
+            default_bind(
+                "Mod+2".parse().unwrap(),
+                engine("focus-workspace", vec![TilingOption::Number(2.)]),
+            ),
+            default_bind("Mod+G".parse().unwrap(), engine("group", Vec::new())),
+        ];
+        let mut descriptions = ActionDescriptions::new();
+        descriptions.insert(
+            (Declarer::Shell, String::from("toggle-launcher")),
+            String::from("Show or hide the launcher <here>."),
+        );
+        descriptions.insert(
+            (Declarer::Engine, String::from("focus-workspace")),
+            String::from("Focus a workspace."),
+        );
+        let binds = &binds;
+        let rows: Vec<String> = collect_actions(&config, binds)
+            .into_iter()
+            .filter(|a| matches!(a, Action::LayoutAction(..) | Action::ShellAction(..)))
+            .filter_map(|action| format_bind(binds, action, &descriptions))
+            .map(|(key, title)| {
+                format!("{}: {title}", key_name(false, ModKey::Super, &key.unwrap()))
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "Super + D: Show or hide the launcher &lt;here&gt;",
+                "Super + 1: Focus a workspace",
+                "Super + G: group",
+            ]
         );
     }
 

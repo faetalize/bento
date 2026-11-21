@@ -144,7 +144,7 @@ After linking, niri itself can't run from that config if it uses anything specif
 ### The shell
 
 bento's shell, `bento-shell`, is the desktop around the workspaces: a glass bar along the top of each monitor with the workspaces, the clock, the tray and the status icons, and the calendar, quick settings, notifications and the volume indicator that grow out of it.
-`shell-action "toggle-launcher"`, bound to <kbd>Super</kbd><kbd>D</kbd>, opens its launcher.
+`shell-action "toggle-launcher"` opens its launcher; the default config binds it to <kbd>Super</kbd><kbd>D</kbd>.
 
 The config names the shell, and bento starts it, and starts it again if it exits:
 

@@ -331,8 +331,11 @@ window-rule {
 // an XKB name for a particular key, you may use a program like wev. "Mod" is a special modifier
 // equal to Super when running on a TTY, and to Alt when running as a winit window. Most actions
 // you can bind can also be run with `bento msg action do-something`.
-//
-// binds {
-//     Mod+Return hotkey-overlay-title="Open a Terminal: foot" { spawn "foot"; }
-//     unbind { power-off-monitors; }
-// }
+binds {
+    // The shell's launcher. bento hands shell-action binds to the shell program, which declares
+    // no keys of its own; bento's own shell binds the launcher to this key too.
+    Mod+D { shell-action "toggle-launcher"; }
+
+    // Mod+Return hotkey-overlay-title="Open a Terminal: foot" { spawn "foot"; }
+    // unbind { power-off-monitors; }
+}

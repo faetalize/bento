@@ -13,13 +13,14 @@ use std::{env, mem, thread};
 use _server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationsMode;
 use anyhow::{bail, ensure, Context};
 use calloop::futures::Scheduler;
+use niri_config::bind_set::Declarer;
 use niri_config::debug::PreviewRender;
 use niri_config::input::XkbFile;
 use niri_config::output::MaxBpc;
 use niri_config::window_rule::VrrRule;
 use niri_config::{
-    Bind, Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
-    WorkspaceReference, Xkb,
+    Bind, Config, FloatOrInt, Key, ModKey, Modifiers, OutputName, TrackLayout,
+    WarpMouseToFocusMode, WorkspaceReference, Xkb,
 };
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::input::{InputTime, Keycode, TouchSlot};
@@ -188,7 +189,7 @@ use crate::scene::Band;
 use crate::screencasting::Screencasting;
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
-use crate::ui::hotkey_overlay::HotkeyOverlay;
+use crate::ui::hotkey_overlay::{ActionDescriptions, HotkeyOverlay};
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
@@ -474,6 +475,12 @@ pub struct Niri {
     pub overview_scroll_swipe_gesture: ScrollSwipeGesture,
     pub vertical_wheel_tracker: ScrollTracker,
     pub horizontal_wheel_tracker: ScrollTracker,
+    /// The binds in use, kept until what they're made from changes: see `refresh_binds`.
+    binds: Rc<niri_config::bind_set::Resolved>,
+    /// What `binds` were made from, or `None` when they're to be made again.
+    binds_made_from: Option<BindSources>,
+    /// The engine's and the shell's actions' descriptions, as their declarers give them.
+    action_descriptions: Rc<ActionDescriptions>,
     pub mods_with_mouse_binds: HashSet<Modifiers>,
     pub mods_with_horizontal_wheel_binds: HashSet<Modifiers>,
     pub mods_with_vertical_wheel_binds: HashSet<Modifiers>,
@@ -838,6 +845,19 @@ pub struct State {
     pub niri: Niri,
 }
 
+/// What the binds in use are made from, past the config.
+#[derive(Debug, PartialEq)]
+struct BindSources {
+    mod_key: ModKey,
+    /// The running engine's generation, which changes as an engine loads.
+    engine: u64,
+    /// The running shell's declared binds, the user's binds for its actions and the ones the user
+    /// turned off, if bento draws its own shell.
+    shell_defaults: Option<Vec<Bind>>,
+    shell_user: Option<Vec<Bind>>,
+    shell_unbound: Option<Vec<niri_config::Action>>,
+}
+
 impl State {
     pub fn new(
         config: Config,
@@ -973,7 +993,8 @@ impl State {
         self.niri.refresh_mapped_cast_window_rules();
 
         self.niri.refresh_window_rules();
-        self.niri.refresh_hotkey_overlay();
+        let mod_key = self.backend.mod_key(&self.niri.config.borrow());
+        self.niri.refresh_binds(mod_key);
         self.refresh_ipc_outputs();
         self.run_scene_actions();
         self.ipc_refresh();
@@ -1904,21 +1925,13 @@ impl State {
             preserved_output_config = Some(mem::take(&mut old_config.outputs));
         }
 
-        let binds_changed = config.binds != old_config.binds;
+        let binds_changed =
+            config.binds != old_config.binds || config.unbound != old_config.unbound;
         let new_mod_key = self.backend.mod_key(&config);
         let mut hotkey_overlay_changed =
             config.hotkey_overlay.hide_not_bound != old_config.hotkey_overlay.hide_not_bound;
         if new_mod_key != self.backend.mod_key(&old_config) || binds_changed {
             hotkey_overlay_changed = true;
-            self.niri.mods_with_mouse_binds = mods_with_mouse_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_horizontal_wheel_binds =
-                mods_with_horizontal_wheel_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_vertical_wheel_binds =
-                mods_with_vertical_wheel_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_tablet_stylus_binds =
-                mods_with_tablet_stylus_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_finger_scroll_binds =
-                mods_with_finger_scroll_binds(new_mod_key, &config.binds);
         }
         if hotkey_overlay_changed {
             self.niri
@@ -2051,8 +2064,9 @@ impl State {
         }
 
         if binds_changed {
-            self.niri.window_mru_ui.update_binds();
+            self.niri.binds_made_from = None;
         }
+        self.niri.refresh_binds(new_mod_key);
 
         if recent_windows_changed {
             self.niri.window_mru_ui.update_config();
@@ -2889,13 +2903,6 @@ impl Niri {
             CursorManager::new(&config_.cursor.xcursor_theme, config_.cursor.xcursor_size);
 
         let mod_key = backend.mod_key(&config.borrow());
-        let mods_with_mouse_binds = mods_with_mouse_binds(mod_key, &config_.binds);
-        let mods_with_horizontal_wheel_binds =
-            mods_with_horizontal_wheel_binds(mod_key, &config_.binds);
-        let mods_with_vertical_wheel_binds =
-            mods_with_vertical_wheel_binds(mod_key, &config_.binds);
-        let mods_with_finger_scroll_binds = mods_with_finger_scroll_binds(mod_key, &config_.binds);
-        let mods_with_tablet_stylus_binds = mods_with_tablet_stylus_binds(mod_key, &config_.binds);
 
         let screenshot_ui = ScreenshotUi::new(animation_clock.clone(), config.clone());
         let window_mru_ui = WindowMruUi::new(config.clone());
@@ -2904,14 +2911,8 @@ impl Niri {
         let mut wallpapers = Wallpapers::new(&event_loop);
         wallpapers.update(&config_);
 
-        let mut hotkey_overlay = HotkeyOverlay::new(config.clone(), mod_key);
-        if !config_.hotkey_overlay.skip_at_startup {
-            // The engine and the shell aren't running yet: bento's own binds and the user's.
-            let defaults = niri_config::bind_set::bento_defaults();
-            let binds =
-                niri_config::bind_set::resolve(&config_.binds.0, &config_.unbound, defaults);
-            hotkey_overlay.show(binds.in_use);
-        }
+        let hotkey_overlay = HotkeyOverlay::new(config.clone(), mod_key);
+        let show_hotkey_overlay = !config_.hotkey_overlay.skip_at_startup;
 
         let exit_confirm_dialog = ExitConfirmDialog::new(animation_clock.clone(), config.clone());
 
@@ -3131,15 +3132,18 @@ impl Niri {
             overview_scroll_swipe_gesture: ScrollSwipeGesture::new(),
             vertical_wheel_tracker: ScrollTracker::new(120),
             horizontal_wheel_tracker: ScrollTracker::new(120),
-            mods_with_mouse_binds,
-            mods_with_horizontal_wheel_binds,
-            mods_with_vertical_wheel_binds,
-            mods_with_tablet_stylus_binds,
+            binds: Rc::default(),
+            binds_made_from: None,
+            action_descriptions: Rc::default(),
+            mods_with_mouse_binds: HashSet::new(),
+            mods_with_horizontal_wheel_binds: HashSet::new(),
+            mods_with_vertical_wheel_binds: HashSet::new(),
+            mods_with_tablet_stylus_binds: HashSet::new(),
 
             // 10 is copied from Clutter: DISCRETE_SCROLL_STEP.
             vertical_finger_scroll_tracker: ScrollTracker::new(10),
             horizontal_finger_scroll_tracker: ScrollTracker::new(10),
-            mods_with_finger_scroll_binds,
+            mods_with_finger_scroll_binds: HashSet::new(),
 
             lock_state: LockState::Unlocked,
             locked_hint: None,
@@ -3181,6 +3185,12 @@ impl Niri {
         };
 
         niri.reset_pointer_inactivity_timer();
+
+        niri.refresh_binds(mod_key);
+        if show_hotkey_overlay {
+            // The engine and the shell may not run yet: the overlay shows theirs once they do.
+            niri.show_hotkey_overlay();
+        }
 
         niri
     }
@@ -4125,40 +4135,87 @@ impl Niri {
     }
 
     /// Which bind each key runs: the user's binds, with the defaults of bento, the running engine
-    /// and the running shell, as `bind_set::resolve` settles them.
-    pub fn resolved_binds(&self) -> niri_config::bind_set::Resolved {
-        let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
-        defaults.extend(crate::layout::tiling::engine::default_binds());
-        let config = self.config.borrow();
-        let mut user = config.binds.0.clone();
-        let mut unbound = config.unbound.clone();
-        if let Some(scene) = &self.scene {
-            defaults.extend(scene.default_binds());
-            // The user's binds for the shell's actions are in the shell's file.
-            user.extend(scene.user_binds());
-            unbound.extend(scene.unbound());
-        }
-        niri_config::bind_set::resolve(&user, &unbound, &defaults)
+    /// and the running shell, as `bind_set::resolve` settled them when `refresh_binds` last made
+    /// them.
+    pub fn resolved_binds(&self) -> Rc<niri_config::bind_set::Resolved> {
+        self.binds.clone()
     }
 
-    /// Keeps the open hotkey overlay showing the binds in use: it can open at startup before the
-    /// engine and the shell have declared theirs.
-    pub fn refresh_hotkey_overlay(&mut self) {
-        if !self.hotkey_overlay.is_open() {
+    /// Makes the binds in use again if what they're made from changed: the config, which marks
+    /// them to be made again as it loads, `mod_key`, the running engine, and the shell's declared
+    /// binds and the user's binds for its actions. Everything that reads the binds follows: the
+    /// modifiers that hold scrolls and buttons for binds, the switcher's keys, and the open hotkey
+    /// overlay, which can open at startup before the engine and the shell have declared theirs.
+    pub fn refresh_binds(&mut self, mod_key: ModKey) {
+        let sources = BindSources {
+            mod_key,
+            engine: crate::layout::tiling::engine::generation(),
+            shell_defaults: self.scene.as_ref().map(|s| s.default_binds()),
+            shell_user: self.scene.as_ref().map(|s| s.user_binds()),
+            shell_unbound: self.scene.as_ref().map(|s| s.unbound()),
+        };
+        if self.binds_made_from.as_ref() == Some(&sources) {
             return;
         }
-        let binds = self.resolved_binds().in_use;
-        if self.hotkey_overlay.update(binds) {
+
+        let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
+        defaults.extend(crate::layout::tiling::engine::default_binds());
+        defaults.extend(sources.shell_defaults.iter().flatten().cloned());
+        let config = self.config.borrow();
+        let mut user = config.binds.0.clone();
+        // The user's binds for the shell's actions are in the shell's file.
+        user.extend(sources.shell_user.iter().flatten().cloned());
+        let mut unbound = config.unbound.clone();
+        unbound.extend(sources.shell_unbound.iter().flatten().cloned());
+        drop(config);
+        let resolved = niri_config::bind_set::resolve(&user, &unbound, &defaults);
+
+        let in_use = &resolved.in_use;
+        self.mods_with_mouse_binds = mods_with_mouse_binds(mod_key, in_use);
+        self.mods_with_horizontal_wheel_binds = mods_with_horizontal_wheel_binds(mod_key, in_use);
+        self.mods_with_vertical_wheel_binds = mods_with_vertical_wheel_binds(mod_key, in_use);
+        self.mods_with_tablet_stylus_binds = mods_with_tablet_stylus_binds(mod_key, in_use);
+        self.mods_with_finger_scroll_binds = mods_with_finger_scroll_binds(mod_key, in_use);
+        self.window_mru_ui.update_binds(in_use);
+
+        let mut descriptions = ActionDescriptions::new();
+        let engine = crate::layout::tiling::engine::meta();
+        let engine = engine.into_iter().flat_map(|meta| meta.actions);
+        let engine = engine.map(|action| (Declarer::Engine, action));
+        let shell = self.scene.as_ref().map(|scene| {
+            let (_, source) = self.shell_entry();
+            scene.ipc_info(source).actions
+        });
+        let shell = shell.into_iter().flatten();
+        let shell = shell.map(|action| (Declarer::Shell, action.action));
+        for (declarer, action) in engine.chain(shell) {
+            if let Some(description) = action.description {
+                descriptions.insert((declarer, action.name), description);
+            }
+        }
+
+        self.binds = Rc::new(resolved);
+        self.action_descriptions = Rc::new(descriptions);
+        self.binds_made_from = Some(sources);
+
+        let binds = self.binds.in_use.clone();
+        let descriptions = self.action_descriptions.clone();
+        if self.hotkey_overlay.update(binds, descriptions) {
             self.queue_redraw_all();
         }
     }
 
-    /// The file of the shell's settings and binds: bento's own shells share
-    /// `~/.config/bento/shell.kdl`, and a shell file's is the one the config names, if any.
+    /// Shows the hotkey overlay with the binds in use. Returns whether it wasn't showing.
+    pub fn show_hotkey_overlay(&mut self) -> bool {
+        let binds = self.binds.in_use.clone();
+        let descriptions = self.action_descriptions.clone();
+        self.hotkey_overlay.show(binds, descriptions)
+    }
+
+    /// The file of the shell's settings and binds, as the config found it where it was read:
+    /// `shell.kdl` there for bento's own shells, and the one the config names for a shell file.
     pub fn shell_settings_file(&self) -> Option<std::path::PathBuf> {
-        let dir = directories::BaseDirs::new()?.config_dir().join("bento");
-        let config = self.config.borrow();
-        config.shell.clone().unwrap_or_default().settings_file(&dir)
+        self.config.borrow().shell_settings_file.clone()
     }
 
     /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps. It holds

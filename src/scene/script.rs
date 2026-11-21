@@ -4,7 +4,7 @@
 //! The shell is the one the config names: one of bento's own, like `bento:shells/unix`, or a file
 //! of one's own. Its default export is the root component, which bento's renderer, in the `bento`
 //! module, mounts. A changed file is loaded again; a shell that fails to load or throws leaves the
-//! last working one on screen, and the error is logged.
+//! last working one on screen with its settings, actions and binds, and the error is logged.
 //!
 //! Scripts never run per frame: only when something happens, like a click, a timer or bento's
 //! state changing. A call that runs too long is stopped.
@@ -50,6 +50,29 @@ impl std::fmt::Debug for Shell {
     }
 }
 
+/// A shell that failed to load, with the files it read before it did, to load it again when one
+/// changes.
+pub struct LoadError {
+    pub error: anyhow::Error,
+    pub files: Vec<PathBuf>,
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            write!(f, "{:#}", self.error)
+        } else {
+            write!(f, "{}", self.error)
+        }
+    }
+}
+
+impl std::fmt::Debug for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.error, f)
+    }
+}
+
 /// When the shell's files last changed, with bento's own read from `dir`, the shell starting
 /// from `entry`, and `loaded` the files it read, to load them again.
 pub fn mtimes(
@@ -76,20 +99,37 @@ fn state_path() -> Option<PathBuf> {
 impl Shell {
     /// Loads the shell that starts from module `entry` onto `outputs`, each its logical size,
     /// with bento's own shell and modules read from `dir` if it's given, and its settings from
-    /// `settings`.
+    /// `settings`. What the shell running before declared there stays until this one has loaded.
     pub fn load(
         outputs: &[(String, (f32, f32))],
         dir: Option<&Path>,
         entry: &str,
         style: serde_json::Value,
         settings: Rc<RefCell<Settings>>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, LoadError> {
         let sources = Rc::new(Sources::new(dir));
+        let before = settings.borrow_mut().take_declarations();
+        let loaded = Self::load_from(outputs, &sources, entry, style, settings.clone());
+        loaded.map_err(|error| {
+            settings.borrow_mut().put_back_declarations(before);
+            LoadError {
+                error,
+                files: sources.read.borrow().clone(),
+            }
+        })
+    }
+
+    fn load_from(
+        outputs: &[(String, (f32, f32))],
+        sources: &Rc<Sources>,
+        entry: &str,
+        style: serde_json::Value,
+        settings: Rc<RefCell<Settings>>,
+    ) -> anyhow::Result<Self> {
         #[cfg(test)]
         let entry = &super::modules::TEST_ENTRY
             .with(|test| test.borrow().clone())
             .unwrap_or_else(|| String::from(entry));
-        settings.borrow_mut().forget_declarations();
 
         let mut scene = Scene::new();
         for (name, size) in outputs {
@@ -433,7 +473,7 @@ impl Shell {
             dispatch: dispatch?,
             context,
             _runtime: runtime,
-            sources,
+            sources: sources.clone(),
         })
     }
 

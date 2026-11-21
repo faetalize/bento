@@ -256,6 +256,9 @@ pub struct SceneHost {
     loaded_mtimes: Option<(String, Mtimes)>,
     /// Why the shell the config names failed to load, if it did.
     load_error: Option<String>,
+    /// The files the shell the config names read as it failed to load, watched with the running
+    /// shell's, so that fixing any of them loads it again.
+    failed_files: Vec<PathBuf>,
     /// The shell's settings, which outlive a shell loading again.
     settings: Option<Rc<RefCell<Settings>>>,
     /// Whether bento's reference copy of the shell is written, for editors.
@@ -341,17 +344,23 @@ impl SceneHost {
                 .clone(),
         };
 
-        // A shell of one's own is watched by the files it read, not the folder it's in.
-        let loaded = self
+        // A shell of one's own is watched by the files it read, not the folder it's in, and by
+        // the ones it read as it failed to load.
+        let mut loaded = self
             .shell
             .as_ref()
             .map(|shell| shell.files())
             .unwrap_or_default();
+        loaded.extend(self.failed_files.iter().cloned());
         let mtimes = (String::from(entry), script::mtimes(dir, entry, &loaded));
         if self.loaded_mtimes.as_ref() != Some(&mtimes) {
             self.loaded_mtimes = Some(mtimes);
             let mut loaded = Shell::load(outputs, dir, entry, style.clone(), settings.clone());
             self.load_error = loaded.as_ref().err().map(|err| format!("{err:#}"));
+            self.failed_files = match &loaded {
+                Ok(_) => Vec::new(),
+                Err(err) => err.files.clone(),
+            };
             if let Err(err) = &loaded {
                 warn!("error loading the shell: {err:?}");
                 if self.shell.is_none() && entry != UNIX {
@@ -367,7 +376,8 @@ impl SceneHost {
                         shell.send(notification);
                     }
                     // What it read is known now: watch those from here on.
-                    let files = shell.files();
+                    let mut files = shell.files();
+                    files.extend(self.failed_files.iter().cloned());
                     self.loaded_mtimes =
                         Some((String::from(entry), script::mtimes(dir, entry, &files)));
                     self.shell = Some(shell);
@@ -379,7 +389,14 @@ impl SceneHost {
                     self.generation += 1;
                     settings.borrow().warn_problems();
                 }
-                Err(err) => warn!("error loading the shell: {err:?}"),
+                Err(err) => {
+                    warn!("error loading the shell: {err:?}");
+                    // What it read is known now too.
+                    let mut files = self.shell.as_ref().map(Shell::files).unwrap_or_default();
+                    files.extend(self.failed_files.iter().cloned());
+                    self.loaded_mtimes =
+                        Some((String::from(entry), script::mtimes(dir, entry, &files)));
+                }
             }
         } else if settings.borrow_mut().reload_if_changed() || other_file {
             if let Some(shell) = &self.shell {
@@ -2243,6 +2260,68 @@ mod tests {
         assert_eq!(row(&host, 6), 25.);
         std::fs::remove_dir_all(&dir).unwrap();
         super::super::modules::TEST_ENTRY.with(|e| *e.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_shell_that_fails_to_load_leaves_the_running_one_its_actions_and_binds() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, _) = loaded(serde_json::json!({ "gaps": 8 }));
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+        let actions = |host: &SceneHost| -> Vec<String> {
+            let info = host.ipc_info(bento_ipc::ShellSource::BuiltIn {
+                name: String::from("windows"),
+            });
+            info.actions.into_iter().map(|a| a.action.name).collect()
+        };
+        let before = (actions(&host), host.default_binds());
+        assert!(before.0.contains(&String::from("toggle-start-menu")));
+
+        // A shell of one's own with a mistake in it.
+        let dir = std::env::temp_dir().join(format!("bento-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mine.tsx");
+        std::fs::write(&file, "export default () => <box>;\n").unwrap();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = file.to_string_lossy().into_owned();
+        host.ensure_loaded(
+            &outputs,
+            None,
+            &entry,
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(host.load_error.is_some());
+        assert_eq!((actions(&host), host.default_binds()), before);
+    }
+
+    #[test]
+    fn a_shell_that_failed_to_load_loads_once_a_file_it_imports_is_fixed() {
+        let dir = std::env::temp_dir().join(format!("bento-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tsx");
+        std::fs::write(
+            &main,
+            "import Bar from \"./bar\";\nexport default () => <Bar />;\n",
+        )
+        .unwrap();
+        let bar = dir.join("bar.tsx");
+        std::fs::write(&bar, "export default () => <box>;\n").unwrap();
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = main.to_string_lossy().into_owned();
+        let style = serde_json::json!({ "gaps": 8 });
+        host.ensure_loaded(&outputs, None, &entry, None, style.clone());
+        assert!(host.load_error.is_some());
+
+        std::fs::write(&bar, "export default () => <box />;\n").unwrap();
+        let later = SystemTime::now() + std::time::Duration::from_secs(5);
+        let opened = std::fs::File::options().write(true).open(&bar).unwrap();
+        opened.set_modified(later).unwrap();
+        host.ensure_loaded(&outputs, None, &entry, None, style);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(host.load_error, None);
     }
 
     fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {

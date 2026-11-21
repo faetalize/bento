@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use niri_config::{engine_config_path, Config};
+use niri_config::{engine_config_path, shell_settings_path, Config};
 
 use crate::kdl::Document;
 
@@ -423,13 +423,6 @@ fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
         write(path, text)?;
     }
     Ok(Saved { written, config })
-}
-
-/// The shell's file in `config`, read from `config_path`: `shell.kdl` next to it for bento's own
-/// shells, and the one the config names for a shell file, if it does.
-pub fn shell_settings_path(config_path: &Path, config: &Config) -> Option<PathBuf> {
-    let dir = config_path.parent().unwrap_or(Path::new(""));
-    config.shell.clone().unwrap_or_default().settings_file(dir)
 }
 
 /// Applies edits to the file at `path` as it is now, so changes made elsewhere since are kept.

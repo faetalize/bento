@@ -126,6 +126,26 @@ impl Shell {
     }
 }
 
+/// The file of the shell's settings and binds for the config at `config_path`, as bento Settings
+/// finds it: the same file bento reads, which [`shell_settings_path_in`] finds as the config is
+/// parsed.
+pub fn shell_settings_path(
+    config_path: &std::path::Path,
+    config: &crate::Config,
+) -> Option<std::path::PathBuf> {
+    let dir = config_path.parent().unwrap_or(std::path::Path::new(""));
+    shell_settings_path_in(dir, config.shell.as_ref())
+}
+
+/// The file of the shell's settings and binds for a config read from the folder `dir`, with
+/// `shell` its `shell` section: see [`Shell::settings_file`].
+pub fn shell_settings_path_in(
+    dir: &std::path::Path,
+    shell: Option<&Shell>,
+) -> Option<std::path::PathBuf> {
+    shell.cloned().unwrap_or_default().settings_file(dir)
+}
+
 /// Which shell bento draws, the way the config names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellScript {

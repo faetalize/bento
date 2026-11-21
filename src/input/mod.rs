@@ -7,8 +7,7 @@ use calloop::timer::{TimeoutAction, Timer};
 use calloop::RegistrationToken;
 use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
-    Action, Bind, Binds, BoundAction, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds,
-    Trigger,
+    Action, Bind, BoundAction, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
 };
 use niri_ipc::LayoutSwitchTarget;
 use smithay::backend::input::{
@@ -712,11 +711,11 @@ impl State {
                 let engine_info =
                     (engine_grabbed || is_searching).then(|| engine_grab::key_info(&keysym));
                 let res = {
-                    let shortcuts = this.niri.resolved_binds().in_use;
+                    let shortcuts = this.niri.resolved_binds();
                     let config = this.niri.config.borrow();
                     let bindings = make_binds_iter(
                         &config,
-                        &shortcuts,
+                        &shortcuts.in_use,
                         &this.niri.screenshot_ui,
                         &mut this.niri.window_mru_ui,
                         this.niri.keyboard_focus.is_overview(),
@@ -1687,8 +1686,7 @@ impl State {
                 self.niri.queue_redraw_all();
             }
             Action::ShowHotkeyOverlay => {
-                let binds = self.niri.resolved_binds().in_use;
-                if self.niri.hotkey_overlay.show(binds) {
+                if self.niri.show_hotkey_overlay() {
                     self.niri.queue_redraw_all();
 
                     #[cfg(feature = "dbus")]
@@ -2450,11 +2448,11 @@ impl State {
     ) -> Option<Bind> {
         let modifiers = modifiers_from_state(mods);
 
-        let shortcuts = self.niri.resolved_binds().in_use;
+        let shortcuts = self.niri.resolved_binds();
         let config = self.niri.config.borrow();
         let bindings = make_binds_iter(
             &config,
-            &shortcuts,
+            &shortcuts.in_use,
             &self.niri.screenshot_ui,
             &mut self.niri.window_mru_ui,
             self.niri.keyboard_focus.is_overview(),
@@ -5158,9 +5156,13 @@ pub fn apply_libinput_settings(
     }
 }
 
-pub fn mods_with_binds(mod_key: ModKey, binds: &Binds, triggers: &[Trigger]) -> HashSet<Modifiers> {
+pub fn mods_with_binds(
+    mod_key: ModKey,
+    binds: &[Bind],
+    triggers: &[Trigger],
+) -> HashSet<Modifiers> {
     let mut rv = HashSet::new();
-    for bind in &binds.0 {
+    for bind in binds {
         if !triggers.contains(&bind.key.trigger) {
             continue;
         }
@@ -5177,7 +5179,7 @@ pub fn mods_with_binds(mod_key: ModKey, binds: &Binds, triggers: &[Trigger]) -> 
     rv
 }
 
-pub fn mods_with_mouse_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_mouse_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5191,7 +5193,7 @@ pub fn mods_with_mouse_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifier
     )
 }
 
-pub fn mods_with_horizontal_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_horizontal_wheel_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5199,7 +5201,7 @@ pub fn mods_with_horizontal_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashS
     )
 }
 
-pub fn mods_with_vertical_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_vertical_wheel_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5207,7 +5209,7 @@ pub fn mods_with_vertical_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashSet
     )
 }
 
-pub fn mods_with_finger_scroll_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_finger_scroll_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5220,7 +5222,7 @@ pub fn mods_with_finger_scroll_binds(mod_key: ModKey, binds: &Binds) -> HashSet<
     )
 }
 
-pub fn mods_with_tablet_stylus_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_tablet_stylus_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5325,6 +5327,8 @@ fn make_binds_iter<'a>(
 
 #[cfg(test)]
 mod tests {
+    use niri_config::Binds;
+
     use super::*;
 
     #[test]

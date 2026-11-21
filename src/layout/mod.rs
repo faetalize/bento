@@ -3904,10 +3904,24 @@ impl<W: LayoutElement> Layout<W> {
         };
 
         let move_ = match move_ {
-            InteractiveMoveState::Engine { window_id, .. } => {
+            InteractiveMoveState::Engine {
+                window_id,
+                output,
+                pointer_pos_within_output,
+            } => {
                 if window_id != window {
                     return;
                 }
+                // Dropped where a new workspace would go, like between two in the overview.
+                let new_at = dropped
+                    .then(|| self.monitor_for_output(output))
+                    .flatten()
+                    .and_then(
+                        |mon| match mon.insert_position(*pointer_pos_within_output) {
+                            (InsertWorkspace::NewAt(idx), _) => Some((output.clone(), idx)),
+                            (InsertWorkspace::Existing(_), _) => None,
+                        },
+                    );
                 self.interactive_move = None;
 
                 for mon in self.monitors_mut() {
@@ -3915,6 +3929,12 @@ impl<W: LayoutElement> Layout<W> {
                 }
 
                 self.end_drag(window, dropped);
+
+                // Workspaces are bento's, so bento makes the new one and moves the window there,
+                // after the engine heard the drag end.
+                if let Some((output, idx)) = new_at {
+                    self.move_to_new_workspace(window, &output, idx);
+                }
                 return;
             }
             InteractiveMoveState::Starting { window_id, .. } => {
@@ -4059,6 +4079,28 @@ impl<W: LayoutElement> Layout<W> {
                     None,
                 );
             }
+        }
+    }
+
+    /// Moves `window` to a new workspace at `idx` on `output`'s monitor, or to the empty one
+    /// already at that end of its stack.
+    fn move_to_new_workspace(&mut self, window: &W::Id, output: &Output, idx: usize) {
+        let Some(mon) = self.monitor_for_output_mut(output) else {
+            return;
+        };
+        let ws_idx = if mon.options.layout.empty_workspace_above_first && idx == 0 {
+            0
+        } else if mon.workspaces.len() - 1 <= idx {
+            mon.workspaces.len() - 1
+        } else {
+            mon.add_workspace_at(idx);
+            idx
+        };
+        let on_output = mon.has_window(window);
+        if on_output {
+            self.move_to_workspace_inner(Some(window), ws_idx, ActivateWindow::No);
+        } else {
+            self.move_to_output_inner(Some(window), output, Some(ws_idx), ActivateWindow::No);
         }
     }
 

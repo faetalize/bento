@@ -1222,8 +1222,11 @@ mod tests {
             // A built-in engine's file starts empty: its defaults are the engine's.
             let config = Config::parse_mem_with_engine(&main, "")
                 .unwrap_or_else(|err| panic!("{name}: {:?}", miette::Report::new(err)));
-            // An engine's default keys are in its declarations, and the main config has none.
-            assert!(config.binds.0.is_empty(), "{name}");
+            // An engine's default keys are in its declarations, and the main config binds none
+            // of its actions.
+            let engines = config.binds.0.iter().filter_map(crate::bind_set::action_of);
+            let engines = engines.filter(|action| matches!(action, Action::LayoutAction(..)));
+            assert_eq!(engines.count(), 0, "{name}");
         }
     }
 

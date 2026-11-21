@@ -11,7 +11,11 @@
 //!
 //! An action can say the key it's bound to by default. The binds are bento's while the module
 //! runs: they take keys over from the main config, as an engine's file does, and a bind of the
-//! action's own in its block replaces its default.
+//! action's own in its block replaces its default. A bind in the file for an action the running
+//! shell doesn't declare, like another shell's, takes no key: bento says so as it reads the file,
+//! and it stays there.
+//!
+//! The file is edited as it is on disk; while it has an error, nothing is written to it.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -34,7 +38,7 @@ pub struct Settings {
     path: Option<PathBuf>,
     /// When the file last changed, as it was read.
     mtime: Option<SystemTime>,
-    /// The file's text as it was read, to edit.
+    /// The file's text as it was last read, which may have an error.
     text: String,
     /// The settings the file sets.
     file: ShellSettings,
@@ -50,6 +54,14 @@ pub struct Settings {
     /// What a test writes to the file, which reads as a change.
     #[cfg(test)]
     written: Option<String>,
+}
+
+/// What a shell declared, kept while another loads in its place.
+#[derive(Debug)]
+pub struct Declarations {
+    declared: Vec<(String, Vec<SettingMeta>)>,
+    actions: Vec<(String, LayoutEngineAction)>,
+    binds: Vec<(String, Bind)>,
 }
 
 impl Settings {
@@ -79,13 +91,44 @@ impl Settings {
         true
     }
 
-    /// The user's binds for the shell's actions, from the file's blocks.
+    /// The user's binds for the running shell's actions, from the file's blocks. Binds for actions
+    /// it doesn't declare, like another shell's, stay in the file and take no key.
     pub fn user_binds(&self) -> Vec<Bind> {
         self.file
             .binds
             .iter()
+            .filter(|(_, bind)| self.declares(bind))
             .map(|(_, bind)| bind.clone())
             .collect()
+    }
+
+    /// The actions the file binds that the running shell doesn't declare, each with its block.
+    pub fn undeclared_binds(&self) -> Vec<String> {
+        let mut undeclared = Vec::new();
+        for (block, bind) in &self.file.binds {
+            if self.declares(bind) {
+                continue;
+            }
+            let name = match bind_set::action_of(bind) {
+                Some(niri_config::Action::ShellAction(name, _)) => name.clone(),
+                action => format!("{action:?}"),
+            };
+            let named = format!("{block}.{name}");
+            if !undeclared.contains(&named) {
+                undeclared.push(named);
+            }
+        }
+        undeclared
+    }
+
+    /// Whether `bind` runs an action the running shell declares.
+    fn declares(&self, bind: &Bind) -> bool {
+        match bind_set::action_of(bind) {
+            Some(niri_config::Action::ShellAction(name, _)) => {
+                self.actions.iter().any(|(_, action)| action.name == *name)
+            }
+            _ => false,
+        }
     }
 
     /// The shell's actions the user turned off in the file's blocks.
@@ -139,10 +182,11 @@ impl Settings {
     }
 
     fn take_text(&mut self, text: String) {
-        match ShellSettings::parse(&text) {
+        let parsed = ShellSettings::parse(&text);
+        self.text = text;
+        match parsed {
             Ok(file) => {
                 self.file = file;
-                self.text = text;
                 self.error = None;
             }
             Err(err) => {
@@ -160,11 +204,21 @@ impl Settings {
         self.written = Some(String::from(text));
     }
 
-    /// Forgets what the shell declared, for a shell loading again to declare it anew.
-    pub fn forget_declarations(&mut self) {
-        self.declared.clear();
-        self.actions.clear();
-        self.binds.clear();
+    /// Takes what the shell declared away, for a shell loading again to declare it anew.
+    pub fn take_declarations(&mut self) -> Declarations {
+        Declarations {
+            declared: std::mem::take(&mut self.declared),
+            actions: std::mem::take(&mut self.actions),
+            binds: std::mem::take(&mut self.binds),
+        }
+    }
+
+    /// Puts back what a shell declared, in place of what's declared now, as when the shell
+    /// loading in its place fails to.
+    pub fn put_back_declarations(&mut self, declarations: Declarations) {
+        self.declared = declarations.declared;
+        self.actions = declarations.actions;
+        self.binds = declarations.binds;
     }
 
     /// Takes what module or shell `name` declares, its settings and actions as the JSON arrays
@@ -306,16 +360,27 @@ impl Settings {
             bail!("{name}'s setting {setting:?} {problem}");
         }
 
-        let mut doc = Document::parse(self.text.clone())
-            .map_err(|_| anyhow!("the settings file has an error, so it's left as it is"))?;
+        // The file as it is now, with what was typed in it since it was read. One with an error
+        // is left as it is until it's fixed.
+        let text = self.on_disk()?;
+        if let Err(err) = ShellSettings::parse(&text) {
+            warn!(
+                "the shell's settings file has an error, so {name}'s setting {setting:?} isn't \
+                 written: {:?}",
+                miette::Report::new(err)
+            );
+            bail!("the settings file has an error, so it's left as it is");
+        }
+        let mut doc = Document::parse(text)?;
         if value.is_none() || value == declared.default {
             doc.remove(&path);
         } else {
             doc.set_node(&path, option_values(&value), option_properties(&value));
         }
         let text = String::from(doc.text());
-        if self.path.is_none() && !cfg!(test) {
-            bail!("the shell has no settings file, so its settings can't change");
+        #[cfg(test)]
+        {
+            self.written = None;
         }
         if let Some(file) = &self.path {
             if let Some(dir) = file.parent() {
@@ -327,6 +392,25 @@ impl Settings {
         }
         self.take_text(text);
         Ok(())
+    }
+
+    /// The file's text as it is now: empty while it doesn't exist.
+    fn on_disk(&self) -> anyhow::Result<String> {
+        #[cfg(test)]
+        if let Some(text) = &self.written {
+            return Ok(text.clone());
+        }
+        let Some(file) = &self.path else {
+            if cfg!(test) {
+                return Ok(self.text.clone());
+            }
+            bail!("the shell has no settings file, so its settings can't change");
+        };
+        match std::fs::read_to_string(file) {
+            Ok(text) => Ok(text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(err) => Err(err).with_context(|| format!("error reading {}", file.display())),
+        }
     }
 
     /// What the file sets that nothing running declares, as `name` for a whole block or
@@ -363,6 +447,14 @@ impl Settings {
                 "the shell's settings file sets what the running shell doesn't declare, which \
                  stays in the file: {}",
                 unused.join(", ")
+            );
+        }
+        let undeclared = self.undeclared_binds();
+        if !undeclared.is_empty() {
+            warn!(
+                "the shell's settings file binds actions the running shell doesn't declare, \
+                 which take no key and stay in the file: {}",
+                undeclared.join(", ")
             );
         }
         for problem in wrong {
@@ -440,6 +532,29 @@ mod tests {
     }
 
     #[test]
+    fn a_setting_is_not_written_over_a_file_that_has_an_error() {
+        let mut settings = Settings::from_text("clock {\n    seconds true\n}\n");
+        settings.declare("taskbar", TASKBAR, "[]").unwrap();
+        // Typed since it was last read, with an error.
+        let typed = "clock {\n    seconds true\n}\nwindows {\n    height 60\n";
+        settings.write_file(typed);
+        assert!(settings.set("taskbar", "pinned", r#"["firefox"]"#).is_err());
+        // Read, as it is too once bento sees it changed.
+        assert!(settings.reload_if_changed());
+        assert!(settings.error().is_some());
+        assert!(settings.set("taskbar", "pinned", r#"["firefox"]"#).is_err());
+        assert_eq!(settings.text, typed);
+        assert!(settings.error().is_some());
+        assert_eq!(settings.values("taskbar")["pinned"], json!([]));
+
+        // Fixed, it takes settings again.
+        let fixed = "clock {\n    seconds true\n}\nwindows {\n    height 60\n}\n";
+        settings.write_file(fixed);
+        settings.set("taskbar", "pinned", r#"["firefox"]"#).unwrap();
+        assert!(settings.text.starts_with(fixed), "{}", settings.text);
+    }
+
+    #[test]
     fn modules_declare_actions_that_no_other_module_or_bento_has() {
         let mut settings = Settings::from_text("");
         let switch = r#"[{ "name": "switch-audio-output", "description": "Switch.", "args": [] }]"#;
@@ -492,6 +607,20 @@ mod tests {
         // Loading again, a module's binds are its new ones.
         settings.declare("start-menu", "[]", "[]").unwrap();
         assert_eq!(settings.binds().len(), 1);
+    }
+
+    #[test]
+    fn only_binds_for_actions_the_running_shell_declares_count() {
+        // A bind left from the unix shell's launcher, under the windows shell's start menu.
+        let text = "launcher {\n    binds {\n        Mod+D { toggle-launcher; }\n    }\n}\n\
+                    start-menu {\n    binds {\n        Mod+S { toggle-start-menu; }\n    }\n}\n";
+        let mut settings = Settings::from_text(text);
+        let start = r#"[{ "name": "toggle-start-menu", "args": [], "binds": [{ "key": "Mod" }] }]"#;
+        settings.declare("start-menu", "[]", start).unwrap();
+        let keys: Vec<Key> = settings.user_binds().into_iter().map(|b| b.key).collect();
+        assert_eq!(keys, ["Mod+S".parse().unwrap()]);
+        // Said once, as the file is read, not as keys are pressed.
+        assert_eq!(settings.undeclared_binds(), ["launcher.toggle-launcher"]);
     }
 
     #[test]

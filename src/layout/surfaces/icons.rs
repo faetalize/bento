@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use std::{env, fs};
 
@@ -223,10 +223,12 @@ const THEME_AGE: Duration = Duration::from_secs(5);
 
 type ThemeKey = (Vec<PathBuf>, String);
 
-/// Themes read from disk, by their base directories and name, with when each was read.
+/// Themes read from disk, by their base directories and name, with when each was read, and the
+/// themes being read for the first time.
 #[derive(Default)]
 struct ThemeCache {
     themes: HashMap<ThemeKey, (Instant, Option<Arc<ThemeFiles>>)>,
+    reading: HashSet<ThemeKey>,
 }
 
 /// What the cache has for a theme.
@@ -235,6 +237,8 @@ enum Cached {
     Fresh(Option<Arc<ThemeFiles>>),
     /// A theme read a while ago, to use while it's read again.
     Stale(Option<Arc<ThemeFiles>>),
+    /// A theme read for the first time on another thread, to wait for.
+    Reading,
     /// Nothing usable: the theme is to be read now.
     Missing,
 }
@@ -244,7 +248,11 @@ impl ThemeCache {
     /// the caller to read again, and as fresh meanwhile.
     fn lookup(&mut self, key: &ThemeKey, now: Instant) -> Cached {
         let Some((read, files)) = self.themes.get_mut(key) else {
-            return Cached::Missing;
+            return if self.reading.contains(key) {
+                Cached::Reading
+            } else {
+                Cached::Missing
+            };
         };
         if now.duration_since(*read) < THEME_AGE {
             return Cached::Fresh(files.clone());
@@ -254,11 +262,19 @@ impl ThemeCache {
     }
 
     fn store(&mut self, key: ThemeKey, files: Option<Arc<ThemeFiles>>, now: Instant) {
+        self.reading.remove(&key);
         self.themes.insert(key, (now, files));
+    }
+
+    /// Notes that `key` is being read for the first time. Returns whether it wasn't already.
+    fn start_reading(&mut self, key: &ThemeKey) -> bool {
+        self.reading.insert(key.clone())
     }
 }
 
 static CACHE: Mutex<Option<ThemeCache>> = Mutex::new(None);
+/// Wakes lookups waiting for a theme that's read for the first time.
+static READ: Condvar = Condvar::new();
 
 /// Reads `theme` from disk into the cache.
 fn read_theme(key: ThemeKey) -> Option<Arc<ThemeFiles>> {
@@ -268,6 +284,7 @@ fn read_theme(key: ThemeKey) -> Option<Arc<ThemeFiles>> {
     cache
         .get_or_insert_with(ThemeCache::default)
         .store(key, files.clone(), Instant::now());
+    READ.notify_all();
     files
 }
 
@@ -276,25 +293,32 @@ fn read_theme(key: ThemeKey) -> Option<Arc<ThemeFiles>> {
 /// first time. After that, it's read again on another thread, while lookups use the one there is.
 fn cached_theme(base_dirs: &[PathBuf], theme: &str) -> Option<Arc<ThemeFiles>> {
     let key = (base_dirs.to_vec(), theme.to_owned());
-    let cached = CACHE
-        .lock()
-        .unwrap()
-        .get_or_insert_with(ThemeCache::default)
-        .lookup(&key, Instant::now());
-    match cached {
-        Cached::Fresh(files) => files,
-        Cached::Stale(files) => {
-            let spawned = std::thread::Builder::new()
-                .name(String::from("icon theme reader"))
-                .spawn(move || {
-                    read_theme(key);
-                });
-            if let Err(err) = spawned {
-                warn!("error starting to read the icon theme again: {err:?}");
+    let mut guard = CACHE.lock().unwrap();
+    loop {
+        let cache = guard.get_or_insert_with(ThemeCache::default);
+        match cache.lookup(&key, Instant::now()) {
+            Cached::Fresh(files) => return files,
+            Cached::Stale(files) => {
+                drop(guard);
+                let spawned = std::thread::Builder::new()
+                    .name(String::from("icon theme reader"))
+                    .spawn(move || {
+                        read_theme(key);
+                    });
+                if let Err(err) = spawned {
+                    warn!("error starting to read the icon theme again: {err:?}");
+                }
+                return files;
             }
-            files
+            Cached::Missing => {
+                cache.start_reading(&key);
+                drop(guard);
+                return read_theme(key);
+            }
+            // Read once, by whoever started: the theme read ahead at startup is usually done by
+            // the time an icon is first drawn.
+            Cached::Reading => guard = READ.wait(guard).unwrap(),
         }
-        Cached::Missing => read_theme(key),
     }
 }
 
@@ -372,6 +396,22 @@ fn find_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_theme_read_for_the_first_time_is_waited_for_rather_than_read_again() {
+        let mut cache = ThemeCache::default();
+        let key = (vec![PathBuf::from("/icons")], String::from("Test"));
+        let now = Instant::now();
+        assert!(matches!(cache.lookup(&key, now), Cached::Missing));
+        assert!(cache.start_reading(&key));
+
+        // Like bento reading the theme ahead on another thread while an icon is looked up.
+        assert!(matches!(cache.lookup(&key, now), Cached::Reading));
+        assert!(!cache.start_reading(&key));
+
+        cache.store(key.clone(), Some(Arc::new(ThemeFiles::default())), now);
+        assert!(matches!(cache.lookup(&key, now), Cached::Fresh(Some(_))));
+    }
 
     #[test]
     fn a_theme_past_its_age_is_used_while_it_is_read_again() {

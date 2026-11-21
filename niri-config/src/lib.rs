@@ -103,6 +103,9 @@ pub struct Config {
     pub spawn_at_startup: Vec<SpawnAtStartup>,
     pub spawn_sh_at_startup: Vec<SpawnShAtStartup>,
     pub shell: Option<Shell>,
+    /// The file of the shell's settings and binds, as [`shell_settings_path_in`] finds it for the
+    /// folder the config was read from. None for a config that isn't on disk.
+    pub shell_settings_file: Option<PathBuf>,
     pub location: Location,
     pub layout: Layout,
     pub tiling: Tiling,
@@ -563,7 +566,11 @@ impl Config {
             "default config must not have includes",
         );
 
-        res.config.unwrap()
+        // It isn't read from the user's folder, so it has no shell's file there.
+        Self {
+            shell_settings_file: None,
+            ..res.config.unwrap()
+        }
     }
 
     pub fn load(path: &Path) -> ConfigParseResult<Self, miette::Report> {
@@ -684,13 +691,21 @@ impl Config {
             }
         }
 
-        let config = part.map(|_| config.take());
+        let config = part.map(|_| {
+            let mut config = config.take();
+            config.shell_settings_file = shell_settings_path_in(dir, config.shell.as_ref());
+            config
+        });
         ConfigParseResult { config, includes }
     }
 
     /// Parses a config that isn't on disk, without an engine file.
     pub fn parse_mem(text: &str) -> Result<Self, ConfigIncludeError> {
-        Self::parse_inner(Path::new("config.kdl"), Path::new(""), text, None).config
+        let config = Self::parse_inner(Path::new("config.kdl"), Path::new(""), text, None).config;
+        config.map(|config| Self {
+            shell_settings_file: None,
+            ..config
+        })
     }
 
     /// Parses a config that isn't on disk, with `engine` as the running engine's file.
@@ -1919,6 +1934,7 @@ mod tests {
                 },
             ],
             shell: None,
+            shell_settings_file: None,
             location: Location {
                 name: None,
                 latitude: None,
@@ -3227,6 +3243,41 @@ mod tests {
     }
 
     #[test]
+    fn the_shells_settings_file_is_next_to_the_config_it_was_read_from() {
+        // A config given with `-c` or `NIRI_CONFIG`: bento's own shells' file is next to it, where
+        // bento Settings writes it.
+        let path = Path::new("/somewhere/else/config.kdl");
+        let config = Config::parse(path, "").config.unwrap();
+        let next_to = Some(PathBuf::from("/somewhere/else/shell.kdl"));
+        assert_eq!(config.shell_settings_file, next_to);
+        assert_eq!(shell_settings_path(path, &config), next_to);
+        // A shell file's is the one the config names, from the config's folder.
+        let text = "shell {\n    script \"/src/mine.tsx\" settings=\"mine.kdl\"\n}\n";
+        let config = Config::parse(path, text).config.unwrap();
+        let named = Some(PathBuf::from("/somewhere/else/mine.kdl"));
+        assert_eq!(config.shell_settings_file, named);
+        assert_eq!(shell_settings_path(path, &config), named);
+        // A config that isn't on disk has none.
+        assert_eq!(do_parse("").shell_settings_file, None);
+
+        // The system's config, read while the user has none, has it in the user's folder, as the
+        // engines' files are.
+        let dir = std::env::temp_dir().join(format!("bento-shell-file-{}", std::process::id()));
+        fs::create_dir_all(dir.join("etc")).unwrap();
+        fs::write(dir.join("etc/config.kdl"), "").unwrap();
+        let config_path = ConfigPath::Regular {
+            user_path: dir.join("user/config.kdl"),
+            system_path: dir.join("etc/config.kdl"),
+        };
+        let config = config_path.load().config;
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            config.unwrap().shell_settings_file,
+            Some(dir.join("user/shell.kdl"))
+        );
+    }
+
+    #[test]
     fn a_shell_file_has_the_settings_file_the_config_names_and_no_other() {
         let dir = Path::new("/home/me/.config/bento");
         let shell = |text: &str| do_parse(text).shell.unwrap();
@@ -3262,6 +3313,7 @@ mod tests {
         // will not have any binds. Clear them out so they don't spam the diff.
         default_config.window_rules.clear();
         default_config.binds.0.clear();
+        default_config.bind_files.0.clear();
 
         assert_snapshot!(
             diff_lines(
