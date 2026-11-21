@@ -12,7 +12,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use niri_config::{OutputName, TilingOption, WorkspaceReference};
@@ -116,6 +116,19 @@ fn silenced<R>(f: impl FnOnce() -> R) -> R {
 
 fn take_queue() -> Vec<Queued> {
     QUEUE.with_borrow_mut(std::mem::take)
+}
+
+/// Longest a step of handling an event may take before it's logged as slow: about a frame.
+const SLOW: Duration = Duration::from_millis(16);
+
+/// Logs a step of handling an event of type `kind` that took longer than a frame.
+fn note_slow(step: &str, kind: &str, took: Duration) {
+    if took > SLOW {
+        warn!(
+            "{step} for {kind:?} took {:.1} ms",
+            took.as_secs_f64() * 1000.
+        );
+    }
 }
 
 /// Sends a call to the layout engine and reads its answer.
@@ -795,11 +808,15 @@ impl<W: LayoutElement> Layout<W> {
         anim: Option<niri_config::Animation>,
         transaction: Option<Transaction>,
     ) -> Option<Value> {
+        let kind = event["type"].as_str().unwrap_or("?").to_owned();
         let call_json = match sync {
             Some(sync) => json!({ "sync": sync, "event": event }),
             None => json!({ "event": event }),
         };
-        match call(&call_json) {
+        let started = Instant::now();
+        let called = call(&call_json);
+        note_slow("layout engine call", &kind, started.elapsed());
+        match called {
             Ok(out) => {
                 self.host.failures = 0;
                 let result = out.result.clone();
@@ -818,7 +835,13 @@ impl<W: LayoutElement> Layout<W> {
                 if out.state_changed {
                     self.host.state_changed = true;
                 }
+                let started = Instant::now();
                 silenced(|| self.apply_output(out, anim, transaction));
+                note_slow(
+                    "applying the layout engine's answer",
+                    &kind,
+                    started.elapsed(),
+                );
                 Some(result)
             }
             Err(err) => {

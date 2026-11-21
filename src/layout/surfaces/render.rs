@@ -679,7 +679,16 @@ fn draw_image<R: NiriRenderer>(
         .as_ref()
         .is_none_or(|cached| cached.key != key)
     {
-        let texture = load_image(&key).and_then(|buffer| {
+        let started = std::time::Instant::now();
+        let loaded = load_image(&key);
+        let took = started.elapsed();
+        if took > std::time::Duration::from_millis(16) {
+            warn!(
+                "loading the image {name:?} took {:.1} ms",
+                took.as_secs_f64() * 1000.
+            );
+        }
+        let texture = loaded.and_then(|buffer| {
             Ok(TextureBuffer::from_memory_buffer(
                 renderer.as_gles_renderer(),
                 &buffer,

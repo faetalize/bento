@@ -2774,6 +2774,7 @@ impl<W: LayoutElement> Layout<W> {
             return false;
         }
 
+        surfaces::icons::warm(theme);
         let options = Options {
             icon_theme: theme.to_owned(),
             ..Options::clone(&self.options)

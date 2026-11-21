@@ -2705,7 +2705,10 @@ impl Niri {
 
         let icon_theme = IconTheme::new();
         let mut layout = Layout::new(animation_clock.clone(), &config_);
-        layout.set_icon_theme(icon_theme.name());
+        // The theme is read ahead, so that the first icons don't wait for the disk.
+        if !layout.set_icon_theme(icon_theme.name()) {
+            crate::layout::surfaces::icons::warm(icon_theme.name());
+        }
         if let Err(problems) = crate::layout::tiling::engine::check(&config_) {
             for problem in problems {
                 warn!("{problem}");
