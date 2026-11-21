@@ -542,7 +542,7 @@ Everything else is bento's own and bound in the main config: spawning, screensho
 Grouping is bento's too. A group is a set of windows that engines can address together, and which one is active, nothing more: it doesn't mean tabs, or one place in the layout, or that only one of its windows shows. How it looks is up to the engine, which can show tabs, a carousel or anything else.
 `group-window-left`, `group-window-right`, `group-window-up` and `group-window-down` group the focused window with the nearest one in that direction, by where the engine put them, and `ungroup-window` takes it out.
 Engines can group windows too, and read the groups, through `bento.groups` and `bento.createGroup`.
-Floating windows can't be in a group, and a window that closes, floats or is dragged out leaves its group.
+Floating windows can't be in a group, and a window that closes or floats leaves its group; a dragged window keeps its group, unless the engine takes it out.
 
 Searching windows is bento's too. An engine starts a search over a group's windows, a workspace's, or every window with `bento.search`, and bento keeps the query, takes the typing, and matches it against the windows' titles and app ids: whole words first, then prefixes, then substrings, then letters in order, and not at all windows that don't match.
 While it runs the keyboard goes to the search's field, a node that bento draws and the engine places and styles, and apps get no keys; binds that can't be inhibited still run.
@@ -656,7 +656,7 @@ The full API, with every event an engine can handle, is in [`bento-layout.d.ts`]
 In short:
 
 - **Objects** are what the engine reads and changes: monitors, their workspaces, windows, each workspace's camera, and groups. Properties are read-only, and every change is a method call that says whether it worked, like `win.place(rect)`, `win.focus()`, `win.moveTo(workspace)` or `workspace.camera.move({ x })`.
-- **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes and drags over a workspace, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
+- **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes over a workspace, drags of a window, which stays the engine's and is placed by it as it goes, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
 - **Groups** are bento's own: a set of windows that engines can address together, and which one is active. Its windows stay ordinary windows. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
 - **Search** is bento's own: `bento.search(scope)` starts it, and the engine gets a `Search` with the query, the matching windows best first, and the field to place in a tree, and hears `change` and `end`.
 - **Nodes** are what the engine draws: boxes, text and images in a tree for each workspace, which also holds the windows. Tab bars, hints and drop targets are nodes. bento renders the tree and runs the transitions the engine describes, so no engine code runs per frame.
@@ -828,6 +828,10 @@ Every window is the engine's, so bento's floating layer is off under it, and win
   `Mod+Z` shows the snap layouts (halves, two thirds and a third, three columns, quarters) to snap the focused window into a zone, and then fills the other zones the same way.
 - **Shared edges.**
   Windows snapped side by side resize together: dragging the edge between them moves it for all of them.
+- **Tabs.**
+  Dropping a window just above another, or on a group's tab strip, groups them as tabs, with the strip above the active window.
+  A tab lights up under the pointer, shows a live preview of its window after a second, and has a close button for its window; dragging a tab pulls it out, and dragging the strip moves the whole group.
+  The strip's buttons follow the title bar button layout of the desktop settings, and its close button ungroups the windows without closing them.
 - **Switching and minimizing.**
   `Alt+Tab` shows the workspace's windows, minimized ones included, most recently used first, and letting go of Alt picks one.
   Apps' minimize buttons and taskbars minimize windows, and so does `Mod+Down`; `Mod+Comma` minimizes every window on the workspace, or brings them back.
