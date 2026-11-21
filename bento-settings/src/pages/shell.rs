@@ -305,6 +305,9 @@ fn choice_group(view: &Rc<View>, binds: Option<&str>) -> adw::PreferencesGroup {
             let row = adw::ActionRow::builder()
                 .use_markup(false)
                 .title("Make a Copy")
+                .subtitle(
+                    "Copy the currently selected shell and use as a starting point to customize",
+                )
                 .activatable(true)
                 .build();
             row.add_suffix(&gtk::Image::from_icon_name("edit-copy-symbolic"));
@@ -365,7 +368,22 @@ fn make_copy(view: &Rc<View>, widget: &impl IsA<gtk::Widget>, name: &str) {
             let script = path.clone();
             let done = move |settings: PathBuf| {
                 set_script_file(&ctx, &script, &settings);
-                ctx.toast(&format!("Copied to {}", tilde(&script)));
+                // Where an editor learns bento's API, which nothing sets up next to the copy.
+                let toast = adw::Toast::builder()
+                    .title(format!("Copied to {}", tilde(&script)))
+                    .button_label("Editor Setup")
+                    .timeout(8)
+                    .build();
+                toast.connect_button_clicked(|toast| {
+                    let uri = "https://github.com/faetalize/bento#the-shell";
+                    gtk::UriLauncher::new(uri).launch(
+                        None::<&gtk::Window>,
+                        None::<&gtk::gio::Cancellable>,
+                        |_| (),
+                    );
+                    toast.dismiss();
+                });
+                ctx.toasts.add_toast(toast);
                 crate::page::open_file(&ctx.toasts, &script);
             };
             settings_file::ask(

@@ -23,6 +23,7 @@ pub fn category() -> Category {
                 Setting::switch("Built-in Shell", "shell.built-in", |c| {
                     c.shell.as_ref().is_some_and(|shell| shell.built_in())
                 })
+                .subtitle("Disable this if you plan to run your own shell")
                 .keywords(&["bar", "panel", "experimental", "desktop shell"]),
             ),
         )

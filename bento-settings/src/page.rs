@@ -324,6 +324,13 @@ pub fn setting_row_watched(
             (row.upcast(), Box::new(show))
         }
     };
+    if let Some(subtitle) = setting.subtitle {
+        if let Some(row) = row.downcast_ref::<adw::ActionRow>() {
+            row.set_subtitle(subtitle);
+        } else if let Some(row) = row.downcast_ref::<adw::ExpanderRow>() {
+            row.set_subtitle(subtitle);
+        }
+    }
     ctx.anchor(setting.path, &row);
 
     let refresh = move || {
