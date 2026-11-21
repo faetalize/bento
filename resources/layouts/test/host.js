@@ -77,6 +77,7 @@ export class TestHost {
         this.config = {
             gaps: 16,
             struts: { left: 0, right: 0, top: 0, bottom: 0 },
+            titleButtons: null,
             ...(opts.config ?? {}),
         };
         this.nextWindowId = 1;
@@ -1209,37 +1210,20 @@ export class TestHost {
         this.send(event("swipeend", 0, velocity));
     }
 
-    /** Drags a window over a workspace: `positions` are where its pointer goes, then drops it. */
-    drag(id, workspace, positions, drop = true) {
+    /**
+     * Drags a window, held `offset` from the top left of its rect: `positions` are where the
+     * pointer goes on `workspace`'s canvas, and then the window is dropped, or the drag is
+     * cancelled with `drop` false. Returns the workspace the window was on.
+     */
+    drag(id, workspace, positions, drop = true, offset = { x: 10, y: 10 }) {
         const win = this.windows.get(id);
         const from = win.workspace;
-        const rect = (pointer) => ({ x: pointer.x - 10, y: pointer.y - 10, w: 20, h: 20 });
-        this.close(id, "drag");
-        const info = this.windowInfo(win);
-        this.windows.set(id, win);
-        positions.forEach((pointer, i) => {
-            this.send({
-                type: i === 0 ? "dragenter" : "dragmove",
-                workspace,
-                window: info,
-                pointer,
-                rect: rect(pointer),
-            });
-        });
-        this.send({ type: "dragleave", workspace });
-        if (drop) {
-            const pointer = positions.at(-1);
-            win.workspace = workspace;
-            this.trees.get(workspace).add(`w${id}`);
-            this.told.windows.set(id, this.windowInfo(win));
-            this.send({
-                type: "windowadd",
-                window: this.windowInfo(win),
-                how: { reason: "drop", activate: true, rect: rect(pointer), pointer, nextTo: null },
-            });
-        } else {
-            this.windows.delete(id);
+        const rect = win.rect ?? { x: 0, y: 0 };
+        this.send({ type: "dragstart", id, offset, pointer: { x: rect.x + offset.x, y: rect.y + offset.y } });
+        for (const pointer of positions) {
+            this.send({ type: "dragmove", id, workspace, pointer });
         }
+        this.send({ type: "dragend", id, dropped: drop });
         return from;
     }
 

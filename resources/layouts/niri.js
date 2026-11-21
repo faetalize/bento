@@ -515,6 +515,18 @@ export const meta = {
 
 /** Corner radius of the insert hint. */
 const HINT_CORNER_RADIUS = 8;
+/** How far the pointer goes before a dragged tiled window comes loose, niri's. */
+const DRAG_THRESHOLD = 256;
+/** Opacity of a dragged window that came loose, niri's. */
+const DRAG_OPACITY = 0.75;
+// Scrolling the view while a dragged window is near its left or right edge, niri's
+// `dnd-edge-view-scroll` defaults: how close to the edge, in px, how long the pointer rests there
+// before it starts, in ms, and its top speed, in px/s.
+const EDGE_SCROLL_WIDTH = 30;
+const EDGE_SCROLL_DELAY = 100;
+const EDGE_SCROLL_MAX_SPEED = 1500;
+/** How often the view scrolls near the edge, in ms: about once a frame. */
+const EDGE_SCROLL_TICK = 16;
 /** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
 const SWIPE_DECELERATION = 0.997;
 
@@ -523,6 +535,17 @@ const MAX_PX = 100000;
 const MAX_F = 10000;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+/**
+ * How far a dragged window that holds its place follows the pointer moved by `delta`: niri's
+ * rubber band, which goes from none of the way up to half of it.
+ */
+function dragPull(delta) {
+    const x = (delta.x ** 2 + delta.y ** 2) / DRAG_THRESHOLD ** 2;
+    // niri's `RubberBand { stiffness: 1, limit: 0.5 }`.
+    const factor = (1 - 1 / (2 * x + 1)) * 0.5;
+    return { x: delta.x * factor, y: delta.y * factor };
+}
 
 /** Applies a window's min and max size, where 0 means no limit. */
 function applyLimits(value, min, max) {
@@ -609,8 +632,6 @@ function createStrip(bento, ws) {
     let viewOffsetToRestore = null;
     /** An ongoing pointer resize: `{ win, edges, originalWindowSize }`. */
     let interactiveResize = null;
-    /** The column width of the window being dragged, to give back when it's dropped. */
-    let dragged = null;
     let lastSettings = ws.settings;
     /** What `ws.focused` was at the end of the last call. */
     let lastFocused = null;
@@ -1325,27 +1346,6 @@ function createStrip(bento, ws) {
     function addWindow(win, how) {
         const tile = makeTile(win);
         switch (how.reason) {
-            case "drop": {
-                // niri takes windows out of fullscreen and maximized when a drag starts, so they
-                // land as normal windows.
-                const position = how.pointer ? insertPosition(how.pointer) : { newColumn: null };
-                const kept = dragged?.id === win.id ? dragged : null;
-                dragged = null;
-                if ("inColumn" in position) {
-                    addTileToColumn(position.inColumn, position.tile, tile, how.activate);
-                } else {
-                    const width = kept?.width ?? widthForSize(win.size.w, win);
-                    addTile(
-                        position.newColumn,
-                        tile,
-                        how.activate,
-                        width,
-                        kept?.isFullWidth ?? false,
-                        "normal",
-                    );
-                }
-                return;
-            }
             case "open": {
                 const nextTo = how.nextTo === null ? null : find(how.nextTo);
                 const colIdx = nextTo === null ? null : nextTo[0] + 1;
@@ -1373,15 +1373,10 @@ function createStrip(bento, ws) {
         }
     }
 
-    function removeWindow(win, reason) {
+    function removeWindow(win) {
         const found = find(win);
         if (found === null) return;
-        const [colIdx, tileIdx] = found;
-        const col = columns[colIdx];
-        if (reason === "drag") {
-            dragged = { id: win.id, width: col.width, isFullWidth: col.isFullWidth };
-        }
-        removeTile(colIdx, tileIdx);
+        removeTile(found[0], found[1]);
     }
 
     // Focus.
@@ -2104,7 +2099,92 @@ function createStrip(bento, ws) {
         fitView();
     }
 
-    // Dragging windows.
+    // Dragging windows. The engine follows the drag, and the strip takes the window out, puts it
+    // back or drops it, see `watchDrag`.
+
+    /**
+     * Takes a dragged window out of its column, which closes up as if the window were gone, for
+     * it to follow the pointer. Returns what `putBack` needs, or null if it isn't here.
+     */
+    function loosen(win) {
+        const found = find(win);
+        if (found === null) return null;
+        const [colIdx, tileIdx] = found;
+        const col = columns[colIdx];
+        const active = activeWindow() === win;
+        const activeTile = col.activeTileIdx === tileIdx;
+        // niri takes a dragged window out of fullscreen and maximized, to its size in the column.
+        if (col.pendingFullscreen || col.pendingMaximized) {
+            cancelResizeForColumn(col);
+            col.pendingFullscreen = false;
+            col.pendingMaximized = false;
+            updateTileSizes(col);
+            win.setMode("normal");
+        }
+        // It leaves its tabs, and joins them again if the drag is cancelled.
+        col.group?.remove(win);
+        return { ...removeTile(colIdx, tileIdx), column: col, colIdx, tileIdx, active, activeTile };
+    }
+
+    /** Puts a dragged window back where `loosen` took it from. */
+    function putBack(taken) {
+        const { tile, column } = taken;
+        const colIdx = columns.indexOf(column);
+        if (colIdx === -1) {
+            const idx = Math.min(taken.colIdx, columns.length);
+            addTile(idx, tile, taken.active, taken.width, taken.isFullWidth, taken.mode);
+            return;
+        }
+        const tileIdx = Math.min(taken.tileIdx, column.tiles.length);
+        addTileToColumn(colIdx, tileIdx, tile, taken.active);
+        if (taken.activeTile) column.activeTileIdx = tileIdx;
+    }
+
+    /**
+     * Drops a dragged window where the insert hint for `pointer` shows. niri takes windows out of
+     * fullscreen and maximized when they're dragged, so a new column for it is a normal one, as
+     * wide as the one it came from.
+     */
+    function dropWindow(win, taken, pointer) {
+        const tile = makeTile(win);
+        const position = insertPosition(pointer);
+        if ("inColumn" in position) {
+            addTileToColumn(position.inColumn, position.tile, tile, true);
+        } else {
+            addTile(position.newColumn, tile, true, taken.width, taken.isFullWidth, "normal");
+        }
+    }
+
+    /**
+     * How fast to scroll the view for a dragged window's pointer at `pointer`, niri's
+     * `dnd_scroll_gesture_scroll`: from -1 at the left edge of the parent area to 1 at its right
+     * edge, growing towards them, and 0 away from them.
+     */
+    function edgeScrollSpeed(pointer) {
+        const area = parentArea();
+        const x = clamp((pointer.x - ws.camera.x) * ws.camera.zoom - area.x, 0, area.w);
+        const trigger = Math.min(EDGE_SCROLL_WIDTH, area.w / 2);
+        if (trigger < 0.01) return 0;
+        if (x < trigger) return -(trigger - x) / trigger;
+        if (area.w - x < trigger) return (trigger - (area.w - x)) / trigger;
+        return 0;
+    }
+
+    /**
+     * Moves the camera `dx` px of the view to the right, as far as some of the columns stay in
+     * view, like niri's `dnd_scroll_gesture_scroll`. Returns how far it moved on the canvas.
+     */
+    function scrollBy(dx) {
+        if (columns.length === 0) return 0;
+        const area = workingArea();
+        const last = columns.length - 1;
+        const min = -area.w;
+        const max = Math.max(columnX(last) + columnWidth(columns[last]) - area.x, min);
+        const x = clamp(ws.camera.x + dx / ws.camera.zoom, min, max);
+        const moved = x - ws.camera.x;
+        if (moved !== 0) ws.camera.move({ x }, { animate: false });
+        return moved;
+    }
 
     /**
      * Where a window dropped with the pointer at `pointer` goes: `{ newColumn: idx }` or
@@ -2972,13 +3052,12 @@ function createStrip(bento, ws) {
         exposed,
 
         windowAdded(win, how) {
-            hideHint();
             mutate(() => addWindow(win, how), { focus: how.activate ? "always" : "follow" });
         },
 
-        windowRemoved(win, reason) {
+        windowRemoved(win) {
             const hadFocus = ws.focused !== null || lastFocused?.id === win.id;
-            mutate(() => removeWindow(win, reason), { hadFocus });
+            mutate(() => removeWindow(win), { hadFocus });
         },
 
         /** Takes over the windows that were here when the engine started, `{ win, rect }`. */
@@ -3182,10 +3261,33 @@ function createStrip(bento, ws) {
             }
         },
 
-        // Dragging windows over the workspace.
+        // Dragging windows with the pointer.
+
+        /** Takes a dragged window out of its column, see `loosen`. */
+        dragLoosen(win) {
+            return mutate(() => loosen(win));
+        },
+
+        /** Puts a dragged window back where it was taken from, see `putBack`. */
+        dragReturn(taken) {
+            mutate(() => putBack(taken), { focus: taken.active ? "always" : "follow" });
+        },
+
+        /** Drops a dragged window where the insert hint for `pointer` shows. */
+        dragDrop(win, taken, pointer) {
+            hideHint();
+            mutate(() => dropWindow(win, taken, pointer), { focus: "always" });
+        },
+
+        /** Places the windows where they belong, like a dragged one that held its place. */
+        dragSettle() {
+            mutate(() => {});
+        },
 
         dragOver: showHint,
         dragLeave: hideHint,
+        edgeScrollSpeed,
+        scrollBy,
 
         newWindowSize,
 
@@ -3310,9 +3412,6 @@ export default function create(bento) {
         ws.addEventListener("swipebegin", () => strip.swipeBegin());
         ws.addEventListener("swipeupdate", (e) => strip.swipeUpdate(e.delta));
         ws.addEventListener("swipeend", (e) => strip.swipeEnd(e.velocity));
-        ws.addEventListener("dragenter", (e) => strip.dragOver(e.pointer));
-        ws.addEventListener("dragmove", (e) => strip.dragOver(e.pointer));
-        ws.addEventListener("dragleave", () => strip.dragLeave());
     }
 
     function watchMonitor(monitor) {
@@ -3337,17 +3436,16 @@ export default function create(bento) {
     function watchWindow(win) {
         if (followed.has(win)) return;
         followed.add(win);
-        win.addEventListener("remove", (e) => stripWith(win)?.windowRemoved(win, e.reason));
+        win.addEventListener("remove", () => stripWith(win)?.windowRemoved(win));
         win.addEventListener("move", (e) => {
             // bento moved the window with one of its own actions.
             const from = strips.get(e.from.id);
             if (from?.has(win)) {
-                from.windowRemoved(win, "move");
+                from.windowRemoved(win);
                 stripOf(e.to).windowAdded(win, {
                     reason: "move",
                     activate: e.activate,
                     rect: null,
-                    pointer: null,
                     nextTo: null,
                 });
             }
@@ -3369,6 +3467,148 @@ export default function create(bento) {
         win.addEventListener("resizeupdate", (e) => stripWith(win)?.resizeUpdate(win, e));
         win.addEventListener("resizeend", () => stripWith(win)?.resizeEnd(win));
         win.addEventListener("edgedoubleclick", (e) => stripWith(win)?.edgeDoubleClick(win, e.edges));
+        watchDrag(win);
+    }
+
+    /**
+     * Follows the drags of a window with the pointer. A tiled window holds its place, pulled
+     * along a little, until the pointer is far enough from where it started or over another
+     * workspace. Then it comes out of its column and follows the pointer across workspaces,
+     * raised and see-through, with the insert hint of the workspace under the pointer, whose view
+     * scrolls while the pointer rests near its left or right edge. Letting go drops it where the
+     * hint shows; a cancelled drag, or one let go where there's no workspace, puts it back.
+     */
+    function watchDrag(win) {
+        /**
+         * The drag going on: the strip and workspace it started from, where the pointer started
+         * and where it holds the window, and the window's rect then. Once the window comes
+         * loose, `taken` puts it back, `workspace` and `pointer` are where the pointer is, `over`
+         * the strip showing the hint, and `timer` scrolls the view near its edge.
+         */
+        let drag = null;
+
+        function stopScrolling() {
+            if (drag.timer !== null) bento.clearTimeout(drag.timer);
+            drag.timer = null;
+        }
+
+        /** Takes away the hint and stops scrolling. Returns the drag, which is over. */
+        function finish() {
+            stopScrolling();
+            drag.over?.dragLeave();
+            const ended = drag;
+            drag = null;
+            return ended;
+        }
+
+        /** Draws the loose window under the pointer, on the workspace under it if there's one. */
+        function follow(ws, pointer) {
+            const strip = ws === null ? null : stripOf(ws);
+            if (strip !== drag.over) drag.over?.dragLeave();
+            Object.assign(drag, { over: strip, workspace: ws, pointer });
+            if (strip === null) {
+                stopScrolling();
+                return;
+            }
+            if (win.workspace !== ws) win.moveTo(ws);
+            const round = (value) => ws.monitor.round(value);
+            const { w, h } = drag.rect;
+            const x = round(pointer.x - drag.offset.x);
+            const y = round(pointer.y - drag.offset.y);
+            win.place({ x, y, w, h }, { animate: false });
+            strip.dragOver(pointer);
+            win.raise();
+            if (strip.edgeScrollSpeed(pointer) === 0) stopScrolling();
+            else if (drag.timer === null) drag.timer = bento.setTimeout(scroll, EDGE_SCROLL_DELAY);
+        }
+
+        /** Scrolls the view a step while the pointer rests near its edge, as far as it goes. */
+        function scroll() {
+            drag.timer = null;
+            const speed = drag.over.edgeScrollSpeed(drag.pointer) * EDGE_SCROLL_MAX_SPEED;
+            const moved = drag.over.scrollBy((speed * EDGE_SCROLL_TICK) / 1000);
+            if (moved === 0) return;
+            drag.timer = bento.setTimeout(scroll, EDGE_SCROLL_TICK);
+            // The pointer stays where it is on screen, which is further along the canvas.
+            follow(drag.workspace, { x: drag.pointer.x + moved, y: drag.pointer.y });
+        }
+
+        win.addEventListener("dragstart", (e) => {
+            const strip = stripWith(win);
+            if (strip === undefined || win.rect === null) return;
+            drag = {
+                strip,
+                from: win.workspace,
+                start: { ...e.pointer },
+                offset: { ...e.offset },
+                rect: { ...win.rect },
+                taken: null,
+                workspace: null,
+                pointer: null,
+                over: null,
+                timer: null,
+            };
+        });
+
+        win.addEventListener("dragmove", (e) => {
+            if (drag === null) return;
+            if (drag.taken === null) {
+                if (e.workspace === null) return;
+                const delta = { x: e.pointer.x - drag.start.x, y: e.pointer.y - drag.start.y };
+                if (e.workspace === drag.from && Math.hypot(delta.x, delta.y) < DRAG_THRESHOLD) {
+                    const pull = dragPull(delta);
+                    const round = (value) => drag.from.monitor.round(value);
+                    const { x, y, w, h } = drag.rect;
+                    win.place({ x: round(x + pull.x), y: round(y + pull.y), w, h }, { animate: false });
+                    return;
+                }
+                drag.taken = drag.strip.dragLoosen(win);
+                if (drag.taken === null) {
+                    drag = null;
+                    return;
+                }
+                // Out of fullscreen or maximized, it's smaller, and held at the same spot in
+                // proportion.
+                const { w, h } = drag.taken.tile.size;
+                if (w !== drag.rect.w || h !== drag.rect.h) {
+                    drag.offset = { x: (drag.offset.x * w) / drag.rect.w, y: (drag.offset.y * h) / drag.rect.h };
+                    drag.rect = { ...drag.rect, w, h };
+                }
+                win.node.set({ opacity: DRAG_OPACITY, transitions: { opacity: "window-movement" } });
+            }
+            follow(e.workspace, e.pointer);
+        });
+
+        win.addEventListener("dragend", (e) => {
+            if (drag === null) return;
+            const { strip, from, taken, workspace, pointer } = finish();
+            if (taken === null) {
+                // It held its place, maybe pulled along a little.
+                stripWith(win)?.dragSettle();
+                return;
+            }
+            win.node.set({ opacity: 1 });
+            const target = workspace === null ? undefined : strips.get(workspace.id);
+            if (e.dropped && target !== undefined) {
+                target.dragDrop(win, taken, pointer);
+            } else if (strips.get(from.id) === strip) {
+                if (win.workspace !== from) win.moveTo(from);
+                strip.dragReturn(taken);
+            } else {
+                // The workspace it came from is gone: it gets a column where it is.
+                stripOf(win.workspace).windowAdded(win, {
+                    reason: "move",
+                    activate: true,
+                    rect: null,
+                    nextTo: null,
+                });
+            }
+        });
+
+        // A window closed or floating mid-drag takes the drag with it.
+        win.addEventListener("remove", () => {
+            if (drag !== null) finish();
+        });
     }
 
     // Across strips.
@@ -3508,7 +3748,6 @@ export default function create(bento) {
             reason: e.reason,
             activate: e.activate,
             rect: e.rect,
-            pointer: e.pointer,
             nextTo: e.nextTo,
         });
     });

@@ -175,8 +175,6 @@ fn drag_windows11(dx: f64) -> Layout<TestWindow> {
         },
         Op::InteractiveMoveUpdate {
             window: 3,
-            dx,
-            dy: 0.,
             output_idx: 1,
             px: 600. + dx,
             py: 300.,
@@ -193,21 +191,35 @@ fn drop_windows11(layout: &mut Layout<TestWindow>) {
 }
 
 #[test]
-fn a_windows11_window_follows_the_pointer_from_the_start() {
-    // A tiled window holds its place until the pointer is far from it; a free one comes along
-    // at once, as a floating window does.
+fn a_dragged_window_stays_the_engines_which_places_it_under_the_pointer() {
     let mut layout = drag_windows11(12.);
     assert!(matches!(
         layout.interactive_move,
-        Some(InteractiveMoveState::Moving(_))
+        Some(InteractiveMoveState::Engine { .. })
     ));
+    let before = format_tiles(&layout);
+
+    // windows11 hears the move with the next frame, and keeps the window under the pointer.
+    layout.send_drag_move();
+    check_ops_on_layout(&mut layout, settle());
+    // The pointer moved 12 px to the right, and so did window 3.
+    assert_snapshot!(before, @"
+      100 × 200 at x:  590 y:260
+      100 × 200 at x:  622 y:292
+      100 × 200 at x:  654 y:324 focused
+    ");
+    assert_snapshot!(format_tiles(&layout), @"
+      100 × 200 at x:  590 y:260
+      100 × 200 at x:  622 y:292
+      100 × 200 at x:  666 y:324 focused
+    ");
     drop_windows11(&mut layout);
 }
 
 #[test]
 fn dragging_under_windows11_leaves_the_view_alone() {
-    // Near the screen's edge, bento scrolls the view under a tiling engine; the camera is the
-    // engine's, and windows11's never moves.
+    // The camera is the engine's, so bento never scrolls it during a drag, and windows11's
+    // never moves.
     let mut layout = drag_windows11(12.);
     for (_, _, ws) in layout.workspaces() {
         assert!(!ws.scrolling().is_camera_gesture());
@@ -1655,10 +1667,10 @@ export default function create(bento) {
         log.push(["windowadd", e.reason, win.decorations.shadow]);
         win.place({ x: 0, y: 0, w: 200, h: 100 });
         win.focus();
-        // Something to tell that it comes back on after the window left the engine.
+        // Something to tell that the window stays as the engine left it.
         win.setDecorations({ shadow: false });
-        for (const type of ["remove", "resizebegin", "resizeupdate", "resizeend"]) {
-            win.addEventListener(type, (r) => log.push([type, r.reason ?? null]));
+        for (const type of ["remove", "resizebegin", "resizeupdate", "resizeend", "dragstart", "dragend"]) {
+            win.addEventListener(type, (r) => log.push([type, r.reason ?? r.dropped ?? null]));
         }
         const bar = bento.createNode("box", { rect: { x: 0, y: 0, w: 200, h: 20 }, interactive: true });
         win.workspace.tree.append(bar);
@@ -1704,8 +1716,6 @@ fn a_press_on_a_node_can_begin_a_move_that_the_engine_sees_like_any() {
         },
         Op::InteractiveMoveUpdate {
             window: 1,
-            dx: 300.,
-            dy: 0.,
             output_idx: 1,
             px: 310.,
             py: 10.,
@@ -1716,14 +1726,17 @@ fn a_press_on_a_node_can_begin_a_move_that_the_engine_sees_like_any() {
     check_ops_on_layout(&mut layout, ops);
     drop(layout);
 
-    // The window left, and came back as bento draws it: with its shadow, which the engine turned
-    // off for the window it had before.
+    // The window stayed the engine's, which heard the drag begin and end with a drop.
     let log = crate::layout::tiling::engine::exposed_state().unwrap();
-    let log = log.as_array().unwrap();
-    assert_eq!(log[0], serde_json::json!(["windowadd", "open", true]));
-    assert_eq!(log[1], serde_json::json!(["pointerdown", 1, true]));
-    assert_eq!(log[2], serde_json::json!(["remove", "drag"]));
-    assert_eq!(log[3], serde_json::json!(["windowadd", "drop", true]));
+    assert_eq!(
+        log.as_array().unwrap()[..],
+        [
+            serde_json::json!(["windowadd", "open", true]),
+            serde_json::json!(["pointerdown", 1, true]),
+            serde_json::json!(["dragstart", null]),
+            serde_json::json!(["dragend", true]),
+        ]
+    );
 }
 
 #[test]
@@ -2799,37 +2812,29 @@ fn a_search_knows_where_its_field_is() {
     assert!(!layout.is_on_search_field(&output, Point::from((50., 110.))));
 }
 
-/// An engine that places windows side by side and logs the drags over its workspaces, with the
-/// pointer's x for moves.
+/// An engine that places windows side by side and logs the drags of its windows.
 const DRAGS: &str = r#"
 export const meta = { api: 2, name: "drags", floating: false };
 export default function create(bento) {
     const log = [];
     bento.exposeState(() => ({ log }));
     bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
         const placed = bento.windows.length - 1;
-        e.window.place({ x: placed * 400, y: 0, w: 400, h: 400 });
+        win.place({ x: placed * 400, y: 0, w: 400, h: 400 });
+        win.addEventListener("dragstart", (d) => log.push(["dragstart", d.offset, d.pointer]));
+        win.addEventListener("dragmove", (d) => log.push(["dragmove", d.workspace?.id ?? null, d.pointer?.x ?? null]));
+        win.addEventListener("dragend", (d) => log.push(["dragend", d.dropped]));
     });
-    const watch = (ws) => {
-        ws.addEventListener("dragenter", () => log.push(["dragenter"]));
-        ws.addEventListener("dragmove", (d) => log.push(["dragmove", Math.round(d.pointer.x)]));
-        ws.addEventListener("dragleave", () => log.push(["dragleave"]));
-    };
-    for (const monitor of bento.monitors) monitor.workspaces.forEach(watch);
-    bento.addEventListener("workspaceadd", (e) => watch(e.workspace));
 }
 "#;
 
-#[test]
-fn a_drag_moves_over_the_engine_once_a_frame_with_the_latest_pointer() {
-    let moved = |px: f64, dx: f64| Op::InteractiveMoveUpdate {
-        window: 2,
-        dx,
-        dy: 0.,
-        output_idx: 1,
-        px,
-        py: 100.,
-    };
+fn drags_log() -> serde_json::Value {
+    crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone()
+}
+
+/// Opens two windows side by side and starts dragging the second by a point 50 px into it.
+fn drag_second_of_two() -> Layout<TestWindow> {
     let ops = [
         Op::AddOutput(1),
         add_window(1),
@@ -2840,19 +2845,139 @@ fn a_drag_moves_over_the_engine_once_a_frame_with_the_latest_pointer() {
             px: 450.,
             py: 100.,
         },
-        // The window starts moving once the pointer is 256 px away.
-        moved(500., 300.),
-        moved(550., 50.),
-        moved(600., 50.),
     ];
-    let mut layout = check_ops_with_options(options_for_source("drags", DRAGS), ops);
+    check_ops_with_options(options_for_source("drags", DRAGS), ops)
+}
+
+fn moved(px: f64) -> Op {
+    Op::InteractiveMoveUpdate {
+        window: 2,
+        output_idx: 1,
+        px,
+        py: 100.,
+    }
+}
+
+#[test]
+fn a_drag_tells_the_engine_where_the_window_is_held() {
+    let mut layout = drag_second_of_two();
+    layout.flush_engine();
+    let ws = layout.active_workspace().unwrap().id().get();
+    assert_eq!(
+        drags_log(),
+        serde_json::json!([["dragstart", { "x": 50, "y": 100 }, { "x": 450, "y": 100 }]])
+    );
+
+    // The window stays where the engine has it: bento doesn't carry it.
+    let before = format_tiles(&layout);
+    check_ops_on_layout(&mut layout, [moved(700.)]);
+    assert_eq!(format_tiles(&layout), before);
+
+    check_ops_on_layout(&mut layout, [Op::InteractiveMoveEnd { window: 2 }]);
+    layout.flush_engine();
+    let log = drags_log();
+    let log = log.as_array().unwrap();
+    assert_eq!(log[1], serde_json::json!(["dragmove", ws, 700]));
+    assert_eq!(log[2], serde_json::json!(["dragend", true]));
+}
+
+#[test]
+fn a_drag_moves_over_the_engine_once_a_frame_with_the_latest_pointer() {
+    let mut layout = drag_second_of_two();
+    check_ops_on_layout(&mut layout, [moved(500.), moved(550.), moved(600.)]);
 
     // The moves wait for the next frame, and then only the latest goes.
     layout.flush_engine();
-    let log = || crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone();
-    assert_eq!(log(), serde_json::json!([["dragenter"]]));
+    let ws = layout.active_workspace().unwrap().id().get();
+    let moves = || {
+        drags_log()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry[0] == "dragmove")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(moves(), [] as [serde_json::Value; 0]);
     layout.send_drag_move();
-    assert_eq!(log(), serde_json::json!([["dragenter"], ["dragmove", 600]]));
+    assert_eq!(moves(), [serde_json::json!(["dragmove", ws, 600])]);
     layout.send_drag_move();
-    assert_eq!(log(), serde_json::json!([["dragenter"], ["dragmove", 600]]));
+    assert_eq!(moves(), [serde_json::json!(["dragmove", ws, 600])]);
+    check_ops_on_layout(&mut layout, [Op::InteractiveMoveEnd { window: 2 }]);
+}
+
+#[test]
+fn a_cancelled_drag_tells_the_engine_after_the_last_move() {
+    let mut layout = drag_second_of_two();
+    check_ops_on_layout(
+        &mut layout,
+        [moved(600.), Op::InteractiveMoveCancel { window: 2 }],
+    );
+    layout.flush_engine();
+    let log = drags_log();
+    let log = log.as_array().unwrap();
+    assert_eq!(log[1][0], "dragmove");
+    assert_eq!(log[2], serde_json::json!(["dragend", false]));
+}
+
+#[test]
+fn a_window_closed_while_dragged_ends_the_drag() {
+    let mut layout = drag_second_of_two();
+    check_ops_on_layout(&mut layout, [moved(600.), Op::CloseWindow(2)]);
+    assert!(layout.interactive_move.is_none());
+    layout.send_drag_move();
+    layout.flush_engine();
+    let log = drags_log();
+    assert_eq!(log.as_array().unwrap().len(), 1, "{log:?}");
+}
+
+#[test]
+fn title_buttons_read_like_gnomes_button_layout() {
+    use crate::layout::TitleButtons;
+
+    let buttons = |left: &[&str], right: &[&str]| TitleButtons {
+        left: left.iter().map(|name| String::from(*name)).collect(),
+        right: right.iter().map(|name| String::from(*name)).collect(),
+    };
+    assert_eq!(
+        TitleButtons::parse("appmenu:minimize,maximize,close"),
+        buttons(&["appmenu"], &["minimize", "maximize", "close"])
+    );
+    assert_eq!(
+        TitleButtons::parse("close,minimize:"),
+        buttons(&["close", "minimize"], &[])
+    );
+    assert_eq!(TitleButtons::parse(":close"), buttons(&[], &["close"]));
+    assert_eq!(TitleButtons::parse(""), buttons(&[], &[]));
+}
+
+/// An engine that shows what bento says about title buttons, and counts the config changes.
+const TITLE_BUTTONS: &str = r#"
+export const meta = { api: 2, name: "title-buttons" };
+export default function create(bento) {
+    let changes = 0;
+    bento.addEventListener("configchange", () => changes++);
+    bento.exposeState(() => ({ buttons: bento.monitors[0]?.workspaces[0]?.config.titleButtons, changes }));
+}
+"#;
+
+#[test]
+fn engines_see_the_title_buttons_and_hear_when_they_change() {
+    use crate::layout::TitleButtons;
+
+    let mut layout = check_ops_with_options(
+        options_for_source("title-buttons", TITLE_BUTTONS),
+        [Op::AddOutput(1)],
+    );
+    layout.flush_engine();
+    let state = || crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(state()["buttons"], serde_json::Value::Null);
+
+    assert!(layout.set_title_buttons(Some(TitleButtons::parse("close:maximize"))));
+    assert_eq!(
+        state()["buttons"],
+        serde_json::json!({ "left": ["close"], "right": ["maximize"] })
+    );
+    assert_eq!(state()["changes"], 1);
+    assert!(!layout.set_title_buttons(Some(TitleButtons::parse("close:maximize"))));
 }

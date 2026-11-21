@@ -625,10 +625,6 @@ enum Op {
     InteractiveMoveUpdate {
         #[proptest(strategy = "1..=5usize")]
         window: usize,
-        #[proptest(strategy = "-20000f64..20000f64")]
-        dx: f64,
-        #[proptest(strategy = "-20000f64..20000f64")]
-        dy: f64,
         #[proptest(strategy = "1..=5usize")]
         output_idx: usize,
         #[proptest(strategy = "-20000f64..20000f64")]
@@ -637,6 +633,10 @@ enum Op {
         py: f64,
     },
     InteractiveMoveEnd {
+        #[proptest(strategy = "1..=5usize")]
+        window: usize,
+    },
+    InteractiveMoveCancel {
         #[proptest(strategy = "1..=5usize")]
         window: usize,
     },
@@ -1358,8 +1358,6 @@ impl Op {
             }
             Op::InteractiveMoveUpdate {
                 window,
-                dx,
-                dy,
                 output_idx,
                 px,
                 py,
@@ -1368,15 +1366,13 @@ impl Op {
                 let Some(output) = layout.outputs().find(|o| o.name() == name).cloned() else {
                     return;
                 };
-                layout.interactive_move_update(
-                    &window,
-                    Point::from((dx, dy)),
-                    output,
-                    Point::from((px, py)),
-                );
+                layout.interactive_move_update(&window, output, Point::from((px, py)));
             }
             Op::InteractiveMoveEnd { window } => {
                 layout.interactive_move_end(&window);
+            }
+            Op::InteractiveMoveCancel { window } => {
+                layout.interactive_move_cancel(&window);
             }
             Op::DndUpdate { output_idx, px, py } => {
                 let name = format!("output{output_idx}");
@@ -2232,8 +2228,6 @@ fn interactive_move_onto_empty_output() {
         Op::AddOutput(2),
         Op::InteractiveMoveUpdate {
             window: 0,
-            dx: 1000.,
-            dy: 0.,
             output_idx: 2,
             px: 0.,
             py: 0.,
@@ -2260,8 +2254,6 @@ fn interactive_move_onto_empty_output_ewaf() {
         Op::AddOutput(2),
         Op::InteractiveMoveUpdate {
             window: 0,
-            dx: 1000.,
-            dy: 0.,
             output_idx: 2,
             px: 0.,
             py: 0.,
@@ -2294,8 +2286,6 @@ fn interactive_move_onto_last_workspace() {
         },
         Op::InteractiveMoveUpdate {
             window: 0,
-            dx: 1000.,
-            dy: 0.,
             output_idx: 1,
             px: 0.,
             py: 0.,
@@ -2323,8 +2313,6 @@ fn interactive_move_onto_first_empty_workspace() {
         },
         Op::InteractiveMoveUpdate {
             window: 1,
-            dx: 1000.,
-            dy: 0.,
             output_idx: 1,
             px: 0.,
             py: 0.,
@@ -2568,8 +2556,6 @@ fn interactive_move_drop_on_other_output_during_animation() {
         Op::AddOutput(4),
         Op::InteractiveMoveUpdate {
             window: 3,
-            dx: 0.0,
-            dy: 8300.68619826683,
             output_idx: 4,
             px: 0.0,
             py: 0.0,
@@ -2595,8 +2581,6 @@ fn add_window_next_to_only_interactively_moved_without_outputs() {
         },
         Op::InteractiveMoveUpdate {
             window: 2,
-            dx: 0.0,
-            dy: 3586.692842955048,
             output_idx: 1,
             px: 0.0,
             py: 0.0,
@@ -2628,8 +2612,6 @@ fn interactive_move_toggle_floating_ends_dnd_gesture() {
         },
         Op::InteractiveMoveUpdate {
             window: 2,
-            dx: 0.0,
-            dy: 3586.692842955048,
             output_idx: 1,
             px: 0.0,
             py: 0.0,
@@ -2668,8 +2650,6 @@ fn interactive_move_from_workspace_with_layout_config() {
         },
         Op::InteractiveMoveUpdate {
             window: 2,
-            dx: 0.0,
-            dy: 3586.692842955048,
             output_idx: 1,
             px: 0.0,
             py: 0.0,
@@ -2679,8 +2659,6 @@ fn interactive_move_from_workspace_with_layout_config() {
         Op::AddOutput(1),
         Op::InteractiveMoveUpdate {
             window: 2,
-            dx: 0.0,
-            dy: 0.0,
             output_idx: 1,
             px: 0.0,
             py: 0.0,
@@ -2690,8 +2668,6 @@ fn interactive_move_from_workspace_with_layout_config() {
         Op::CompleteAnimations,
         Op::InteractiveMoveUpdate {
             window: 2,
-            dx: 0.0,
-            dy: 0.0,
             output_idx: 1,
             px: 0.0,
             py: 0.0,

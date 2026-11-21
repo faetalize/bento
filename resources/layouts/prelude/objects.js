@@ -1021,9 +1021,17 @@ export class Session {
                 scale: info.view.scale,
             };
             d.camera = { x: info.camera.x, y: info.camera.y, zoom: info.camera.zoom };
+            const buttons = info.config.titleButtons ?? null;
             d.config = Object.freeze({
                 gaps: info.config.gaps,
                 struts: Object.freeze({ ...info.config.struts }),
+                titleButtons:
+                    buttons === null
+                        ? null
+                        : Object.freeze({
+                              left: Object.freeze([...buttons.left]),
+                              right: Object.freeze([...buttons.right]),
+                          }),
             });
             d.settings = Object.freeze(copyJson(info.settings ?? {}));
             d.focused = info.focused;
@@ -1146,14 +1154,6 @@ export class Session {
         this.windows.set(d.id, d);
         attachWindowNode(ws.root, d.node);
         return d;
-    }
-
-    /** A window that isn't in the engine, for events about a window that left it, like a drag. */
-    detachedWindow(info) {
-        const d = { id: info.id, workspace: info.workspace, rect: null, visible: true, data: info.data ?? null, node: null };
-        this.updateWindow(d, info);
-        d.facade = new Window(this, d);
-        return d.facade;
     }
 
     /** Takes a window away after the engine has been told, and clears what refers to it. */

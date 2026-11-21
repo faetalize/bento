@@ -347,7 +347,8 @@ drags the way it starts floating windows': from the first pixel, and by the titl
 direction.
 
 An engine can turn off, per window, the border, focus ring and shadow that bento draws around
-it, to draw its own decorations instead.
+it, to draw its own decorations instead. An engine that draws title bars sees which buttons the
+desktop's settings put on each side, like GNOME's button layout, and hears when they change.
 
 ### Engines decide whether focus follows the pointer
 

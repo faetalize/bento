@@ -119,22 +119,6 @@ pub struct WorkspaceSwitchGesture {
     dnd_nonzero_start_time: Option<Duration>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum InsertPosition {
-    /// In the tiling layout, where the pointer and the window are on the workspace's canvas;
-    /// `None` when there's nowhere in particular, like on a new workspace.
-    Tiled(Option<TiledDrop>),
-    Floating,
-}
-
-/// A window dropped in the tiling layout, on the canvas.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct TiledDrop {
-    pub pointer: Point<f64, Logical>,
-    /// Where the dragged tile is.
-    pub rect: Rectangle<f64, Logical>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InsertWorkspace {
     Existing(WorkspaceId),

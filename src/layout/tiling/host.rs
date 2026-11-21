@@ -20,11 +20,11 @@ use niri_ipc::{LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOpt
 use serde_json::{json, Value};
 use smithay::utils::{Logical, Point, Rectangle};
 
+use super::engine;
 use super::protocol::{
     CameraChange, Grab, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SearchInfo,
     SyncInfo, TimerStart, TreeOp, Verdict, Wh, WindowChange, Xy,
 };
-use super::{engine, TilingSpace};
 use crate::layout::monitor::InsertWorkspace;
 use crate::layout::workspace::WorkspaceId;
 use crate::layout::{
@@ -153,10 +153,9 @@ pub enum NodeGrab<Id> {
     Resize { window: Id, edges: ResizeEdge },
 }
 
-/// A drag over a workspace's canvas, as the layout last heard.
+/// A drag of one of the layout's windows, as the layout last heard.
 #[derive(Debug)]
 struct Drag {
-    workspace: u64,
     last: Value,
     /// The move to tell the layout about with the next frame, see [`Layout::send_drag_move`].
     pending: Option<Value>,
@@ -1634,85 +1633,72 @@ impl<W: LayoutElement> Layout<W> {
         self.flush_engine();
     }
 
-    /// Tells the layout where an interactively moved window is over a workspace, or that it left.
+    /// Notes where the pointer dragging one of the layout's windows is now, for the layout to
+    /// hear with the next frame.
     pub(in crate::layout) fn update_drag(&mut self) {
-        let target = self.drag_target();
-        let previous = self.host.drag.take();
-
-        match (previous, target) {
-            (Some(previous), Some((workspace, window, pointer_rect))) => {
-                let mut pending = None;
-                if previous.workspace == workspace {
-                    pending = previous.pending;
-                    if previous.last != pointer_rect {
-                        // It waits for the next frame, see `send_drag_move`.
-                        pending = Some(drag_event("dragmove", workspace, &window, &pointer_rect));
-                    }
-                } else {
-                    queue(json!({ "type": "dragleave", "workspace": previous.workspace }));
-                    queue(drag_event("dragenter", workspace, &window, &pointer_rect));
-                }
+        let Some(event) = self.drag_move() else {
+            return;
+        };
+        match &mut self.host.drag {
+            Some(drag) if drag.last == event => (),
+            Some(drag) => {
+                // It waits for the next frame, see `send_drag_move`.
+                drag.last = event.clone();
+                drag.pending = Some(event);
+            }
+            None => {
                 self.host.drag = Some(Drag {
-                    workspace,
-                    last: pointer_rect,
-                    pending,
+                    last: event.clone(),
+                    pending: Some(event),
                 });
             }
-            (None, Some((workspace, window, pointer_rect))) => {
-                queue(drag_event("dragenter", workspace, &window, &pointer_rect));
-                self.host.drag = Some(Drag {
-                    workspace,
-                    last: pointer_rect,
-                    pending: None,
-                });
-            }
-            (Some(previous), None) => {
-                queue(json!({ "type": "dragleave", "workspace": previous.workspace }));
-            }
-            (None, None) => (),
         }
     }
 
-    /// The workspace that an interactively moved tiled window is over, with the window's info and
-    /// the pointer and rect on the workspace's canvas.
-    fn drag_target(&self) -> Option<(u64, Value, Value)> {
-        let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move else {
-            return None;
-        };
-        if move_.is_floating {
-            return None;
+    /// Tells the layout that the drag of `window` ended, dropped or cancelled, after the move it
+    /// hasn't heard yet.
+    pub(in crate::layout) fn end_drag(&mut self, window: &W::Id, dropped: bool) {
+        if let Some(event) = self.host.drag.take().and_then(|drag| drag.pending) {
+            queue(event);
         }
-        let mon = self.monitor_for_output(&move_.output)?;
-        let zoom = mon.overview_zoom();
-        let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
-        let InsertWorkspace::Existing(ws_id) = insert_ws else {
+        let Some(id) = self.engine_id_of(window) else {
+            return;
+        };
+        queue(json!({ "type": "dragend", "id": id, "dropped": dropped }));
+    }
+
+    /// Forgets the drag of a window that is no longer the layout's.
+    pub(in crate::layout) fn forget_drag(&mut self) {
+        self.host.drag = None;
+    }
+
+    /// Where the pointer dragging one of the layout's windows is: the workspace under it, and its
+    /// position on that workspace's canvas, or neither, like between workspaces in the overview.
+    fn drag_move(&self) -> Option<Value> {
+        let Some(InteractiveMoveState::Engine {
+            window_id,
+            output,
+            pointer_pos_within_output,
+        }) = &self.interactive_move
+        else {
             return None;
         };
-        let ws = mon.workspaces.iter().find(|ws| ws.id() == ws_id)?;
-
-        let pos_within_workspace = (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-        let tile_pos_within_workspace =
-            (move_.tile_render_location(zoom) - geo.loc).downscale(zoom);
-        let drop = ws.scrolling().drag_on_canvas(
-            pos_within_workspace,
-            &move_.tile,
-            tile_pos_within_workspace,
-        );
-        let window = TilingSpace::<W>::window_info_of(&move_.tile, ws_id.get(), &engine::name());
-        let pointer_rect = json!({
-            "pointer": Xy::from_point(drop.pointer),
-            "rect": Rect::from_rect(drop.rect),
+        let id = self.engine_id_of(window_id)?;
+        let over = self.monitor_for_output(output).and_then(|mon| {
+            let (InsertWorkspace::Existing(ws_id), geo) =
+                mon.insert_position(*pointer_pos_within_output)
+            else {
+                return None;
+            };
+            let ws = mon.workspaces.iter().find(|ws| ws.id() == ws_id)?;
+            let pos = (*pointer_pos_within_output - geo.loc).downscale(mon.overview_zoom());
+            Some((ws_id.get(), ws.scrolling().canvas_pos(pos)))
         });
-        Some((ws_id.get(), to_value(&window), pointer_rect))
+        Some(json!({
+            "type": "dragmove",
+            "id": id,
+            "workspace": over.map(|(ws, _)| ws),
+            "pointer": over.map(|(_, pos)| Xy::from_point(pos)),
+        }))
     }
-}
-
-fn drag_event(kind: &str, workspace: u64, window: &Value, pointer_rect: &Value) -> Value {
-    json!({
-        "type": kind,
-        "workspace": workspace,
-        "window": window,
-        "pointer": pointer_rect["pointer"],
-        "rect": pointer_rect["rect"],
-    })
 }

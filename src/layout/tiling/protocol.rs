@@ -136,6 +136,8 @@ pub struct ViewInfo {
 pub struct ConfigInfo {
     pub gaps: f64,
     pub struts: Struts,
+    #[serde(rename = "titleButtons")]
+    pub title_buttons: Option<crate::layout::TitleButtons>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

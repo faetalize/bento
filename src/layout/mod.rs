@@ -37,7 +37,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use groups::Groups;
-use monitor::{InsertPosition, InsertWorkspace, MonitorAddWindowTarget};
+use monitor::{InsertWorkspace, MonitorAddWindowTarget};
 use niri_config::utils::MergeWith as _;
 use niri_config::{
     Config, CornerRadius, LayoutPart, Workspace as WorkspaceConfig, WorkspaceReference,
@@ -49,7 +49,7 @@ use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::output::{self, Output};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Scale, Serial, Size, Transform};
-use tile::{PendingMove, Tile, TileRenderElement};
+use tile::{Tile, TileRenderElement};
 use tiling::host::Host;
 use workspace::{WorkspaceAddWindowTarget, WorkspaceId};
 
@@ -70,10 +70,7 @@ use crate::render_helpers::xray::{Xray, XrayPos};
 use crate::render_helpers::{BakedBuffer, RenderCtx};
 use crate::rubber_band::RubberBand;
 use crate::utils::transaction::{Transaction, TransactionBlocker};
-use crate::utils::{
-    ensure_min_max_size_maybe_zero, output_matches_name, output_size,
-    round_logical_in_physical_max1, ResizeEdge,
-};
+use crate::utils::{output_matches_name, output_size, round_logical_in_physical_max1, ResizeEdge};
 use crate::window::ResolvedWindowRules;
 
 pub mod closing_window;
@@ -94,12 +91,6 @@ mod tests;
 
 /// Size changes up to this many pixels don't animate.
 pub const RESIZE_ANIMATION_THRESHOLD: f64 = 10.;
-
-/// Pointer needs to move this far to pull a window from the layout.
-const INTERACTIVE_MOVE_START_THRESHOLD: f64 = 256. * 256.;
-
-/// Opacity of interactively moved tiles targeting the scrolling layout.
-const INTERACTIVE_MOVE_ALPHA: f64 = 0.75;
 
 /// Amount of touchpad movement to toggle the overview.
 const OVERVIEW_GESTURE_MOVEMENT: f64 = 300.;
@@ -423,6 +414,34 @@ enum MonitorSet<W: LayoutElement> {
     },
 }
 
+/// The buttons of a title bar, by name, on its left and right, like GNOME's `button-layout`:
+/// `"close"`, `"minimize"`, `"maximize"`, `"appmenu"` and so on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct TitleButtons {
+    pub left: Vec<String>,
+    pub right: Vec<String>,
+}
+
+impl TitleButtons {
+    /// Reads a GNOME `button-layout` value, like `"appmenu:minimize,maximize,close"`: the
+    /// buttons left of the colon go on the left, and those after it on the right.
+    pub fn parse(layout: &str) -> Self {
+        let side = |names: &str| {
+            names
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(String::from)
+                .collect()
+        };
+        let (left, right) = layout.split_once(':').unwrap_or((layout, ""));
+        Self {
+            left: side(left),
+            right: side(right),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Options {
     pub layout: niri_config::Layout,
@@ -433,6 +452,9 @@ pub struct Options {
     pub blur: niri_config::Blur,
     /// The icon theme that image nodes look icons up in.
     pub icon_theme: String,
+    /// The buttons title bars have on each side, as the desktop settings say, for engines that
+    /// draw title bars; `None` when they don't say.
+    pub title_buttons: Option<TitleButtons>,
     // Debug flags.
     pub disable_resize_throttling: bool,
     pub disable_transactions: bool,
@@ -442,19 +464,25 @@ pub struct Options {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum InteractiveMoveState<W: LayoutElement> {
-    /// Initial rubberbanding; the window remains in the layout.
+    /// A floating window whose move began, before the pointer moved; it's still in the layout.
     Starting {
         /// The window we're moving.
         window_id: W::Id,
-        /// Current pointer delta from the starting location.
-        pointer_delta: Point<f64, Logical>,
         /// Pointer location within the visual window geometry as ratio from geometry size.
         ///
         /// This helps the pointer remain inside the window as it resizes.
         pointer_ratio_within_window: (f64, f64),
     },
-    /// Moving; the window is no longer in the layout.
+    /// A floating window that bento carries; it's no longer in the layout.
     Moving(InteractiveMoveData<W>),
+    /// A window of the engine's, which stays the engine's while it's dragged: the engine hears
+    /// where the pointer goes and places the window itself.
+    Engine {
+        window_id: W::Id,
+        /// Output the pointer is on.
+        output: Output,
+        pointer_pos_within_output: Point<f64, Logical>,
+    },
 }
 
 #[derive(Debug)]
@@ -465,8 +493,6 @@ struct InteractiveMoveData<W: LayoutElement> {
     pub(self) output: Output,
     /// Current pointer position within output.
     pub(self) pointer_pos_within_output: Point<f64, Logical>,
-    /// Whether the window targets the floating layout.
-    pub(self) is_floating: bool,
     /// Pointer location within the visual window geometry as ratio from geometry size.
     ///
     /// This helps the pointer remain inside the window as it resizes.
@@ -712,6 +738,7 @@ impl Default for Options {
             overview: Default::default(),
             blur: Default::default(),
             icon_theme: crate::utils::icon_theme::DEFAULT.to_owned(),
+            title_buttons: None,
             disable_resize_throttling: false,
             disable_transactions: false,
             deactivate_unfocused_windows: false,
@@ -729,6 +756,7 @@ impl Options {
             overview: config.overview,
             blur: config.blur,
             icon_theme: crate::utils::icon_theme::DEFAULT.to_owned(),
+            title_buttons: None,
             disable_resize_throttling: config.debug.disable_resize_throttling,
             disable_transactions: config.debug.disable_transactions,
             deactivate_unfocused_windows: config.debug.deactivate_unfocused_windows,
@@ -1208,21 +1236,24 @@ impl<W: LayoutElement> Layout<W> {
                             unreachable!()
                         };
 
-                        self.update_drag();
-
                         for mon in self.monitors_mut() {
                             mon.dnd_scroll_gesture_end();
                         }
 
-                        // Unlock the view on the workspaces.
-                        for ws in self.workspaces_mut() {
-                            ws.dnd_scroll_gesture_end();
-                        }
-
                         return Some(RemovedTile {
                             tile: move_.tile,
-                            is_floating: false,
+                            is_floating: true,
                         });
+                    }
+                }
+                InteractiveMoveState::Engine { window_id, .. } => {
+                    // The window goes, and the drag with it: the engine hears it's removed.
+                    if window_id == window {
+                        self.interactive_move = None;
+                        self.forget_drag();
+                        for mon in self.monitors_mut() {
+                            mon.dnd_scroll_gesture_end();
+                        }
                     }
                 }
             }
@@ -2182,7 +2213,6 @@ impl<W: LayoutElement> Layout<W> {
             match state {
                 InteractiveMoveState::Starting {
                     window_id,
-                    pointer_delta: _,
                     pointer_ratio_within_window: _,
                 } => {
                     assert!(
@@ -2190,6 +2220,16 @@ impl<W: LayoutElement> Layout<W> {
                         "interactive move must be on an existing window"
                     );
                     move_win_id = Some(window_id.clone());
+                }
+                InteractiveMoveState::Engine { window_id, .. } => {
+                    let (_, _, ws) = self
+                        .workspaces()
+                        .find(|(_, _, ws)| ws.has_window(window_id))
+                        .expect("a window dragged in the engine must be in the layout");
+                    assert!(
+                        !ws.is_floating(window_id),
+                        "a window dragged in the engine must be the engine's"
+                    );
                 }
                 InteractiveMoveState::Moving(move_) => {
                     assert_eq!(self.clock, move_.tile.clock);
@@ -2216,31 +2256,16 @@ impl<W: LayoutElement> Layout<W> {
                     assert_abs_diff_eq!(tile_pos.y, rounded_pos.y, epsilon = 1e-5);
 
                     if let Some(alpha) = &move_.tile.alpha_animation {
-                        if move_.is_floating {
-                            assert_eq!(
-                                alpha.anim.to(),
-                                1.,
-                                "interactively moved floating tile can animate alpha only to 1"
-                            );
+                        assert_eq!(
+                            alpha.anim.to(),
+                            1.,
+                            "interactively moved floating tile can animate alpha only to 1"
+                        );
 
-                            assert!(
-                                !alpha.hold_after_done,
-                                "interactively moved floating tile \
-                                 cannot have held alpha animation"
-                            );
-                        } else {
-                            assert_ne!(
-                                alpha.anim.to(),
-                                1.,
-                                "interactively moved scrolling tile must animate alpha to not 1"
-                            );
-
-                            assert!(
-                                alpha.hold_after_done,
-                                "interactively moved scrolling tile \
-                                 must have held alpha animation"
-                            );
-                        }
+                        assert!(
+                            !alpha.hold_after_done,
+                            "interactively moved floating tile cannot have held alpha animation"
+                        );
                     }
                 }
             }
@@ -2399,16 +2424,25 @@ impl<W: LayoutElement> Layout<W> {
             is_dnd = true;
         }
 
-        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            move_.tile.advance_animations();
-
-            if dnd_scroll.is_none() {
-                dnd_scroll = Some((
+        // A window being dragged only scrolls bento's overview: the engine's camera is the
+        // engine's to move.
+        match &mut self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_)) => {
+                move_.tile.advance_animations();
+                dnd_scroll.get_or_insert((
                     move_.output.clone(),
                     move_.pointer_pos_within_output,
-                    !move_.is_floating,
+                    false,
                 ));
             }
+            Some(InteractiveMoveState::Engine {
+                output,
+                pointer_pos_within_output,
+                ..
+            }) => {
+                dnd_scroll.get_or_insert((output.clone(), *pointer_pos_within_output, false));
+            }
+            _ => (),
         }
 
         let is_overview_open = self.overview_open;
@@ -2544,10 +2578,16 @@ impl<W: LayoutElement> Layout<W> {
                     return true;
                 }
 
-                // Keep advancing animations if we might need to scroll the view.
-                if !move_.is_floating || self.overview_open {
+                // Keep advancing animations if we might need to scroll the overview.
+                if self.overview_open {
                     return true;
                 }
+            }
+        }
+
+        if let Some(InteractiveMoveState::Engine { output: on, .. }) = &self.interactive_move {
+            if self.overview_open && output.is_none_or(|output| output == on) {
+                return true;
             }
         }
 
@@ -2703,12 +2743,29 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        // The icon theme isn't in the config.
+        // The icon theme and the title buttons aren't in the config.
         let icon_theme = self.options.icon_theme.clone();
+        let title_buttons = self.options.title_buttons.clone();
         self.update_options(Options {
             icon_theme,
+            title_buttons,
             ..Options::from_config(config)
         });
+    }
+
+    /// Sets the buttons title bars have on each side, for engines. Returns whether they changed.
+    pub fn set_title_buttons(&mut self, buttons: Option<TitleButtons>) -> bool {
+        if self.options.title_buttons == buttons {
+            return false;
+        }
+
+        let options = Options {
+            title_buttons: buttons,
+            ..Options::clone(&self.options)
+        };
+        self.update_options(options);
+        self.flush_engine();
+        true
     }
 
     /// Sets the icon theme that image nodes look icons up in. Returns whether it changed.
@@ -2770,50 +2827,43 @@ impl<W: LayoutElement> Layout<W> {
             return;
         }
 
-        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
-                move_.is_floating = !move_.is_floating;
-
-                // When going to floating, restore the floating window size.
-                if move_.is_floating {
-                    let floating_size = move_.tile.floating_window_size;
-                    let win = move_.tile.window_mut();
-                    let mut size =
-                        floating_size.unwrap_or_else(|| win.expected_size().unwrap_or_default());
-
-                    // Apply min/max size window rules. If requesting a concrete size, apply
-                    // completely; if requesting (0, 0), apply only when min/max results in a fixed
-                    // size.
-                    let min_size = win.min_size();
-                    let max_size = win.max_size();
-                    size.w = ensure_min_max_size_maybe_zero(size.w, min_size.w, max_size.w);
-                    size.h = ensure_min_max_size_maybe_zero(size.h, min_size.h, max_size.h);
-
-                    win.request_size_once(size, true);
-
-                    // Animate the tile back to opaque.
-                    move_.tile.animate_alpha(
-                        INTERACTIVE_MOVE_ALPHA,
-                        1.,
-                        self.options.animations.window_movement.0,
-                    );
-
-                    // Unlock the view on the workspaces.
-                    for ws in self.workspaces_mut() {
-                        ws.dnd_scroll_gesture_end();
-                    }
-                } else {
-                    // Animate the tile back to semitransparent.
-                    move_.tile.animate_alpha(
-                        1.,
-                        INTERACTIVE_MOVE_ALPHA,
-                        self.options.animations.window_movement.0,
-                    );
-                    move_.tile.hold_alpha_animation_after_done();
-                }
-
+        // A window toggled while it's dragged goes on being dragged: bento carries it while it
+        // floats, and the engine while it's the engine's.
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Engine {
+                window_id,
+                output,
+                pointer_pos_within_output,
+            }) if window.is_none_or(|window| window == window_id) => {
+                let (id, output, pos) = (
+                    window_id.clone(),
+                    output.clone(),
+                    *pointer_pos_within_output,
+                );
+                self.interactive_move_end_inner(&id, false);
+                self.toggle_window_floating_inner(Some(&id));
+                self.flush_engine();
+                self.interactive_move_begin_inner(id, &output, pos);
                 return;
             }
+            Some(InteractiveMoveState::Moving(move_))
+                if window.is_none_or(|window| window == move_.tile.window().id()) =>
+            {
+                let id = move_.tile.window().id().clone();
+                let (output, pos) = (move_.output.clone(), move_.pointer_pos_within_output);
+                self.interactive_move_end_inner(&id, true);
+                self.toggle_window_floating_inner(Some(&id));
+                self.flush_engine();
+                self.interactive_move_begin_inner(id, &output, pos);
+                return;
+            }
+            Some(InteractiveMoveState::Starting { window_id, .. })
+                if window.is_none_or(|window| window == window_id) =>
+            {
+                let id = window_id.clone();
+                self.interactive_move_end_inner(&id, false);
+            }
+            _ => (),
         }
 
         let workspace = if let Some(window) = window {
@@ -2860,13 +2910,25 @@ impl<W: LayoutElement> Layout<W> {
             return;
         }
 
-        if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
-            if window.is_none() || window == Some(move_.tile.window().id()) {
-                if move_.is_floating != floating {
+        // A dragged window floats while bento carries it, and is the engine's otherwise.
+        match &self.interactive_move {
+            Some(InteractiveMoveState::Moving(move_))
+                if window.is_none_or(|window| window == move_.tile.window().id()) =>
+            {
+                if !floating {
                     self.toggle_window_floating(window);
                 }
                 return;
             }
+            Some(InteractiveMoveState::Engine { window_id, .. })
+                if window.is_none_or(|window| window == window_id) =>
+            {
+                if floating {
+                    self.toggle_window_floating(window);
+                }
+                return;
+            }
+            _ => (),
         }
 
         let workspace = if let Some(window) = window {
@@ -3525,8 +3587,35 @@ impl<W: LayoutElement> Layout<W> {
         output: &Output,
         start_pos_within_output: Point<f64, Logical>,
     ) -> bool {
+        let began = self.interactive_move_begin_inner(window_id, output, start_pos_within_output);
+        self.flush_engine();
+        began
+    }
+
+    fn interactive_move_begin_inner(
+        &mut self,
+        window_id: W::Id,
+        output: &Output,
+        start_pos_within_output: Point<f64, Logical>,
+    ) -> bool {
         if self.interactive_move.is_some() {
             return false;
+        }
+
+        // A floating window that went fullscreen or maximized is the engine's only until it's
+        // restored, and a drag restores it: it floats again, and bento carries it.
+        let floats_when_restored = self.workspaces().any(|(_, _, ws)| {
+            !ws.is_floating(&window_id)
+                && ws
+                    .tiles()
+                    .any(|tile| tile.window().id() == &window_id && tile.restore_to_floating)
+        });
+        if floats_when_restored {
+            if let Some(ws) = self.workspaces_mut().find(|ws| ws.has_window(&window_id)) {
+                ws.set_fullscreen(&window_id, false);
+                ws.set_maximized(&window_id, false);
+            }
+            self.flush_engine();
         }
 
         let Some((mon, (ws, ws_geo))) = self.monitors().find_map(|mon| {
@@ -3554,11 +3643,34 @@ impl<W: LayoutElement> Layout<W> {
 
         // A tile that the layout draws moved, scaled or zoomed is grabbed where it's drawn.
         let pos_within_workspace = (start_pos_within_output - ws_geo.loc).downscale(zoom);
-        let pointer_offset_within_window =
-            match ws.pos_within_tile(&window_id, pos_within_workspace) {
-                Some(pos_within_tile) => (pos_within_tile - window_offset).upscale(zoom),
-                None => start_pos_within_output - tile_pos - window_offset.upscale(zoom),
-            };
+        let pos_within_tile = ws.pos_within_tile(&window_id, pos_within_workspace);
+
+        if !is_floating {
+            // The window stays the engine's, which hears where the pointer holds it: from the
+            // top left of the rect it gave the window.
+            let offset = pos_within_tile
+                .unwrap_or_else(|| (start_pos_within_output - tile_pos).downscale(zoom));
+            ws.scrolling()
+                .queue_drag_start(&window_id, offset, pos_within_workspace);
+
+            self.interactive_move = Some(InteractiveMoveState::Engine {
+                window_id,
+                output: output.clone(),
+                pointer_pos_within_output: start_pos_within_output,
+            });
+
+            // In the overview, bento still scrolls between workspaces.
+            for mon in self.monitors_mut() {
+                mon.dnd_scroll_gesture_begin();
+            }
+
+            return true;
+        }
+
+        let pointer_offset_within_window = match pos_within_tile {
+            Some(pos_within_tile) => (pos_within_tile - window_offset).upscale(zoom),
+            None => start_pos_within_output - tile_pos - window_offset.upscale(zoom),
+        };
         let window_size = tile.window_size().upscale(zoom);
         let pointer_ratio_within_window = (
             f64::clamp(pointer_offset_within_window.x / window_size.w, 0., 1.),
@@ -3567,7 +3679,6 @@ impl<W: LayoutElement> Layout<W> {
 
         self.interactive_move = Some(InteractiveMoveState::Starting {
             window_id,
-            pointer_delta: Point::from((0., 0.)),
             pointer_ratio_within_window,
         });
 
@@ -3575,25 +3686,17 @@ impl<W: LayoutElement> Layout<W> {
             mon.dnd_scroll_gesture_begin();
         }
 
-        // Lock the view for scrolling interactive move.
-        if !is_floating {
-            for ws in self.workspaces_mut() {
-                ws.dnd_scroll_gesture_begin();
-            }
-        }
-
         true
     }
 
+    /// Moves the pointer of the move of `window` to `pointer_pos_within_output` on `output`.
     pub fn interactive_move_update(
         &mut self,
         window: &W::Id,
-        delta: Point<f64, Logical>,
         output: Output,
         pointer_pos_within_output: Point<f64, Logical>,
     ) -> bool {
-        let result =
-            self.interactive_move_update_inner(window, delta, output, pointer_pos_within_output);
+        let result = self.interactive_move_update_inner(window, output, pointer_pos_within_output);
         self.flush_engine();
         result
     }
@@ -3601,72 +3704,52 @@ impl<W: LayoutElement> Layout<W> {
     fn interactive_move_update_inner(
         &mut self,
         window: &W::Id,
-        delta: Point<f64, Logical>,
         output: Output,
         pointer_pos_within_output: Point<f64, Logical>,
     ) -> bool {
+        // The engine places its window; bento only tells it where the pointer went.
+        if let Some(InteractiveMoveState::Engine {
+            window_id,
+            output: on,
+            pointer_pos_within_output: pos,
+        }) = &mut self.interactive_move
+        {
+            if window_id != window {
+                return false;
+            }
+            let moved_output = *on != output;
+            *on = output.clone();
+            *pos = pointer_pos_within_output;
+            if moved_output {
+                self.focus_output(&output);
+            }
+            self.update_drag();
+            return true;
+        }
+
         let Some(state) = self.interactive_move.take() else {
             return false;
         };
 
         match state {
+            InteractiveMoveState::Engine { .. } => unreachable!(),
             InteractiveMoveState::Starting {
                 window_id,
-                mut pointer_delta,
                 pointer_ratio_within_window,
             } => {
                 if window_id != *window {
                     self.interactive_move = Some(InteractiveMoveState::Starting {
                         window_id,
-                        pointer_delta,
                         pointer_ratio_within_window,
                     });
                     return false;
                 }
 
-                let zoom = self.overview_zoom();
-                let delta = delta.downscale(zoom);
-
-                pointer_delta += delta;
-
-                let (cx, cy) = (pointer_delta.x, pointer_delta.y);
-                let sq_dist = cx * cx + cy * cy;
-
-                let factor = RubberBand {
-                    stiffness: 1.0,
-                    limit: 0.5,
-                }
-                .band(sq_dist / INTERACTIVE_MOVE_START_THRESHOLD);
-
-                let (is_floating, tile, workspace_config) = self
-                    .workspaces_mut()
-                    .find(|ws| ws.has_window(&window_id))
-                    .map(|ws| {
-                        let workspace_config = ws.layout_config().cloned().map(|c| (ws.id(), c));
-                        (
-                            ws.is_floating(&window_id),
-                            ws.tiles_mut()
-                                .find(|tile| *tile.window().id() == window_id)
-                                .unwrap(),
-                            workspace_config,
-                        )
-                    })
-                    .unwrap();
-                tile.interactive_move_offset = pointer_delta.upscale(factor);
-
-                // Put it back to be able to easily return.
-                self.interactive_move = Some(InteractiveMoveState::Starting {
-                    window_id: window_id.clone(),
-                    pointer_delta,
-                    pointer_ratio_within_window,
-                });
-
-                // A tiled window holds its place until the pointer is well away; a free one comes
-                // along at once, like a floating one.
-                let free = is_floating || tiling::engine::free_drag_enabled();
-                if !free && sq_dist < INTERACTIVE_MOVE_START_THRESHOLD {
-                    return true;
-                }
+                // A floating window comes along as soon as the pointer moves.
+                let workspace_config = self
+                    .workspaces()
+                    .find(|(_, _, ws)| ws.has_window(&window_id))
+                    .and_then(|(_, _, ws)| ws.layout_config().cloned().map(|c| (ws.id(), c)));
 
                 let output_config = self
                     .monitors()
@@ -3674,9 +3757,8 @@ impl<W: LayoutElement> Layout<W> {
                     .and_then(|mon| mon.layout_config().cloned());
 
                 // If the pointer is currently on the window's own output, then we can animate the
-                // window movement from its current (rubberbanded and possibly moved away) position
-                // to the pointer. Otherwise, we just teleport it as the layout code is not aware
-                // of monitor positions.
+                // window movement from its current position to the pointer. Otherwise, we just
+                // teleport it as the layout code is not aware of monitor positions.
                 //
                 // FIXME: when and if the layout code knows about monitor positions, this will be
                 // potentially animatable.
@@ -3697,10 +3779,6 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 }
 
-                // Clear it before calling remove_window() to avoid running interactive_move_end()
-                // in the middle of interactive_move_update() and the confusion that causes.
-                self.interactive_move = None;
-
                 // Unset fullscreen before removing the tile. This will restore its size properly,
                 // and move it to floating if needed, so we don't have to deal with that here.
                 let ws = self
@@ -3709,19 +3787,8 @@ impl<W: LayoutElement> Layout<W> {
                     .unwrap();
                 ws.set_fullscreen(window, false);
                 ws.set_maximized(window, false);
-                // The engine decides about modes, so it hears these while it still places the
-                // window, and the window takes the size it gives back.
-                self.flush_engine();
-                let ws = self
-                    .workspaces_mut()
-                    .find(|ws| ws.has_window(&window_id))
-                    .unwrap();
-                ws.set_remove_reason(window, "drag");
 
-                let RemovedTile {
-                    mut tile,
-                    is_floating,
-                } = self
+                let RemovedTile { mut tile, .. } = self
                     .remove_window_inner(window, Transaction::new())
                     .unwrap();
 
@@ -3741,27 +3808,10 @@ impl<W: LayoutElement> Layout<W> {
                     .adjusted_for_scale(scale);
                 tile.update_config(view_size, scale, Rc::new(options));
 
-                if is_floating {
-                    // Unlock the view in case we locked it moving a fullscreen window that is
-                    // going to unfullscreen to floating.
-                    for ws in self.workspaces_mut() {
-                        ws.dnd_scroll_gesture_end();
-                    }
-                } else if !tiling::engine::free_drag_enabled() {
-                    // Animate to semitransparent.
-                    tile.animate_alpha(
-                        1.,
-                        INTERACTIVE_MOVE_ALPHA,
-                        self.options.animations.window_movement.0,
-                    );
-                    tile.hold_alpha_animation_after_done();
-                }
-
                 let mut data = InteractiveMoveData {
                     tile,
                     output,
                     pointer_pos_within_output,
-                    is_floating,
                     pointer_ratio_within_window,
                     output_config,
                     workspace_config,
@@ -3831,57 +3881,48 @@ impl<W: LayoutElement> Layout<W> {
             }
         }
 
-        self.update_drag();
-
         true
     }
 
+    /// Ends a move with the window dropped where the pointer is.
     pub fn interactive_move_end(&mut self, window: &W::Id) {
-        self.interactive_move_end_inner(window);
+        self.interactive_move_end_inner(window, true);
         self.flush_engine();
     }
 
-    fn interactive_move_end_inner(&mut self, window: &W::Id) {
+    /// Ends a move without a drop, like when something else takes the pointer. A floating window
+    /// stays where it was carried to, as on a drop; an engine hears that the drag was cancelled.
+    pub fn interactive_move_cancel(&mut self, window: &W::Id) {
+        self.interactive_move_end_inner(window, false);
+        self.flush_engine();
+    }
+
+    fn interactive_move_end_inner(&mut self, window: &W::Id, dropped: bool) {
         let Some(move_) = &self.interactive_move else {
             return;
         };
 
         let move_ = match move_ {
-            InteractiveMoveState::Starting { window_id, .. } => {
+            InteractiveMoveState::Engine { window_id, .. } => {
                 if window_id != window {
                     return;
                 }
-
-                let Some(InteractiveMoveState::Starting { window_id, .. }) =
-                    self.interactive_move.take()
-                else {
-                    unreachable!()
-                };
+                self.interactive_move = None;
 
                 for mon in self.monitors_mut() {
                     mon.dnd_scroll_gesture_end();
                 }
 
-                for ws in self.workspaces_mut() {
-                    if let Some(tile) = ws.tiles_mut().find(|tile| *tile.window().id() == window_id)
-                    {
-                        let offset = tile.interactive_move_offset;
-                        tile.interactive_move_offset = Point::from((0., 0.));
-                        tile.animate_move_from(offset);
-                    }
-
-                    // Unlock the view on the workspaces, but if the moved window was active,
-                    // preserve that.
-                    let moved_tile_was_active =
-                        ws.active_window().is_some_and(|win| *win.id() == window_id);
-
-                    ws.dnd_scroll_gesture_end();
-
-                    if moved_tile_was_active {
-                        ws.activate_window(&window_id);
+                self.end_drag(window, dropped);
+                return;
+            }
+            InteractiveMoveState::Starting { window_id, .. } => {
+                if window_id == window {
+                    self.interactive_move = None;
+                    for mon in self.monitors_mut() {
+                        mon.dnd_scroll_gesture_end();
                     }
                 }
-
                 return;
             }
             InteractiveMoveState::Moving(move_) => move_,
@@ -3891,31 +3932,12 @@ impl<W: LayoutElement> Layout<W> {
             return;
         }
 
-        let Some(InteractiveMoveState::Moving(mut move_)) = self.interactive_move.take() else {
+        let Some(InteractiveMoveState::Moving(move_)) = self.interactive_move.take() else {
             unreachable!()
         };
 
-        // The window isn't over a workspace any more.
-        self.update_drag();
-
         for mon in self.monitors_mut() {
             mon.dnd_scroll_gesture_end();
-        }
-
-        // Unlock the view on the workspaces.
-        if !move_.is_floating {
-            for ws in self.workspaces_mut() {
-                ws.dnd_scroll_gesture_end();
-            }
-
-            // Also animate the tile back to opaque, if it went see-through.
-            if !tiling::engine::free_drag_enabled() {
-                move_.tile.animate_alpha(
-                    INTERACTIVE_MOVE_ALPHA,
-                    1.,
-                    self.options.animations.window_movement.0,
-                );
-            }
         }
 
         // Dragging in the overview shouldn't switch the workspace and so on.
@@ -3927,61 +3949,24 @@ impl<W: LayoutElement> Layout<W> {
                 active_monitor_idx,
                 ..
             } => {
-                let (mon, insert_ws, position, offset, zoom) = if let Some(mon) =
-                    monitors.iter_mut().find(|mon| mon.output == move_.output)
-                {
-                    let zoom = mon.overview_zoom();
-
-                    let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
-                    let (position, offset) = match insert_ws {
-                        InsertWorkspace::Existing(ws_id) => {
-                            let ws_idx = mon.idx_of_ws(ws_id).unwrap();
-
-                            let position = if move_.is_floating {
-                                InsertPosition::Floating
-                            } else {
-                                let pos_within_workspace =
-                                    (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-                                let tile_pos_within_workspace =
-                                    (move_.tile_render_location(zoom) - geo.loc).downscale(zoom);
-                                let ws = &mut mon.workspaces[ws_idx];
-                                ws.scrolling_insert_position(
-                                    pos_within_workspace,
-                                    &move_.tile,
-                                    tile_pos_within_workspace,
-                                )
-                            };
-
-                            (position, Some(geo.loc))
-                        }
-                        InsertWorkspace::NewAt(_) => {
-                            let position = if move_.is_floating {
-                                InsertPosition::Floating
-                            } else {
-                                InsertPosition::Tiled(None)
-                            };
-
-                            (position, None)
-                        }
-                    };
-
-                    (mon, insert_ws, position, offset, zoom)
-                } else {
-                    let mon = &mut monitors[*active_monitor_idx];
-                    let zoom = mon.overview_zoom();
-                    // No point in trying to use the pointer position on the wrong output.
-                    let ws = &mon.workspaces[0];
-                    let ws_geo = mon.workspaces_render_geo().next().unwrap();
-
-                    let position = if move_.is_floating {
-                        InsertPosition::Floating
+                let (mon, insert_ws, offset, zoom) =
+                    if let Some(mon) = monitors.iter_mut().find(|mon| mon.output == move_.output) {
+                        let zoom = mon.overview_zoom();
+                        let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
+                        let offset = match insert_ws {
+                            InsertWorkspace::Existing(_) => Some(geo.loc),
+                            InsertWorkspace::NewAt(_) => None,
+                        };
+                        (mon, insert_ws, offset, zoom)
                     } else {
-                        InsertPosition::Tiled(None)
+                        let mon = &mut monitors[*active_monitor_idx];
+                        let zoom = mon.overview_zoom();
+                        // No point in trying to use the pointer position on the wrong output.
+                        let ws = &mon.workspaces[0];
+                        let ws_geo = mon.workspaces_render_geo().next().unwrap();
+                        let insert_ws = InsertWorkspace::Existing(ws.id());
+                        (mon, insert_ws, Some(ws_geo.loc), zoom)
                     };
-
-                    let insert_ws = InsertWorkspace::Existing(ws.id());
-                    (mon, insert_ws, position, Some(ws_geo.loc), zoom)
-                };
 
                 let win_id = move_.tile.window().id().clone();
                 let tile_render_loc = move_.tile_render_location(zoom);
@@ -4002,103 +3987,58 @@ impl<W: LayoutElement> Layout<W> {
                     }
                 };
 
-                match position {
-                    InsertPosition::Tiled(drop) => {
-                        let ws = &mut mon.workspaces[ws_idx];
-                        if let Some(drop) = drop {
-                            ws.set_tiling_drop(win_id.clone(), drop);
+                let mut tile = move_.tile;
+                tile.floating_pos = None;
+
+                match insert_ws {
+                    InsertWorkspace::Existing(_) => {
+                        if let Some(offset) = offset {
+                            let pos = (tile_render_loc - offset).downscale(zoom);
+                            let pos = mon.workspaces[ws_idx].floating_logical_to_size_frac(pos);
+                            tile.floating_pos = Some(pos);
+                        } else {
+                            error!(
+                                "offset unset for inserting a floating tile to existing workspace"
+                            );
                         }
-                        let ws_id = ws.id();
-                        mon.add_tile(
-                            move_.tile,
-                            MonitorAddWindowTarget::Workspace { id: ws_id },
-                            ActivateWindow::Yes,
-                            allow_to_activate_workspace,
-                            false,
-                            None,
-                        );
                     }
-                    InsertPosition::Floating => {
-                        let mut tile = move_.tile;
-                        tile.floating_pos = None;
-
-                        match insert_ws {
-                            InsertWorkspace::Existing(_) => {
-                                if let Some(offset) = offset {
-                                    let pos = (tile_render_loc - offset).downscale(zoom);
-                                    let pos =
-                                        mon.workspaces[ws_idx].floating_logical_to_size_frac(pos);
-                                    tile.floating_pos = Some(pos);
-                                } else {
-                                    error!(
-                                        "offset unset for inserting a floating tile \
-                                         to existing workspace"
-                                    );
-                                }
-                            }
-                            InsertWorkspace::NewAt(_) => {
-                                // When putting a floating tile on a new workspace, we don't really
-                                // have a good pre-existing position.
-                            }
-                        }
-
-                        // Set the floating size so it takes into account any window resizing that
-                        // took place during the move.
-                        if let Some(size) = tile.window().expected_size() {
-                            tile.floating_window_size = Some(size);
-                        }
-
-                        let ws_id = mon.workspaces[ws_idx].id();
-                        mon.add_tile(
-                            tile,
-                            MonitorAddWindowTarget::Workspace { id: ws_id },
-                            ActivateWindow::Yes,
-                            allow_to_activate_workspace,
-                            true,
-                            None,
-                        );
+                    InsertWorkspace::NewAt(_) => {
+                        // When putting a floating tile on a new workspace, we don't really
+                        // have a good pre-existing position.
                     }
                 }
+
+                // Set the floating size so it takes into account any window resizing that
+                // took place during the move.
+                if let Some(size) = tile.window().expected_size() {
+                    tile.floating_window_size = Some(size);
+                }
+
+                let ws_id = mon.workspaces[ws_idx].id();
+                mon.add_tile(
+                    tile,
+                    MonitorAddWindowTarget::Workspace { id: ws_id },
+                    ActivateWindow::Yes,
+                    allow_to_activate_workspace,
+                    true,
+                    None,
+                );
 
                 // The workspace's index could have changed with empty_workspace_above_first.
-                match position {
-                    InsertPosition::Tiled(_) => {
-                        // The layout engine places the tile after this, so it animates from
-                        // where it was dropped then.
-                        let (ws, ws_geo) = mon
-                            .workspaces_with_render_geo_mut(false)
-                            .find(|(ws, _)| ws.has_window(&win_id))
-                            .unwrap();
-                        let from = (tile_render_loc - ws_geo.loc).downscale(zoom);
-                        ws.set_pending_move(
-                            &win_id,
-                            PendingMove {
-                                from,
-                                config: None,
-                                between_workspaces: true,
-                            },
-                        );
-                    }
-                    InsertPosition::Floating => {
-                        let (tile, tile_offset, ws_geo) = mon
-                            .workspaces_with_render_geo_mut(false)
-                            .find_map(|(ws, geo)| {
-                                ws.tiles_with_render_positions_mut(false)
-                                    .find(|(tile, _)| tile.window().id() == &win_id)
-                                    .map(|(tile, tile_offset)| (tile, tile_offset, geo))
-                            })
-                            .unwrap();
-                        let new_tile_render_loc = ws_geo.loc + tile_offset.upscale(zoom);
+                let (tile, tile_offset, ws_geo) = mon
+                    .workspaces_with_render_geo_mut(false)
+                    .find_map(|(ws, geo)| {
+                        ws.tiles_with_render_positions_mut(false)
+                            .find(|(tile, _)| tile.window().id() == &win_id)
+                            .map(|(tile, tile_offset)| (tile, tile_offset, geo))
+                    })
+                    .unwrap();
+                let new_tile_render_loc = ws_geo.loc + tile_offset.upscale(zoom);
 
-                        // Interactive move into floating barely animates (it doesn't really move
-                        // after being dropped), so it doesn't count as moving between workspaces,
-                        // which would just make it awkwardly sit unclipped for a moment before the
-                        // animation runs out.
-                        tile.animate_move_from(
-                            (tile_render_loc - new_tile_render_loc).downscale(zoom),
-                        );
-                    }
-                }
+                // Interactive move into floating barely animates (it doesn't really move after
+                // being dropped), so it doesn't count as moving between workspaces, which would
+                // just make it awkwardly sit unclipped for a moment before the animation runs out.
+                tile.animate_move_from((tile_render_loc - new_tile_render_loc).downscale(zoom));
             }
             MonitorSet::NoOutputs { workspaces, .. } => {
                 if workspaces.is_empty() {
@@ -4114,7 +4054,7 @@ impl<W: LayoutElement> Layout<W> {
                     move_.tile,
                     WorkspaceAddWindowTarget::Auto,
                     ActivateWindow::Yes,
-                    move_.is_floating,
+                    true,
                     None,
                 );
             }
@@ -4674,7 +4614,7 @@ impl<W: LayoutElement> Layout<W> {
         if let Some(InteractiveMoveState::Moving(move_)) = &mut self.interactive_move {
             let win = move_.tile.window_mut();
 
-            win.set_floating(move_.is_floating);
+            win.set_floating(true);
             win.set_activated(true);
 
             win.set_interactive_resize(None);
@@ -4684,17 +4624,9 @@ impl<W: LayoutElement> Layout<W> {
             win.send_pending_configure();
             win.refresh();
 
-            ongoing_scrolling_dnd.get_or_insert(!move_.is_floating);
-        } else if let Some(InteractiveMoveState::Starting { window_id, .. }) =
-            &self.interactive_move
-        {
-            ongoing_scrolling_dnd.get_or_insert_with(|| {
-                let (_, _, ws) = self
-                    .workspaces()
-                    .find(|(_, _, ws)| ws.has_window(window_id))
-                    .unwrap();
-                !ws.is_floating(window_id)
-            });
+            ongoing_scrolling_dnd.get_or_insert(false);
+        } else if self.interactive_move.is_some() {
+            ongoing_scrolling_dnd.get_or_insert(false);
         }
 
         match &mut self.monitor_set {

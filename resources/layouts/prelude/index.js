@@ -288,7 +288,6 @@ function deliver(event) {
                     reason: how.reason,
                     activate: how.activate,
                     rect: how.rect ?? null,
-                    pointer: how.pointer ?? null,
                     nextTo: how.nextTo === null || how.nextTo === undefined ? null : (bento.window(how.nextTo) ?? null),
                 }),
             );
@@ -379,23 +378,26 @@ function deliver(event) {
             dispatch(ws, new BentoEvent("camerachange", ws));
             return null;
         }
-        case "dragenter":
-        case "dragmove":
-        case "dragleave": {
-            const ws = mustWorkspace(event.workspace);
-            const type = event.type;
-            if (type === "dragleave") {
-                dispatch(ws, new BentoEvent(type, ws));
-            } else {
-                dispatch(
-                    ws,
-                    new BentoEvent(type, ws, {
-                        window: session.detachedWindow(event.window),
-                        pointer: { ...event.pointer },
-                        rect: { ...event.rect },
-                    }),
-                );
-            }
+        case "dragstart": {
+            const win = mustWindow(event.id);
+            dispatch(win, new BentoEvent("dragstart", win, { offset: { ...event.offset }, pointer: { ...event.pointer } }));
+            return null;
+        }
+        case "dragmove": {
+            const win = mustWindow(event.id);
+            const over = event.workspace === null ? null : mustWorkspace(event.workspace);
+            dispatch(
+                win,
+                new BentoEvent("dragmove", win, {
+                    workspace: over,
+                    pointer: event.pointer === null ? null : { ...event.pointer },
+                }),
+            );
+            return null;
+        }
+        case "dragend": {
+            const win = mustWindow(event.id);
+            dispatch(win, new BentoEvent("dragend", win, { dropped: event.dropped }));
             return null;
         }
         case "swipebegin":

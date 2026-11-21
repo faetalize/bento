@@ -808,25 +808,31 @@ test("horizontal swipes are reported, and the engine moves the camera", () => {
     assert.equal(h.lastCamera.velocity, 500);
 });
 
-test("drags over a workspace are events, and the drop adds the window", () => {
+test("a drag's start, moves and end reach the window, which stays the engine's", () => {
     const seen = [];
     const h = host((bento) => {
-        placing(bento);
-        const ws = bento.monitors[0].workspaces[0];
-        for (const type of ["dragenter", "dragmove", "dragleave"]) {
-            ws.addEventListener(type, (e) => seen.push([type, e.window?.id ?? null, e.pointer?.x ?? null, e.rect?.w ?? null]));
-        }
+        placing(bento, { x: 100, y: 0, w: 20, h: 20 });
         bento.addEventListener("windowadd", (e) => {
-            if (e.reason === "drop") seen.push(["drop", e.pointer.x, e.rect.x]);
+            const win = e.window;
+            win.addEventListener("dragstart", (d) => seen.push(["dragstart", d.offset.x, d.pointer.x]));
+            win.addEventListener("dragmove", (d) => seen.push(["dragmove", d.workspace?.id ?? null, d.pointer?.x ?? null]));
+            win.addEventListener("dragend", (d) => seen.push(["dragend", d.dropped]));
+            win.addEventListener("remove", (r) => seen.push(["remove", r.reason]));
         });
     });
     const a = h.open();
-    h.drag(a, h.workspace(0).id, [{ x: 100, y: 10 }, { x: 120, y: 10 }]);
+    const ws = h.workspace(0).id;
+    h.drag(a, ws, [{ x: 120, y: 10 }]);
+    h.send({ type: "dragstart", id: a, offset: { x: 5, y: 5 }, pointer: { x: 105, y: 5 } });
+    h.send({ type: "dragmove", id: a, workspace: null, pointer: null });
+    h.send({ type: "dragend", id: a, dropped: false });
     assert.deepEqual(seen, [
-        ["dragenter", a, 100, 20],
-        ["dragmove", a, 120, 20],
-        ["dragleave", null, null, null],
-        ["drop", 120, 110],
+        ["dragstart", 10, 110],
+        ["dragmove", ws, 120],
+        ["dragend", true],
+        ["dragstart", 5, 105],
+        ["dragmove", null, null],
+        ["dragend", false],
     ]);
     assert.deepEqual(h.stacking(), [a]);
 });
@@ -1367,7 +1373,7 @@ test("beginResize needs edges, and a window that's in the engine", () => {
     assert.throws(() => win.beginMove(), /not in the layout engine/);
 });
 
-test("a move with the pointer takes the window out and puts it back, like bento's own", () => {
+test("a move with the pointer keeps the window in the engine, like bento's own", () => {
     const log = [];
     const h = host(
         titleBars(
@@ -1375,6 +1381,8 @@ test("a move with the pointer takes the window out and puts it back, like bento'
             (win, bar, e) => {
                 log.push(["add", e.reason]);
                 win.addEventListener("remove", (r) => log.push(["remove", r.reason]));
+                win.addEventListener("dragstart", () => log.push(["dragstart"]));
+                win.addEventListener("dragend", (d) => log.push(["dragend", d.dropped]));
             },
         ),
     );
@@ -1383,7 +1391,7 @@ test("a move with the pointer takes the window out and puts it back, like bento'
     assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
 
     h.drag(a, h.workspace(0).id, [{ x: 30, y: 30 }]);
-    assert.deepEqual(log, [["add", "open"], ["remove", "drag"], ["add", "drop"]]);
+    assert.deepEqual(log, [["add", "open"], ["dragstart"], ["dragend", true]]);
 });
 
 test("a resize with the pointer sends the same events as bento's own", () => {
@@ -1484,7 +1492,7 @@ test("decorations only take booleans", () => {
     h.action("go");
 });
 
-test("decorations come back when a window leaves the engine and when the engine starts over", () => {
+test("decorations stay through a drag, and come back when the engine starts over", () => {
     const seen = [];
     const h = host(
         titleBars(
@@ -1499,10 +1507,10 @@ test("decorations come back when a window leaves the engine and when the engine 
     const off = { border: false, focusRing: true, shadow: false };
     assert.deepEqual(h.windows.get(a).decorations, off);
 
-    // A drag takes the window out, and it comes back as bento draws it.
+    // A dragged window stays the engine's, as the engine decorated it.
     h.drag(a, h.workspace(0).id, [{ x: 30, y: 30 }]);
-    assert.deepEqual(seen.map(([reason]) => reason), ["open", "drop"]);
-    assert.deepEqual(seen[1][1], ALL_ON);
+    assert.deepEqual(seen.map(([reason]) => reason), ["open"]);
+    assert.deepEqual(h.windows.get(a).decorations, off);
 
     // A new instance of the engine finds them on, and turns them off again if it wants.
     h.reload();
@@ -1727,19 +1735,26 @@ test("tab bars are drawn, and clicking a tab activates its window", () => {
     assert.equal([...h.tree().nodes].filter(([, node]) => node.kind === "box").length, 1);
 });
 
-test("an API 1 engine's drop target is drawn while a window is dragged", () => {
+test("an API 1 engine sees a dragged window leave and come back where it's dropped", () => {
+    const log = [];
     const h = hostV1((ws) => ({
-        ...simple()(ws),
+        ...simple(log)(ws),
         dropTarget: (win, pointer) => ({ x: pointer.x, y: pointer.y, w: 5, h: 5 }),
     }));
     const a = h.open();
     const ws = h.workspace(0).id;
-    const info = h.windowInfo(h.windows.get(a));
-    h.send({ type: "dragenter", workspace: ws, window: info, pointer: { x: 10, y: 20 }, rect: { x: 0, y: 0, w: 5, h: 5 } });
     const boxes = () => [...h.tree().nodes].filter(([, node]) => node.kind === "box");
-    assert.deepEqual(boxes()[0][1].props.rect, { x: 10, y: 20, w: 5, h: 5 });
-    h.send({ type: "dragleave", workspace: ws });
+    h.send({ type: "dragstart", id: a, offset: { x: 10, y: 10 }, pointer: { x: 10, y: 10 } });
+    assert.deepEqual(log.at(-1), ["removed", a, "drag"]);
+
+    // The adapter carries the window under the pointer, and draws the engine's drop target.
+    h.send({ type: "dragmove", id: a, workspace: ws, pointer: { x: 210, y: 20 } });
+    assert.deepEqual(h.windows.get(a).rect, { x: 200, y: 10, w: 100, h: 100 });
+    assert.deepEqual(boxes()[0][1].props.rect, { x: 210, y: 20, w: 5, h: 5 });
+
+    h.send({ type: "dragend", id: a, dropped: true });
     assert.equal(boxes().length, 0);
+    assert.deepEqual(log.at(-1), ["added", a, "drop", true]);
 });
 
 test("setActiveInColumn has no effect on an API 1 window", () => {

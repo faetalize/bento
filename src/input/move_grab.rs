@@ -30,6 +30,9 @@ pub struct MoveGrab {
     gesture: GestureState,
     enable_view_offset: bool,
     move_icon: CursorIcon,
+    /// Whether the button, finger or pen that held the window let go, which drops it; any other
+    /// end of the grab cancels the move.
+    released: bool,
 
     // Accumulated and applied in frame().
     new_location: Point<f64, Logical>,
@@ -65,6 +68,7 @@ impl MoveGrab {
             enable_view_offset,
             // Moving windows by their titlebars uses the default cursor by default.
             move_icon: move_icon.unwrap_or(CursorIcon::Default),
+            released: false,
             new_location: location,
             event_timestamp: None,
             relative_delta: None,
@@ -100,7 +104,8 @@ impl MoveGrab {
 
                 layout.activate_window(&self.window);
             }
-            GestureState::Move => layout.interactive_move_end(&self.window),
+            GestureState::Move if self.released => layout.interactive_move_end(&self.window),
+            GestureState::Move => layout.interactive_move_cancel(&self.window),
             GestureState::ViewOffset => {
                 layout.view_offset_gesture_end(Some(false));
             }
@@ -175,7 +180,7 @@ impl MoveGrab {
             return true;
         };
 
-        let mut delta = self.new_location - self.last_location;
+        let delta = self.new_location - self.last_location;
         let mut relative_delta = self.relative_delta.take().unwrap_or(delta);
         self.last_location = self.new_location;
 
@@ -217,7 +222,6 @@ impl MoveGrab {
                 }
 
                 // Apply the whole delta that accumulated during recognizing.
-                delta = c;
                 relative_delta = c;
             }
         }
@@ -231,11 +235,8 @@ impl MoveGrab {
                 };
                 let output = output.clone();
 
-                // Interactive move always uses absolute delta since the window must remain pinned
-                // to the cursor even when it's clamped to monitor bounds.
                 let ongoing = data.niri.layout.interactive_move_update(
                     &self.window,
-                    delta,
                     output,
                     pos_within_output,
                 );
@@ -280,13 +281,10 @@ impl MoveGrab {
                 return false;
             }
 
-            // Apply the delta accumulated during recognizing.
-            let ongoing = data.niri.layout.interactive_move_update(
-                &self.window,
-                self.last_location - self.start_data.location(),
-                output,
-                pos_within_output,
-            );
+            let ongoing =
+                data.niri
+                    .layout
+                    .interactive_move_update(&self.window, output, pos_within_output);
             if !ongoing {
                 return false;
             }
@@ -344,6 +342,7 @@ impl PointerGrab<State> for MoveGrab {
 
         if !handle.current_pressed().contains(&start_data.button) {
             // The button that initiated the grab was released.
+            self.released = true;
             handle.unset_grab(self, data, event.serial, event.time, true);
             return;
         }
@@ -496,6 +495,7 @@ impl TouchGrab<State> for MoveGrab {
         handle.up(data, event);
 
         if event.slot == self.start_data.unwrap_touch().slot {
+            self.released = true;
             handle.unset_grab(self, data);
         }
     }
@@ -602,6 +602,7 @@ impl TabletToolGrab<State> for MoveGrab {
         event: &tablet::tool::UpEvent,
     ) {
         handle.up(data, event);
+        self.released = true;
         handle.unset_grab(self, data, event.serial, event.time, true);
     }
 

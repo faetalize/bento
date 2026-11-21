@@ -64,52 +64,44 @@ const tabsOf = (host, workspace) => drawn(host, workspace).filter((node) => node
 const hintOf = (host, workspace) =>
     drawn(host, workspace).find((node) => node.background === "#7fc8ff80" && !node.interactive) ?? null;
 
-/** Starts dragging a window: it leaves its workspace. Returns what bento tells about it. */
-function startDrag(host, id) {
-    const win = host.windows.get(id);
-    const info = host.windowInfo(win);
-    host.close(id, "drag");
-    host.windows.set(id, win);
-    return info;
+/** The opacity of a window's node, 1 unless the engine set one. */
+const opacityOf = (host, id) => host.tree(host.windows.get(id).workspace).node(`w${id}`).props.opacity ?? 1;
+
+/** Starts dragging a window, held `offset` from its top left. Returns where the pointer is. */
+function startDrag(host, id, offset = { x: 10, y: 10 }) {
+    const rect = host.rect(id);
+    const pointer = { x: rect.x + offset.x, y: rect.y + offset.y };
+    host.send({ type: "dragstart", id, offset, pointer });
+    return pointer;
 }
 
-/** Moves the pointer of a dragged window over a workspace. */
-function dragOver(host, info, pointer, workspace = host.activeWorkspace().id, first = false) {
-    host.send({
-        type: first ? "dragenter" : "dragmove",
-        workspace,
-        window: info,
-        pointer,
-        rect: { x: pointer.x - 10, y: pointer.y - 10, w: 20, h: 20 },
-    });
+/** Moves the pointer of a dragged window, on a workspace's canvas, or where there's none. */
+function dragTo(host, id, pointer, workspace = host.activeWorkspace().id) {
+    host.send({ type: "dragmove", id, workspace, pointer });
+}
+
+/** Ends a drag: lets go of the window, or cancels the drag. */
+function endDrag(host, id, dropped = true) {
+    host.send({ type: "dragend", id, dropped });
+}
+
+/** Starts dragging a window and pulls it far enough to come loose of its column. */
+function dragLoose(host, id) {
+    const start = startDrag(host, id);
+    dragTo(host, id, { x: start.x, y: start.y + 300 });
 }
 
 /** The rect of the insert hint while dragging `id` with the pointer at `pointer`. */
 function hintAt(host, id, pointer) {
-    const info = startDrag(host, id);
-    dragOver(host, info, pointer, undefined, true);
-    const hint = hintOf(host)?.rect ?? null;
-    host.send({ type: "dragleave", workspace: host.activeWorkspace().id });
-    return hint;
+    dragLoose(host, id);
+    dragTo(host, id, pointer);
+    return hintOf(host)?.rect ?? null;
 }
 
 /** Drops a dragged window with the pointer at `pointer`. */
 function drop(host, id, pointer, workspace = host.activeWorkspace().id) {
-    const win = host.windows.get(id);
-    win.workspace = workspace;
-    host.trees.get(workspace).add(`w${id}`);
-    host.told.windows.set(id, host.windowInfo(win));
-    host.send({
-        type: "windowadd",
-        window: host.windowInfo(win),
-        how: {
-            reason: "drop",
-            activate: true,
-            rect: { x: pointer.x - 10, y: pointer.y - 10, w: 20, h: 20 },
-            pointer,
-            nextTo: null,
-        },
-    });
+    dragTo(host, id, pointer, workspace);
+    endDrag(host, id);
 }
 
 describe("opening windows", () => {
@@ -865,6 +857,7 @@ describe("tabbed columns", () => {
 
         // Dropping into the column highlights the tabs, not the indicator.
         assert.deepEqual(hintAt(host, c, { x: 300, y: 700 }), rect(10, 554, 606, 150));
+        endDrag(host, c, false);
         assert.deepEqual(host.rect(a), rect(10, 16, 606, 688));
     });
 
@@ -974,18 +967,18 @@ describe("dragging windows", () => {
         assert.deepEqual(columnsOf(host), [[a], [c], [b]]);
         assert.deepEqual(host.rect(c), rect(632, 16, 616, 688));
         assert.equal(host.focused(), c);
+        assert.equal(hintOf(host), null);
     });
 
     test("dropping past the last column", async () => {
         const host = await load();
         const [a, b] = openMany(host, 2);
-        const info = startDrag(host, b);
-        dragOver(host, info, { x: 620, y: 300 }, undefined, true);
+        dragLoose(host, b);
+        dragTo(host, b, { x: 620, y: 300 });
         assert.deepEqual(hintOf(host).rect, rect(632, 16, 300, 688));
         // Before the first column; the hint stays half on screen.
-        dragOver(host, info, { x: -100, y: 300 });
+        dragTo(host, b, { x: -100, y: 300 });
         assert.deepEqual(hintOf(host).rect, rect(-166, 16, 300, 688));
-        host.send({ type: "dragleave", workspace: host.activeWorkspace().id });
         drop(host, b, { x: 620, y: 300 });
         assert.deepEqual(host.rect(b), rect(632, 16, 616, 688));
         assert.deepEqual(host.rect(a), rect(0, 16, 616, 688));
@@ -1021,23 +1014,181 @@ describe("dragging windows", () => {
         assert.deepEqual(host.screenRect(a), rect(16, 16, 616, 688));
     });
 
+    test("dropping on another workspace", async () => {
+        const host = await load();
+        const [w0, w1] = [host.workspace(0).id, host.workspace(1).id];
+        const [a, b] = openMany(host, 2);
+        dragLoose(host, b);
+        dragTo(host, b, { x: 500, y: 300 }, w1);
+        // The window goes along with the pointer, and so does the hint.
+        assert.equal(host.windows.get(b).workspace, w1);
+        assert.deepEqual(host.rect(b), rect(490, 290, 616, 688));
+        assert.equal(hintOf(host, w0), null);
+        assert.notEqual(hintOf(host, w1), null);
+        endDrag(host, b);
+        assert.deepEqual(columnsOf(host, w0), [[a]]);
+        assert.deepEqual(columnsOf(host, w1), [[b]]);
+        assert.equal(hintOf(host, w1), null);
+    });
+
+    test("a window holds its place until the pointer is far enough, then follows it", async () => {
+        const host = await load();
+        const [a, b] = openMany(host, 2);
+        host.action("focus-column-first");
+        const before = host.rect(b);
+        const start = startDrag(host, b, { x: 100, y: 50 });
+        // Pulled along a little.
+        dragTo(host, b, { x: start.x + 100, y: start.y });
+        const pulled = host.rect(b);
+        assert.ok(pulled.x > before.x && pulled.x < before.x + 100, JSON.stringify(pulled));
+        assert.equal(pulled.y, before.y);
+        assert.deepEqual(columnsOf(host), [[a], [b]]);
+        assert.equal(hintOf(host), null);
+
+        // Loose: under the pointer at its size, raised and see-through, and the columns close up.
+        dragTo(host, b, { x: start.x + 300, y: start.y });
+        assert.deepEqual(host.rect(b), rect(before.x + 300, before.y, before.w, before.h));
+        assert.deepEqual(columnsOf(host), [[a]]);
+        assert.equal(host.stacking().at(-1), b);
+        assert.equal(opacityOf(host, b), 0.75);
+        dragTo(host, b, { x: 400, y: 200 });
+        assert.deepEqual(host.rect(b), rect(300, 150, before.w, before.h));
+
+        endDrag(host, b);
+        assert.equal(opacityOf(host, b), 1);
+    });
+
+    test("a drag that ends before the window comes loose changes nothing", async () => {
+        const host = await load();
+        const [a, b] = openMany(host, 2);
+        host.action("focus-column-first");
+        const before = host.rect(b);
+        const start = startDrag(host, b);
+        dragTo(host, b, { x: start.x + 50, y: start.y + 50 });
+        assert.notDeepEqual(host.rect(b), before);
+        endDrag(host, b);
+        assert.deepEqual(host.rect(b), before);
+        assert.deepEqual(columnsOf(host), [[a], [b]]);
+        assert.equal(host.focused(), a);
+        assert.equal(opacityOf(host, b), 1);
+    });
+
+    test("a cancelled drag puts the window back", async () => {
+        const host = await load();
+        const [w0, w1] = [host.workspace(0).id, host.workspace(1).id];
+        const c = host.open();
+        const [a, b] = openStacked(host);
+        const rects = [a, b, c].map((id) => host.rect(id));
+        dragLoose(host, a);
+        assert.deepEqual(columnsOf(host), [[c], [b]]);
+        dragTo(host, a, { x: 500, y: 300 }, w1);
+        endDrag(host, a, false);
+        assert.equal(host.windows.get(a).workspace, w0);
+        assert.deepEqual(columnsOf(host, w0), [[c], [a, b]]);
+        assert.deepEqual(columnsOf(host, w1), []);
+        assert.deepEqual([a, b, c].map((id) => host.rect(id)), rects);
+        assert.equal(host.focused(), b);
+        assert.equal(hintOf(host, w1), null);
+        assert.equal(opacityOf(host, a), 1);
+
+        // So does letting go where there's no workspace.
+        dragLoose(host, b);
+        dragTo(host, b, null, null);
+        endDrag(host, b);
+        assert.deepEqual(columnsOf(host, w0), [[c], [a, b]]);
+        assert.equal(host.focused(), b);
+    });
+
+    test("a tab dragged out leaves its tabs, and comes back to them when cancelled", async () => {
+        const host = await load();
+        const [a, b, c] = openMany(host, 3);
+        host.action("focus-column-first");
+        host.action("consume-window-into-column");
+        host.action("toggle-column-tabbed-display");
+        host.action("focus-window-down");
+        assert.equal(host.focused(), b);
+        assert.deepEqual(host.groupOf(a)?.windows, [a, b]);
+
+        dragLoose(host, b);
+        assert.deepEqual(columnsOf(host), [[a], [c]]);
+        assert.equal(host.groupOf(b), null);
+        endDrag(host, b, false);
+        assert.deepEqual(columnsOf(host), [[a, b], [c]]);
+        assert.equal(host.focused(), b);
+        assert.deepEqual(host.groupOf(a)?.windows, [a, b]);
+        assert.equal(host.isVisible(a), false);
+    });
+
+    test("closing a dragged window ends the drag", async () => {
+        const host = await load();
+        const [a, b] = openMany(host, 2);
+        dragLoose(host, b);
+        dragTo(host, b, { x: 620, y: 300 });
+        assert.notEqual(hintOf(host), null);
+        host.close(b);
+        assert.equal(hintOf(host), null);
+        assert.deepEqual(columnsOf(host), [[a]]);
+        host.advanceTime(1000);
+        assert.deepEqual(host.errors, []);
+    });
+
+    test("the view scrolls while the pointer rests near its edge", async () => {
+        const host = await load();
+        const [a, b, c, d] = openMany(host, 4);
+        host.action("focus-column-first");
+        assert.equal(host.camera().x, -16);
+        dragLoose(host, d);
+        assert.deepEqual(columnsOf(host), [[a], [b], [c]]);
+        // 5 px from the right edge of the view.
+        const pointer = { x: host.camera().x + 1275, y: 300 };
+        dragTo(host, d, pointer);
+        // Not right away.
+        host.advanceTime(90);
+        assert.equal(host.camera().x, -16);
+        host.advanceTime(200);
+        const scrolled = host.camera().x;
+        assert.ok(scrolled > -16, `camera at ${scrolled}`);
+        // The window stays under the pointer on screen.
+        assert.deepEqual(host.screenRect(d), rect(1265, 290, 616, 688));
+
+        // It goes up to the right edge of the last column, which stays at the left of the view.
+        host.advanceTime(5000);
+        assert.equal(host.camera().x, 3 * 616 + 2 * 16);
+        assert.deepEqual(host.screenRect(d), rect(1265, 290, 616, 688));
+
+        // Away from the edge it stops.
+        dragTo(host, d, { x: host.camera().x + 640, y: 300 });
+        const stopped = host.camera().x;
+        host.advanceTime(1000);
+        assert.equal(host.camera().x, stopped);
+
+        // Dropping scrolls to the dropped window.
+        endDrag(host, d);
+        assert.deepEqual(columnsOf(host), [[a], [b], [c], [d]]);
+        assert.equal(host.focused(), d);
+        const screen = host.screenRect(d);
+        assert.ok(screen.x >= 0 && screen.x + screen.w <= 1280, JSON.stringify(screen));
+    });
+
     test("the hint goes away when the pointer leaves, and follows its settings", async () => {
         const host = await load();
         const [, b] = openMany(host, 2);
-        const info = startDrag(host, b);
-        dragOver(host, info, { x: 620, y: 300 }, undefined, true);
+        assert.notEqual(hintAt(host, b, { x: 620, y: 300 }), null);
+        dragTo(host, b, null, null);
+        assert.equal(hintOf(host), null);
+        dragTo(host, b, { x: 620, y: 300 });
         assert.notEqual(hintOf(host), null);
-        host.send({ type: "dragleave", workspace: host.activeWorkspace().id });
+        endDrag(host, b, false);
         assert.equal(hintOf(host), null);
 
         const plain = await load({ settings: { "insert-hint": false } });
         const [, c] = openMany(plain, 2);
-        dragOver(plain, startDrag(plain, c), { x: 620, y: 300 }, undefined, true);
+        hintAt(plain, c, { x: 620, y: 300 });
         assert.equal(drawn(plain).length, 0);
 
         const colored = await load({ settings: { "insert-hint-color": "#ff000080" } });
         const [, d] = openMany(colored, 2);
-        dragOver(colored, startDrag(colored, d), { x: 620, y: 300 }, undefined, true);
+        hintAt(colored, d, { x: 620, y: 300 });
         assert.equal(drawn(colored)[0].background, "#ff000080");
 
         // A gradient wins over the color.
@@ -1046,7 +1197,7 @@ describe("dragging windows", () => {
             settings: { "insert-hint-color": "#ff000080", "insert-hint-gradient": gradient },
         });
         const [, e] = openMany(painted, 2);
-        dragOver(painted, startDrag(painted, e), { x: 620, y: 300 }, undefined, true);
+        hintAt(painted, e, { x: 620, y: 300 });
         assert.deepEqual(drawn(painted)[0].background, gradient);
     });
 });

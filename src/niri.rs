@@ -2603,6 +2603,12 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            PortalSettingsToNiri::TitleButtons(buttons) => {
+                trace!("portal title buttons: {buttons:?}");
+                if self.niri.layout.set_title_buttons(buttons) {
+                    self.niri.queue_redraw_all();
+                }
+            }
         }
     }
 

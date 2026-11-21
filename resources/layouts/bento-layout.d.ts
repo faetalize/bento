@@ -164,9 +164,7 @@ export interface Meta {
     minimize?: boolean;
     /**
      * Whether windows move freely, the way floating windows do; false by default. With it on, a
-     * drag takes a window from the first pixel and keeps it opaque, a title bar dragged sideways
-     * moves its window instead of scrolling the view, and bento never scrolls the view during a
-     * drag: the camera stays where the engine puts it.
+     * title bar dragged sideways moves its window instead of scrolling the view.
      */
     freeDrag?: boolean;
 }
@@ -201,8 +199,6 @@ export type AddReason =
     | "open"
     /** The window was there when the engine started, see `Bento.savedState`. */
     | "adopt"
-    /** The window was dropped at the end of a pointer drag. */
-    | "drop"
     /** The window stopped floating. */
     | "tile";
 
@@ -212,18 +208,16 @@ export interface WindowAddEvent extends BentoEvent {
     /** Whether the window should get focus. */
     readonly activate: boolean;
     /**
-     * Where the window was on its workspace's canvas: before the engine started, while floating,
-     * or where it was dropped. A hint, which the engine is free to ignore.
+     * Where the window was on its workspace's canvas: before the engine started, or while
+     * floating. A hint, which the engine is free to ignore.
      */
     readonly rect: Rect | null;
-    /** Pointer position on the canvas, when the window was dropped. */
-    readonly pointer: Point | null;
     /** For a new window, the window it's related to, like a dialog's parent. */
     readonly nextTo: Window | null;
 }
 
 /** Why a window leaves the engine. */
-export type RemoveReason = "close" | "drag" | "float";
+export type RemoveReason = "close" | "float";
 
 export interface WindowRemoveEvent extends BentoEvent {
     readonly reason: RemoveReason;
@@ -287,13 +281,40 @@ export interface ResizeEvent extends BentoEvent {
     readonly delta: Point;
 }
 
-/** A pointer drag carries a window over a workspace, for the engine to show where it would go. */
-export interface DragEvent extends BentoEvent {
-    readonly window: Window;
-    /** Pointer position on the workspace's canvas. */
+/**
+ * A drag of the window with the pointer began. bento runs the drag: it holds the pointer, shows
+ * the cursor and follows it across monitors, and doesn't move the window. The window stays the
+ * engine's, with its group, state and order, and the engine places it as the drag goes.
+ */
+export interface DragStartEvent extends BentoEvent {
+    /** Where on the window the pointer holds it, from the top left of its rect. */
+    readonly offset: Point;
+    /** Pointer position on the window's workspace's canvas. */
     readonly pointer: Point;
-    /** Where the dragged window is drawn. */
-    readonly rect: Rect;
+}
+
+/**
+ * The pointer dragging the window moved. Comes at most once a frame, with where the pointer is
+ * when the frame is drawn. The engine places the window, under the pointer or wherever it likes,
+ * and moves it to `workspace` with `moveTo` if it should go there.
+ */
+export interface DragMoveEvent extends BentoEvent {
+    /**
+     * The workspace under the pointer, on any monitor, or null where there's none, like between
+     * workspaces in an overview.
+     */
+    readonly workspace: Workspace | null;
+    /** Pointer position on `workspace`'s canvas, or null with no workspace. */
+    readonly pointer: Point | null;
+}
+
+/** The drag of the window ended. */
+export interface DragEndEvent extends BentoEvent {
+    /**
+     * True when it was dropped where the pointer is, by letting go; false when it was cancelled,
+     * like when something else took the pointer or the window started floating.
+     */
+    readonly dropped: boolean;
 }
 
 /**
@@ -384,11 +405,11 @@ export interface WorkspaceEvents {
     /** Its name, monitor, place in the stack, or whether it's shown changed. */
     change: BentoEvent;
     remove: BentoEvent;
-    /** bento moved the camera itself, while a dragged window is near the view's edge. */
+    /**
+     * bento moved the camera itself, while something an app drags, like a file, is near the
+     * view's edge.
+     */
     camerachange: BentoEvent;
-    dragenter: DragEvent;
-    dragmove: DragEvent;
-    dragleave: BentoEvent;
     swipebegin: SwipeEvent;
     swipeupdate: SwipeEvent;
     swipeend: SwipeEvent;
@@ -410,6 +431,9 @@ export interface WindowEvents {
     resizebegin: ResizeEvent;
     resizeupdate: ResizeEvent;
     resizeend: BentoEvent;
+    dragstart: DragStartEvent;
+    dragmove: DragMoveEvent;
+    dragend: DragEndEvent;
     /** A double click on one of the window's resize edges. */
     edgedoubleclick: BentoEvent & { readonly edges: Edges };
 }
@@ -453,6 +477,12 @@ export interface Config {
     readonly gaps: number;
     /** Space to leave around tiled windows, already taken out of `Workspace.tilingArea`. */
     readonly struts: { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number };
+    /**
+     * The buttons title bars have on each side, by name, as the desktop's settings say, like
+     * GNOME's `button-layout`: `"close"`, `"minimize"`, `"maximize"`, `"appmenu"`, and others an
+     * engine may not draw. For engines that draw title bars. Null when the settings don't say.
+     */
+    readonly titleButtons: { readonly left: readonly string[]; readonly right: readonly string[] } | null;
 }
 
 /** What `create(bento)` receives. */
@@ -649,9 +679,9 @@ export interface Window extends EventTarget<WindowEvents> {
     setVisible(visible: boolean): boolean;
     setData(data: unknown): void;
     /**
-     * Starts moving it with the pointer, like dragging a title bar the engine draws. Only from a
-     * `pointerdown` listener, with the button still held; bento runs the move as when it starts
-     * one, and the window leaves the engine with reason `"drag"` and comes back with `"drop"`.
+     * Starts dragging it with the pointer, like dragging a title bar the engine draws. Only from a
+     * `pointerdown` listener, with the button still held; bento runs the drag as when it starts
+     * one, and the window hears `dragstart`, `dragmove` and `dragend`.
      * The press belongs to the move from then on: the node gets no `pointerup` or `click` for it.
      * Returns false outside a press, and when the press began a move or resize already.
      */

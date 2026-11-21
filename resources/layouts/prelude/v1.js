@@ -468,19 +468,6 @@ export class V1Adapter {
                 }
             }
         });
-        const dropTarget = (e) => {
-            if (typeof inst.layout.dropTarget !== "function") {
-                return;
-            }
-            const rect = inst.layout.dropTarget(new V1Window(e.window), e.pointer, e.rect);
-            if (rect !== null && rect !== undefined && !isRect(rect)) {
-                throw new Error(`invalid drop target: ${JSON.stringify(rect)}`);
-            }
-            inst.showBox("drop", rect ?? null);
-        };
-        ws.addEventListener("dragenter", dropTarget);
-        ws.addEventListener("dragmove", dropTarget);
-        ws.addEventListener("dragleave", () => inst.showBox("drop", null));
     }
 
     watchMonitor(monitor) {
@@ -570,6 +557,85 @@ export class V1Adapter {
             const found = mine();
             found?.inst.layout.resizeEnd?.(found.win);
         });
+        this.watchDrags(window, mine);
+    }
+
+    /**
+     * API 1 engines saw a dragged window leave them and come back where it was dropped. The
+     * adapter does that: it takes the window from its instance when the drag starts, carries it
+     * under the pointer meanwhile, asks the instance under the pointer for its drop target, and
+     * gives the window to the instance it's on when the drag ends.
+     */
+    watchDrags(window, mine) {
+        let drag = null;
+        const hideTarget = () => {
+            drag?.over?.showBox("drop", null);
+            if (drag !== null) {
+                drag.over = null;
+            }
+        };
+        window.addEventListener("dragstart", (e) => {
+            const found = mine();
+            if (found === null || found.win === undefined) {
+                return;
+            }
+            const size = window.rect ?? window.size;
+            drag = { offset: { ...e.offset }, w: size.w, h: size.h, pointer: { ...e.pointer }, over: null };
+            found.inst.drop(window);
+            found.inst.layout.windowRemoved(found.win, { reason: "drag" });
+            found.inst.raiseOverlays();
+            window.raise();
+        });
+        window.addEventListener("dragmove", (e) => {
+            if (drag === null || e.workspace === null) {
+                return;
+            }
+            if (e.workspace !== window.workspace) {
+                window.moveTo(e.workspace);
+            }
+            drag.pointer = { ...e.pointer };
+            const rect = { x: e.pointer.x - drag.offset.x, y: e.pointer.y - drag.offset.y, w: drag.w, h: drag.h };
+            window.place(rect);
+            window.raise();
+            const inst = this.instances.get(e.workspace.id);
+            if (drag.over !== inst) {
+                hideTarget();
+            }
+            if (inst === undefined || typeof inst.layout.dropTarget !== "function") {
+                return;
+            }
+            const target = inst.layout.dropTarget(new V1Window(window), drag.pointer, rect);
+            if (target !== null && target !== undefined && !isRect(target)) {
+                throw new Error(`invalid drop target: ${JSON.stringify(target)}`);
+            }
+            drag.over = inst;
+            inst.showBox("drop", target ?? null);
+        });
+        window.addEventListener("dragend", () => {
+            if (drag === null) {
+                return;
+            }
+            hideTarget();
+            const { pointer } = drag;
+            drag = null;
+            const inst = this.instanceOf(window);
+            if (inst === undefined) {
+                return;
+            }
+            const win = inst.add(window);
+            inst.layout.windowAdded(win, {
+                reason: "drop",
+                activate: true,
+                rect: window.rect,
+                pointer,
+                nextTo: null,
+            });
+            inst.raiseOverlays();
+        });
+        window.addEventListener("remove", () => {
+            hideTarget();
+            drag = null;
+        });
     }
 
     onWindowAdd(e) {
@@ -584,7 +650,7 @@ export class V1Adapter {
             reason: e.reason,
             activate: e.activate,
             rect: e.rect,
-            pointer: e.pointer,
+            pointer: null,
             nextTo: e.nextTo === null ? null : (inst.byId.get(e.nextTo.id) ?? null),
         });
         inst.raiseOverlays();
