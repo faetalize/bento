@@ -30,8 +30,8 @@ pub struct Debug {
     /// A glass shader to draw glass with instead of bento's own, compiled again whenever its
     /// file changes.
     pub glass_shader: Option<PathBuf>,
-    /// A folder to read bento's own shell and widgets from, `main.js` and `ui.js`, instead of
-    /// the ones built in, loaded again whenever they change.
+    /// A folder to read bento's own shell and modules from, each file there in place of the
+    /// one built in with its path, loaded again whenever they change.
     pub shell_scripts: Option<PathBuf>,
 }
 

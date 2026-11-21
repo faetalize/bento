@@ -16,9 +16,9 @@ use std::time::Duration;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use niri_config::{engine_config_path, Config};
+use niri_config::{engine_config_path, shell_settings_path, Config};
 
-use crate::kdl::{Document, Value};
+use crate::kdl::Document;
 
 /// How long after the last change to save, so dragging a slider writes once.
 const SAVE_DELAY: Duration = Duration::from_millis(150);
@@ -35,8 +35,11 @@ struct Edit {
 pub enum File {
     /// bento's `config.kdl`.
     Main,
-    /// The running engine's own file, with its options and binds.
+    /// The running engine's own file, with its settings and binds.
     Engine,
+    /// The shell's file, with its settings and binds: `shell.kdl` next to the config for bento's
+    /// own shells, and the one the config names for a shell file.
+    ShellSettings,
 }
 
 #[derive(Clone)]
@@ -106,9 +109,48 @@ impl Store {
         &self.0.config_path
     }
 
-    /// The running engine's own file, which may not exist yet.
-    pub fn engine_path(&self) -> PathBuf {
-        engine_config_path(&self.0.config_path, &self.0.config.borrow().tiling.layout)
+    /// The running engine's own file, which may not exist yet: a built-in engine's by its name,
+    /// and an engine file's as the config names it, if it does.
+    pub fn engine_path(&self) -> Option<PathBuf> {
+        engine_config_path(&self.0.config_path, &self.0.config.borrow().tiling)
+    }
+
+    /// The shell's file, which may not exist yet: `shell.kdl` next to the config for bento's own
+    /// shells, and a shell file's as the config names it, if it does.
+    pub fn shell_path(&self) -> Option<PathBuf> {
+        shell_settings_path(&self.0.config_path, &self.0.config.borrow())
+    }
+
+    /// The shell's file as it is now, empty when there's none or it has an error.
+    pub fn shell_settings(&self) -> niri_config::ShellSettings {
+        let text = self
+            .shell_path()
+            .and_then(|path| fs::read_to_string(path).ok());
+        text.and_then(|text| niri_config::ShellSettings::parse(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// The user's binds and the actions they turned off, in the config, the engine's file and the
+    /// shell's, as bento reads them.
+    pub fn user_binds(&self) -> (Vec<niri_config::binds::Bind>, Vec<niri_config::Action>) {
+        let config = self.config();
+        let shell = self.shell_settings();
+        let binds = config.binds.0.iter().cloned();
+        let unbound = config.unbound.iter().cloned();
+        (
+            binds
+                .chain(shell.binds.into_iter().map(|(_, b)| b))
+                .collect(),
+            unbound
+                .chain(shell.unbound.into_iter().map(|(_, a)| a))
+                .collect(),
+        )
+    }
+
+    /// The folder of the config, where new files for engines and shells go.
+    pub fn config_dir(&self) -> PathBuf {
+        let dir = self.0.config_path.parent().unwrap_or(Path::new(""));
+        dir.to_owned()
     }
 
     pub fn config(&self) -> Ref<'_, Config> {
@@ -154,10 +196,12 @@ impl Store {
         self.edit_in(File::Main, key, f);
     }
 
-    /// Queues a change like [`Store::edit`], to `file`.
+    /// Queues a change like [`Store::edit`], to `file`. It replaces an older change of the same
+    /// `key` to the same file only: one change can write both files under one key, like a bind's
+    /// to the config and the engine's file.
     pub fn edit_in(&self, file: File, key: &str, f: impl FnOnce(&mut Document) + Send + 'static) {
         let mut queued = self.0.queued.borrow_mut();
-        queued.retain(|edit| edit.key != key);
+        queued.retain(|edit| edit.key != key || edit.file != file);
         queued.push(Edit {
             key: key.to_owned(),
             file,
@@ -258,7 +302,14 @@ impl Store {
 
     /// Watches the config and the running engine's file, which changes with the engine.
     fn watch(&self) {
-        let paths = [self.0.config_path.clone(), self.engine_path()];
+        let paths: Vec<PathBuf> = [
+            Some(self.0.config_path.clone()),
+            self.engine_path(),
+            self.shell_path(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         let mut monitors = self.0.monitors.borrow_mut();
         monitors.retain(|(path, _)| paths.contains(path));
         for path in paths {
@@ -321,6 +372,9 @@ impl Store {
 /// Applies edits to the config and the engine's file and writes them, if bento accepts the result.
 /// Runs off the main thread.
 fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
+    let (shell_edits, edits): (Vec<_>, Vec<_>) = edits
+        .into_iter()
+        .partition(|edit| edit.file == File::ShellSettings);
     let (engine_edits, main_edits): (Vec<_>, Vec<_>) = edits
         .into_iter()
         .partition(|edit| edit.file == File::Engine);
@@ -342,10 +396,29 @@ fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
     };
     // Check the whole config first, so a bad value never reaches bento.
     let config = parsed.config.map_err(|err| describe(&err))?;
+    if engine_changes && engine.is_none() {
+        return Err(String::from(
+            "The engine has no settings file to write to; pick one on the Engine page",
+        ));
+    }
+
+    // The shell's file is known once the config says which shell runs, as with the engine's.
+    let mut shell = None;
+    if !shell_edits.is_empty() {
+        let Some(shell_path) = shell_settings_path(path, &config) else {
+            return Err(String::from(
+                "The shell has no settings file to write to; pick one on the Shell page",
+            ));
+        };
+        let text = apply(&shell_path, shell_edits)?;
+        niri_config::ShellSettings::parse(&text).map_err(|err| describe(&err))?;
+        shell = Some((shell_path, text));
+    }
 
     let mut written = vec![(path.to_owned(), main)];
-    // Only an edit creates the engine's file.
+    // Only an edit creates the engine's file, or the shell's settings.
     written.extend(engine.filter(|_| engine_changes));
+    written.extend(shell);
     for (path, text) in &written {
         write(path, text)?;
     }
@@ -437,67 +510,10 @@ pub fn tilde(path: &Path) -> String {
     }
 }
 
-/// A plain value for a layout engine option or action argument, or `None` for a list or a
-/// gradient, which is written with [`option_properties`].
-pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Option<Value> {
-    use niri_ipc::LayoutEngineOptionValue as OptionValue;
-
-    Some(match value {
-        OptionValue::Boolean(x) => Value::Bool(*x),
-        OptionValue::Number(x) if x.fract() == 0. => Value::Int(*x as i64),
-        OptionValue::Number(x) => Value::Float(*x),
-        OptionValue::String(x) => Value::Str(x.clone()),
-        OptionValue::Gradient(_) | OptionValue::List(_) => return None,
-    })
-}
-
-/// The values an option is written with: one for a plain option, one each for a list, none for a
-/// size left to the window or a gradient.
-pub fn option_values(value: &Option<niri_ipc::LayoutEngineOptionValue>) -> Vec<Value> {
-    use niri_ipc::LayoutEngineOptionValue as OptionValue;
-
-    match value {
-        None => Vec::new(),
-        Some(OptionValue::List(items)) => items.iter().filter_map(option_value).collect(),
-        Some(value) => option_value(value).into_iter().collect(),
-    }
-}
-
-/// The properties an option is written with, which only a gradient has: `from`, `to`, and the
-/// other properties it sets.
-pub fn option_properties(
-    value: &Option<niri_ipc::LayoutEngineOptionValue>,
-) -> Vec<(String, Value)> {
-    use niri_ipc::LayoutEngineOptionValue as OptionValue;
-
-    let Some(OptionValue::Gradient(gradient)) = value else {
-        return Vec::new();
-    };
-    let text = |text: &String| Value::Str(text.clone());
-    let mut properties = vec![
-        (String::from("from"), text(&gradient.from)),
-        (String::from("to"), text(&gradient.to)),
-    ];
-    if let Some(angle) = gradient.angle {
-        let angle = if angle.fract() == 0. {
-            Value::Int(angle as i64)
-        } else {
-            Value::Float(angle)
-        };
-        properties.push((String::from("angle"), angle));
-    }
-    if let Some(relative_to) = &gradient.relative_to {
-        properties.push((String::from("relative-to"), text(relative_to)));
-    }
-    if let Some(space) = &gradient.color_space {
-        properties.push((String::from("in"), text(space)));
-    }
-    properties
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kdl::{option_properties, option_values, Value};
     use crate::model::{BoolStyle, Input, Setting};
 
     /// Edits run on another thread, so the settings they use live for the whole program.
@@ -586,7 +602,7 @@ mod tests {
             let engine_path = dir.join("engines").join("niri.kdl");
 
             let store = Store::load_from(config_path.clone());
-            assert_eq!(store.engine_path(), engine_path);
+            assert_eq!(store.engine_path(), Some(engine_path.clone()));
 
             // Editing the main config leaves the engine's file alone.
             store.edit("layout.gaps", |doc| {
@@ -595,19 +611,19 @@ mod tests {
             store.flush();
             assert!(!engine_path.exists());
 
-            store.edit_in(File::Engine, "options.gravity", |doc| {
-                doc.set(&["options", "gravity"], vec![Value::Bool(true)])
+            store.edit_in(File::Engine, "settings.gravity", |doc| {
+                doc.set(&["settings", "gravity"], vec![Value::Bool(true)])
             });
             store.flush();
             assert_eq!(
                 fs::read_to_string(&engine_path).unwrap(),
-                "options {\n    gravity true\n}\n"
+                "settings {\n    gravity true\n}\n"
             );
             assert!(!fs::read_to_string(&config_path)
                 .unwrap()
                 .contains("gravity"));
             assert_eq!(
-                store.config().tiling.options,
+                store.config().tiling.settings,
                 [(
                     String::from("gravity"),
                     vec![niri_config::TilingOption::Bool(true)]
@@ -631,7 +647,7 @@ mod tests {
             let engine_path = dir.join("engines").join("niri.kdl");
             fs::write(
                 &engine_path,
-                "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n",
+                "output \"DP-2\" {\n    settings {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n",
             )
             .unwrap();
 
@@ -647,10 +663,10 @@ mod tests {
             let (gradient_, color_) = (gradient.clone(), color.clone());
             store.edit_in(
                 File::Engine,
-                "options.tab-indicator-active-gradient",
+                "settings.tab-indicator-active-gradient",
                 move |doc| {
                     doc.set_node(
-                        &["options", "tab-indicator-active-gradient"],
+                        &["settings", "tab-indicator-active-gradient"],
                         option_values(&gradient_),
                         option_properties(&gradient_),
                     )
@@ -658,10 +674,10 @@ mod tests {
             );
             store.edit_in(
                 File::Engine,
-                "options.tab-indicator-active-color",
+                "settings.tab-indicator-active-color",
                 move |doc| {
                     doc.set(
-                        &["options", "tab-indicator-active-color"],
+                        &["settings", "tab-indicator-active-color"],
                         option_values(&color_),
                     )
                 },
@@ -671,13 +687,13 @@ mod tests {
             let text = fs::read_to_string(&engine_path).unwrap();
             assert_eq!(
                 text,
-                "output \"DP-2\" {\n    options {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n\noptions {\n    tab-indicator-active-gradient from=\"#80c8ff\" to=\"#c7ff7f80\" angle=45 relative-to=\"view\"\n    tab-indicator-active-color \"#112233\"\n}\n"
+                "output \"DP-2\" {\n    settings {\n        insert-hint-gradient from=\"#000\" to=\"#fff\"\n    }\n}\n\nsettings {\n    tab-indicator-active-gradient from=\"#80c8ff\" to=\"#c7ff7f80\" angle=45 relative-to=\"view\"\n    tab-indicator-active-color \"#112233\"\n}\n"
             );
 
-            // The file is what bento reads, and the output's options stay.
+            // The file is what bento reads, and the output's settings stay.
             let config = store.config();
-            assert_eq!(config.tiling.options.len(), 2);
-            assert_eq!(config.tiling.output_options.len(), 1);
+            assert_eq!(config.tiling.settings.len(), 2);
+            assert_eq!(config.tiling.output_settings.len(), 1);
             drop(config);
             assert!(option_properties(&color).is_empty());
             assert!(option_values(&gradient).is_empty());
@@ -688,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_edits_keep_window_rules_and_typed_options() {
+    fn engine_edits_keep_window_rules_and_typed_settings() {
         on_own_context(|| {
             use niri_ipc::LayoutEngineOptionValue as OptionValue;
 
@@ -700,7 +716,7 @@ mod tests {
             let engine_path = dir.join("engines").join("niri.kdl");
             let engine = "\
 // Mine.
-options {
+settings {
     default-column-width
     center-focused-column \"always\"
 }
@@ -719,18 +735,21 @@ binds {
 
             let store = Store::load_from(config_path);
             assert_eq!(store.config().tiling.window_rules.len(), 1);
-            assert!(store.config().tiling.options[0].1.is_empty());
+            assert!(store.config().tiling.settings[0].1.is_empty());
 
             // A list is written as several values, and a size with no value as a bare name.
             let widths = Some(OptionValue::List(vec![
                 OptionValue::String(String::from("33%")),
                 OptionValue::String(String::from("800")),
             ]));
-            store.edit_in(File::Engine, "options.preset-column-widths", move |doc| {
-                doc.set(&["options", "preset-column-widths"], option_values(&widths))
+            store.edit_in(File::Engine, "settings.preset-column-widths", move |doc| {
+                doc.set(
+                    &["settings", "preset-column-widths"],
+                    option_values(&widths),
+                )
             });
-            store.edit_in(File::Engine, "options.default-column-width", |doc| {
-                doc.set(&["options", "default-column-width"], option_values(&None))
+            store.edit_in(File::Engine, "settings.default-column-width", |doc| {
+                doc.set(&["settings", "default-column-width"], option_values(&None))
             });
             store.flush();
 
@@ -744,8 +763,8 @@ binds {
             );
             let config = store.config();
             assert_eq!(config.tiling.window_rules.len(), 1);
-            assert_eq!(config.tiling.options.len(), 3);
-            assert_eq!(config.tiling.options[2].1.len(), 2);
+            assert_eq!(config.tiling.settings.len(), 3);
+            assert_eq!(config.tiling.settings[2].1.len(), 2);
             drop(config);
 
             fs::remove_dir_all(&dir).unwrap();

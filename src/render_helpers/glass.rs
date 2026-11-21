@@ -85,6 +85,7 @@ pub fn effect_commit(
             glass.rects[..count].as_flattened(),
             glass.radii[..count].as_flattened(),
             &glass.melts[..count],
+            &glass.opacities[..count],
             glass.curves[..glass.curve_count].as_flattened(),
             &glass.path_ends[..glass.path_count],
         ] {
@@ -114,6 +115,8 @@ pub struct GlassShapes {
     pub radii: [[f32; 4]; MAX_GLASS_SHAPES],
     /// How close other glass comes for each to melt into it.
     pub melts: [f32; MAX_GLASS_SHAPES],
+    /// How opaque each is, as it fades in or out.
+    pub opacities: [f32; MAX_GLASS_SHAPES],
     pub count: usize,
     /// The paths' curves, in order of their paths: each its start, control point and end.
     pub curves: [[f32; 6]; MAX_GLASS_CURVES],
@@ -135,6 +138,7 @@ impl Default for GlassShapes {
             rects: Default::default(),
             radii: Default::default(),
             melts: [DEFAULT_MELT; MAX_GLASS_SHAPES],
+            opacities: [1.; MAX_GLASS_SHAPES],
             count: 0,
             curves: [[0.; 6]; MAX_GLASS_CURVES],
             curve_count: 0,
@@ -405,7 +409,7 @@ pub fn uniforms(
                 r2,
                 r3,
                 shapes.melts[i],
-                0.,
+                shapes.opacities[i],
                 0.,
                 0.,
                 0.,
@@ -577,13 +581,14 @@ pub fn style() -> (bool, Option<[f32; 4]>) {
     )
 }
 
-/// Renders glass for bento's own shell: rounded rectangles, each its rectangle and its corners'
-/// radii, in an output's logical coordinates, melting together where they come `melt` close.
+/// Renders glass for bento's own shell: rounded rectangles, each its rectangle, its corners'
+/// radii and how opaque it is, in an output's logical coordinates, melting together where they
+/// come `melt` close.
 #[allow(clippy::too_many_arguments)]
 pub fn render_rects(
     effect: &FramebufferEffect,
     ns: Option<usize>,
-    rects: &[([f32; 4], [f32; 4])],
+    rects: &[([f32; 4], [f32; 4], f32)],
     melt: f32,
     scale: f64,
     blur: niri_config::Blur,
@@ -593,7 +598,7 @@ pub fn render_rects(
     let rects = &rects[..rects.len().min(MAX_GLASS_SHAPES)];
     let shapes: Vec<GlassShape> = rects
         .iter()
-        .map(|(rect, radii)| GlassShape {
+        .map(|(rect, radii, _)| GlassShape {
             rect: *rect,
             radius: radii[0],
             melt,
@@ -610,16 +615,19 @@ pub fn render_rects(
 
     let mut uniforms = GlassShapes {
         count: rects.len(),
-        glass: blur.glass,
+        glass: shell_glass(&blur),
         accent: accent(),
         ..GlassShapes::default()
     };
     let origin = [bounds.loc.x as f32, bounds.loc.y as f32];
-    for (i, (rect, radii)) in rects.iter().enumerate() {
+    for (i, (rect, radii, opacity)) in rects.iter().enumerate() {
         let [x, y, w, h] = *rect;
         uniforms.rects[i] = [x - origin[0], y - origin[1], w, h];
         uniforms.radii[i] = *radii;
-        uniforms.melts[i] = melt;
+        // A piece melts no further than it's big, so one growing out of other glass or shrinking
+        // back into it swells it only as much as it's there.
+        uniforms.melts[i] = melt.min(w).min(h);
+        uniforms.opacities[i] = *opacity;
     }
     let uniforms = uniforms.lit(frame, geometry.loc, 1.);
     let params = RenderParams {
@@ -641,6 +649,28 @@ pub fn render_rects(
         push(look.into());
     }
     push(elem.into());
+}
+
+/// The glass under bento's own shell for `blur`'s material. Plain is the shell's shapes blurred
+/// evenly, as apps' plain blur is: glass that's flat, clear, and catches no light, so nothing
+/// bends or lights what's behind.
+fn shell_glass(blur: &niri_config::Blur) -> niri_config::Glass {
+    match blur.material {
+        niri_config::Material::Glass => blur.glass,
+        niri_config::Material::Plain => niri_config::Glass {
+            bezel: 0.,
+            thickness: 0.,
+            dispersion: 0.,
+            reflection: 0.,
+            color: Color::from_rgba8_unpremul(0, 0, 0, 0),
+            follow_accent: false,
+            pattern: GlassPattern::Smooth,
+            pattern_depth: 0.,
+            pointer_light: 0.,
+            lights: Default::default(),
+            ..blur.glass
+        },
+    }
 }
 
 /// `bounds` grown out to whole steps of [`AREA_STEP`].
@@ -692,6 +722,29 @@ fn bounds(shapes: &[GlassShape], paths: &[GlassCurve]) -> Option<Rectangle<i32, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_shells_glass_is_flat_and_clear_when_the_material_is_plain() {
+        let blur = niri_config::Blur {
+            material: niri_config::Material::Plain,
+            ..Default::default()
+        };
+        let glass = super::shell_glass(&blur);
+        assert_eq!(glass.bezel, 0., "it has an edge that bends what's behind");
+        assert_eq!(glass.thickness, 0.);
+        assert_eq!(glass.reflection, 0.);
+        assert_eq!(glass.pointer_light, 0.);
+        assert!(
+            glass.lights.iter().all(Option::is_none),
+            "it catches the light"
+        );
+        assert_eq!(glass.pattern_depth, 0.);
+        assert_eq!(glass.color.a, 0., "it's tinted");
+        assert!(!glass.follow_accent);
+
+        let blur = niri_config::Blur::default();
+        assert_eq!(super::shell_glass(&blur), blur.glass);
+    }
+
     use smithay::backend::renderer::element::Element as _;
 
     use super::*;

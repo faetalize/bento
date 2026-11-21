@@ -5,7 +5,7 @@
 // window covers a rectangle of whole cells: a starting column and row plus a span. Windows are
 // independent of each other: they can sit in different rows, stack on top of each other and leave
 // holes. Moving or resizing one pushes the others out of the way, in order, and with left gravity
-// (the `gravity` option, on by default) windows slide left within their rows until they touch
+// (the `gravity` setting, on by default) windows slide left within their rows until they touch
 // another window or column 0, which is the fixed left edge of the strip.
 //
 // This file has two parts:
@@ -42,17 +42,19 @@ export const meta = {
     api: 2,
     name: "bento",
     description: "Windows on a scrolling grid.",
-    // Every action, bound by name in engines/bento.kdl. A window's stack is the windows covering
+    // Every action, with its default keys. A window's stack is the windows covering
     // the same column of cells, and places are where windows start, counting from the left.
     actions: {
         "focus-left": {
             description: "Focus the window to the left in the focused group, or the nearest window to the left.",
+            bind: ["Mod+Left", "Mod+H", "Mod+WheelScrollLeft", "Mod+Shift+WheelScrollUp"],
         },
         "focus-right": {
             description: "Focus the window to the right in the focused group, or the nearest window to the right.",
+            bind: ["Mod+Right", "Mod+L", "Mod+WheelScrollRight", "Mod+Shift+WheelScrollDown"],
         },
-        "focus-first": { description: "Focus the leftmost window in the row." },
-        "focus-last": { description: "Focus the rightmost window in the row." },
+        "focus-first": { description: "Focus the leftmost window in the row.", bind: "Mod+Home" },
+        "focus-last": { description: "Focus the rightmost window in the row.", bind: "Mod+End" },
         "focus-right-or-first": {
             description: "Focus the nearest window to the right, or the leftmost one in the row.",
         },
@@ -69,9 +71,11 @@ export const meta = {
         },
         "focus-down": {
             description: "Focus the nearest window below, even diagonally.",
+            bind: ["Mod+Down", "Mod+J"],
         },
         "focus-up": {
             description: "Focus the nearest window above, even diagonally.",
+            bind: ["Mod+Up", "Mod+K"],
         },
         "focus-down-or-left": {
             description: "Focus the window right below, or the nearest window to the left.",
@@ -97,15 +101,29 @@ export const meta = {
         },
         "move-left": {
             description: "Move the focused window left in its group, or one cell left, swapping with a window in the way.",
+            bind: [
+                "Mod+Ctrl+Left",
+                "Mod+Ctrl+H",
+                "Mod+Ctrl+WheelScrollLeft",
+                "Mod+Ctrl+Shift+WheelScrollUp",
+            ],
         },
         "move-right": {
             description: "Move the focused window right in its group, or one cell right, swapping with a window in the way.",
+            bind: [
+                "Mod+Ctrl+Right",
+                "Mod+Ctrl+L",
+                "Mod+Ctrl+WheelScrollRight",
+                "Mod+Ctrl+Shift+WheelScrollDown",
+            ],
         },
         "move-first": {
             description: "Move the focused window to the start of its rows, pushing others right.",
+            bind: "Mod+Ctrl+Home",
         },
         "move-last": {
             description: "Move the focused window past the end of the grid in its rows.",
+            bind: "Mod+Ctrl+End",
         },
         "move-to-index": {
             description: "Move the focused window to a place where windows start, from the left.",
@@ -113,50 +131,66 @@ export const meta = {
         },
         "move-down": {
             description: "Move the focused window one cell down.",
+            bind: ["Mod+Ctrl+Down", "Mod+Ctrl+J"],
         },
         "move-up": {
             description: "Move the focused window one cell up.",
+            bind: ["Mod+Ctrl+Up", "Mod+Ctrl+K"],
         },
         "stack-from-right": {
             description: "Stack the window to the right under the focused one.",
+            bind: "Mod+Comma",
         },
         "unstack": {
             description: "Take the focused window out of its stack or its group, to the right.",
+            bind: "Mod+Period",
         },
         "group": {
             description:
                 "Pick the focused window to group, or unpick it. Letting go of the keys held groups the picked windows where the first one is; one picked window leaves its group.",
+            bind: "Mod+W",
         },
-        "center": { description: "Center the focused window in the view." },
+        "center": { description: "Center the focused window in the view.", bind: "Mod+C" },
         "center-visible": {
             description: "Center the windows that are fully in view, together.",
+            bind: "Mod+Ctrl+C",
         },
         "cycle-width": {
             description: "Switch the focused window to the next preset width.",
+            bind: "Mod+R",
         },
         "cycle-width-back": {
             description: "Switch the focused window to the previous preset width.",
+            bind: "Mod+Shift+R",
         },
         "cycle-height": {
             description: "Switch the window to the next preset height.",
+            bind: "Mod+Ctrl+Shift+R",
         },
         "cycle-height-back": {
             description: "Switch the window to the previous preset height.",
         },
         "toggle-full-width": {
             description: "Toggle the focused window between the full view width and its own width.",
+            bind: "Mod+F",
         },
         "set-width": {
             description: "Set or change the focused window's width, in whole cells.",
             args: SIZE,
+            bind: [{ key: "Mod+Minus", args: ["-10%"] }, { key: "Mod+Equal", args: ["+10%"] }],
         },
         "set-height": {
             description: "Set or change the window's height, in whole cells.",
             args: SIZE,
+            bind: [
+                { key: "Mod+Shift+Minus", args: ["-10%"] },
+                { key: "Mod+Shift+Equal", args: ["+10%"] },
+            ],
         },
-        "full-height": { description: "Make the window as tall as the grid." },
+        "full-height": { description: "Make the window as tall as the grid.", bind: "Mod+Ctrl+R" },
         "fill-width": {
             description: "Grow the focused window into the empty cells beside it in view.",
+            bind: "Mod+Ctrl+F",
         },
 
         // Where the grid ends, these go on to the monitor or workspace beside it.
@@ -178,9 +212,11 @@ export const meta = {
         },
         "move-up-or-to-workspace": {
             description: "Move the focused window one cell up, or to the workspace above when it can't.",
+            bind: ["Mod+Ctrl+Shift+Page_Up", "Mod+Ctrl+Shift+I"],
         },
         "move-down-or-to-workspace": {
             description: "Move the focused window one cell down, or to the workspace below when it can't.",
+            bind: ["Mod+Ctrl+Shift+Page_Down", "Mod+Ctrl+Shift+U"],
         },
         "move-to-workspace": {
             description: "Move the focused window, with its group, to a workspace of the focused monitor.",
@@ -191,6 +227,17 @@ export const meta = {
                     description: "An index counting from 1, or a name.",
                 },
             ],
+            bind: [
+                { key: "Mod+Ctrl+Shift+1", args: [1] },
+                { key: "Mod+Ctrl+Shift+2", args: [2] },
+                { key: "Mod+Ctrl+Shift+3", args: [3] },
+                { key: "Mod+Ctrl+Shift+4", args: [4] },
+                { key: "Mod+Ctrl+Shift+5", args: [5] },
+                { key: "Mod+Ctrl+Shift+6", args: [6] },
+                { key: "Mod+Ctrl+Shift+7", args: [7] },
+                { key: "Mod+Ctrl+Shift+8", args: [8] },
+                { key: "Mod+Ctrl+Shift+9", args: [9] },
+            ],
         },
         "move-to-monitor": {
             description: "Move the focused window, with its group, to the active workspace of a monitor.",
@@ -199,54 +246,68 @@ export const meta = {
 
         // Each takes two presses: the first picks the focused window, then focus another window
         // and press again. Pressing again on the same window cancels.
-        "split-h": { description: "Share a window's space with another, side by side." },
-        "split-v": { description: "Share a window's space with another, stacked." },
-        swap: { description: "Swap two windows." },
+        "split-h": {
+            description: "Share a window's space with another, side by side.",
+            bind: "Mod+S",
+        },
+        "split-v": {
+            description: "Share a window's space with another, stacked.",
+            bind: "Mod+Ctrl+S",
+        },
+        swap: { description: "Swap two windows.", bind: "Mod+X" },
         // Also two presses: the first highlights where the window would go, the direction keys
         // move the highlight between seams, and the second press puts it there.
-        stuff: { description: "Squeeze the focused window between two others." },
+        stuff: { description: "Squeeze the focused window between two others.", bind: "Mod+G" },
     },
-    options: {
+    settings: {
         gravity: {
             type: "boolean",
+            page: "engine",
             default: true,
             description: "Windows fall to the left.",
         },
         "center-focused-window": {
             type: "choice",
+            page: "engine",
             choices: ["never", "always", "on-overflow"],
             default: "never",
             description: "When to center a window that gets focus.",
         },
         "always-center-single-window": {
             type: "boolean",
+            page: "engine",
             default: false,
             description: "Center a window when no two windows are side by side.",
         },
         "default-width": {
             type: "size",
+            page: "engine",
             default: "50%",
             description: "The width new windows open with. Left empty, the window picks.",
         },
         "preset-widths": {
             type: "size",
+            page: "engine",
             list: true,
             default: ["33.333%", "50%", "66.667%"],
             description: "The widths that cycling widths goes through.",
         },
         "preset-heights": {
             type: "size",
+            page: "engine",
             list: true,
             default: ["33.333%", "50%", "66.667%"],
             description: "The heights that cycling heights goes through.",
         },
         "hint-color": {
             type: "color",
+            page: "engine",
             default: "#7fc8ff80",
             description: "The color of the hints that show a picked window and where a dragged one would land.",
         },
         "focus-follows-mouse": {
             type: "choice",
+            page: "engine",
             choices: ["never", "in-view", "always"],
             default: "never",
             description:
@@ -1181,7 +1242,7 @@ export function nextPresetSpan(current, spans, forwards) {
 // Part 2: the engine
 // =================================================================================================
 
-/** How many windows that left to float or be dragged elsewhere to remember the size of. */
+/** How many windows that left to float to remember the size of. */
 const REMEMBERED_WINDOWS = 64;
 /** Width of the windows of a group that aren't active, which show as slits of their middle. */
 const SLIT_WIDTH = 40;
@@ -1215,6 +1276,19 @@ const TARGET_OUTLINE = "#00000059";
 const TARGET_MOTION = { duration: 150, curve: "ease-out-cubic" };
 /** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
 const SWIPE_DECELERATION = 0.997;
+/** How far the pointer goes from where a drag started before the window comes loose. */
+const DRAG_LOOSE_DISTANCE = 256;
+/** Opacity of a window that came loose in a drag. */
+const DRAG_OPACITY = 0.75;
+/**
+ * Scrolling the view while a dragged window is near its left or right edge: how close to the edge
+ * the pointer starts it, how long the pointer rests there first, the speed at the very edge in
+ * px/s, and how often the view moves, in milliseconds.
+ */
+const EDGE_SCROLL_WIDTH = 30;
+const EDGE_SCROLL_DELAY = 100;
+const EDGE_SCROLL_SPEED = 1500;
+const EDGE_SCROLL_TICK = 16;
 
 /**
  * The grid of one workspace. The engine keeps one for every workspace, and each only knows its
@@ -1274,6 +1348,11 @@ function createSpace(bento, ws) {
      * for it, the targets it shows and the one it's on.
      */
     let dragging = null;
+    /**
+     * The window held by the pointer in its place until it comes loose, `{ win, offset }`, which
+     * is drawn `offset` away from its place, see `hold`.
+     */
+    let held = null;
     /** Windows picked for grouping, see `pickToGroup`, and the nodes that highlight them. */
     let groupPicks = [];
     const groupPickNodes = new Map();
@@ -1290,7 +1369,7 @@ function createSpace(bento, ws) {
     overlay.append(targetLayer);
     /** What the space told the outside about itself last, see `exposed()`. */
     let lastExposed = null;
-    /** Size of windows that left to float or to be dragged, by window id, for when they're back. */
+    /** Size of windows that left to float, by window id, for when they're back. */
     const remembered = new Map();
     /**
      * Two-step action waiting for its second step: `{ action, first }`, with `first` the item
@@ -1308,8 +1387,8 @@ function createSpace(bento, ws) {
     let workingArea;
     let metrics;
 
-    // The workspace's options: the engine's, with what its monitor and its name set on top.
-    const options = (name) => ws.options[name];
+    // The workspace's settings: the engine's, with what its monitor and its name set on top.
+    const setting = (name) => ws.settings[name];
     /** Snaps a coordinate to physical pixels on the workspace's monitor. */
     const pixel = (value) => ws.monitor.round(value);
 
@@ -1317,7 +1396,7 @@ function createSpace(bento, ws) {
     grid.setGravity(gravityOption());
 
     function gravityOption() {
-        return options("gravity") !== false;
+        return setting("gravity") !== false;
     }
 
     function updateGeometry() {
@@ -1353,11 +1432,11 @@ function createSpace(bento, ws) {
         };
     }
 
-    // Window rules. A rule that no rule sets is left out of `rules`, so the option of the same
+    // Window rules. A rule that no rule sets is left out of `rules`, so the setting of the same
     // name is the default, if there is one. `null` is a size left to the window.
 
     const rulesWidth = (rules) =>
-        rules["default-width"] !== undefined ? rules["default-width"] : options("default-width");
+        rules["default-width"] !== undefined ? rules["default-width"] : setting("default-width");
     const rulesHeight = (rules) => rules["default-height"] ?? null;
 
     /** Whether `item` is a group: several windows sharing its area. */
@@ -1676,7 +1755,7 @@ function createSpace(bento, ws) {
             });
         if (slot === "pick") hintNode = box;
         else dropNode = box;
-        box.set({ rect, background: options("hint-color") });
+        box.set({ rect, background: setting("hint-color") });
         if (box.parent !== hintLayer) {
             hintLayer.append(box);
         }
@@ -1882,7 +1961,7 @@ function createSpace(bento, ws) {
                 groupPickNodes.set(win.id, node);
                 pickLayer.append(node);
             }
-            node.set({ rect: shownRect(item, win), background: options("hint-color") });
+            node.set({ rect: shownRect(item, win), background: setting("hint-color") });
         }
         for (const [id, node] of groupPickNodes) {
             if (!ids.has(id)) {
@@ -2089,7 +2168,14 @@ function createSpace(bento, ws) {
                 }
                 win.setMode(mode);
                 win.setVisible(places !== null || i === item.active);
-                win.place(places?.[i].rect ?? rect, { animate });
+                const at = places?.[i].rect ?? rect;
+                if (held?.win === win) {
+                    // It follows the pointer at once.
+                    const { x, y } = held.offset;
+                    win.place({ ...at, x: at.x + x, y: at.y + y }, { animate: false });
+                } else {
+                    win.place(at, { animate });
+                }
             });
         }
         syncGroups();
@@ -2155,8 +2241,8 @@ function createSpace(bento, ws) {
 
     function isCentering() {
         return (
-            options("center-focused-window") === "always" ||
-            (options("always-center-single-window") && isSingleColumn())
+            setting("center-focused-window") === "always" ||
+            (setting("always-center-single-window") && isSingleColumn())
         );
     }
 
@@ -2218,7 +2304,7 @@ function createSpace(bento, ws) {
         if (isCentering()) {
             return centeredOffset(targetX, item);
         }
-        if (options("center-focused-window") !== "on-overflow" || prev === null || prev === item) {
+        if (setting("center-focused-window") !== "on-overflow" || prev === null || prev === item) {
             return fitOffset(targetX, item);
         }
 
@@ -2477,8 +2563,8 @@ function createSpace(bento, ws) {
     // ---------------------------------------------------------------------------------------------
 
     function addWindow(win, how) {
-        // Windows coming back from floating or a drag keep the size they had, and windows that
-        // were on the workspace before this engine keep theirs.
+        // Windows coming back from floating keep the size they had, and windows that were on the
+        // workspace before this engine keep theirs.
         const saved = remembered.get(win.id) ?? null;
         remembered.delete(win.id);
         let intent = saved ?? intentForNewWindow(win);
@@ -2493,24 +2579,7 @@ function createSpace(bento, ws) {
         const wasEmpty = items.length === 0;
         const [cols, rows] = spanFor(item);
 
-        const target = how.reason === "drop" ? dropTargetAt(grid, how.pointer) : null;
-        if (target?.kind === "member") {
-            // Into the group, where it was dropped.
-            joinGroup(win, target, how.activate);
-            return;
-        }
-        const stuffed = target?.kind === "seam" ? stuffPlan(grid, item, target.seam) : null;
-        if (stuffed !== null) {
-            grid.place(stuffed);
-        } else if (how.reason === "drop" && how.rect) {
-            // Where the pointer dropped it, after pushing and gravity, see `landing`.
-            const plan = dropPlan(grid, how.pointer, how.rect);
-            const areas = [[item, plan.area]];
-            if (plan.split !== null) {
-                areas.push(plan.split);
-            }
-            grid.place(areas);
-        } else if (how.rect && (how.reason === "tile" || how.reason === "adopt")) {
+        if (how.rect && (how.reason === "tile" || how.reason === "adopt")) {
             // A window that stops floating goes to the cells under where it was, at its size from
             // the last time it was tiled; one from the engine before this one, at its own size.
             grid.place([[item, areaAt(how.rect.x, how.rect.y, cols, rows)]]);
@@ -2612,12 +2681,15 @@ function createSpace(bento, ws) {
             return;
         }
 
-        // A window that floats or is dragged keeps its size for when it's tiled again.
-        if (how.reason === "float" || how.reason === "drag") {
+        // A window that floats keeps its size for when it's tiled again.
+        if (how.reason === "float") {
             remember(win.id, { ...intentOf(item), maximized: item.maximized });
         }
         if (resize?.win.id === win.id) {
             stopResize();
+        }
+        if (held?.win === win) {
+            held = null;
         }
 
         if (item.windows.length > 1) {
@@ -3148,7 +3220,7 @@ function createSpace(bento, ws) {
             return false;
         }
         const borders = item.windows[0].borders.w;
-        const spans = options("preset-widths").map((preset) => colsForPreset(preset, borders));
+        const spans = setting("preset-widths").map((preset) => colsForPreset(preset, borders));
         return resizeItem(item, nextPresetSpan(grid.area(item).cols, spans, forwards), null);
     }
 
@@ -3158,7 +3230,7 @@ function createSpace(bento, ws) {
             return false;
         }
         const borders = item.windows[0].borders.h;
-        const spans = options("preset-heights").map((preset) => rowsForPreset(preset, borders));
+        const spans = setting("preset-heights").map((preset) => rowsForPreset(preset, borders));
         return resizeItem(item, null, nextPresetSpan(grid.area(item).rows, spans, forwards));
     }
 
@@ -3636,7 +3708,7 @@ function createSpace(bento, ws) {
 
     /** Draws `targets`, with `current` stood out, and takes away the ones drawn before. */
     function drawTargets(targets, current) {
-        const color = opaque(options("hint-color"));
+        const color = opaque(setting("hint-color"));
         const keys = new Set();
         for (const target of targets) {
             keys.add(target.key);
@@ -3845,7 +3917,7 @@ function createSpace(bento, ws) {
                 snaps.push({ pos, item });
             }
         } else {
-            const onOverflow = options("center-focused-window") === "on-overflow";
+            const onOverflow = setting("center-focused-window") === "on-overflow";
 
             // Width of the window next to `item` in `dir` on the grid, if any.
             const adjacentWidth = (item, dir) => {
@@ -4237,6 +4309,129 @@ function createSpace(bento, ws) {
         const fit = isCentering() ? computeCentered : computeFit;
         const camera = cells.x + fit(cells.x, cells.x, cells.w, "normal");
         return { ...cells, x: cells.x - camera + ws.camera.x };
+    }
+
+    /**
+     * Holds `win` in its place while a drag hasn't pulled it loose, drawn `offset` away from it,
+     * or lets it go back there with `null`.
+     */
+    function hold(win, offset) {
+        held = offset === null || itemOf(win) === null ? null : { win, offset };
+    }
+
+    /**
+     * Takes `win` off the grid and out of its group as it comes loose in a drag, normal sized.
+     * Returns what the drag needs, or `null` if it isn't on the grid: `rect`, where it goes on
+     * the grid at that size, `intent`, its size to keep, and `back`, where it came from, for
+     * `putBack`.
+     */
+    function lift(win) {
+        const item = itemOf(win);
+        if (item === null) {
+            return null;
+        }
+        // It leaves fullscreen and maximized first, to take its own cells again.
+        changeMode(item, false, false);
+        const index = item.windows.indexOf(win);
+        const area = grid.area(item);
+        const cells = areaRect(area);
+        const rect = item.windows.length > 1 ? carouselLayout(item, cells)[index].rect : cells;
+        const intent = { ...intentOf(item), maximized: false };
+        const back = { area, group: item.windows.length > 1 ? item : null, index };
+
+        held = null;
+        if (peeked === win.id) {
+            peeked = null;
+        }
+        if (resize?.win.id === win.id) {
+            stopResize();
+        }
+        unclip(win);
+        win.group?.remove(win);
+        win.setMode("normal");
+        if (item.windows.length > 1) {
+            removeMember(item, win);
+        } else {
+            removeItem(item);
+        }
+        return { rect, intent, back };
+    }
+
+    /**
+     * Puts a window dropped at the end of a drag where `dragOver` showed, with the pointer at
+     * `pointer` and the window at `rect`: into the group or the seam it's on, splitting the window
+     * whose dot it's on, or into the cells nearest to it, after pushing and gravity. It keeps
+     * `intent`, the size it had before it came loose, and takes focus.
+     */
+    function dropWindow(win, pointer, rect, intent) {
+        const target = dropTargetAt(grid, pointer);
+        if (target?.kind === "member") {
+            joinGroup(win, target, true);
+            return;
+        }
+        const item = makeItem([win], intent);
+        const wasEmpty = items.length === 0;
+        const stuffed = target?.kind === "seam" ? stuffPlan(grid, item, target.seam) : null;
+        if (stuffed !== null) {
+            grid.place(stuffed);
+        } else {
+            const plan = dropPlan(grid, pointer, rect);
+            const areas = [[item, plan.area]];
+            if (plan.split !== null) {
+                areas.push(plan.split);
+            }
+            grid.place(areas);
+        }
+        items.push(item);
+        finishAdd(item, wasEmpty, true);
+    }
+
+    /**
+     * Puts a window whose drag was cancelled back where `lift` took it from, `back`: into its
+     * group at its place, or at its cells, pushing the windows there. With `back` null, it goes
+     * right of the focused window. It keeps `intent`, and takes focus.
+     */
+    function putBack(win, back, intent) {
+        const group = back?.group ?? null;
+        if (group !== null && items.includes(group) && modeOf(group) === "normal") {
+            const index = Math.min(back.index, group.windows.length);
+            joinGroup(win, { item: group, index }, true);
+            return;
+        }
+        const item = makeItem([win], intent);
+        const wasEmpty = items.length === 0;
+        if (back === null) {
+            const [cols, rows] = spanFor(item);
+            grid.insertAfter(item, active, cols, rows);
+        } else {
+            grid.insert(item, back.area);
+        }
+        items.push(item);
+        finishAdd(item, wasEmpty, true);
+    }
+
+    /**
+     * Moves the camera `dx` along, for a window dragged near the view's edge, as far as some
+     * window stays in view. Returns how far it moved.
+     */
+    function scrollBy(dx) {
+        if (items.length === 0) {
+            return 0;
+        }
+        const rects = items.map(itemRect);
+        const min = Math.min(...rects.map((r) => r.x)) - parentArea.w;
+        const max = Math.max(...rects.map((r) => r.x + r.w)) - parentArea.x;
+        const from = ws.camera.x;
+        // Only ever towards the edge, even from outside of the bounds.
+        const to =
+            dx < 0
+                ? Math.min(from, Math.max(from + dx, min))
+                : Math.max(from, Math.min(from + dx, max));
+        if (to === from) {
+            return 0;
+        }
+        ws.camera.move({ x: to }, { animate: false });
+        return to - from;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -4687,8 +4882,13 @@ function createSpace(bento, ws) {
             }
         },
 
-        // Dragging windows over the workspace.
+        // Dragging windows, see `dragMove` in the engine.
 
+        hold: changes(hold),
+        lift: changes(lift),
+        dropWindow: changes(dropWindow),
+        putBack: changes(putBack),
+        scrollBy,
         dragOver,
         dragLeave,
 
@@ -4720,10 +4920,10 @@ function createSpace(bento, ws) {
 // The engine: one space for each workspace, and what crosses from one to another.
 
 export default function create(bento) {
-    // Focus follows the pointer as the options say; bento does the focusing. "in-view" is only
+    // Focus follows the pointer as the settings say; bento does the focusing. "in-view" is only
     // windows that focusing doesn't scroll the view to.
     const followMouse = () => {
-        const mode = bento.options["focus-follows-mouse"];
+        const mode = bento.settings["focus-follows-mouse"];
         bento.setFocusFollowsMouse(mode !== "never", { maxScroll: mode === "in-view" ? 0 : null });
     };
     followMouse();
@@ -4776,9 +4976,6 @@ export default function create(bento) {
         ws.addEventListener("swipebegin", () => space.swipeBegin());
         ws.addEventListener("swipeupdate", (e) => space.swipeUpdate(e.delta));
         ws.addEventListener("swipeend", (e) => space.swipeEnd(e.velocity));
-        ws.addEventListener("dragenter", (e) => space.dragOver(e.window, e.pointer, e.rect));
-        ws.addEventListener("dragmove", (e) => space.dragOver(e.window, e.pointer, e.rect));
-        ws.addEventListener("dragleave", () => space.dragLeave());
     }
 
     function watchMonitor(monitor) {
@@ -4803,7 +5000,12 @@ export default function create(bento) {
     function watchWindow(win) {
         if (followed.has(win)) return;
         followed.add(win);
-        win.addEventListener("remove", (e) => spaceWith(win)?.windowRemoved(win, { reason: e.reason }));
+        win.addEventListener("remove", (e) => {
+            if (drag?.win === win) {
+                stopDrag();
+            }
+            spaceWith(win)?.windowRemoved(win, { reason: e.reason });
+        });
         win.addEventListener("move", (e) => {
             // bento moved the window with one of its own actions.
             const from = spaces.get(e.from.id);
@@ -4813,7 +5015,6 @@ export default function create(bento) {
                     reason: "move",
                     activate: e.activate,
                     rect: null,
-                    pointer: null,
                     nextTo: null,
                 });
             }
@@ -4837,6 +5038,192 @@ export default function create(bento) {
         win.addEventListener("edgedoubleclick", (e) =>
             spaceWith(win)?.edgeDoubleClick(win, e.edges),
         );
+        win.addEventListener("dragstart", (e) => dragStart(win, e));
+        win.addEventListener("dragmove", (e) => dragMove(win, e));
+        win.addEventListener("dragend", (e) => {
+            if (drag?.win === win) finishDrag(e.dropped);
+        });
+    }
+
+    // Dragging windows with the pointer. bento runs the drag and tells the window where the
+    // pointer goes, and the engine places it. A window holds its place, following the pointer on
+    // a rubber band, until the pointer has gone `DRAG_LOOSE_DISTANCE` from where the drag
+    // started. Then it comes loose: it leaves the grid and its group, and is drawn see-through
+    // under the pointer, above the other windows, on the workspace under the pointer, which
+    // shows where it would land and scrolls while the pointer rests near its left or right edge.
+    // Letting go puts it there; a cancelled drag puts it back where it came from.
+
+    /**
+     * The drag going on, or null: `{ win, offset, start, loose, placed, over, pointer, scroll }`.
+     * `offset` is where on the window the pointer holds it, and `start` where the pointer was on
+     * the window's workspace when the drag began. Once the window is loose, `loose` is what
+     * `lift` gave, with `home`, the workspace and space it came from, and `placed` whether it
+     * was drawn under the pointer yet. `over` is the space under the pointer, `pointer` where on
+     * it, and `scroll` the timer that scrolls its view.
+     */
+    let drag = null;
+
+    function dragStart(win, e) {
+        if (drag !== null) {
+            finishDrag(false);
+        }
+        if (spaceWith(win) === undefined) return;
+        drag = {
+            win,
+            offset: { ...e.offset },
+            start: { ...e.pointer },
+            loose: null,
+            placed: false,
+            over: null,
+            pointer: null,
+            scroll: null,
+        };
+    }
+
+    function dragMove(win, e) {
+        if (drag?.win !== win) return;
+        if (drag.loose === null && !pullLoose(e.workspace, e.pointer)) return;
+        follow(e.workspace, e.pointer);
+    }
+
+    /**
+     * Holds the dragged window in its place on a rubber band while the pointer is near where the
+     * drag started, on its workspace, and makes it come loose once the pointer is further.
+     * Returns whether it's loose.
+     */
+    function pullLoose(ws, pointer) {
+        const { win, start } = drag;
+        const space = spaceWith(win);
+        if (ws === null || space === undefined) return false;
+        if (ws === win.workspace) {
+            const dx = pointer.x - start.x;
+            const dy = pointer.y - start.y;
+            const pull = (dx * dx + dy * dy) / DRAG_LOOSE_DISTANCE ** 2;
+            if (pull < 1) {
+                // It gives less the further the pointer goes.
+                const give = pull / (2 * pull + 1);
+                space.hold(win, { x: dx * give, y: dy * give });
+                return false;
+            }
+        }
+        const before = win.rect;
+        const loose = space.lift(win);
+        if (loose === null) return false;
+        // The pointer keeps its place on the window in proportion, for a window that comes out
+        // of fullscreen or maximized at a smaller size.
+        if (before !== null && before.w > 0 && before.h > 0) {
+            drag.offset = {
+                x: (drag.offset.x * loose.rect.w) / before.w,
+                y: (drag.offset.y * loose.rect.h) / before.h,
+            };
+        }
+        drag.loose = { ...loose, home: { ws: win.workspace, space } };
+        win.node.set({ opacity: DRAG_OPACITY, transitions: { opacity: "window-movement" } });
+        return true;
+    }
+
+    /**
+     * Takes the loose window to the workspace under the pointer, and draws it under the pointer
+     * there, which shows where it would land. Away from any workspace, it stays where it is.
+     */
+    function follow(ws, pointer) {
+        const { win } = drag;
+        const moves = ws !== null && ws !== win.workspace;
+        const over = ws === null || (moves && !win.moveTo(ws)) ? null : spaceOf(ws);
+        if (over !== drag.over) {
+            drag.over?.dragLeave();
+            drag.over = over;
+        }
+        drag.pointer = over === null ? null : { ...pointer };
+        if (over === null) {
+            stopEdgeScroll();
+            return;
+        }
+        // From where it was on the grid, it slides under the pointer.
+        placeLoose(!moves && !drag.placed);
+        drag.placed = true;
+        edgeScroll();
+    }
+
+    /** Draws the loose window under the pointer, at its size, above the others. */
+    function placeLoose(animate = false) {
+        const { win, offset, pointer, loose, over } = drag;
+        const { w, h } = loose.rect;
+        const rect = { x: pointer.x - offset.x, y: pointer.y - offset.y, w, h };
+        win.place(rect, { animate });
+        over.dragOver(win, pointer, rect);
+        win.raise();
+    }
+
+    /** Scrolls the view under the loose window while the pointer rests near its edge. */
+    function edgeScroll() {
+        if (edgeSpeed() === 0) {
+            stopEdgeScroll();
+        } else {
+            drag.scroll ??= bento.setTimeout(scrollTick, EDGE_SCROLL_DELAY);
+        }
+    }
+
+    function scrollTick() {
+        if (drag === null) return;
+        drag.scroll = null;
+        const speed = edgeSpeed();
+        if (speed === 0) return;
+        const dx = drag.over.scrollBy((speed * EDGE_SCROLL_TICK) / 1000);
+        if (dx !== 0) {
+            // The pointer stays still on screen, so it goes along the canvas with the view.
+            drag.pointer = { x: drag.pointer.x + dx, y: drag.pointer.y };
+            placeLoose();
+        }
+        drag.scroll = bento.setTimeout(scrollTick, EDGE_SCROLL_TICK);
+    }
+
+    /** How fast the view under the pointer scrolls, see `edgeScrollSpeed`. */
+    function edgeSpeed() {
+        const { camera, monitor } = drag.win.workspace;
+        const x = (drag.pointer.x - camera.x) * camera.zoom;
+        return edgeScrollSpeed(x, monitor.workingArea);
+    }
+
+    function stopEdgeScroll() {
+        if (drag.scroll !== null) {
+            bento.clearTimeout(drag.scroll);
+            drag.scroll = null;
+        }
+    }
+
+    /** Stops following the drag, and takes away what it shows. Returns what it was. */
+    function stopDrag() {
+        const was = drag;
+        stopEdgeScroll();
+        drag.over?.dragLeave();
+        drag = null;
+        return was;
+    }
+
+    /**
+     * Ends the drag. A loose window lands where it was `dropped` on a workspace, or goes back
+     * where it came from; one that never came loose goes back to its place.
+     */
+    function finishDrag(dropped) {
+        const { win, loose, over, pointer } = stopDrag();
+        if (loose === null) {
+            spaceWith(win)?.hold(win, null);
+            return;
+        }
+        win.node.set({ opacity: 1 });
+        if (dropped && over !== null) {
+            over.dropWindow(win, pointer, win.rect, loose.intent);
+            return;
+        }
+        // Back to the workspace it came from, unless that's gone.
+        const { home } = loose;
+        const alive = spaces.get(home.ws.id) === home.space;
+        if (alive && (win.workspace === home.ws || win.moveTo(home.ws))) {
+            home.space.putBack(win, loose.back, loose.intent);
+        } else {
+            spaceOf(win.workspace).putBack(win, null, loose.intent);
+        }
     }
 
     // Across spaces.
@@ -4995,7 +5382,6 @@ export default function create(bento) {
             reason: e.reason,
             activate: e.activate,
             rect: e.rect,
-            pointer: e.pointer,
             nextTo: e.nextTo,
         });
     });
@@ -5041,6 +5427,21 @@ export default function create(bento) {
 // =================================================================================================
 // Helpers
 // =================================================================================================
+
+/**
+ * Speed to scroll the view at, in px/s, for a dragged window with the pointer at `x` in the view,
+ * whose working area is `area`: towards the edge the pointer is near, faster nearer to it, and 0
+ * away from the edges.
+ */
+function edgeScrollSpeed(x, area) {
+    const width = Math.min(EDGE_SCROLL_WIDTH, area.w / 2);
+    if (width < 0.01) {
+        return 0;
+    }
+    const at = clamp(x - area.x, 0, area.w);
+    const into = at < width ? at - width : area.w - at < width ? width - (area.w - at) : 0;
+    return (into / width) * EDGE_SCROLL_SPEED;
+}
 
 /**
  * Camera offset from a window at `newColX` of `newColWidth` that keeps it in view, given the

@@ -2,7 +2,7 @@
 
 mod account;
 mod ipc;
-mod kdl;
+use niri_config::edit as kdl;
 mod model;
 mod page;
 mod pages;

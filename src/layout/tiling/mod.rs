@@ -26,7 +26,6 @@ use self::protocol::{
     WindowChange, WindowInfo, WorkspaceInfo, Xy,
 };
 use super::closing_window::{ClosingWindow, ClosingWindowRenderElement};
-use super::monitor::{InsertPosition, TiledDrop};
 use super::surfaces::{
     CopyLook, Drawn, Input, RenderItem, SurfaceRenderElement, Tree, WindowHit, WindowSlot,
 };
@@ -82,9 +81,6 @@ pub struct TilingSpace<W: LayoutElement> {
 
     /// Horizontal swipe that the layout follows.
     swipe: Option<Swipe>,
-
-    /// Where a window that's being dropped goes, for when it's added.
-    drop: Option<(W::Id, TiledDrop)>,
 
     /// Why a window that's about to be removed is leaving, if it isn't closing.
     remove_reason: Option<(W::Id, &'static str)>,
@@ -285,7 +281,6 @@ impl<W: LayoutElement> TilingSpace<W> {
             tree,
             pointer: Point::from((0., 0.)),
             swipe: None,
-            drop: None,
             remove_reason: None,
             interactive_resize: None,
             closing_windows: Vec::new(),
@@ -600,7 +595,7 @@ impl<W: LayoutElement> TilingSpace<W> {
         name: Option<&String>,
         monitor: Option<String>,
         index: usize,
-        options: Value,
+        settings: Value,
     ) -> WorkspaceInfo {
         let Struts {
             left,
@@ -634,8 +629,9 @@ impl<W: LayoutElement> TilingSpace<W> {
                     top: top.0,
                     bottom: bottom.0,
                 },
+                title_buttons: self.options.title_buttons.clone(),
             },
-            options,
+            settings,
             focused: self.active,
         }
     }
@@ -981,19 +977,7 @@ impl<W: LayoutElement> TilingSpace<W> {
     ) {
         tile.update_config(self.view_size, self.scale, self.options.clone());
 
-        let drop = self
-            .drop
-            .take()
-            .filter(|(id, _)| id == tile.window().id())
-            .map(|(_, drop)| drop);
-
-        let reason = if drop.is_some() {
-            "drop"
-        } else if let Some((reason, _)) = from {
-            reason
-        } else {
-            "open"
-        };
+        let reason = from.map_or("open", |(reason, _)| reason);
 
         let moved_from = tile.engine_workspace.filter(|from| *from != self.id);
         let known = tile.engine_workspace == Some(self.id);
@@ -1029,11 +1013,7 @@ impl<W: LayoutElement> TilingSpace<W> {
                 anim,
             );
         } else if !known {
-            let (rect, pointer) = match (&drop, from) {
-                (Some(drop), _) => (Some(drop.rect), Some(drop.pointer)),
-                (None, Some((_, rect))) => (Some(rect), None),
-                (None, None) => (None, None),
-            };
+            let rect = from.map(|(_, rect)| rect);
             let window = Self::window_info_of(&self.tiles[0], self.id, &engine::name());
             host::queue_with(
                 json!({
@@ -1043,7 +1023,6 @@ impl<W: LayoutElement> TilingSpace<W> {
                         "reason": reason,
                         "activate": activate,
                         "rect": rect.map(Rect::from_rect),
-                        "pointer": pointer.map(Xy::from_point),
                         "nextTo": next_to,
                     },
                 }),
@@ -1706,37 +1685,23 @@ impl<W: LayoutElement> TilingSpace<W> {
             .collect()
     }
 
-    /// Where a dragged tile is on the canvas: the pointer at `pos` and the tile at `tile_pos`,
-    /// both relative to the view.
-    pub(super) fn drag_on_canvas(
+    /// Tells the layout that a drag of window `id` began, with the pointer at `pos` on the view,
+    /// holding the window at `offset` from the top left of the rect the layout gave it.
+    pub(super) fn queue_drag_start(
         &self,
+        id: &W::Id,
+        offset: Point<f64, Logical>,
         pos: Point<f64, Logical>,
-        tile: &Tile<W>,
-        tile_pos: Point<f64, Logical>,
-    ) -> TiledDrop {
-        // The dragged tile is drawn at its size on the view, which shows the canvas zoomed.
-        let zoom = self.camera.zoom.current();
-        TiledDrop {
-            pointer: self.canvas_pos(pos),
-            rect: Rectangle::new(self.canvas_pos(tile_pos), tile.tile_size().downscale(zoom)),
-        }
-    }
-
-    /// Where a dragged tile goes if dropped with the pointer at `pos`, relative to the view.
-    ///
-    /// `tile_pos` is where the dragged tile is, relative to the view.
-    pub(super) fn insert_position(
-        &self,
-        pos: Point<f64, Logical>,
-        tile: &Tile<W>,
-        tile_pos: Point<f64, Logical>,
-    ) -> InsertPosition {
-        InsertPosition::Tiled(Some(self.drag_on_canvas(pos, tile, tile_pos)))
-    }
-
-    /// Makes the window go where it was dropped when it's added next.
-    pub(super) fn set_drop(&mut self, window: W::Id, drop: TiledDrop) {
-        self.drop = Some((window, drop));
+    ) {
+        let Some(id) = self.engine_id_of(id) else {
+            return;
+        };
+        host::queue(json!({
+            "type": "dragstart",
+            "id": id,
+            "offset": Xy::from_point(offset),
+            "pointer": Xy::from_point(self.canvas_pos(pos)),
+        }));
     }
 
     /// Sets how a tile that was just added animates to where the layout places it.
@@ -2317,6 +2282,57 @@ impl Placement {
             None => Some(TilingSpaceRenderElement::from(elem)),
         }
     }
+}
+
+/// Draws a live copy of `win`'s contents fitted into `rect` on the output, centred, at
+/// `opacity`, with `radius` on its corners and cut to `clip`, a rounded rect, if it's given: what
+/// the window draws itself, without its border, focus ring, shadow or popups, as an engine's copy
+/// node draws it. bento's own shell draws its copies with it.
+#[allow(clippy::too_many_arguments)]
+pub fn render_window_copy<W: LayoutElement, R: NiriRenderer>(
+    mut ctx: RenderCtx<R>,
+    win: &W,
+    rect: Rectangle<f64, Logical>,
+    radius: f64,
+    opacity: f64,
+    clip: Option<(Rectangle<f64, Logical>, f64)>,
+    output_scale: f64,
+    push: &mut dyn FnMut(TilingSpaceRenderElement<R>),
+) {
+    let size = win.size().to_f64();
+    if opacity <= 0. || size.w <= 0. || size.h <= 0. || rect.is_empty() {
+        return;
+    }
+    // The window fitted into the rect, drawn at its own size where the fitted copy starts, and
+    // scaled by `fit` around there.
+    let fit = f64::min(rect.size.w / size.w, rect.size.h / size.h);
+    let fitted = size.upscale(fit);
+    let pos = (rect.loc + (rect.size - fitted).downscale(2.).to_point())
+        .to_physical_precise_round(output_scale)
+        .to_logical(output_scale);
+    let own = Rectangle::new(pos, fitted);
+    let clip = match clip {
+        Some((area, outer)) => own
+            .intersection(area)
+            .map(|area| (area, if radius > 0. { radius } else { outer })),
+        None => Some((own, radius)),
+    };
+    let Some((clip, radius)) = clip else { return };
+    let map = TileMap {
+        pivot: pos,
+        scale: fit,
+        offset: Point::from((0., 0.)),
+        clip: Some((clip, radius)),
+    };
+    let placement = Placement::new(&map, output_scale);
+    let clip_shader = ClippedSurfaceRenderElement::shader(ctx.renderer).cloned();
+    let scale = Scale::from(output_scale);
+    win.render_normal(ctx.r(), pos, scale, opacity as f32, &mut |elem| {
+        let elem = placement.round_corners(elem.into(), clip_shader.as_ref());
+        if let Some(elem) = placement.place(elem) {
+            push(elem);
+        }
+    });
 }
 
 /// What the pointer is on, among the windows that the layout draws.

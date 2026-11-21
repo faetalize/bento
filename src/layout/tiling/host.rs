@@ -12,7 +12,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use niri_config::{OutputName, TilingOption, WorkspaceReference};
@@ -20,11 +20,11 @@ use niri_ipc::{LayoutEngineActionArg, LayoutEngineActionArgType, LayoutEngineOpt
 use serde_json::{json, Value};
 use smithay::utils::{Logical, Point, Rectangle};
 
+use super::engine;
 use super::protocol::{
     CameraChange, Grab, GroupInfo, MonitorInfo, Op, Output as EngineOutput, Rect, SearchInfo,
     SyncInfo, TimerStart, TreeOp, Verdict, Wh, WindowChange, Xy,
 };
-use super::{engine, TilingSpace};
 use crate::layout::monitor::InsertWorkspace;
 use crate::layout::workspace::WorkspaceId;
 use crate::layout::{
@@ -118,6 +118,19 @@ fn take_queue() -> Vec<Queued> {
     QUEUE.with_borrow_mut(std::mem::take)
 }
 
+/// Longest a step of handling an event may take before it's logged as slow: about a frame.
+const SLOW: Duration = Duration::from_millis(16);
+
+/// Logs a step of handling an event of type `kind` that took longer than a frame.
+fn note_slow(step: &str, kind: &str, took: Duration) {
+    if took > SLOW {
+        warn!(
+            "{step} for {kind:?} took {:.1} ms",
+            took.as_secs_f64() * 1000.
+        );
+    }
+}
+
 /// Sends a call to the layout engine and reads its answer.
 fn call(call: &Value) -> anyhow::Result<EngineOutput> {
     let out = engine::call(&call.to_string())?;
@@ -153,10 +166,9 @@ pub enum NodeGrab<Id> {
     Resize { window: Id, edges: ResizeEdge },
 }
 
-/// A drag over a workspace's canvas, as the layout last heard.
+/// A drag of one of the layout's windows, as the layout last heard.
 #[derive(Debug)]
 struct Drag {
-    workspace: u64,
     last: Value,
     /// The move to tell the layout about with the next frame, see [`Layout::send_drag_move`].
     pending: Option<Value>,
@@ -253,7 +265,7 @@ pub struct Host {
     /// The search, as the layout was last told: it only hears about what changed.
     search: Option<SearchInfo>,
     focused_monitor: Option<String>,
-    options: Option<Value>,
+    settings: Option<Value>,
     /// What to tell the layout about again, because it changed it and bento may not agree.
     resend_all: bool,
     resend_workspaces: HashSet<u64>,
@@ -263,6 +275,8 @@ pub struct Host {
     drag: Option<Drag>,
     /// What the layout asked to start with the pointer, until the input code takes it.
     grab: Option<Grab>,
+    /// Windows the layout asked to close, until bento takes them, see [`Layout::take_closes`].
+    closes: Vec<u64>,
     /// Whether events are being sent, which carrying out what the layout answers doesn't start
     /// again.
     flushing: bool,
@@ -294,12 +308,13 @@ impl Host {
         self.groups = None;
         self.search = None;
         self.focused_monitor = None;
-        self.options = None;
+        self.settings = None;
         self.resend_all = false;
         self.resend_workspaces.clear();
         self.resend_windows.clear();
         self.drag = None;
         self.grab = None;
+        self.closes.clear();
         self.instance += 1;
         // The layout that held the keyboard and waited for timers is gone, and isn't told.
         self.keyboard_grabbed = false;
@@ -444,7 +459,7 @@ impl<W: LayoutElement> Layout<W> {
                     }));
                     let output_name = mon.output().user_data().get::<OutputName>();
                     for (ws_idx, ws) in mon.workspaces.iter().enumerate() {
-                        let options = engine::workspace_options_json(
+                        let settings = engine::workspace_settings_json(
                             &self.options.tiling,
                             output_name,
                             ws.name().map(String::as_str),
@@ -453,7 +468,7 @@ impl<W: LayoutElement> Layout<W> {
                             ws.name(),
                             Some(names[idx].clone()),
                             ws_idx,
-                            options,
+                            settings,
                         );
                         workspaces.push(to_value(&info));
                         add_windows(ws);
@@ -465,12 +480,14 @@ impl<W: LayoutElement> Layout<W> {
             }
             MonitorSet::NoOutputs { workspaces } => {
                 for (idx, ws) in workspaces.iter().enumerate() {
-                    let options = engine::workspace_options_json(
+                    let settings = engine::workspace_settings_json(
                         &self.options.tiling,
                         None,
                         ws.name().map(String::as_str),
                     );
-                    let info = ws.scrolling().workspace_info(ws.name(), None, idx, options);
+                    let info = ws
+                        .scrolling()
+                        .workspace_info(ws.name(), None, idx, settings);
                     snapshot.workspaces.push(to_value(&info));
                     add_windows(ws);
                 }
@@ -627,10 +644,10 @@ impl<W: LayoutElement> Layout<W> {
         host.focused_monitor = snapshot.focused_monitor.clone();
         sync.focused_monitor = snapshot.focused_monitor;
 
-        let options = engine::options_json(&self.options.tiling);
-        if host.options.as_ref() != Some(&options) {
-            host.options = Some(options.clone());
-            sync.options = Some(options);
+        let settings = engine::settings_json(&self.options.tiling);
+        if host.settings.as_ref() != Some(&settings) {
+            host.settings = Some(settings.clone());
+            sync.settings = Some(settings);
         }
 
         if host.keyboard_told != Some(keyboard_available) {
@@ -693,8 +710,8 @@ impl<W: LayoutElement> Layout<W> {
                 .insert(info["id"].as_u64().unwrap_or_default(), info);
         }
         self.host.focused_monitor = snapshot.focused_monitor.clone();
-        let options = engine::options_json(&self.options.tiling);
-        self.host.options = Some(options.clone());
+        let settings = engine::settings_json(&self.options.tiling);
+        self.host.settings = Some(settings.clone());
 
         let groups = self.group_infos();
         self.host.groups = Some(groups.clone());
@@ -714,7 +731,7 @@ impl<W: LayoutElement> Layout<W> {
 
         let event = json!({
             "type": "create",
-            "options": options,
+            "settings": settings,
             "savedState": engine::take_state(),
             "windows": windows,
             "focused": focused,
@@ -794,11 +811,15 @@ impl<W: LayoutElement> Layout<W> {
         anim: Option<niri_config::Animation>,
         transaction: Option<Transaction>,
     ) -> Option<Value> {
+        let kind = event["type"].as_str().unwrap_or("?").to_owned();
         let call_json = match sync {
             Some(sync) => json!({ "sync": sync, "event": event }),
             None => json!({ "event": event }),
         };
-        match call(&call_json) {
+        let started = Instant::now();
+        let called = call(&call_json);
+        note_slow("layout engine call", &kind, started.elapsed());
+        match called {
             Ok(out) => {
                 self.host.failures = 0;
                 let result = out.result.clone();
@@ -817,7 +838,13 @@ impl<W: LayoutElement> Layout<W> {
                 if out.state_changed {
                     self.host.state_changed = true;
                 }
+                let started = Instant::now();
                 silenced(|| self.apply_output(out, anim, transaction));
+                note_slow(
+                    "applying the layout engine's answer",
+                    &kind,
+                    started.elapsed(),
+                );
                 Some(result)
             }
             Err(err) => {
@@ -1000,6 +1027,7 @@ impl<W: LayoutElement> Layout<W> {
                 self.groups.activate(group, window);
             }
             Op::DissolveGroup { group } => self.groups.dissolve(group),
+            Op::CloseWindow { window } => self.host.closes.push(window),
             Op::Search { scope } => self.start_search(scope),
             Op::EndSearch => self.forget_search(),
         }
@@ -1400,7 +1428,7 @@ impl<W: LayoutElement> Layout<W> {
                 LayoutEngineOptionValue::Boolean(value) => TilingOption::Bool(*value),
                 LayoutEngineOptionValue::Number(value) => TilingOption::Number(*value),
                 LayoutEngineOptionValue::String(value) => TilingOption::String(value.clone()),
-                // Action arguments are single values; only options are lists or gradients.
+                // Action arguments are single values; only settings are lists or gradients.
                 LayoutEngineOptionValue::Gradient(_) | LayoutEngineOptionValue::List(_) => break,
             };
             values.push(convert(i, &default));
@@ -1576,6 +1604,15 @@ impl<W: LayoutElement> Layout<W> {
         }));
     }
 
+    /// The windows that the layout asked to close since bento last took them, for bento to ask
+    /// their apps, as its own close action does.
+    pub fn take_closes(&mut self) -> Vec<W::Id> {
+        std::mem::take(&mut self.host.closes)
+            .into_iter()
+            .filter_map(|window| self.window_by_engine_id(window))
+            .collect()
+    }
+
     /// The move or resize that the layout began while it handled the last press on one of its
     /// nodes, if it did. The input code starts the same grab as for a client's request, and the
     /// layout hears about it as for any move or resize with the pointer.
@@ -1632,85 +1669,72 @@ impl<W: LayoutElement> Layout<W> {
         self.flush_engine();
     }
 
-    /// Tells the layout where an interactively moved window is over a workspace, or that it left.
+    /// Notes where the pointer dragging one of the layout's windows is now, for the layout to
+    /// hear with the next frame.
     pub(in crate::layout) fn update_drag(&mut self) {
-        let target = self.drag_target();
-        let previous = self.host.drag.take();
-
-        match (previous, target) {
-            (Some(previous), Some((workspace, window, pointer_rect))) => {
-                let mut pending = None;
-                if previous.workspace == workspace {
-                    pending = previous.pending;
-                    if previous.last != pointer_rect {
-                        // It waits for the next frame, see `send_drag_move`.
-                        pending = Some(drag_event("dragmove", workspace, &window, &pointer_rect));
-                    }
-                } else {
-                    queue(json!({ "type": "dragleave", "workspace": previous.workspace }));
-                    queue(drag_event("dragenter", workspace, &window, &pointer_rect));
-                }
+        let Some(event) = self.drag_move() else {
+            return;
+        };
+        match &mut self.host.drag {
+            Some(drag) if drag.last == event => (),
+            Some(drag) => {
+                // It waits for the next frame, see `send_drag_move`.
+                drag.last = event.clone();
+                drag.pending = Some(event);
+            }
+            None => {
                 self.host.drag = Some(Drag {
-                    workspace,
-                    last: pointer_rect,
-                    pending,
+                    last: event.clone(),
+                    pending: Some(event),
                 });
             }
-            (None, Some((workspace, window, pointer_rect))) => {
-                queue(drag_event("dragenter", workspace, &window, &pointer_rect));
-                self.host.drag = Some(Drag {
-                    workspace,
-                    last: pointer_rect,
-                    pending: None,
-                });
-            }
-            (Some(previous), None) => {
-                queue(json!({ "type": "dragleave", "workspace": previous.workspace }));
-            }
-            (None, None) => (),
         }
     }
 
-    /// The workspace that an interactively moved tiled window is over, with the window's info and
-    /// the pointer and rect on the workspace's canvas.
-    fn drag_target(&self) -> Option<(u64, Value, Value)> {
-        let Some(InteractiveMoveState::Moving(move_)) = &self.interactive_move else {
-            return None;
-        };
-        if move_.is_floating {
-            return None;
+    /// Tells the layout that the drag of `window` ended, dropped or cancelled, after the move it
+    /// hasn't heard yet.
+    pub(in crate::layout) fn end_drag(&mut self, window: &W::Id, dropped: bool) {
+        if let Some(event) = self.host.drag.take().and_then(|drag| drag.pending) {
+            queue(event);
         }
-        let mon = self.monitor_for_output(&move_.output)?;
-        let zoom = mon.overview_zoom();
-        let (insert_ws, geo) = mon.insert_position(move_.pointer_pos_within_output);
-        let InsertWorkspace::Existing(ws_id) = insert_ws else {
+        let Some(id) = self.engine_id_of(window) else {
+            return;
+        };
+        queue(json!({ "type": "dragend", "id": id, "dropped": dropped }));
+    }
+
+    /// Forgets the drag of a window that is no longer the layout's.
+    pub(in crate::layout) fn forget_drag(&mut self) {
+        self.host.drag = None;
+    }
+
+    /// Where the pointer dragging one of the layout's windows is: the workspace under it, and its
+    /// position on that workspace's canvas, or neither, like between workspaces in the overview.
+    fn drag_move(&self) -> Option<Value> {
+        let Some(InteractiveMoveState::Engine {
+            window_id,
+            output,
+            pointer_pos_within_output,
+        }) = &self.interactive_move
+        else {
             return None;
         };
-        let ws = mon.workspaces.iter().find(|ws| ws.id() == ws_id)?;
-
-        let pos_within_workspace = (move_.pointer_pos_within_output - geo.loc).downscale(zoom);
-        let tile_pos_within_workspace =
-            (move_.tile_render_location(zoom) - geo.loc).downscale(zoom);
-        let drop = ws.scrolling().drag_on_canvas(
-            pos_within_workspace,
-            &move_.tile,
-            tile_pos_within_workspace,
-        );
-        let window = TilingSpace::<W>::window_info_of(&move_.tile, ws_id.get(), &engine::name());
-        let pointer_rect = json!({
-            "pointer": Xy::from_point(drop.pointer),
-            "rect": Rect::from_rect(drop.rect),
+        let id = self.engine_id_of(window_id)?;
+        let over = self.monitor_for_output(output).and_then(|mon| {
+            let (InsertWorkspace::Existing(ws_id), geo) =
+                mon.insert_position(*pointer_pos_within_output)
+            else {
+                return None;
+            };
+            let ws = mon.workspaces.iter().find(|ws| ws.id() == ws_id)?;
+            let pos = (*pointer_pos_within_output - geo.loc).downscale(mon.overview_zoom());
+            Some((ws_id.get(), ws.scrolling().canvas_pos(pos)))
         });
-        Some((ws_id.get(), to_value(&window), pointer_rect))
+        Some(json!({
+            "type": "dragmove",
+            "id": id,
+            "workspace": over.map(|(ws, _)| ws),
+            "pointer": over.map(|(_, pos)| Xy::from_point(pos)),
+        }))
     }
-}
-
-fn drag_event(kind: &str, workspace: u64, window: &Value, pointer_rect: &Value) -> Value {
-    json!({
-        "type": kind,
-        "workspace": workspace,
-        "window": window,
-        "pointer": pointer_rect["pointer"],
-        "rect": pointer_rect["rect"],
-    })
 }

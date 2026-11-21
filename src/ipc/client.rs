@@ -331,6 +331,11 @@ pub fn handle_msg(msg: Msg, json: bool, print_request: bool) -> anyhow::Result<(
 
             print_actions(&actions);
         }
+        Response::Shell(shell) => {
+            print_json!(shell);
+
+            print_shell(&shell);
+        }
         Response::PickedWindow(window) => {
             print_json!(window);
 
@@ -427,6 +432,7 @@ fn make_request(msg: &Msg) -> anyhow::Result<Request> {
         Msg::Engine => get(Get::Engine),
         Msg::EngineState => get(Get::EngineState),
         Msg::Actions => get(Get::Actions),
+        Msg::Shell => get(Get::Shell),
         Msg::PickWindow => Request::PickWindow,
         Msg::PickColor => Request::PickColor,
         Msg::Action {
@@ -799,26 +805,12 @@ fn print_layout_engine(engine: &LayoutEngine) {
     }
 
     println!();
-    if engine.options.is_empty() {
-        println!("No options.");
+    if engine.settings.is_empty() {
+        println!("No settings.");
     } else {
-        println!("Options:");
+        println!("Settings:");
     }
-    for option in &engine.options {
-        let value = fmt_option_value(&option.value);
-        if option.value == option.default {
-            println!("  {}: {value} (default)", option.name);
-        } else {
-            let default = fmt_option_value(&option.default);
-            println!("  {}: {value} (default: {default})", option.name);
-        }
-        let list = if option.list { " list" } else { "" };
-        let choices = fmt_choices(&option.choices);
-        println!("    {}{list}{choices}", fmt_option_type(option.r#type));
-        if let Some(description) = &option.description {
-            println!("    {description}");
-        }
-    }
+    print_settings(&engine.settings);
 
     println!();
     if engine.window_rules.is_empty() {
@@ -838,6 +830,59 @@ fn print_layout_engine(engine: &LayoutEngine) {
 
     println!();
     print_actions(&engine.actions);
+}
+
+/// Settings of an engine or a shell, with their values, types and descriptions.
+fn print_settings(settings: &[niri_ipc::LayoutEngineOption]) {
+    for option in settings {
+        let value = fmt_option_value(&option.value);
+        if option.value == option.default {
+            println!("  {}: {value} (default)", option.name);
+        } else {
+            let default = fmt_option_value(&option.default);
+            println!("  {}: {value} (default: {default})", option.name);
+        }
+        let list = if option.list { " list" } else { "" };
+        let choices = fmt_choices(&option.choices);
+        println!("    {}{list}{choices}", fmt_option_type(option.r#type));
+        if let Some(description) = &option.description {
+            println!("    {description}");
+        }
+    }
+}
+
+fn print_shell(shell: &bento_ipc::Shell) {
+    match &shell.source {
+        bento_ipc::ShellSource::BuiltIn { name } => println!("Shell \"{name}\" (built-in)"),
+        bento_ipc::ShellSource::File { path } => println!("Shell {path}"),
+    }
+    if let Some(error) = &shell.error {
+        println!();
+        println!("The configured shell failed to load: {error}");
+    }
+    if let Some(error) = &shell.settings_error {
+        println!();
+        println!("The settings file can't be read: {error}");
+    }
+    for block in &shell.settings {
+        println!();
+        println!("{}:", block.name);
+        print_settings(&block.settings);
+    }
+    if shell.settings.is_empty() {
+        println!();
+        println!("No settings.");
+    }
+    println!();
+    let actions: Vec<_> = shell.actions.iter().map(|a| a.action.clone()).collect();
+    print_actions(&actions);
+    if !shell.unused.is_empty() {
+        println!();
+        println!(
+            "The settings file sets what nothing running declares: {}",
+            shell.unused.join(", ")
+        );
+    }
 }
 
 fn print_actions(actions: &[LayoutEngineAction]) {
@@ -866,7 +911,18 @@ fn print_actions(actions: &[LayoutEngineAction]) {
                 usage.push_str(&format!(" [{name}]"));
             }
         }
-        println!("  {usage}");
+        let keys: Vec<String> = action
+            .binds
+            .iter()
+            .map(|bind| match bind.args.as_slice() {
+                [] => bind.key.clone(),
+                args => format!("{} with {}", bind.key, serde_json::to_string(args).unwrap()),
+            })
+            .collect();
+        match keys.as_slice() {
+            [] => println!("  {usage}"),
+            keys => println!("  {usage}  ({} by default)", keys.join(", ")),
+        }
         if let Some(description) = &action.description {
             println!("    {description}");
         }

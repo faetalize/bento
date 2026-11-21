@@ -15,7 +15,7 @@ authors = ["Ivan Molodetskikh <yalterz@gmail.com>"]
 license = "GPL-3.0-or-later"
 edition = "2021"
 repository = "https://github.com/faetalize/bento"
-rust-version = "1.87"
+rust-version = "1.95"
 
 [workspace.dependencies]
 anyhow = "1.0.104"
@@ -120,6 +120,15 @@ taffy = "0.15.1"
 naga = { version = "29", features = ["wgsl-in", "spv-out"] }
 parley = "0.7.0"
 swash = "0.2.10"
+# The shell's TSX: Solid's own JSX compiler, which has no release on crates.io, pinned to a
+# revision as its Rust API asks, and Oxc at the version it's built on, to strip TypeScript.
+solidjs-compiler = { git = "https://github.com/solidjs/solid", rev = "68406c2077eff22c67f71db4a16bf7026ddceee1", default-features = false }
+oxc_allocator = "0.144"
+oxc_codegen = "0.144"
+oxc_parser = "0.144"
+oxc_semantic = "0.144"
+oxc_span = "0.144"
+oxc_transformer = "0.144"
 shlex = "2.0.1"
 
 [dependencies.smithay]

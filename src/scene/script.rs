@@ -1,10 +1,10 @@
-//! The shell's scripts: JavaScript that builds and changes the scene, and reacts to its events.
+//! The shell's scripts: TSX with Solid that builds and changes the scene, and reacts to its
+//! events, compiled as they load (see [`super::modules`]).
 //!
-//! The shell is `~/.config/bento/shell/main.js` if it's there, or bento's own otherwise. Both
-//! import bento's widgets from `bento:ui`. bento's own shell and widgets are built in, or read from
-//! a folder that `debug { shell-scripts }` names, to work on them. A changed file is loaded again;
-//! a shell that fails to load or throws leaves the last working one on screen, and the error is
-//! logged.
+//! The shell is the one the config names: one of bento's own, like `bento:shells/unix`, or a file
+//! of one's own. Its default export is the root component, which bento's renderer, in the `bento`
+//! module, mounts. A changed file is loaded again; a shell that fails to load or throws leaves the
+//! last working one on screen with its settings, actions and binds, and the error is logged.
 //!
 //! Scripts never run per frame: only when something happens, like a click, a timer or bento's
 //! state changing. A call that runs too long is stopped.
@@ -15,41 +15,12 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Context as _};
-use rquickjs::loader::{BuiltinLoader, BuiltinResolver};
 use rquickjs::prelude::Opt;
 use rquickjs::{CatchResultExt as _, Context, Function, Module, Persistent, Runtime};
 
+use super::modules::{ScriptLoader, Sources};
+use super::settings::Settings;
 use super::{ImageSource, Scene};
-
-/// bento's own shell.
-const MAIN: &str = include_str!("../../resources/shell/main.js");
-/// Its modules, each imported as `bento:` and its name: the widgets, and the shell's parts.
-const MODULES: &[(&str, &str)] = &[
-    ("ui", include_str!("../../resources/shell/ui.js")),
-    (
-        "calendar",
-        include_str!("../../resources/shell/calendar.js"),
-    ),
-    (
-        "clipboard",
-        include_str!("../../resources/shell/clipboard.js"),
-    ),
-    ("control", include_str!("../../resources/shell/control.js")),
-    (
-        "launcher",
-        include_str!("../../resources/shell/launcher.js"),
-    ),
-    (
-        "notifications",
-        include_str!("../../resources/shell/notifications.js"),
-    ),
-    ("osd", include_str!("../../resources/shell/osd.js")),
-    ("toasts", include_str!("../../resources/shell/toasts.js")),
-    (
-        "workspace",
-        include_str!("../../resources/shell/workspace.js"),
-    ),
-];
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 const CALL_TIME_LIMIT: Duration = Duration::from_millis(200);
@@ -69,6 +40,8 @@ pub struct Shell {
     dispatch: Persistent<Function<'static>>,
     context: Context,
     _runtime: Runtime,
+    /// Where its files came from, with the ones it read.
+    sources: Rc<Sources>,
 }
 
 impl std::fmt::Debug for Shell {
@@ -77,62 +50,37 @@ impl std::fmt::Debug for Shell {
     }
 }
 
-/// The user's shell, if they have one.
-pub fn user_path() -> Option<PathBuf> {
-    let path = directories::BaseDirs::new()?
-        .config_dir()
-        .join("bento/shell/main.js");
-    path.is_file().then_some(path)
+/// A shell that failed to load, with the files it read before it did, to load it again when one
+/// changes.
+pub struct LoadError {
+    pub error: anyhow::Error,
+    pub files: Vec<PathBuf>,
 }
 
-/// The scripts in `dir`, sorted by name.
-fn scripts_in(dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "js"))
-        .collect();
-    files.sort();
-    files
-}
-
-/// When the shell's files last changed, with bento's own read from `dir`, to load them again.
-pub fn mtimes(dir: Option<&Path>) -> Vec<Option<SystemTime>> {
-    let mtime = |path: PathBuf| path.metadata().ok()?.modified().ok();
-    let mut files: Vec<PathBuf> = user_path().into_iter().collect();
-    if let Some(dir) = dir {
-        files.extend(scripts_in(dir));
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            write!(f, "{:#}", self.error)
+        } else {
+            write!(f, "{}", self.error)
+        }
     }
-    files.into_iter().map(mtime).collect()
 }
 
-/// The shell's source and its modules by name, with bento's own read from `dir` if it's given:
-/// `main.js` there, and every other script as the module of its name.
-fn sources(dir: Option<&Path>) -> anyhow::Result<(String, Vec<(String, String)>)> {
-    let read = |path: &Path| {
-        std::fs::read_to_string(path).with_context(|| format!("error reading {}", path.display()))
-    };
-    let main = match (user_path(), dir) {
-        (Some(path), _) => read(&path)?,
-        (None, Some(dir)) => read(&dir.join("main.js"))?,
-        (None, None) => String::from(MAIN),
-    };
-    let modules = match dir {
-        Some(dir) => scripts_in(dir)
-            .into_iter()
-            .filter(|path| path.file_name().is_some_and(|name| name != "main.js"))
-            .map(|path| {
-                let name = path.file_stem().unwrap_or_default().to_string_lossy();
-                Ok((name.into_owned(), read(&path)?))
-            })
-            .collect::<anyhow::Result<_>>()?,
-        None => MODULES
-            .iter()
-            .map(|(name, source)| (String::from(*name), String::from(*source)))
-            .collect(),
-    };
-    Ok((main, modules))
+impl std::fmt::Debug for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.error, f)
+    }
+}
+
+/// When the shell's files last changed, with bento's own read from `dir`, the shell starting
+/// from `entry`, and `loaded` the files it read, to load them again.
+pub fn mtimes(
+    dir: Option<&Path>,
+    entry: &str,
+    loaded: &[PathBuf],
+) -> Vec<(PathBuf, Option<SystemTime>)> {
+    Sources::new(dir).mtimes(entry, loaded)
 }
 
 /// Where what scripts keep between runs is written, like which sound outputs are pinned. Tests
@@ -149,14 +97,39 @@ fn state_path() -> Option<PathBuf> {
 }
 
 impl Shell {
-    /// Loads the user's shell, or bento's own, onto `outputs`, each its logical size, with
-    /// bento's own shell and widgets read from `dir` if it's given.
+    /// Loads the shell that starts from module `entry` onto `outputs`, each its logical size,
+    /// with bento's own shell and modules read from `dir` if it's given, and its settings from
+    /// `settings`. What the shell running before declared there stays until this one has loaded.
     pub fn load(
         outputs: &[(String, (f32, f32))],
         dir: Option<&Path>,
+        entry: &str,
         style: serde_json::Value,
+        settings: Rc<RefCell<Settings>>,
+    ) -> Result<Self, LoadError> {
+        let sources = Rc::new(Sources::new(dir));
+        let before = settings.borrow_mut().take_declarations();
+        let loaded = Self::load_from(outputs, &sources, entry, style, settings.clone());
+        loaded.map_err(|error| {
+            settings.borrow_mut().put_back_declarations(before);
+            LoadError {
+                error,
+                files: sources.read.borrow().clone(),
+            }
+        })
+    }
+
+    fn load_from(
+        outputs: &[(String, (f32, f32))],
+        sources: &Rc<Sources>,
+        entry: &str,
+        style: serde_json::Value,
+        settings: Rc<RefCell<Settings>>,
     ) -> anyhow::Result<Self> {
-        let (source, modules) = sources(dir)?;
+        #[cfg(test)]
+        let entry = &super::modules::TEST_ENTRY
+            .with(|test| test.borrow().clone())
+            .unwrap_or_else(|| String::from(entry));
 
         let mut scene = Scene::new();
         for (name, size) in outputs {
@@ -168,14 +141,10 @@ impl Shell {
         let runtime = Runtime::new().context("error creating the JS runtime")?;
         runtime.set_memory_limit(MEMORY_LIMIT);
         runtime.set_max_stack_size(1024 * 1024);
-        let mut resolver = BuiltinResolver::default();
-        let mut loader = BuiltinLoader::default();
-        for (name, module) in modules {
-            let name = format!("bento:{name}");
-            resolver.add_module(&name);
-            loader.add_module(&name, module);
-        }
-        runtime.set_loader(resolver, loader);
+        let loader = ScriptLoader {
+            sources: sources.clone(),
+        };
+        runtime.set_loader(loader.clone(), loader);
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         let deadline_ = deadline.clone();
@@ -228,12 +197,12 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
-                "reserve",
+                "insertBefore",
                 Function::new(
                     ctx.clone(),
-                    move |output: String, top: f64, right: f64, bottom: f64, left: f64| {
-                        let edges = [top, right, bottom, left].map(|e| e.max(0.) as f32);
-                        s.borrow_mut().reserve(&output, edges);
+                    move |parent: u32, child: u32, siblings: String| {
+                        let siblings: Vec<u32> = serde_json::from_str(&siblings).unwrap_or_default();
+                        s.borrow_mut().insert_before(parent, child, &siblings);
                     },
                 )
                 .map_err(js)?,
@@ -326,8 +295,22 @@ impl Shell {
             )?;
             let s = scene.clone();
             native.set(
+                "scrollTo",
+                Function::new(ctx.clone(), move |id: u32, top: f64| {
+                    s.borrow_mut().scroll_to(id, top as f32)
+                })
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
                 "remove",
                 Function::new(ctx.clone(), move |id: u32| s.borrow_mut().remove(id)).map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
+                "detach",
+                Function::new(ctx.clone(), move |id: u32| s.borrow_mut().take_out(id))
+                    .map_err(js)?,
             )?;
             let s = scene.clone();
             native.set(
@@ -343,6 +326,16 @@ impl Shell {
                 Function::new(ctx.clone(), move || {
                     let scene = s.borrow();
                     serde_json::to_string(&scene.outputs().collect::<Vec<_>>()).unwrap_or_default()
+                })
+                .map_err(js)?,
+            )?;
+            let s = scene.clone();
+            native.set(
+                "outputSize",
+                Function::new(ctx.clone(), move |output: String| {
+                    s.borrow()
+                        .output_size(&output)
+                        .map(|(w, h)| serde_json::json!({ "width": w, "height": h }).to_string())
                 })
                 .map_err(js)?,
             )?;
@@ -371,6 +364,9 @@ impl Shell {
             native.set(
                 "log",
                 Function::new(ctx.clone(), |message: String| {
+                    if cfg!(test) {
+                        eprintln!("shell: {message}");
+                    }
                     info!("shell: {message}");
                 })
                 .map_err(js)?,
@@ -404,8 +400,49 @@ impl Shell {
                 })
                 .map_err(js)?,
             )?;
+            // The settings and actions that modules and shells declare in their `meta`, and the
+            // settings they write.
+            let s = settings.clone();
+            native.set(
+                "declare",
+                Function::new(
+                    ctx.clone(),
+                    move |ctx: rquickjs::Ctx<'_>,
+                          name: String,
+                          settings: String,
+                          actions: String| {
+                        let values = s.borrow_mut().declare(&name, &settings, &actions);
+                        values.map(|values| values.to_string()).map_err(|err| {
+                            rquickjs::Exception::throw_message(&ctx, &format!("{err:#}"))
+                        })
+                    },
+                )
+                .map_err(js)?,
+            )?;
+            let s = settings.clone();
+            native.set(
+                "setSetting",
+                Function::new(
+                    ctx.clone(),
+                    move |ctx: rquickjs::Ctx<'_>, name: String, setting: String, value: String| {
+                        let mut settings = s.borrow_mut();
+                        match settings.set(&name, &setting, &value) {
+                            Ok(()) => Ok(settings.values(&name).to_string()),
+                            Err(err) => Err(rquickjs::Exception::throw_message(
+                                &ctx,
+                                &format!("{err:#}"),
+                            )),
+                        }
+                    },
+                )
+                .map_err(js)?,
+            )?;
             ctx.globals().set("__bento", native)?;
 
+            // The shell's root component, mounted by bento's renderer.
+            let source = format!(
+                "import {{ __mount }} from \"bento\";\nimport Shell from {entry:?};\n__mount(Shell);\n"
+            );
             let module = Module::declare(ctx.clone(), "main.js", source)
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))?;
@@ -415,7 +452,7 @@ impl Shell {
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))?;
 
-            let ui = Module::import(&ctx, "bento:ui")
+            let ui = Module::import(&ctx, "bento")
                 .catch(&ctx)
                 .map_err(|err| anyhow!("{err}"))?
                 .finish::<rquickjs::Object>()
@@ -436,7 +473,13 @@ impl Shell {
             dispatch: dispatch?,
             context,
             _runtime: runtime,
+            sources: sources.clone(),
         })
+    }
+
+    /// The files it read from disk, to load it again when one changes.
+    pub fn files(&self) -> Vec<PathBuf> {
+        self.sources.read.borrow().clone()
     }
 
     /// Hands the script an event, as JSON: `{ "type": ..., ... }`.

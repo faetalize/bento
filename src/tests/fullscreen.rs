@@ -173,25 +173,25 @@ fn interactive_move_unfullscreen_to_scrolling_restores_size() {
         @"size: 1920 × 1080, bounds: 1888 × 1048, states: [Activated, Fullscreen]"
     );
 
-    // Start an interactive move which causes an unfullscreen.
+    // A drag takes the window out of fullscreen.
     let output = f.niri_output(1);
     let niri = f.niri();
     let mapped = niri.layout.windows().next().unwrap().1;
     let window = mapped.window.clone();
     niri.layout
         .interactive_move_begin(window.clone(), &output, Point::default());
-    niri.layout.interactive_move_update(
-        &window,
-        Point::from((1000., 0.)),
-        output,
-        Point::default(),
-    );
+    // The engine lets go of the window once the pointer is far enough, which takes it out of
+    // fullscreen or maximized.
+    niri.layout
+        .interactive_move_update(&window, output, Point::from((1000., 0.)));
+    niri.layout.send_drag_move();
     f.double_roundtrip(id);
 
-    // This should request the tiled size.
+    // This should request the tiled size, in the working area, since the window stays the
+    // engine's.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 936 × 1048, bounds: 1920 × 1080, states: [Activated]"
+        @"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"
     );
 }
 
@@ -213,24 +213,24 @@ fn interactive_move_unmaximize_to_scrolling_restores_size() {
         @"size: 1920 × 1080, bounds: 1888 × 1048, states: [Activated, Maximized]"
     );
 
-    // Start an interactive move which causes an unmaximize.
+    // A drag takes the window out of maximized.
     let output = f.niri_output(1);
     let niri = f.niri();
     let mapped = niri.layout.windows().next().unwrap().1;
     let window = mapped.window.clone();
     niri.layout
         .interactive_move_begin(window.clone(), &output, Point::default());
-    niri.layout.interactive_move_update(
-        &window,
-        Point::from((1000., 0.)),
-        output,
-        Point::default(),
-    );
+    // The engine lets go of the window once the pointer is far enough, which takes it out of
+    // fullscreen or maximized.
+    niri.layout
+        .interactive_move_update(&window, output, Point::from((1000., 0.)));
+    niri.layout.send_drag_move();
     f.double_roundtrip(id);
 
-    // This should request the tiled size.
+    // This should request the tiled size, in the working area, since the window stays the
+    // engine's.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 936 × 1048, bounds: 1920 × 1080, states: [Activated]"
+        @"size: 936 × 1048, bounds: 1888 × 1048, states: [Activated]"
     );
 }

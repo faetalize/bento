@@ -157,8 +157,6 @@ fn interactive_move_unfullscreen_to_floating_stops_dnd_scroll() {
         // since we're no longer dragging a tiled window, but rather a floating one.
         Op::InteractiveMoveUpdate {
             window: 4,
-            dx: 0.0,
-            dy: 15035.31210741684,
             output_idx: 3,
             px: 0.0,
             py: 0.0,

@@ -91,8 +91,18 @@ const IMAGE_PAD: u32 = 8;
 /// How much larger each next size is that text is drawn at while it grows.
 const SIZE_STEP: f32 = 1.25;
 
+/// Icons the shell has of its own, by name, like Phosphor's `ph-cards-three-symbolic`: SVGs,
+/// found before the icon theme.
+const ICONS: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/shell_icons.rs"));
+
 /// An icon's or an image's pixels, premultiplied RGBA, fitted into `size` pixels square.
 fn load_image(source: &ImageSource, size: u32, theme: &str) -> Option<(Vec<u8>, u32, u32)> {
+    if let ImageSource::Icon(name) = source {
+        if let Some((_, svg)) = ICONS.iter().find(|(icon, _)| icon == name) {
+            let raster = crate::layout::surfaces::svg::rasterize(svg, size, 1024).ok()?;
+            return Some((raster.data, raster.width, raster.height));
+        }
+    }
     let path = match source {
         ImageSource::Icon(name) if name.starts_with('/') => std::path::PathBuf::from(name),
         ImageSource::Icon(name) => crate::layout::surfaces::icons::find(theme, name, size)?,
@@ -1722,6 +1732,20 @@ mod tests {
         renderer.destroy_target(target);
     }
 
+    #[test]
+    fn the_shells_own_icons_load_whatever_the_icon_theme() {
+        for (name, _) in ICONS {
+            let source = ImageSource::Icon(String::from(*name));
+            let (data, width, height) = load_image(&source, 32, "no-such-theme").unwrap();
+            assert_eq!((width, height), (32, 32), "{name}");
+            let drawn = data.chunks_exact(4).filter(|px| px[3] > 200).count();
+            assert!(drawn > 50, "{name} has {drawn} pixels drawn");
+        }
+        assert!(ICONS
+            .iter()
+            .any(|(name, _)| *name == "ph-cards-three-symbolic"));
+    }
+
     /// Draws a symbolic icon from the icon theme in red, on the machine's GPU, and reads it back.
     #[test]
     #[ignore]
@@ -1929,14 +1953,16 @@ mod tests {
         let shell = super::super::script::Shell::load(
             &[(String::from("DP-1"), (1920., 1080.))],
             None,
+            crate::scene::host::UNIX,
             serde_json::json!({ "gaps": 8 }),
+            Default::default(),
         )
         .unwrap();
         let items = {
             let mut scene = shell.scene.borrow_mut();
             scene.lay_out();
             scene.advance(1., Some(1.));
-            scene.draw("DP-1")
+            scene.draw_all("DP-1")
         };
         let modifiers = [Modifier::Linear, Modifier::Invalid]
             .into_iter()

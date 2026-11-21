@@ -68,10 +68,10 @@ test("promote swaps the focused window with the main one", async () => {
 });
 
 test("the option sets the main window's width, and changes apply right away", async () => {
-    const host = await setUpThree({ options: { "main-width": 0.5 } });
+    const host = await setUpThree({ settings: { "main-width": 0.5 } });
     assert.deepEqual(host.rect(1), rect(16, 16, 616, 688));
 
-    host.setOptions({ "main-width": 0.7 });
+    host.setSettings({ "main-width": 0.7 });
     assert.deepEqual(host.rect(1), rect(16, 16, 862, 688));
     assert.deepEqual(host.rect(3), rect(894, 16, 370, 336));
 });
@@ -138,4 +138,18 @@ test("reloading keeps the order", async () => {
         before,
     );
     assert.deepEqual(host.errors, []);
+});
+
+test("a window dropped on the left half of the view becomes the main window", async () => {
+    const host = await setUpThree();
+    const ws = host.activeWorkspace().id;
+    const main = host.rect(1);
+    host.drag(3, ws, [{ x: 900, y: 300 }, { x: 200, y: 300 }]);
+    assert.deepEqual(host.rect(3), main);
+    assert.equal(host.focused(), 3);
+
+    // Dropped on the right half, or cancelled, it stays where it was.
+    host.drag(1, ws, [{ x: 900, y: 300 }]);
+    host.drag(2, ws, [{ x: 200, y: 300 }], false);
+    assert.deepEqual(host.rect(3), main);
 });

@@ -10,7 +10,7 @@
 //         layout "~/path/to/my-engine.js"
 //     }
 //
-// bento reloads the file when it changes. The engine's options and binds go in `my-engine.kdl` next
+// bento reloads the file when it changes. The engine's settings and binds go in `my-engine.kdl` next
 // to it, loaded only while it runs, with its actions bound by name. The full API is in
 // `../bento-layout.d.ts`, and `template.test.js` next to this file shows how to test an engine
 // with node, without bento.
@@ -30,10 +30,12 @@ export const meta = {
     actions: {
         promote: { description: "Swap the focused window with the main one." },
     },
-    // Options for the `options {}` section of the engine's .kdl file.
-    options: {
+    // Settings for the `settings {}` section of the engine's .kdl file.
+    settings: {
         "main-width": {
             type: "number",
+            // Shown on bento Settings' Engine page; a setting that names no page isn't shown.
+            page: "engine",
             default: 0.55,
             description: "Width of the main window, as a proportion of the view.",
         },
@@ -63,7 +65,7 @@ export default function create(bento) {
         const gap = ws.config.gaps;
         const monitor = ws.monitor;
         const [main, ...stack] = orderOf(ws);
-        const mainWidth = clamp(bento.options["main-width"], 0.1, 0.9);
+        const mainWidth = clamp(bento.settings["main-width"], 0.1, 0.9);
 
         // The main window is as wide as the view when it's alone.
         const mainW =
@@ -174,6 +176,29 @@ export default function create(bento) {
         e.target.focus();
     }
 
+    /**
+     * A window dragged with the pointer stays in its place while it's dragged, and dropped on the
+     * left half of the view of its workspace, it becomes the main window.
+     */
+    function watchDrag(win) {
+        let pointer = null;
+        win.addEventListener("dragmove", (e) => {
+            pointer = e.workspace === win.workspace ? e.pointer : null;
+        });
+        win.addEventListener("dragend", (e) => {
+            const ws = win.workspace;
+            const left = pointer !== null && pointer.x - ws.camera.x < ws.monitor.size.w / 2;
+            pointer = null;
+            const order = orderOf(ws);
+            if (e.dropped && left && order.includes(win)) {
+                order.splice(order.indexOf(win), 1);
+                order.unshift(win);
+                win.focus();
+                layout(ws);
+            }
+        });
+    }
+
     // Events from bento.
 
     bento.addEventListener("windowadd", (e) => {
@@ -185,13 +210,6 @@ export default function create(bento) {
             const rank = (other) => saved.indexOf(other.id);
             const idx = order.findIndex((other) => rank(other) > rank(win));
             order.splice(idx === -1 ? order.length : idx, 0, win);
-        } else if (
-            e.reason === "drop" &&
-            e.pointer !== null &&
-            e.pointer.x < win.workspace.monitor.size.w / 2
-        ) {
-            // Dropped on the left half of the view: it becomes the main window.
-            order.unshift(win);
         } else if (e.nextTo !== null && order.includes(e.nextTo)) {
             // Next to the window it belongs with, like a dialog after its parent.
             order.splice(order.indexOf(e.nextTo) + 1, 0, win);
@@ -204,6 +222,7 @@ export default function create(bento) {
         win.addEventListener("move", onMove);
         win.addEventListener("moderequest", onModeRequest);
         win.addEventListener("activaterequest", onActivateRequest);
+        watchDrag(win);
 
         if (e.activate) {
             win.focus();
@@ -250,7 +269,8 @@ export default function create(bento) {
     // - the `workspaceadd` and `remove` events: the model is made when a workspace is first seen.
     // - `swipebegin`, `swipeupdate` and `swipeend` on a workspace: horizontal swipes do nothing.
     // - `resizebegin` on a window: resizing with the mouse is refused.
-    // - `dragenter`, `dragmove` and `dragleave` on a workspace: no hint where a window would land.
+    // - `dragstart` on a window, and drawing it under the pointer on `dragmove`: a dragged window
+    //   stays in its place, with no hint where it would land.
     // - the `newwindowsize` query: windows pick their own size to open at.
     // - `windowRules` in `meta`: rules an engine declares, which windows get as `win.rules`.
     // Tabs are up to the engine too, with `bento.createGroup`; see `../bento.js` and `../niri.js`.

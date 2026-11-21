@@ -459,12 +459,8 @@ fn interactive_move_unfullscreen_to_floating_restores_size() {
     let window = mapped.window.clone();
     niri.layout
         .interactive_move_begin(window.clone(), &output, Point::default());
-    niri.layout.interactive_move_update(
-        &window,
-        Point::from((1000., 0.)),
-        output,
-        Point::default(),
-    );
+    niri.layout
+        .interactive_move_update(&window, output, Point::default());
     f.double_roundtrip(id);
 
     // This should request the stored floating size (200 × 200).
@@ -508,12 +504,8 @@ fn interactive_move_unmaximize_to_floating_restores_size() {
     let window = mapped.window.clone();
     niri.layout
         .interactive_move_begin(window.clone(), &output, Point::default());
-    niri.layout.interactive_move_update(
-        &window,
-        Point::from((1000., 0.)),
-        output,
-        Point::default(),
-    );
+    niri.layout
+        .interactive_move_update(&window, output, Point::default());
     f.double_roundtrip(id);
 
     // This should request the stored floating size (200 × 200).
@@ -545,12 +537,8 @@ fn resize_during_interactive_move_propagates_to_floating() {
     let window_id = mapped.window.clone();
     niri.layout
         .interactive_move_begin(window_id.clone(), &output, Point::default());
-    niri.layout.interactive_move_update(
-        &window_id,
-        Point::from((1000., 0.)),
-        output,
-        Point::default(),
-    );
+    niri.layout
+        .interactive_move_update(&window_id, output, Point::default());
     f.double_roundtrip(id);
 
     // This shouldn't request any new size.
@@ -779,21 +767,17 @@ fn interactive_move_restores_floating_size_when_set_to_floating() {
     let window_id = mapped.window.clone();
     niri.layout
         .interactive_move_begin(window_id.clone(), &output, Point::default());
-    niri.layout.interactive_move_update(
-        &window_id,
-        Point::from((1000., 0.)),
-        output,
-        Point::default(),
-    );
+    niri.layout
+        .interactive_move_update(&window_id, output, Point::default());
     f.double_roundtrip(id);
 
-    // This shouldn't request any new size because interactive move targets tiling.
+    // This shouldn't request anything: the window stays the engine's while it's dragged.
     assert_snapshot!(
         f.client(id).window(&surface).format_recent_configures(),
-        @"size: 936 × 1048, bounds: 1920 × 1080, states: [Activated]"
+        @""
     );
 
-    // Change interactive move to target floating.
+    // Make the dragged window float, which bento carries from then on.
     f.niri().layout.toggle_window_floating(None);
     f.double_roundtrip(id);
 

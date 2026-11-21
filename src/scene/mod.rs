@@ -1,9 +1,11 @@
 //! bento's own shell, as a scene that bento lays out, animates and draws itself.
 //!
-//! The scene is a tree of nodes per output: boxes, shapes with a material, and text. Scripts
-//! build and change it (see [`script`]); bento lays it out with flexbox, moves each node's frame,
-//! corners and opacity with springs towards where the layout puts them, and draws it in the same
-//! frame as everything else, so the shell's motion never waits on anything.
+//! The scene is a tree of nodes per output: surfaces, placed on the output the way layer-shell
+//! places other programs' surfaces, and in them boxes, shapes with a material, text and images.
+//! Scripts build and change it (see [`script`]); bento lays each surface out with flexbox, moves
+//! each node's frame, corners and opacity with springs towards where the layout puts them, and
+//! draws it in the same frame as everything else, so the shell's motion never waits on anything.
+//! Props are CSS's, by their names in JavaScript, with bento's own for what CSS has no word for.
 //!
 //! A node's frame is where it is on its output, so a node moves only when its own place does,
 //! and what's in an island moves with it as their places move together. A node that grows out of a
@@ -12,7 +14,10 @@
 
 pub mod apps;
 pub mod host;
+pub mod modules;
+pub mod reference;
 pub mod script;
+pub mod settings;
 mod spring;
 pub mod text;
 pub mod vk;
@@ -21,6 +26,7 @@ use std::rc::Rc;
 
 use serde_json::Value;
 use taffy::prelude::*;
+use taffy::{CompactLength, Overflow, Point};
 
 pub use self::spring::Spring;
 use self::text::{Fonts, Laid, TextStyle};
@@ -121,6 +127,146 @@ pub enum Material {
     Glass,
 }
 
+/// Where a surface goes among what else is on its output: one of layer-shell's layers, below or
+/// above other programs' surfaces in it. From the back to the front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Band {
+    BackgroundBelow,
+    BackgroundAbove,
+    BottomBelow,
+    BottomAbove,
+    TopBelow,
+    TopAbove,
+    OverlayBelow,
+    OverlayAbove,
+}
+
+impl Band {
+    pub const ALL: [Band; 8] = [
+        Band::BackgroundBelow,
+        Band::BackgroundAbove,
+        Band::BottomBelow,
+        Band::BottomAbove,
+        Band::TopBelow,
+        Band::TopAbove,
+        Band::OverlayBelow,
+        Band::OverlayAbove,
+    ];
+}
+
+/// How much of the edge a surface is held to it keeps from the windows.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Reserve {
+    #[default]
+    None,
+    /// Its size there and its margin from the edge.
+    Own,
+    Pixels(f32),
+}
+
+/// Where a surface is on its output.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    /// layer-shell's background, bottom, top and overlay, as 0 to 3.
+    layer: u8,
+    /// Below other programs' surfaces in its layer when negative, above them otherwise; higher
+    /// is in front among the shell's own.
+    z: f32,
+    /// The edges it's held to: top, right, bottom and left.
+    anchor: [bool; 4],
+    reserve: Reserve,
+    /// The node it's put beside instead, as a flyout over its button is.
+    attach: Option<Attach>,
+    /// Where it was put: its top left on its output.
+    origin: [f32; 2],
+}
+
+/// Where a surface goes beside a node: on which of its sides, how far, and lined up with its
+/// start, middle or end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Attach {
+    /// What it's beside.
+    to: AttachTo,
+    /// Top, right, bottom or left, as 0 to 3.
+    side: usize,
+    /// Its start, middle or end along that side, as 0, 0.5 or 1.
+    align: f32,
+    gap: f32,
+}
+
+/// What a surface is put beside.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AttachTo {
+    /// A node of the shell's.
+    Node(NodeId),
+    /// A point on the output, like where a menu was asked for.
+    Point([f32; 2]),
+}
+
+impl Default for Placement {
+    fn default() -> Self {
+        Self {
+            layer: 2,
+            z: 1.,
+            anchor: [false; 4],
+            reserve: Reserve::None,
+            attach: None,
+            origin: [0., 0.],
+        }
+    }
+}
+
+impl Placement {
+    pub fn band(&self) -> Band {
+        let above = self.z >= 0.;
+        match (self.layer, above) {
+            (0, false) => Band::BackgroundBelow,
+            (0, true) => Band::BackgroundAbove,
+            (1, false) => Band::BottomBelow,
+            (1, true) => Band::BottomAbove,
+            (2, false) => Band::TopBelow,
+            (2, true) => Band::TopAbove,
+            (_, false) => Band::OverlayBelow,
+            (_, true) => Band::OverlayAbove,
+        }
+    }
+
+    /// The edge it keeps from the windows: the one it's held to, alone or with both beside it.
+    fn reserved_edge(&self) -> Option<usize> {
+        let held = self.anchor.iter().filter(|a| **a).count();
+        (0..4).find(|&edge| {
+            let opposite = (edge + 2) % 4;
+            self.anchor[edge]
+                && !self.anchor[opposite]
+                && (held == 1 || (held == 3 && self.anchor[(edge + 1) % 4]))
+        })
+    }
+}
+
+/// Text styles a node sets itself, which what it holds inherits.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct TextOwn {
+    size: Option<f32>,
+    weight: Option<f32>,
+    family: Option<String>,
+    align: Option<f32>,
+    tabular: Option<bool>,
+    one_line: Option<bool>,
+}
+
+impl TextOwn {
+    fn over(&self, base: &TextStyle) -> TextStyle {
+        TextStyle {
+            size: self.size.unwrap_or(base.size),
+            weight: self.weight.unwrap_or(base.weight),
+            family: self.family.clone().unwrap_or_else(|| base.family.clone()),
+            align: self.align.unwrap_or(base.align),
+            tabular: self.tabular.unwrap_or(base.tabular),
+            one_line: self.one_line.unwrap_or(base.one_line),
+        }
+    }
+}
+
 /// Where an image comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImageSource {
@@ -140,9 +286,12 @@ impl ImageSource {
 #[derive(Debug, Clone)]
 pub enum Kind {
     Box,
+    /// A live copy of a window, by its id, fitted into the node and centred.
+    Copy(Option<u64>),
     Image(Option<ImageSource>),
     Text {
         text: String,
+        /// How it's set: its own text styles over what it inherits.
         style: TextStyle,
         /// The text laid out, at the width it was laid out for.
         laid: Option<(Option<f32>, Rc<Laid>)>,
@@ -158,13 +307,18 @@ struct Look {
     tint: Option<Paint>,
     radii: [f32; 4],
     border: Option<(f32, Paint)>,
+    /// A border's colour set before its width.
+    border_paint: Option<Paint>,
     opacity: f32,
     /// How big it's drawn, around its middle, as a fraction of its size.
     scale: f32,
     /// How blurred it's drawn, in logical pixels.
     blur: f32,
     clip: bool,
-    color: Paint,
+    /// Whether what it holds scrolls in it, cut to its shape.
+    scroll: bool,
+    /// The text colour, which what it holds inherits, unless it's the inherited one.
+    color: Option<Paint>,
     /// How the pointer looks over it, like "pointer".
     cursor: Option<String>,
 }
@@ -177,11 +331,13 @@ impl Default for Look {
             tint: None,
             radii: [0.; 4],
             border: None,
+            border_paint: None,
             opacity: 1.,
             scale: 1.,
             blur: 0.,
             clip: false,
-            color: Paint::Fg(1.),
+            scroll: false,
+            color: None,
             cursor: None,
         }
     }
@@ -197,6 +353,10 @@ pub const SETTLE: u32 = 8;
 pub const NEAR: u32 = 16;
 /// The pointer moving while a press on it is held.
 pub const DRAG: u32 = 32;
+/// Where its layout puts it changing.
+pub const LAYOUT: u32 = 64;
+/// How far what it holds is scrolled, how far it can be, or how tall it is, changing.
+pub const SCROLLED: u32 = 128;
 
 // A node's springs: its place on its output, as the layout has it, opacity, corners, scale,
 // blur, an offset from its place, and the size it's drawn at.
@@ -221,8 +381,8 @@ const MOTIONS: [(&str, &[usize]); 7] = [
     ("radius", &[RADII, RADII + 1, RADII + 2, RADII + 3]),
     ("scale", &[SCALE]),
     ("blur", &[BLUR]),
-    ("offset", &[DX, DY]),
-    ("size", &[DW, DH]),
+    ("translate", &[DX, DY]),
+    ("drawSize", &[DW, DH]),
 ];
 
 #[derive(Debug)]
@@ -239,8 +399,20 @@ pub struct Node {
     /// Whether it was left out of the last layout, hidden or not displayed: shown again, it
     /// comes in at its place, not from where it was.
     left_out: bool,
-    /// The size it's drawn at, around the middle of its place, or `None` for its place's size.
-    draw_size: Option<[f32; 2]>,
+    /// The size it's drawn at, each way in pixels and in fractions of its place's, or `None` for
+    /// its place's size.
+    draw_size: Option<[Offset; 2]>,
+    /// A drawn size it jumped to before it was laid out, in fractions of a size it didn't have
+    /// yet, which it starts from once it's laid out.
+    jumped_size: Option<[Offset; 2]>,
+    /// Where in its place a shape drawn at another size is held, as fractions of its width and
+    /// height: its middle, `[0.5, 0.5]`, unless it says an edge or a corner.
+    draw_from: [f32; 2],
+    /// How far it's drawn from its place, each way in pixels and in fractions of its size.
+    translate: [Offset; 2],
+    /// A translation it jumped to before it was laid out, in fractions of a size it didn't have
+    /// yet, which it starts from once it's laid out.
+    jumped_translate: Option<[Offset; 2]>,
     animate: bool,
     /// Whether it's left out: neither drawn nor hit.
     hidden: bool,
@@ -249,6 +421,19 @@ pub struct Node {
     /// Whether it was moving on the last frame, to tell when it settles.
     moving: bool,
     pub events: u32,
+    /// Its own text styles.
+    text_own: TextOwn,
+    /// Where it goes on its output, if it's a surface.
+    placement: Option<Placement>,
+    /// Where its layout put it when its script last heard, for those that hear it.
+    told: Option<[f32; 4]>,
+    /// How far what it holds is scrolled up, if it scrolls.
+    scrolled: f32,
+    /// How far what it holds reaches past its bottom, as far as it scrolls.
+    reach: f32,
+    /// How far it was scrolled, how far it could be and how tall it was when its script last
+    /// heard, for those that hear it.
+    told_scroll: Option<[f32; 3]>,
 }
 
 /// What the renderer draws, in order, back to front, in the output's logical coordinates.
@@ -418,6 +603,17 @@ impl Item {
     }
 }
 
+/// A live copy of a window, as bento draws it over the rest of its band: where, how faded, with
+/// what corners, and cut to what.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopyItem {
+    pub window: u64,
+    pub rect: [f32; 4],
+    pub radius: f32,
+    pub opacity: f32,
+    pub clip: Option<Clip>,
+}
+
 /// A rounded rectangle that what's drawn is cut to.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Clip {
@@ -438,13 +634,19 @@ pub struct Scene {
     roots: Vec<Root>,
     fonts: Fonts,
     layout_dirty: bool,
+    /// Whether text styles changed, which what's held inherits.
+    styles_dirty: bool,
     /// Nodes that settled, for their scripts.
     settled: Vec<NodeId>,
+    /// Nodes whose layout put them somewhere else, and where, for their scripts.
+    laid_out: Vec<(NodeId, [f32; 4])>,
+    /// What hears how far it's scrolled and was scrolled, or reached, otherwise since last asked.
+    scrolled_out: Vec<(NodeId, [f32; 3])>,
     /// How long a spring takes to settle, in seconds, where a node doesn't say: bento's own,
     /// as its windows move.
     pub base_response: f64,
     /// What the shell keeps for itself along each output's edges, that windows stay out of:
-    /// top, right, bottom and left.
+    /// top, right, bottom and left, from the surfaces that reserve room.
     reserved: std::collections::HashMap<String, [f32; 4]>,
     /// bento's style that the shell lines up with: its gaps and corner radius.
     pub style: Value,
@@ -480,7 +682,10 @@ impl Scene {
             roots: Vec::new(),
             fonts: Fonts::default(),
             layout_dirty: true,
+            styles_dirty: true,
             settled: Vec::new(),
+            laid_out: Vec::new(),
+            scrolled_out: Vec::new(),
             base_response: spring::RESPONSE,
             reserved: std::collections::HashMap::new(),
             style: Value::Null,
@@ -533,6 +738,11 @@ impl Scene {
             .map(|r| r.node)
     }
 
+    /// How big output `name` is, in logical pixels.
+    pub fn output_size(&self, name: &str) -> Option<(f32, f32)> {
+        self.roots.iter().find(|r| r.output == name).map(|r| r.size)
+    }
+
     pub fn outputs(&self) -> impl Iterator<Item = &str> {
         self.roots.iter().map(|r| r.output.as_str())
     }
@@ -546,8 +756,9 @@ impl Scene {
         }
     }
 
-    /// Makes a node of `kind`, "box", "text", "input" or "image", with `props`.
+    /// Makes a node of `kind`, "surface", "box", "text", "input" or "image", with `props`.
     pub fn create(&mut self, kind: &str, props: &Value) -> NodeId {
+        let placement = (kind == "surface").then(Placement::default);
         let kind = match kind {
             "image" => Kind::Image(None),
             "text" | "input" => Kind::Text {
@@ -556,6 +767,7 @@ impl Scene {
                 laid: None,
                 edit: (kind == "input").then(Default::default),
             },
+            "copy" => Kind::Copy(None),
             _ => Kind::Box,
         };
         let id = match self.free.pop() {
@@ -590,11 +802,21 @@ impl Scene {
             left_out: false,
             responses: [None; SPRINGS],
             draw_size: None,
+            jumped_size: None,
+            draw_from: [0.5, 0.5],
+            translate: Default::default(),
+            jumped_translate: None,
             animate: true,
             hidden: false,
             placed_size: false,
             moving: false,
             events: 0,
+            text_own: TextOwn::default(),
+            placement,
+            told: None,
+            told_scroll: None,
+            scrolled: 0.,
+            reach: 0.,
         });
         self.set(id, props);
         id
@@ -615,6 +837,9 @@ impl Scene {
         for (key, value) in props {
             relayout |= apply_layout(&mut style, key, value);
             apply_look(node, key, value);
+            if let (Kind::Copy(window), "window") = (&mut node.kind, key.as_str()) {
+                *window = value.as_u64();
+            }
             if let Kind::Image(source) = &mut node.kind {
                 match key.as_str() {
                     "icon" => *source = value.as_str().map(|v| ImageSource::Icon(v.into())),
@@ -630,56 +855,36 @@ impl Scene {
                     _ => (),
                 }
             }
+            if apply_text(&mut node.text_own, key, value) {
+                self.styles_dirty = true;
+                relayout = true;
+            }
+            if let Some(placement) = &mut node.placement {
+                if apply_placement(placement, key, value) {
+                    relayout = true;
+                }
+            }
             if let Kind::Text {
-                text,
-                style: text_style,
-                laid,
-                edit,
+                text, laid, edit, ..
             } = &mut node.kind
             {
-                let changed = match key.as_str() {
-                    "text" => value
-                        .as_str()
-                        .filter(|v| *v != text.as_str())
-                        .map(|v| {
-                            *text = String::from(v);
-                            // Set from outside, typing goes on at its end.
-                            if let Some(edit) = edit {
-                                *edit = Default::default();
-                                edit.apply(&crate::layout::search::Edit::Insert(text.clone()));
-                            }
-                        })
-                        .is_some(),
-                    "size" => value.as_f64().map(|v| text_style.size = v as f32).is_some(),
-                    "weight" => value
-                        .as_f64()
-                        .map(|v| text_style.weight = v as f32)
-                        .is_some(),
-                    "family" => value
-                        .as_str()
-                        .map(|v| text_style.family = String::from(v))
-                        .is_some(),
-                    "textAlign" => value
-                        .as_str()
-                        .map(|v| {
-                            text_style.align = match v {
-                                "center" => 0.5,
-                                "end" | "right" => 1.,
-                                _ => 0.,
-                            }
-                        })
-                        .is_some(),
-                    "tabular" => value.as_bool().map(|v| text_style.tabular = v).is_some(),
-                    "lines" => value
-                        .as_u64()
-                        .map(|v| text_style.one_line = v == 1)
-                        .is_some(),
-                    _ => false,
-                };
-                if changed {
-                    *laid = None;
-                    relayout = true;
-                    let _ = self.tree.mark_dirty(node.taffy);
+                if key == "text" {
+                    let value = match value {
+                        Value::String(v) => v.clone(),
+                        Value::Number(n) => n.to_string(),
+                        _ => String::new(),
+                    };
+                    if value != *text {
+                        *text = value;
+                        // Set from outside, typing goes on at its end.
+                        if let Some(edit) = edit {
+                            *edit = Default::default();
+                            edit.apply(&crate::layout::search::Edit::Insert(text.clone()));
+                        }
+                        *laid = None;
+                        relayout = true;
+                        let _ = self.tree.mark_dirty(node.taffy);
+                    }
                 }
             }
         }
@@ -695,22 +900,30 @@ impl Scene {
         for i in 0..4 {
             node.springs[RADII + i].target = f64::from(node.look.radii[i]);
         }
-        if let Some(offset) = props.get("offset") {
-            let [dx, dy] = pair(offset).unwrap_or([0., 0.]);
+        if let Some(offset) = props.get("translate") {
+            node.translate = offsets(offset).unwrap_or_default();
+            let size = [node.springs[W].target, node.springs[H].target].map(|x| x as f32);
+            let [dx, dy] = resolve(node.translate, size);
             node.springs[DX].target = f64::from(dx);
             node.springs[DY].target = f64::from(dy);
         }
         // Shown or hidden, it's placed again, or left out.
-        if props.get("hidden").is_some() {
+        if props.get("hidden").is_some() || props.get("visibility").is_some() {
             self.layout_dirty = true;
         }
+        if let Some(from) = props.get("drawFrom") {
+            node.draw_from = draw_from(from.as_str().unwrap_or("center"));
+        }
         if let Some(size) = props.get("drawSize") {
-            node.draw_size = pair(size);
-            if let Some([w, h]) = node.draw_size {
+            node.draw_size = offsets(size);
+            let place = [node.springs[W].target, node.springs[H].target].map(|x| x as f32);
+            if let Some(size) = node.draw_size {
+                let [w, h] = resolve(size, place);
                 node.springs[DW].target = f64::from(w);
                 node.springs[DH].target = f64::from(h);
-            } else {
-                // Its place's size, which the next layout sets.
+            }
+            // What follows its place's size takes it from the next layout.
+            if follows_place(node.draw_size) {
                 self.layout_dirty = true;
             }
         }
@@ -735,12 +948,30 @@ impl Scene {
                         &[BLUR],
                         value.as_f64().map(|v| v as f32).into_iter().collect(),
                     ),
-                    "radius" => (
+                    "borderRadius" => (
                         &[RADII, RADII + 1, RADII + 2, RADII + 3],
                         sides(value).map(Vec::from).unwrap_or_default(),
                     ),
-                    "offset" => (&[DX, DY], pair(value).map(Vec::from).unwrap_or_default()),
-                    "drawSize" => (&[DW, DH], pair(value).map(Vec::from).unwrap_or_default()),
+                    "translate" => {
+                        let offset = offsets(value).unwrap_or_default();
+                        let size = [node.springs[W].target, node.springs[H].target];
+                        let [dx, dy] = resolve(offset, size.map(|x| x as f32));
+                        // A fraction of a size it doesn't have yet is taken once it has one.
+                        if !node.placed && offset.iter().any(|o| o.of_size != 0.) {
+                            node.jumped_translate = Some(offset);
+                        }
+                        (&[DX, DY], vec![dx, dy])
+                    }
+                    "drawSize" => {
+                        let Some(size) = offsets(value) else { continue };
+                        let place = [node.springs[W].target, node.springs[H].target];
+                        let [w, h] = resolve(size, place.map(|x| x as f32));
+                        // A fraction of a size it doesn't have yet is taken once it has one.
+                        if !node.placed && size.iter().any(|o| o.of_size != 0.) {
+                            node.jumped_size = Some(size);
+                        }
+                        (&[DW, DH], vec![w, h])
+                    }
                     _ => continue,
                 };
                 for (spring, value) in springs.iter().zip(values) {
@@ -769,12 +1000,36 @@ impl Scene {
         let children = &mut self.node_mut(parent).unwrap().children;
         let index = index.unwrap_or(children.len()).min(children.len());
         children.insert(index, child);
-        let _ = self
-            .tree
-            .insert_child_at_index(parent_taffy, index, child_taffy);
+        // Surfaces are laid out on their own, in their output.
+        if !self.is_root(parent) {
+            let _ = self
+                .tree
+                .insert_child_at_index(parent_taffy, index, child_taffy);
+        }
+        self.styles_dirty = true;
         self.node_mut(child).unwrap().parent = Some(parent);
         self.layout_dirty = true;
         self.changed = true;
+    }
+
+    /// Puts `child` in `parent` before the first of `siblings` that `parent` holds, or last if
+    /// it holds none of them: the nodes that come after it in the script's tree, some of which,
+    /// like those on their way out, bento may not hold.
+    pub fn insert_before(&mut self, parent: NodeId, child: NodeId, siblings: &[NodeId]) {
+        let Some(node) = self.node(parent) else {
+            return;
+        };
+        let before = siblings
+            .iter()
+            .filter(|sibling| **sibling != child)
+            .find_map(|sibling| node.children.iter().position(|c| c == sibling));
+        // Its own place counts from without it.
+        let own = node.children.iter().position(|c| *c == child);
+        let index = match (before, own) {
+            (Some(before), Some(own)) if own < before => Some(before - 1),
+            (before, _) => before,
+        };
+        self.append(parent, child, index);
     }
 
     fn detach(&mut self, child: NodeId) {
@@ -785,8 +1040,16 @@ impl Scene {
         if let Some(parent_node) = self.node_mut(parent) {
             parent_node.children.retain(|c| *c != child);
             let parent_taffy = parent_node.taffy;
-            let _ = self.tree.remove_child(parent_taffy, child_taffy);
+            // Surfaces aren't in their output's layout.
+            let held = self
+                .tree
+                .children(parent_taffy)
+                .is_ok_and(|children| children.contains(&child_taffy));
+            if held {
+                let _ = self.tree.remove_child(parent_taffy, child_taffy);
+            }
         }
+        self.styles_dirty = true;
         self.node_mut(child).unwrap().parent = None;
         self.layout_dirty = true;
     }
@@ -795,6 +1058,16 @@ impl Scene {
     /// once it has.
     pub fn remove(&mut self, id: NodeId) {
         self.destroy(id);
+    }
+
+    /// Takes a node out of what holds it, keeping it and what it holds, to be put back.
+    pub fn take_out(&mut self, id: NodeId) {
+        if self.node(id).is_some() {
+            // Put back, it comes in at its new place, not from where it was.
+            self.leave_out(id);
+            self.detach(id);
+            self.changed = true;
+        }
     }
 
     fn destroy(&mut self, id: NodeId) {
@@ -813,33 +1086,250 @@ impl Scene {
         }
     }
 
-    /// Lays the scene out again if anything changed, setting where each node heads.
+    /// Whether `id` is an output's root, which holds its surfaces.
+    fn is_root(&self, id: NodeId) -> bool {
+        self.roots.iter().any(|root| root.node == id)
+    }
+
+    /// Lays the scene out again if anything changed, setting where each node heads: each
+    /// surface on its own, placed on its output by its anchors and margins.
     pub fn lay_out(&mut self) {
         if !self.layout_dirty {
             return;
         }
         self.layout_dirty = false;
-        for i in 0..self.roots.len() {
-            let (node, size) = (self.roots[i].node, self.roots[i].size);
-            let Some(taffy) = self.node(node).map(|n| n.taffy) else {
-                continue;
-            };
-            let mut style = self.tree.style(taffy).cloned().unwrap_or_default();
-            style.size = Size {
-                width: Dimension::length(size.0),
-                height: Dimension::length(size.1),
-            };
-            let _ = self.tree.set_style(taffy, style);
-
-            let Self {
-                tree, nodes, fonts, ..
-            } = self;
-            let _ =
-                tree.compute_layout_with_measure(taffy, Size::MAX_CONTENT, |input, _, id, _| {
-                    measure(nodes, fonts, input, id.copied())
-                });
-            self.place(node, [0., 0.]);
+        if std::mem::take(&mut self.styles_dirty) {
+            for i in 0..self.roots.len() {
+                self.resolve_text(self.roots[i].node, &TextStyle::default());
+            }
         }
+        for i in 0..self.roots.len() {
+            let (root, size) = (self.roots[i].node, self.roots[i].size);
+            let surfaces = self
+                .node(root)
+                .map(|n| n.children.clone())
+                .unwrap_or_default();
+            let mut reserved = [0f32; 4];
+            // Those put beside a node go once that node has its place.
+            let (beside, held): (Vec<NodeId>, Vec<NodeId>) = surfaces.into_iter().partition(|id| {
+                self.node(*id)
+                    .and_then(|n| n.placement)
+                    .is_some_and(|p| p.attach.is_some())
+            });
+            for surface in held.into_iter().chain(beside) {
+                if let Some((edge, room)) = self.lay_out_surface(surface, size) {
+                    reserved[edge] += room;
+                }
+            }
+            let output = self.roots[i].output.clone();
+            self.reserved.insert(output, reserved);
+        }
+    }
+
+    /// Sets the text styles of the text in `id` from what it and what's above it set.
+    fn resolve_text(&mut self, id: NodeId, inherited: &TextStyle) {
+        let Some(node) = self.nodes.get_mut(id as usize).and_then(Option::as_mut) else {
+            return;
+        };
+        let style = node.text_own.over(inherited);
+        if let Kind::Text {
+            style: own, laid, ..
+        } = &mut node.kind
+        {
+            if *own != style {
+                *own = style.clone();
+                *laid = None;
+                let _ = self.tree.mark_dirty(node.taffy);
+            }
+        }
+        for child in node.children.clone() {
+            self.resolve_text(child, &style);
+        }
+    }
+
+    /// Lays surface `id` out on an output `size` big, and says what it keeps from the windows:
+    /// along which edge, and how much.
+    fn lay_out_surface(&mut self, id: NodeId, size: (f32, f32)) -> Option<(usize, f32)> {
+        let node = self.node(id)?;
+        let placement = node.placement.unwrap_or_default();
+        let taffy = node.taffy;
+        let shown = !node.hidden && self.displayed(node);
+        let own = self.tree.style(taffy).cloned().unwrap_or_default();
+        let length = |v: LengthPercentageAuto, of: f32| -> f32 {
+            let raw = v.into_raw();
+            match raw.tag() {
+                CompactLength::LENGTH_TAG => raw.value(),
+                CompactLength::PERCENT_TAG => raw.value() * of,
+                _ => 0.,
+            }
+        };
+        // Its margins are from the output's edges.
+        let margin = [
+            length(own.margin.top, size.1),
+            length(own.margin.right, size.0),
+            length(own.margin.bottom, size.1),
+            length(own.margin.left, size.0),
+        ];
+        let room = (
+            (size.0 - margin[1] - margin[3]).max(0.),
+            (size.1 - margin[0] - margin[2]).max(0.),
+        );
+        let attach = placement.attach.and_then(|attach| {
+            let rect: [f32; 4] = match attach.to {
+                AttachTo::Node(node) => {
+                    let node = self.node(node)?;
+                    std::array::from_fn(|i| node.springs[X + i].target as f32)
+                }
+                AttachTo::Point([x, y]) => [x, y, 0., 0.],
+            };
+            Some((attach, rect))
+        });
+        // Put beside a node, it's as big as what it holds.
+        let [top, right, bottom, left] = if attach.is_some() {
+            [false; 4]
+        } else {
+            placement.anchor
+        };
+        let (wide, tall) = (left && right, top && bottom);
+        // Held to opposite edges, it stretches between them unless it says how big it is; else
+        // it's as big as what it holds, up to the room there is.
+        let mut style = own.clone();
+        let zero = LengthPercentageAuto::length(0.);
+        style.margin = Rect {
+            left: zero,
+            right: zero,
+            top: zero,
+            bottom: zero,
+        };
+        style.position = Position::Relative;
+        let auto = LengthPercentageAuto::auto();
+        style.inset = Rect {
+            left: auto,
+            right: auto,
+            top: auto,
+            bottom: auto,
+        };
+        if wide && style.size.width == Dimension::auto() {
+            style.size.width = Dimension::length(room.0);
+        }
+        if tall && style.size.height == Dimension::auto() {
+            style.size.height = Dimension::length(room.1);
+        }
+        if style.max_size.width == LengthPercentageAuto::auto() {
+            style.max_size.width = LengthPercentageAuto::length(room.0);
+        }
+        if style.max_size.height == LengthPercentageAuto::auto() {
+            style.max_size.height = LengthPercentageAuto::length(room.1);
+        }
+        let _ = self.tree.set_style(taffy, style);
+        let available = Size {
+            width: if wide {
+                AvailableSpace::Definite(room.0)
+            } else {
+                AvailableSpace::MaxContent
+            },
+            height: if tall {
+                AvailableSpace::Definite(room.1)
+            } else {
+                AvailableSpace::MaxContent
+            },
+        };
+        let Self {
+            tree, nodes, fonts, ..
+        } = self;
+        let _ = tree.compute_layout_with_measure(taffy, available, |input, _, id, _| {
+            let mut out = measure(nodes, fonts, input, id.copied());
+            // taffy keeps what's out of a box's flow in a list of its own, and only empties it
+            // for a box with a positioning area, which it gives a box with nothing in it none of.
+            // A box left empty by what was out of its flow would keep it on the list, and taffy
+            // would read it once it's gone. With an area, it's emptied.
+            out.oof_positioning_area
+                .get_or_insert(taffy::OofPositioningArea {
+                    size: out.size,
+                    offset: taffy::Point::ZERO,
+                });
+            out
+        });
+        let laid = self
+            .tree
+            .layout(taffy)
+            .map(|l| l.size)
+            .unwrap_or(Size::ZERO);
+        // Its own style again, for scripts to change; the layout stays until the next one.
+        let _ = self.tree.set_style(taffy, own);
+
+        let x = if left {
+            margin[3]
+        } else if right {
+            size.0 - margin[1] - laid.width
+        } else {
+            (size.0 - laid.width) / 2.
+        };
+        let y = if top {
+            margin[0]
+        } else if bottom {
+            size.1 - margin[2] - laid.height
+        } else {
+            (size.1 - laid.height) / 2.
+        };
+        // Beside its node, on the output, as far in as its margins say.
+        let (x, y) = match attach {
+            Some((attach, [nx, ny, nw, nh])) => {
+                let (w, h) = (laid.width, laid.height);
+                let at = |side: usize, align: f32| match side {
+                    0 => (nx + (nw - w) * align, ny - attach.gap - h),
+                    1 => (nx + nw + attach.gap, ny + (nh - h) * align),
+                    3 => (nx - attach.gap - w, ny + (nh - h) * align),
+                    _ => (nx + (nw - w) * align, ny + nh + attach.gap),
+                };
+                let fits_x = |x: f32| x >= margin[3] && x + w <= size.0 - margin[1];
+                let fits_y = |y: f32| y >= margin[0] && y + h <= size.1 - margin[2];
+                // Where there's no room on its side, it goes on the other; where there's no room
+                // lined up with its start, it lines up with its end, and the other way around, as
+                // a menu at the pointer does near the output's edges.
+                let (mut side, mut align) = (attach.side, attach.align);
+                let (x, y) = at(side, align);
+                let across = side % 2 == 0;
+                if !(if across { fits_y(y) } else { fits_x(x) }) {
+                    let (x, y) = at((side + 2) % 4, align);
+                    if if across { fits_y(y) } else { fits_x(x) } {
+                        side = (side + 2) % 4;
+                    }
+                }
+                let (x, y) = at(side, align);
+                if !(if across { fits_x(x) } else { fits_y(y) }) && align != 0.5 {
+                    let (x, y) = at(side, 1. - align);
+                    if if across { fits_x(x) } else { fits_y(y) } {
+                        align = 1. - align;
+                    }
+                }
+                let (x, y) = at(side, align);
+                (
+                    x.min(size.0 - margin[1] - w).max(margin[3]),
+                    y.min(size.1 - margin[2] - h).max(margin[0]),
+                )
+            }
+            None => (x, y),
+        };
+        if let Some(placement) = self.node_mut(id).and_then(|n| n.placement.as_mut()) {
+            placement.origin = [x, y];
+        }
+        self.place(id, [x, y]);
+
+        let edge = placement.reserved_edge().filter(|_| shown)?;
+        let room = match placement.reserve {
+            Reserve::None => return None,
+            Reserve::Pixels(px) => px,
+            Reserve::Own => {
+                margin[edge]
+                    + if edge % 2 == 0 {
+                        laid.height
+                    } else {
+                        laid.width
+                    }
+            }
+        };
+        Some((edge, room))
     }
 
     /// Where node `id`'s layout puts it on its output, laying the scene out first if it has to:
@@ -851,12 +1341,26 @@ impl Scene {
         let own = self.tree.layout(node.taffy).ok()?;
         let (mut x, mut y) = (own.location.x, own.location.y);
         let size = [own.size.width, own.size.height];
-        let mut parent = node.parent;
-        while let Some(above) = parent.and_then(|id| self.node(id)) {
+        let mut at = node;
+        loop {
+            if let Some(placement) = &at.placement {
+                x += placement.origin[0];
+                y += placement.origin[1];
+                break;
+            }
+            let Some(above) = at.parent.and_then(|id| self.node(id)) else {
+                break;
+            };
+            if let Some(placement) = &above.placement {
+                // A surface's own layout is at its output's top left; its place is its origin.
+                x += placement.origin[0];
+                y += placement.origin[1];
+                break;
+            }
             let layout = self.tree.layout(above.taffy).ok()?;
             x += layout.location.x;
             y += layout.location.y;
-            parent = above.parent;
+            at = above;
         }
         Some([x, y, size[0], size[1]])
     }
@@ -867,8 +1371,12 @@ impl Scene {
     fn place(&mut self, id: NodeId, origin: [f32; 2]) {
         let Some(node) = self.node(id) else { return };
         // What's left out has no place: shown again, it comes in at its place, not from where
-        // it was.
+        // it was. What's hidden is still laid out, and what in it hears where it would be is
+        // told, so that a script can size things for it before it shows.
         if node.hidden || !self.displayed(node) {
+            if node.hidden && self.displayed(node) {
+                self.tell_layout(id, origin);
+            }
             self.leave_out(id);
             return;
         }
@@ -882,15 +1390,58 @@ impl Scene {
             layout.size.height,
         ];
         let children = node.children.clone();
+        // Those that hear where they're put are told when it changes.
+        let tell = node.events & LAYOUT != 0 && node.told != Some(target);
+        let (scrolls, taffy_id) = (node.look.scroll, node.taffy);
+        if tell {
+            self.laid_out.push((id, target));
+        }
+        // What scrolls is moved up by as far as it's scrolled, as far as what it holds reaches.
+        let reach = if scrolls {
+            let bottom = children
+                .iter()
+                .filter_map(|child| {
+                    let child = self.node(*child)?;
+                    let l = self.tree.layout(child.taffy).ok()?;
+                    Some(l.location.y + l.size.height)
+                })
+                .fold(0f32, f32::max);
+            let padding = self.tree.layout(taffy_id).map_or(0., |l| l.padding.bottom);
+            (bottom + padding - target[3]).max(0.)
+        } else {
+            0.
+        };
+        let node = self.node_mut(id).unwrap();
+        if node.events & LAYOUT != 0 {
+            node.told = Some(target);
+        }
+        node.reach = reach;
+        node.scrolled = node.scrolled.clamp(0., reach);
+        let scrolled = node.scrolled;
+        // Those that hear how far they're scrolled are told when it, or how far it goes, changes.
+        let scroll = [scrolled, reach, target[3]];
+        if scrolls && node.events & SCROLLED != 0 && node.told_scroll != Some(scroll) {
+            node.told_scroll = Some(scroll);
+            self.scrolled_out.push((id, scroll));
+        }
         let node = self.node_mut(id).unwrap();
         // Drawn at its place's size, unless it says another.
-        let size = node.draw_size.unwrap_or([target[2], target[3]]);
+        let place = [target[2], target[3]];
+        let size = node.draw_size.map_or(place, |size| resolve(size, place));
+        let first = !node.placed;
         if !node.placed {
             node.placed = true;
             for (spring, value) in node.springs.iter_mut().zip(target) {
                 spring.jump(f64::from(value));
             }
-            if !node.placed_size {
+            if let Some(jumped) = node.jumped_size.take() {
+                // It starts from where it jumped to, and moves to its own size.
+                let [w, h] = resolve(jumped, place);
+                for (spring, value) in [(DW, w), (DH, h)] {
+                    node.springs[spring].value = f64::from(value);
+                    node.springs[spring].velocity = 0.;
+                }
+            } else if !node.placed_size {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
@@ -899,7 +1450,7 @@ impl Scene {
             for (spring, value) in node.springs.iter_mut().zip(target) {
                 spring.jump(f64::from(value));
             }
-            if node.draw_size.is_none() {
+            if follows_place(node.draw_size) {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
@@ -907,7 +1458,7 @@ impl Scene {
             for (spring, value) in node.springs.iter_mut().zip(target) {
                 spring.jump(f64::from(value));
             }
-            if node.draw_size.is_none() {
+            if follows_place(node.draw_size) {
                 node.springs[DW].jump(f64::from(size[0]));
                 node.springs[DH].jump(f64::from(size[1]));
             }
@@ -917,9 +1468,51 @@ impl Scene {
         }
         node.springs[DW].target = f64::from(size[0]);
         node.springs[DH].target = f64::from(size[1]);
+        // A translation by a fraction of its size follows its size.
+        let [dx, dy] = resolve(node.translate, [target[2], target[3]]);
+        node.springs[DX].target = f64::from(dx);
+        node.springs[DY].target = f64::from(dy);
+        let by_size = node.translate.iter().any(|o| o.of_size != 0.);
+        if let Some(jumped) = node.jumped_translate.take() {
+            // It starts from where it jumped to, and moves to its own translation.
+            let [x, y] = resolve(jumped, [target[2], target[3]]);
+            for (spring, value) in [(DX, x), (DY, y)] {
+                node.springs[spring].value = f64::from(value);
+                node.springs[spring].velocity = 0.;
+            }
+        } else if by_size && (first || !node.animate) {
+            node.springs[DX].jump(f64::from(dx));
+            node.springs[DY].jump(f64::from(dy));
+        }
         node.left_out = false;
         for child in children {
-            self.place(child, [target[0], target[1]]);
+            self.place(child, [target[0], target[1] - scrolled]);
+        }
+    }
+
+    /// Tells what hears where its layout puts it, in `id` and what it holds, with `id`'s parent's
+    /// top left at `origin`, without moving anything.
+    fn tell_layout(&mut self, id: NodeId, origin: [f32; 2]) {
+        let Some(node) = self.node(id) else { return };
+        if !self.displayed(node) {
+            return;
+        }
+        let Ok(layout) = self.tree.layout(node.taffy) else {
+            return;
+        };
+        let target = [
+            origin[0] + layout.location.x,
+            origin[1] + layout.location.y,
+            layout.size.width,
+            layout.size.height,
+        ];
+        let children = node.children.clone();
+        if node.events & LAYOUT != 0 && node.told != Some(target) {
+            self.laid_out.push((id, target));
+            self.node_mut(id).unwrap().told = Some(target);
+        }
+        for child in children {
+            self.tell_layout(child, [target[0], target[1]]);
         }
     }
 
@@ -958,14 +1551,48 @@ impl Scene {
         moving
     }
 
+    /// The nodes that hear where their layout puts them and were put somewhere else since this
+    /// was last asked, with where.
+    pub fn take_laid_out(&mut self) -> Vec<(NodeId, [f32; 4])> {
+        std::mem::take(&mut self.laid_out)
+    }
+
+    /// What hears how far it's scrolled, with how far it is, how far it can be and how tall it
+    /// is, since this was last asked.
+    pub fn take_scrolled(&mut self) -> Vec<(NodeId, [f32; 3])> {
+        std::mem::take(&mut self.scrolled_out)
+    }
+
+    /// Scrolls what `id` holds to `top` logical pixels from its top, as far as it goes, and says
+    /// whether it scrolls at all.
+    pub fn scroll_to(&mut self, id: NodeId, top: f32) -> bool {
+        let Some(scrolled) = self.node(id).map(|node| node.scrolled) else {
+            return false;
+        };
+        self.scroll(id, top - scrolled)
+    }
+
+    /// Scrolls what `id` holds by `by` logical pixels, as far as it goes, and says whether it
+    /// scrolls at all.
+    pub fn scroll(&mut self, id: NodeId, by: f32) -> bool {
+        let Some(node) = self.node_mut(id) else {
+            return false;
+        };
+        if !node.look.scroll {
+            return false;
+        }
+        let scrolled = (node.scrolled + by).clamp(0., node.reach);
+        if scrolled != node.scrolled {
+            node.scrolled = scrolled;
+            self.layout_dirty = true;
+            self.changed = true;
+        }
+        true
+    }
+
     /// The nodes that hear of their motion settling and settled since this was last asked.
     pub fn take_settled(&mut self) -> Vec<NodeId> {
         std::mem::take(&mut self.settled)
-    }
-
-    /// Keeps `edges` along output `output`, top, right, bottom and left, for the shell.
-    pub fn reserve(&mut self, output: &str, edges: [f32; 4]) {
-        self.reserved.insert(String::from(output), edges);
     }
 
     /// What the shell keeps along output `output`'s edges.
@@ -1076,28 +1703,84 @@ impl Scene {
     fn drawn(node: &Node) -> [f32; 4] {
         let s = |i: usize| node.springs[i].value as f32;
         let (w, h) = (s(DW).max(0.), s(DH).max(0.));
-        let cx = s(X) + s(W) / 2. + s(DX);
-        let cy = s(Y) + s(H) / 2. + s(DY);
-        [cx - w / 2., cy - h / 2., w, h]
+        let [fx, fy] = node.draw_from;
+        let x = s(X) + s(DX) + (s(W) - w) * fx;
+        let y = s(Y) + s(DY) + (s(H) - h) * fy;
+        [x, y, w, h]
     }
 
-    /// What to draw for output `name`, back to front.
-    pub fn draw(&self, output: &str) -> Vec<Item> {
+    /// What to draw of output `name`'s surfaces in `band`, back to front.
+    pub fn draw(&self, output: &str, band: Band) -> Vec<Item> {
+        self.draw_with_copies(output, band).0
+    }
+
+    /// What to draw of output `name`'s surfaces in `band`, back to front, and the window copies
+    /// in them, which bento draws over it.
+    pub fn draw_with_copies(&self, output: &str, band: Band) -> (Vec<Item>, Vec<CopyItem>) {
         let mut items = Vec::new();
-        for child in self.top_nodes(output) {
-            self.draw_node(child, 1., None, Scaling::NONE, 0., &mut items);
+        let mut copies = Vec::new();
+        for child in self.surfaces(output, Some(band)) {
+            let mut out = (&mut items, &mut copies);
+            self.draw_node(child, 1., None, Scaling::NONE, 0., None, &mut out);
         }
-        items
+        (items, copies)
     }
 
-    /// Output `name`'s top nodes, from the bottom up.
-    fn top_nodes(&self, output: &str) -> Vec<NodeId> {
-        self.root(output)
-            .and_then(|root| self.node(root))
-            .map(|root| root.children.clone())
-            .unwrap_or_default()
+    /// What to draw of output `name`'s surfaces in every band, back to front.
+    #[cfg(test)]
+    pub fn draw_all(&self, output: &str) -> Vec<Item> {
+        Band::ALL
+            .into_iter()
+            .flat_map(|band| self.draw(output, band))
+            .collect()
     }
 
+    /// The bands output `name` has surfaces in.
+    pub fn bands(&self, output: &str) -> Vec<Band> {
+        let mut bands: Vec<Band> = self
+            .surfaces(output, None)
+            .into_iter()
+            .filter_map(|id| self.node(id)?.placement.map(|p| p.band()))
+            .collect();
+        bands.sort();
+        bands.dedup();
+        bands
+    }
+
+    /// Output `name`'s surfaces in `band`, or all of them, from the back to the front.
+    fn surfaces(&self, output: &str, band: Option<Band>) -> Vec<NodeId> {
+        let Some(root) = self.root(output).and_then(|root| self.node(root)) else {
+            return Vec::new();
+        };
+        let mut surfaces: Vec<(Band, f32, usize, NodeId)> = root
+            .children
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let placement = self.node(*id)?.placement?;
+                let own = placement.band();
+                band.is_none_or(|band| band == own)
+                    .then_some((own, placement.z, i, *id))
+            })
+            .collect();
+        surfaces.sort_by(|a, b| {
+            (a.0, a.1, a.2)
+                .partial_cmp(&(b.0, b.1, b.2))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        surfaces.into_iter().map(|(_, _, _, id)| id).collect()
+    }
+
+    /// The topmost surface of output `output` in `band`, or any, that covers `point`.
+    pub fn surface_at(&self, output: &str, point: [f32; 2], band: Option<Band>) -> Option<NodeId> {
+        self.surfaces(output, band).into_iter().rev().find(|id| {
+            let mut found = Vec::new();
+            self.pick_node(*id, point, Scaling::NONE, None, &mut found);
+            found.iter().any(|id| self.takes_pointer(*id))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn draw_node(
         &self,
         id: NodeId,
@@ -1105,12 +1788,17 @@ impl Scene {
         clip: Option<Clip>,
         scaling: Scaling,
         blur: f32,
-        items: &mut Vec<Item>,
+        color: Option<Paint>,
+        out: &mut (&mut Vec<Item>, &mut Vec<CopyItem>),
     ) {
+        let items = &mut *out.0;
         let Some(node) = self.node(id) else { return };
         if node.hidden || !self.displayed(node) {
             return;
         }
+        // The text colour, as it's inherited.
+        let color = node.look.color.or(color);
+        let ink = color.unwrap_or(Paint::Fg(1.)).resolve(&self.theme);
         let rect = Self::drawn(node);
         let opacity = opacity * node.springs[OPACITY].value.clamp(0., 1.) as f32;
         if opacity <= 0.003 {
@@ -1133,7 +1821,7 @@ impl Scene {
         let blur = blur + node.springs[BLUR].value.max(0.) as f32;
 
         match &node.kind {
-            Kind::Box => {
+            Kind::Box | Kind::Copy(_) => {
                 let fill = node.look.fill.or(node.look.tint);
                 if node.look.material != Material::None
                     || fill.is_some()
@@ -1153,12 +1841,21 @@ impl Scene {
                         clip,
                     });
                 }
+                if let Kind::Copy(Some(window)) = node.kind {
+                    out.1.push(CopyItem {
+                        window,
+                        rect,
+                        radius: radii[0],
+                        opacity,
+                        clip,
+                    });
+                }
             }
             Kind::Image(Some(source)) => {
                 items.push(Item::Image {
                     rect,
                     source: source.clone(),
-                    color: node.look.color.resolve(&self.theme),
+                    color: ink,
                     opacity,
                     scale: scaling.by,
                     blur,
@@ -1171,7 +1868,7 @@ impl Scene {
                     items.push(Item::Text {
                         origin: [rect[0], rect[1]],
                         laid: laid.clone(),
-                        color: node.look.color.resolve(&self.theme),
+                        color: ink,
                         opacity,
                         scale: scaling.by,
                         still: scaling.still,
@@ -1187,17 +1884,19 @@ impl Scene {
         } else {
             clip
         };
+        // What it holds is moved with it.
+        let scaling = scaling.then(Scaling::moved(node));
         for child in &node.children {
-            self.draw_node(*child, opacity, clip, scaling, blur, items);
+            self.draw_node(*child, opacity, clip, scaling, blur, color, out);
         }
     }
 
     /// The nodes at `point` on output `output`, from the bottom up: those whose drawn shape,
     /// rounded, scaled and cut to what clips it, holds the point, and that aren't hidden or
     /// leaving.
-    fn pick(&self, output: &str, point: [f32; 2]) -> Vec<NodeId> {
+    fn pick(&self, output: &str, point: [f32; 2], band: Option<Band>) -> Vec<NodeId> {
         let mut found = Vec::new();
-        for child in self.top_nodes(output) {
+        for child in self.surfaces(output, band) {
             self.pick_node(child, point, Scaling::NONE, None, &mut found);
         }
         found
@@ -1237,6 +1936,7 @@ impl Scene {
         } else {
             clip
         };
+        let scaling = scaling.then(Scaling::moved(node));
         for child in &node.children {
             self.pick_node(*child, point, scaling, clip, found);
         }
@@ -1245,7 +1945,7 @@ impl Scene {
     /// The nodes at `point` on output `output` that hear the pointer near: all of them, whatever
     /// is over or under them, since they take nothing from it.
     pub fn near(&self, output: &str, point: [f32; 2]) -> Vec<NodeId> {
-        let mut found = self.pick(output, point);
+        let mut found = self.pick(output, point, None);
         found.retain(|id| self.node(*id).is_some_and(|n| n.events & NEAR != 0));
         found
     }
@@ -1301,6 +2001,34 @@ impl Scene {
         found
     }
 
+    /// Where the texts that say `wanted`, and the icons called it, show on output `output`, on
+    /// surfaces in `band` alone.
+    #[cfg(test)]
+    pub fn find_in(&self, output: &str, wanted: &str, band: Band) -> Vec<[f32; 4]> {
+        let Some(root) = self.root(output).and_then(|root| self.node(root)) else {
+            return Vec::new();
+        };
+        let surfaces = root.children.iter().filter(|id| {
+            self.node(**id)
+                .and_then(|node| node.placement)
+                .is_some_and(|placement| placement.band() == band)
+        });
+        let found = surfaces.flat_map(|surface| {
+            let all = self.find(output, wanted);
+            let frame = self.frame(*surface);
+            // What's on this surface is within its frame.
+            all.into_iter().filter(move |f| {
+                frame.is_some_and(|s| {
+                    f[0] >= s[0]
+                        && f[1] >= s[1]
+                        && f[0] + f[2] <= s[0] + s[2] + 0.5
+                        && f[1] + f[3] <= s[1] + s[3] + 0.5
+                })
+            })
+        });
+        found.collect()
+    }
+
     /// Whether `node` has a place in the layout: with `display: "none"` it has none, and
     /// neither it nor what it holds is drawn or hit.
     fn displayed(&self, node: &Node) -> bool {
@@ -1314,31 +2042,88 @@ impl Scene {
         self.node(id).is_some_and(|n| n.events & events != 0)
     }
 
-    /// The topmost node at `point` on output `output` that takes any of `events`.
-    pub fn hit(&self, output: &str, point: [f32; 2], events: u32) -> Option<NodeId> {
-        self.pick(output, point)
+    /// The topmost node at `point` on output `output`, in `band` or any, that takes any of
+    /// `events`.
+    pub fn hit(
+        &self,
+        output: &str,
+        point: [f32; 2],
+        events: u32,
+        band: Option<Band>,
+    ) -> Option<NodeId> {
+        self.pick(output, point, band)
             .into_iter()
             .rev()
             .find(|id| self.node(*id).is_some_and(|n| n.events & events != 0))
     }
 
-    /// Whether the shell is at `point` on output `output`, so it takes the pointer there from
-    /// what's below: a shape or something that takes the pointer's events is.
-    pub fn covers(&self, output: &str, point: [f32; 2]) -> bool {
-        self.pick(output, point).into_iter().any(|id| {
-            self.node(id).is_some_and(|n| {
-                n.events & (CLICK | HOVER | SCROLL) != 0
-                    || n.look.material != Material::None
-                    || n.look.fill.is_some()
-                    || n.look.border.is_some()
-            })
+    /// Whether the shell's surfaces in `band`, or any, are at `point` on output `output`, so
+    /// they take the pointer there from what's below: a shape or something that takes the
+    /// pointer's events is.
+    pub fn covers(&self, output: &str, point: [f32; 2], band: Option<Band>) -> bool {
+        self.pick(output, point, band)
+            .into_iter()
+            .any(|id| self.takes_pointer(id))
+    }
+
+    /// Whether node `id` takes the pointer from what's below it: a shape does, and so does what
+    /// hears presses, the pointer coming or scrolling.
+    fn takes_pointer(&self, id: NodeId) -> bool {
+        self.node(id).is_some_and(|n| {
+            n.events & (CLICK | HOVER | SCROLL | DRAG) != 0
+                || n.look.scroll
+                || n.look.material != Material::None
+                || n.look.fill.is_some()
+                || n.look.border.is_some()
         })
     }
 
-    /// The pointer's look at `point` on output `output`: the topmost node's that says one, like
-    /// "pointer" over a button.
-    pub fn cursor(&self, output: &str, point: [f32; 2]) -> Option<String> {
-        self.pick(output, point)
+    /// What the pointer is on at `point` on output `output`, in `band` or any, as CSS's `:hover`
+    /// has it: the topmost node that takes the pointer and what holds it, those of them that
+    /// hear it come and go.
+    pub fn hovered(&self, output: &str, point: [f32; 2], band: Option<Band>) -> Vec<NodeId> {
+        let picked = self.pick(output, point, band);
+        let Some(mut at) = picked.into_iter().rev().find(|id| self.takes_pointer(*id)) else {
+            return Vec::new();
+        };
+        let mut chain = Vec::new();
+        while let Some(node) = self.node(at) {
+            if node.events & HOVER != 0 {
+                chain.push(at);
+            }
+            match node.parent {
+                Some(parent) if !self.is_root(parent) => at = parent,
+                _ => break,
+            }
+        }
+        chain
+    }
+
+    /// What scrolling at `point` on output `output`, in `band` or any, scrolls: the topmost node
+    /// that hears it, or that holds what scrolls in it, which says so with `true`.
+    pub fn scroll_target(
+        &self,
+        output: &str,
+        point: [f32; 2],
+        band: Option<Band>,
+    ) -> Option<(NodeId, bool)> {
+        self.pick(output, point, band)
+            .into_iter()
+            .rev()
+            .find_map(|id| {
+                let node = self.node(id)?;
+                if node.events & SCROLL != 0 {
+                    Some((id, false))
+                } else {
+                    node.look.scroll.then_some((id, true))
+                }
+            })
+    }
+
+    /// The pointer's look at `point` on output `output`, in `band` or any: the topmost node's
+    /// that says one, like "pointer" over a button.
+    pub fn cursor(&self, output: &str, point: [f32; 2], band: Option<Band>) -> Option<String> {
+        self.pick(output, point, band)
             .into_iter()
             .rev()
             .find_map(|id| self.node(id).and_then(|n| n.look.cursor.clone()))
@@ -1376,6 +2161,17 @@ impl Scaling {
         still: true,
     };
 
+    /// How far `node` is drawn from its place, which moves what it holds with it.
+    fn moved(node: &Node) -> Self {
+        let (dx, dy) = (&node.springs[DX], &node.springs[DY]);
+        let at_rest = |s: &Spring| s.velocity == 0. && (s.value - s.target).abs() < 1e-6;
+        Self {
+            by: 1.,
+            offset: [dx.value as f32, dy.value as f32],
+            still: at_rest(dx) && at_rest(dy),
+        }
+    }
+
     /// This scaling, applied after `inner`.
     fn then(self, inner: Self) -> Self {
         Self {
@@ -1398,12 +2194,57 @@ impl Scaling {
     }
 }
 
-/// Two numbers, like a size or an offset.
-fn pair(value: &Value) -> Option<[f32; 2]> {
+/// Where in its place a shape is held, from a style's `drawFrom`: `"center"`, an edge, or a corner
+/// like `"bottom right"`, as fractions of its width and height.
+fn draw_from(value: &str) -> [f32; 2] {
+    let mut at = [0.5, 0.5];
+    for word in value.split_whitespace() {
+        match word {
+            "left" => at[0] = 0.,
+            "right" => at[0] = 1.,
+            "top" => at[1] = 0.,
+            "bottom" => at[1] = 1.,
+            _ => (),
+        }
+    }
+    at
+}
+
+/// A length one way, as `translate` takes it: pixels, and a fraction of the node's own size, which
+/// a percentage like `"100%"` is.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Offset {
+    px: f32,
+    of_size: f32,
+}
+
+/// A translation, `[x, y]`, each a number of pixels or a percentage of the node's size.
+fn offsets(value: &Value) -> Option<[Offset; 2]> {
+    let one = |value: &Value| match value {
+        Value::Number(n) => Some(Offset {
+            px: n.as_f64()? as f32,
+            of_size: 0.,
+        }),
+        Value::String(text) => Some(Offset {
+            px: 0.,
+            of_size: text.strip_suffix('%')?.trim().parse::<f32>().ok()? / 100.,
+        }),
+        _ => None,
+    };
     match value.as_array()?.as_slice() {
-        [a, b, ..] => Some([a.as_f64()? as f32, b.as_f64()? as f32]),
+        [x, y] => Some([one(x)?, one(y)?]),
         _ => None,
     }
+}
+
+/// Whether a drawn size follows its place's: none, which is its place's, or a fraction of it.
+fn follows_place(size: Option<[Offset; 2]>) -> bool {
+    size.is_none_or(|size| size.iter().any(|o| o.of_size != 0.))
+}
+
+/// `offset` in pixels, for a node of `size`.
+fn resolve(offset: [Offset; 2], size: [f32; 2]) -> [f32; 2] {
+    [0, 1].map(|i| offset[i].px + offset[i].of_size * size[i])
 }
 
 /// Measures a text node for taffy.
@@ -1521,31 +2362,104 @@ fn sides(value: &Value) -> Option<[f32; 4]> {
 
 fn align_items(value: &Value) -> Option<AlignItems> {
     Some(match value.as_str()? {
-        "start" => AlignItems::FLEX_START,
+        "start" | "flex-start" => AlignItems::FLEX_START,
         "center" => AlignItems::CENTER,
-        "end" => AlignItems::FLEX_END,
+        "end" | "flex-end" => AlignItems::FLEX_END,
         "stretch" => AlignItems::STRETCH,
         "baseline" => AlignItems::BASELINE,
         _ => return None,
     })
 }
 
-/// Applies one layout prop, and says whether it was one.
+fn justify(value: &Value) -> Option<JustifyContent> {
+    Some(match value.as_str()? {
+        "start" | "flex-start" => JustifyContent::FLEX_START,
+        "center" => JustifyContent::CENTER,
+        "end" | "flex-end" => JustifyContent::FLEX_END,
+        "space-between" => JustifyContent::SPACE_BETWEEN,
+        "space-around" => JustifyContent::SPACE_AROUND,
+        "space-evenly" => JustifyContent::SPACE_EVENLY,
+        "stretch" => JustifyContent::STRETCH,
+        _ => return None,
+    })
+}
+
+/// A length or a percentage, as padding and gaps take.
+fn length_percentage(value: &Value) -> LengthPercentage {
+    if let Some(v) = value.as_f64() {
+        return LengthPercentage::length(v as f32);
+    }
+    value
+        .as_str()
+        .and_then(|s| s.strip_suffix('%'))
+        .and_then(|s| s.parse::<f32>().ok())
+        .map_or(LengthPercentage::length(0.), |p| {
+            LengthPercentage::percent(p / 100.)
+        })
+}
+
+/// Up to four lengths, percentages or `"auto"`, CSS-style, as margins and insets take.
+fn sides_auto(value: &Value) -> Option<[LengthPercentageAuto; 4]> {
+    let one = |v: &Value| inset(v).unwrap_or(LengthPercentageAuto::length(0.));
+    if !value.is_array() {
+        let v = one(value);
+        return Some([v; 4]);
+    }
+    let list: Vec<LengthPercentageAuto> = value.as_array()?.iter().map(one).collect();
+    Some(match list.as_slice() {
+        [v] => [*v; 4],
+        [v, h] => [*v, *h, *v, *h],
+        [t, h, b] => [*t, *h, *b, *h],
+        [t, r, b, l, ..] => [*t, *r, *b, *l],
+        [] => return None,
+    })
+}
+
+/// Applies one layout prop, by its CSS name, and says whether it was one.
 fn apply_layout(style: &mut Style, key: &str, value: &Value) -> bool {
     match key {
-        "direction" => {
+        "display" => {
+            style.display = match value.as_str() {
+                Some("none") => Display::None,
+                _ => Display::Flex,
+            }
+        }
+        // A box that scrolls is as small as its style lets it be, not as big as what it holds.
+        "overflow" => {
+            let overflow = match value.as_str() {
+                Some("scroll") => Overflow::Scroll,
+                Some("hidden") => Overflow::Hidden,
+                _ => Overflow::Visible,
+            };
+            style.overflow = Point {
+                x: overflow,
+                y: overflow,
+            };
+            return true;
+        }
+        "flexDirection" => {
             style.flex_direction = match value.as_str() {
                 Some("column") => FlexDirection::Column,
+                Some("column-reverse") => FlexDirection::ColumnReverse,
+                Some("row-reverse") => FlexDirection::RowReverse,
                 _ => FlexDirection::Row,
             }
         }
+        "flexWrap" => {
+            style.flex_wrap = match value.as_str() {
+                Some("wrap") => FlexWrap::Wrap,
+                _ => FlexWrap::NoWrap,
+            }
+        }
         "gap" => {
-            let gap = value.as_f64().unwrap_or(0.) as f32;
+            let gap = length_percentage(value);
             style.gap = Size {
-                width: LengthPercentage::length(gap),
-                height: LengthPercentage::length(gap),
+                width: gap,
+                height: gap,
             };
         }
+        "rowGap" => style.gap.height = length_percentage(value),
+        "columnGap" => style.gap.width = length_percentage(value),
         "padding" => {
             let [t, r, b, l] = sides(value).unwrap_or([0.; 4]);
             style.padding = Rect {
@@ -1555,14 +2469,29 @@ fn apply_layout(style: &mut Style, key: &str, value: &Value) -> bool {
                 bottom: LengthPercentage::length(b),
             };
         }
+        "paddingTop" => style.padding.top = length_percentage(value),
+        "paddingRight" => style.padding.right = length_percentage(value),
+        "paddingBottom" => style.padding.bottom = length_percentage(value),
+        "paddingLeft" => style.padding.left = length_percentage(value),
         "margin" => {
-            let [t, r, b, l] = sides(value).unwrap_or([0.; 4]);
+            let zero = LengthPercentageAuto::length(0.);
+            let [t, r, b, l] = sides_auto(value).unwrap_or([zero; 4]);
             style.margin = Rect {
-                left: LengthPercentageAuto::length(l),
-                right: LengthPercentageAuto::length(r),
-                top: LengthPercentageAuto::length(t),
-                bottom: LengthPercentageAuto::length(b),
+                left: l,
+                right: r,
+                top: t,
+                bottom: b,
             };
+        }
+        "marginTop" => style.margin.top = inset(value).unwrap_or(LengthPercentageAuto::length(0.)),
+        "marginRight" => {
+            style.margin.right = inset(value).unwrap_or(LengthPercentageAuto::length(0.))
+        }
+        "marginBottom" => {
+            style.margin.bottom = inset(value).unwrap_or(LengthPercentageAuto::length(0.))
+        }
+        "marginLeft" => {
+            style.margin.left = inset(value).unwrap_or(LengthPercentageAuto::length(0.))
         }
         "width" => style.size.width = length_or_auto(value).unwrap_or(Dimension::auto()),
         "height" => style.size.height = length_or_auto(value).unwrap_or(Dimension::auto()),
@@ -1570,19 +2499,15 @@ fn apply_layout(style: &mut Style, key: &str, value: &Value) -> bool {
         "minHeight" => style.min_size.height = inset(value).unwrap_or(LengthPercentageAuto::auto()),
         "maxWidth" => style.max_size.width = inset(value).unwrap_or(LengthPercentageAuto::auto()),
         "maxHeight" => style.max_size.height = inset(value).unwrap_or(LengthPercentageAuto::auto()),
-        "grow" => style.flex_grow = value.as_f64().unwrap_or(0.) as f32,
-        "shrink" => style.flex_shrink = value.as_f64().unwrap_or(1.) as f32,
-        "align" => style.align_items = align_items(value).unwrap_or(AlignItems::NORMAL),
-        "self" => style.align_self = align_items(value),
-        "justify" => {
-            style.justify_content = match value.as_str() {
-                Some("center") => JustifyContent::CENTER,
-                Some("end") => JustifyContent::FLEX_END,
-                Some("between") => JustifyContent::SPACE_BETWEEN,
-                Some("around") => JustifyContent::SPACE_AROUND,
-                Some("start") => JustifyContent::FLEX_START,
-                _ => JustifyContent::NORMAL,
-            }
+        "aspectRatio" => style.aspect_ratio = value.as_f64().map(|v| v as f32),
+        "flexGrow" => style.flex_grow = value.as_f64().unwrap_or(0.) as f32,
+        "flexShrink" => style.flex_shrink = value.as_f64().unwrap_or(1.) as f32,
+        "flexBasis" => style.flex_basis = length_or_auto(value).unwrap_or(Dimension::auto()),
+        "alignItems" => style.align_items = align_items(value).unwrap_or(AlignItems::NORMAL),
+        "alignSelf" => style.align_self = align_items(value),
+        "alignContent" => style.align_content = justify(value).unwrap_or(JustifyContent::NORMAL),
+        "justifyContent" => {
+            style.justify_content = justify(value).unwrap_or(JustifyContent::NORMAL)
         }
         "position" => {
             style.position = match value.as_str() {
@@ -1594,10 +2519,95 @@ fn apply_layout(style: &mut Style, key: &str, value: &Value) -> bool {
         "left" => style.inset.left = inset(value).unwrap_or(LengthPercentageAuto::auto()),
         "right" => style.inset.right = inset(value).unwrap_or(LengthPercentageAuto::auto()),
         "bottom" => style.inset.bottom = inset(value).unwrap_or(LengthPercentageAuto::auto()),
-        "display" => {
-            style.display = match value.as_str() {
-                Some("none") => Display::None,
-                _ => Display::Flex,
+        "inset" => {
+            let auto = LengthPercentageAuto::auto();
+            let [t, r, b, l] = sides_auto(value).unwrap_or([auto; 4]);
+            style.inset = Rect {
+                left: l,
+                right: r,
+                top: t,
+                bottom: b,
+            };
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// Applies one text style, which what a node holds inherits, and says whether it was one.
+fn apply_text(own: &mut TextOwn, key: &str, value: &Value) -> bool {
+    match key {
+        "fontSize" => own.size = value.as_f64().map(|v| v as f32),
+        "fontWeight" => {
+            own.weight = value.as_f64().map(|v| v as f32).or(match value.as_str() {
+                Some("bold") => Some(700.),
+                Some("normal") => Some(400.),
+                _ => None,
+            })
+        }
+        "fontFamily" => own.family = value.as_str().map(String::from),
+        "textAlign" => {
+            own.align = value.as_str().map(|v| match v {
+                "center" => 0.5,
+                "end" | "right" => 1.,
+                _ => 0.,
+            })
+        }
+        "fontVariantNumeric" => own.tabular = value.as_str().map(|v| v == "tabular-nums"),
+        "lineClamp" => own.one_line = (!value.is_null()).then(|| value.as_u64() == Some(1)),
+        _ => return false,
+    }
+    true
+}
+
+/// Applies one of a surface's props, and says whether it was one.
+fn apply_placement(placement: &mut Placement, key: &str, value: &Value) -> bool {
+    match key {
+        "layer" => {
+            placement.layer = match value.as_str() {
+                Some("background") => 0,
+                Some("bottom") => 1,
+                Some("overlay") => 3,
+                _ => 2,
+            }
+        }
+        "z" => placement.z = value.as_f64().unwrap_or(1.) as f32,
+        "anchor" => {
+            let edges: Vec<&str> = value
+                .as_array()
+                .map(|list| list.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            placement.anchor = ["top", "right", "bottom", "left"].map(|e| edges.contains(&e));
+        }
+        "attach" => {
+            let to = match (value.get("node"), value.get("point")) {
+                (Some(node), _) => node.as_u64().map(|node| AttachTo::Node(node as NodeId)),
+                (_, Some(point)) => serde_json::from_value(point.clone())
+                    .ok()
+                    .map(AttachTo::Point),
+                _ => None,
+            };
+            placement.attach = to.map(|to| Attach {
+                to,
+                side: match value["side"].as_str() {
+                    Some("top") => 0,
+                    Some("right") => 1,
+                    Some("left") => 3,
+                    _ => 2,
+                },
+                align: match value["align"].as_str() {
+                    Some("center") => 0.5,
+                    Some("end") => 1.,
+                    _ => 0.,
+                },
+                gap: value["gap"].as_f64().unwrap_or(0.) as f32,
+            })
+        }
+        "reserve" => {
+            placement.reserve = match value {
+                Value::Bool(true) => Reserve::Own,
+                Value::Number(n) => Reserve::Pixels(n.as_f64().unwrap_or(0.) as f32),
+                _ => Reserve::None,
             }
         }
         _ => return false,
@@ -1609,9 +2619,9 @@ fn apply_layout(style: &mut Style, key: &str, value: &Value) -> bool {
 fn apply_look(node: &mut Node, key: &str, value: &Value) {
     let look = &mut node.look;
     match key {
-        "fill" => look.fill = Paint::parse(value),
+        "background" => look.fill = Paint::parse(value),
         "tint" => look.tint = Paint::parse(value),
-        "color" => look.color = Paint::parse(value).unwrap_or(Paint::Fg(1.)),
+        "color" => look.color = Paint::parse(value),
         "material" => {
             look.material = match value.as_str() {
                 Some("solid") => Material::Solid,
@@ -1621,26 +2631,39 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                 _ => Material::None,
             }
         }
-        "radius" => {
-            // Top left, top right, bottom right, bottom left.
+        "borderRadius" => {
+            // Top left, top right, bottom right and bottom left.
             look.radii = sides(value).unwrap_or([0.; 4]);
         }
-        "border" => {
-            look.border = value.as_array().and_then(|list| {
-                let width = list.first()?.as_f64()? as f32;
-                Some((width, Paint::parse(list.get(1)?)?))
-            })
+        "borderWidth" => {
+            let width = value.as_f64().unwrap_or(0.) as f32;
+            let paint = look
+                .border
+                .map(|(_, p)| p)
+                .or(look.border_paint)
+                .unwrap_or(Paint::Fg(0.2));
+            look.border = (width > 0.).then_some((width, paint));
+        }
+        "borderColor" => {
+            if let Some(paint) = Paint::parse(value) {
+                let width = look.border.map_or(0., |(w, _)| w);
+                look.border = Some((width, paint)).filter(|(w, _)| *w > 0.);
+                // The colour is kept for when a width comes.
+                if look.border.is_none() {
+                    look.border_paint = Some(paint);
+                }
+            }
         }
         "opacity" => look.opacity = value.as_f64().unwrap_or(1.).clamp(0., 1.) as f32,
         "scale" => look.scale = value.as_f64().unwrap_or(1.).max(0.) as f32,
         "blur" => look.blur = value.as_f64().unwrap_or(0.).max(0.) as f32,
-        "clip" => look.clip = value.as_bool().unwrap_or(false),
-        "hidden" => node.hidden = value.as_bool().unwrap_or(false),
-        // How long its moves take, in seconds: all of them, or with `transition` each kind.
-        "response" => {
-            let response = value.as_f64().filter(|r| *r > 0.);
-            node.responses = [response; SPRINGS];
+        "overflow" => {
+            look.clip = matches!(value.as_str(), Some("hidden" | "scroll"));
+            look.scroll = value.as_str() == Some("scroll");
         }
+        "visibility" => node.hidden = value.as_str() == Some("hidden"),
+        "hidden" => node.hidden = value.as_bool().unwrap_or(false),
+        // How long its moves take, in seconds: all of them, or each kind's.
         "transition" => {
             if let Some(kinds) = value.as_object() {
                 for (kind, springs) in MOTIONS {
@@ -1651,6 +2674,9 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                         }
                     }
                 }
+            } else {
+                let response = value.as_f64().filter(|r| *r > 0.);
+                node.responses = [response; SPRINGS];
             }
         }
         "cursor" => look.cursor = value.as_str().map(String::from),
@@ -1666,6 +2692,8 @@ fn apply_look(node: &mut Node, key: &str, value: &Value) {
                             Some("settle") => SETTLE,
                             Some("near") => NEAR,
                             Some("drag") => DRAG,
+                            Some("layout") => LAYOUT,
+                            Some("scrolled") => SCROLLED,
                             _ => 0,
                         }
                 })
@@ -1685,7 +2713,9 @@ mod tests {
         let shell = Shell::load(
             &[(String::from("DP-1"), (1920., 1080.))],
             None,
+            crate::scene::host::UNIX,
             serde_json::json!({ "gaps": 8 }),
+            Default::default(),
         )
         .unwrap();
         let mut scene = shell.scene.borrow_mut();
@@ -1693,7 +2723,7 @@ mod tests {
         scene.advance(1., Some(1.));
         let shapes = |scene: &Scene| -> Vec<[f32; 4]> {
             scene
-                .draw("DP-1")
+                .draw_all("DP-1")
                 .into_iter()
                 .filter_map(|item| match item {
                     Item::Shape {
@@ -1712,10 +2742,21 @@ mod tests {
         assert_eq!(middle[3], 36.);
 
         let clock = scene
-            .hit("DP-1", [960., 20.], CLICK)
+            .hit("DP-1", [960., 20.], CLICK, None)
             .expect("the clock takes clicks");
         drop(scene);
         shell.send(&serde_json::json!({ "type": "click", "id": clock, "button": 1 }));
+        // The calendar is laid out, and the island hears how big it is, as bento tells it.
+        let laid = {
+            let mut scene = shell.scene.borrow_mut();
+            scene.lay_out();
+            scene.take_laid_out()
+        };
+        for (id, [x, y, width, height]) in laid {
+            shell.send(&serde_json::json!({
+                "type": "layout", "id": id, "x": x, "y": y, "width": width, "height": height,
+            }));
+        }
         let mut scene = shell.scene.borrow_mut();
         scene.lay_out();
         scene.advance(1. / 60., Some(1.));
@@ -1736,8 +2777,8 @@ mod tests {
     #[test]
     fn typing_into_an_input_edits_it_with_its_caret_and_selection() {
         let mut scene = Scene::new();
-        let root = scene.set_output("DP-1", (1920., 1080.));
-        let input = scene.create("input", &serde_json::json!({ "size": 20 }));
+        let root = screen(&mut scene);
+        let input = scene.create("input", &serde_json::json!({ "fontSize": 20 }));
         scene.append(root, input, None);
         scene.lay_out();
         let key = |key: &str, text: &str, shift: bool| serde_json::json!({ "key": key, "text": text, "pressed": true, "shift": shift });
@@ -1773,8 +2814,19 @@ mod tests {
         );
     }
 
-    fn panel(scene: &mut Scene, props: serde_json::Value) -> NodeId {
+    /// A surface over the whole of output DP-1, to put things in.
+    fn screen(scene: &mut Scene) -> NodeId {
         let root = scene.set_output("DP-1", (1920., 1080.));
+        let surface = scene.create(
+            "surface",
+            &serde_json::json!({ "anchor": ["top", "right", "bottom", "left"], "layer": "overlay" }),
+        );
+        scene.append(root, surface, None);
+        surface
+    }
+
+    fn panel(scene: &mut Scene, props: serde_json::Value) -> NodeId {
+        let root = screen(scene);
         let mut all = serde_json::json!({
             "material": "glass", "position": "absolute",
             "top": 200, "left": 680, "width": 560, "height": 120,
@@ -1799,14 +2851,14 @@ mod tests {
         let mut scene = Scene::new();
         let node = panel(
             &mut scene,
-            serde_json::json!({ "drawSize": [100, 40], "offset": [10, -5] }),
+            serde_json::json!({ "drawSize": [100, 40], "translate": [10, -5] }),
         );
         settle(&mut scene);
         assert_eq!(scene.frame(node).unwrap(), [920., 235., 100., 40.]);
         // Without one, it's drawn at its place's size, and moves there.
         scene.set(
             node,
-            &serde_json::json!({ "drawSize": null, "offset": [0, 0] }),
+            &serde_json::json!({ "drawSize": null, "translate": [0, 0] }),
         );
         scene.lay_out();
         scene.advance(1. / 60., Some(1.));
@@ -1814,6 +2866,58 @@ mod tests {
         assert!(moving[2] > 100. && moving[2] < 560., "{moving:?}");
         settle(&mut scene);
         assert_eq!(scene.frame(node).unwrap(), [680., 200., 560., 120.]);
+    }
+
+    #[test]
+    fn a_drawn_size_is_held_at_the_edge_or_corner_it_says() {
+        let mut scene = Scene::new();
+        let node = panel(
+            &mut scene,
+            serde_json::json!({ "drawSize": [100, 40], "drawFrom": "bottom right" }),
+        );
+        settle(&mut scene);
+        assert_eq!(scene.frame(node).unwrap(), [1140., 280., 100., 40.]);
+        scene.set(node, &serde_json::json!({ "drawFrom": "bottom" }));
+        assert_eq!(scene.frame(node).unwrap(), [910., 280., 100., 40.]);
+        scene.set(node, &serde_json::json!({ "drawFrom": "top left" }));
+        assert_eq!(scene.frame(node).unwrap(), [680., 200., 100., 40.]);
+    }
+
+    #[test]
+    fn a_translation_can_be_a_fraction_of_its_size() {
+        let mut scene = Scene::new();
+        // The panel is 560 by 120.
+        let node = panel(&mut scene, serde_json::json!({ "translate": [0, "50%"] }));
+        settle(&mut scene);
+        assert_eq!(scene.frame(node).unwrap(), [680., 260., 560., 120.]);
+        // A jump by a fraction of its size before it's laid out starts it from there.
+        let other = scene.create(
+            "box",
+            &serde_json::json!({ "width": 50, "height": 80, "jump": { "translate": [0, "100%"] } }),
+        );
+        scene.append(node, other, None);
+        scene.lay_out();
+        let start = scene.frame(other).unwrap();
+        settle(&mut scene);
+        let end = scene.frame(other).unwrap();
+        assert_eq!(start[1] - end[1], 80., "{start:?} {end:?}");
+    }
+
+    #[test]
+    fn a_box_left_empty_by_what_was_out_of_its_flow_lays_out() {
+        let mut scene = Scene::new();
+        let holder = panel(&mut scene, serde_json::json!({}));
+        let absolute = scene.create(
+            "box",
+            &serde_json::json!({ "position": "absolute", "width": 20, "height": 20 }),
+        );
+        scene.append(holder, absolute, None);
+        scene.lay_out();
+        // taffy keeps what's out of a box's flow in a list of its own, which it doesn't empty
+        // for a box laid out with nothing in it, and then reads what's gone from it.
+        scene.remove(absolute);
+        scene.lay_out();
+        assert_eq!(scene.frame(holder).unwrap()[2], 560.);
     }
 
     #[test]
@@ -1862,10 +2966,10 @@ mod tests {
         let mut scene = Scene::new();
         let node = panel(&mut scene, serde_json::json!({}));
         settle(&mut scene);
-        assert!(scene.covers("DP-1", [960., 260.]));
+        assert!(scene.covers("DP-1", [960., 260.], None));
         scene.set(node, &serde_json::json!({ "hidden": true }));
-        assert!(scene.draw("DP-1").is_empty());
-        assert!(!scene.covers("DP-1", [960., 260.]));
+        assert!(scene.draw_all("DP-1").is_empty());
+        assert!(!scene.covers("DP-1", [960., 260.], None));
     }
 
     #[test]
@@ -1893,7 +2997,7 @@ mod tests {
     #[test]
     fn what_isnt_displayed_is_neither_drawn_nor_hit_with_what_it_holds() {
         let mut scene = Scene::new();
-        let root = scene.set_output("DP-1", (1920., 1080.));
+        let root = screen(&mut scene);
         let holder = scene.create("box", &serde_json::json!({ "display": "none" }));
         let held = scene.create(
             "box",
@@ -1906,21 +3010,25 @@ mod tests {
         scene.append(holder, held, None);
         scene.lay_out();
         scene.advance(1., Some(1.));
-        assert!(scene.draw("DP-1").is_empty(), "{:?}", scene.draw("DP-1"));
-        assert!(!scene.covers("DP-1", [0., 0.]));
+        assert!(
+            scene.draw_all("DP-1").is_empty(),
+            "{:?}",
+            scene.draw_all("DP-1")
+        );
+        assert!(!scene.covers("DP-1", [0., 0.], None));
 
         // Displayed again, it's there.
         scene.set(holder, &serde_json::json!({ "display": "flex" }));
         scene.lay_out();
         scene.advance(1., Some(1.));
-        assert_eq!(scene.draw("DP-1").len(), 1);
-        assert!(scene.covers("DP-1", [20., 20.]));
+        assert_eq!(scene.draw_all("DP-1").len(), 1);
+        assert!(scene.covers("DP-1", [20., 20.], None));
     }
 
     #[test]
     fn what_shows_again_comes_in_at_its_place_rather_than_from_where_it_was_left_out() {
         let mut scene = Scene::new();
-        let root = scene.set_output("DP-1", (1920., 1080.));
+        let root = screen(&mut scene);
         let row = scene.create(
             "box",
             &serde_json::json!({ "position": "absolute", "top": 100, "left": 600, "gap": 10 }),
@@ -1928,11 +3036,11 @@ mod tests {
         let first = scene.create("box", &serde_json::json!({ "width": 50, "height": 20 }));
         let shown_later = scene.create(
             "box",
-            &serde_json::json!({ "width": 30, "height": 20, "display": "none", "fill": "fg" }),
+            &serde_json::json!({ "width": 30, "height": 20, "display": "none", "background": "fg" }),
         );
         let hidden_later = scene.create(
             "box",
-            &serde_json::json!({ "width": 30, "height": 20, "fill": "fg" }),
+            &serde_json::json!({ "width": 30, "height": 20, "background": "fg" }),
         );
         scene.append(root, row, None);
         scene.append(row, first, None);
@@ -1963,25 +3071,25 @@ mod tests {
     #[test]
     fn one_line_text_is_cut_short_to_its_room_and_lets_what_is_beside_it_be() {
         let mut scene = Scene::new();
-        let root = scene.set_output("DP-1", (1920., 1080.));
+        let root = screen(&mut scene);
         let row = scene.create(
             "box",
             &serde_json::json!({ "position": "absolute", "top": 0, "left": 0, "width": 200, "gap": 10 }),
         );
         let icon = scene.create(
             "box",
-            &serde_json::json!({ "width": 32, "height": 32, "shrink": 0 }),
+            &serde_json::json!({ "width": 32, "height": 32, "flexShrink": 0 }),
         );
         let name = scene.create(
             "text",
             &serde_json::json!({
                 "text": "Navi 21/23 HDMI/DP Audio Controller Digital Stereo (HDMI 3)",
-                "lines": 1,
+                "lineClamp": 1,
             }),
         );
         let pin = scene.create(
             "box",
-            &serde_json::json!({ "width": 24, "height": 24, "shrink": 0 }),
+            &serde_json::json!({ "width": 24, "height": 24, "flexShrink": 0 }),
         );
         scene.append(root, row, None);
         scene.append(row, icon, None);
@@ -2008,7 +3116,7 @@ mod tests {
     #[test]
     fn what_is_absolute_is_placed_and_sized_in_what_holds_it() {
         let mut scene = Scene::new();
-        let root = scene.set_output("DP-1", (1920., 1080.));
+        let root = screen(&mut scene);
         // A bar across the output, a column at its end, and a pill in that, none of which say
         // how they're positioned but the bar.
         let bar = scene.create(
@@ -2017,7 +3125,7 @@ mod tests {
         );
         let end = scene.create(
             "box",
-            &serde_json::json!({ "grow": 1, "width": 0, "direction": "column", "align": "end" }),
+            &serde_json::json!({ "flexGrow": 1, "width": 0, "flexDirection": "column", "alignItems": "end" }),
         );
         let pill = scene.create("box", &serde_json::json!({ "width": 372, "height": 36 }));
         let holder = scene.create(
@@ -2036,7 +3144,7 @@ mod tests {
     #[test]
     fn what_overflows_its_holder_is_held_to_the_side_it_says() {
         let mut scene = Scene::new();
-        let root = scene.set_output("DP-1", (1920., 1080.));
+        let root = screen(&mut scene);
         let pill = scene.create(
             "box",
             &serde_json::json!({ "position": "absolute", "top": 8, "left": 800, "width": 100, "height": 36 }),
@@ -2046,12 +3154,12 @@ mod tests {
             let holder = scene.create(
                 "box",
                 &serde_json::json!({
-                    "position": "absolute", "top": 16, "left": 0, "right": 0, "justify": justify,
+                    "position": "absolute", "top": 16, "left": 0, "right": 0, "justifyContent": justify,
                 }),
             );
             let content = scene.create(
                 "box",
-                &serde_json::json!({ "width": 340, "height": 50, "shrink": 0 }),
+                &serde_json::json!({ "width": 340, "height": 50, "flexShrink": 0 }),
             );
             scene.append(pill, holder, None);
             scene.append(holder, content, None);
@@ -2066,7 +3174,7 @@ mod tests {
     #[test]
     fn what_hears_the_pointer_near_takes_nothing_from_it() {
         let mut scene = Scene::new();
-        let root = scene.set_output("DP-1", (1920., 1080.));
+        let root = screen(&mut scene);
         let zone = scene.create(
             "box",
             &serde_json::json!({
@@ -2090,14 +3198,267 @@ mod tests {
         assert_eq!(scene.near("DP-1", [50., 1.]), vec![zone]);
         assert!(scene.near("DP-1", [500., 5.]).is_empty());
         // What's under it keeps the pointer.
-        assert!(!scene.covers("DP-1", [500., 1.]));
-        assert!(scene.covers("DP-1", [50., 1.]));
+        assert!(!scene.covers("DP-1", [500., 1.], None));
+        assert!(scene.covers("DP-1", [50., 1.], None));
+    }
+
+    /// A surface on output DP-1 with `props`, holding a box with `inner`.
+    fn surface(scene: &mut Scene, props: Value, inner: Value) -> (NodeId, NodeId) {
+        let root = scene.set_output("DP-1", (1920., 1080.));
+        let surface = scene.create("surface", &props);
+        let held = scene.create("box", &inner);
+        scene.append(root, surface, None);
+        scene.append(surface, held, None);
+        (surface, held)
+    }
+
+    #[test]
+    fn a_child_put_before_another_comes_before_it() {
+        let mut scene = Scene::new();
+        let (_, row) = surface(
+            &mut scene,
+            serde_json::json!({ "anchor": ["top", "left"] }),
+            serde_json::json!({ "flexDirection": "row" }),
+        );
+        let style = serde_json::json!({ "width": 40, "height": 40 });
+        let a = scene.create("box", &style);
+        let b = scene.create("box", &style);
+        scene.append(row, a, None);
+        scene.append(row, b, None);
+        scene.lay_out();
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(0.));
+        scene.append(row, b, Some(0));
+        scene.lay_out();
+        assert_eq!(scene.layout(b).map(|r| r[0]), Some(0.));
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(40.));
+
+        // Before the first of the nodes after it that's there: one that isn't is passed over.
+        scene.insert_before(row, a, &[9999, b]);
+        scene.lay_out();
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(0.));
+        scene.insert_before(row, a, &[9999]);
+        scene.lay_out();
+        assert_eq!(scene.layout(a).map(|r| r[0]), Some(40.));
+    }
+
+    #[test]
+    fn a_surface_goes_where_its_anchors_and_margins_say_and_keeps_room_from_the_windows() {
+        let mut scene = Scene::new();
+        // A taskbar: along the bottom, stretched between the sides, as tall as it holds.
+        let (bar, _) = surface(
+            &mut scene,
+            serde_json::json!({
+                "anchor": ["bottom", "left", "right"], "reserve": true, "margin": [0, 4, 6, 4],
+            }),
+            serde_json::json!({ "height": 48 }),
+        );
+        // A panel in the middle, as big as it holds.
+        let (panel, _) = surface(
+            &mut scene,
+            serde_json::json!({}),
+            serde_json::json!({ "width": 400, "height": 200 }),
+        );
+        scene.lay_out();
+        assert_eq!(scene.layout(bar), Some([4., 1080. - 6. - 48., 1912., 48.]));
+        assert_eq!(scene.layout(panel), Some([760., 440., 400., 200.]));
+        assert_eq!(scene.reserved("DP-1"), [0., 0., 48. + 6., 0.]);
+        // Held to one corner, it keeps no room.
+        scene.set(bar, &serde_json::json!({ "anchor": ["bottom", "left"] }));
+        scene.lay_out();
+        assert_eq!(scene.reserved("DP-1"), [0.; 4]);
+    }
+
+    #[test]
+    fn a_surface_attached_to_a_node_goes_beside_it_on_the_output() {
+        let mut scene = Scene::new();
+        let (_, button) = surface(
+            &mut scene,
+            serde_json::json!({ "anchor": ["bottom", "right"], "margin": [0, 8, 8, 0] }),
+            serde_json::json!({ "width": 40, "height": 40 }),
+        );
+        let (flyout, _) = surface(
+            &mut scene,
+            serde_json::json!({
+                "attach": { "node": button, "side": "top", "align": "center", "gap": 10 },
+                "margin": 8,
+            }),
+            serde_json::json!({ "width": 300, "height": 100 }),
+        );
+        scene.lay_out();
+        // Over the button, its middle on the button's, but kept on the output by its margin.
+        assert_eq!(scene.layout(button), Some([1872., 1032., 40., 40.]));
+        assert_eq!(
+            scene.layout(flyout),
+            Some([1920. - 8. - 300., 1032. - 10. - 100., 300., 100.])
+        );
+    }
+
+    #[test]
+    fn a_surface_attached_to_a_point_goes_where_there_is_room_for_it() {
+        let mut scene = Scene::new();
+        let (menu, _) = surface(
+            &mut scene,
+            serde_json::json!({
+                "attach": { "point": [100, 200], "side": "bottom", "align": "start" },
+                "margin": 8,
+            }),
+            serde_json::json!({ "width": 200, "height": 300 }),
+        );
+        scene.lay_out();
+        // Below the point and to its right.
+        assert_eq!(scene.layout(menu), Some([100., 200., 200., 300.]));
+
+        // Near the bottom right corner, there's room only above it and to its left.
+        scene.set(
+            menu,
+            &serde_json::json!({ "attach": { "point": [1900, 1000], "side": "bottom", "align": "start" } }),
+        );
+        scene.lay_out();
+        assert_eq!(scene.layout(menu), Some([1700., 700., 200., 300.]));
+    }
+
+    #[test]
+    fn surfaces_are_drawn_in_the_band_of_their_layer_and_z() {
+        let mut scene = Scene::new();
+        let style = serde_json::json!({ "width": 10, "height": 10, "background": "fg" });
+        let (wallpaper, _) = surface(
+            &mut scene,
+            serde_json::json!({ "layer": "background", "z": -1 }),
+            style.clone(),
+        );
+        let (bar, _) = surface(
+            &mut scene,
+            serde_json::json!({ "layer": "overlay", "z": -1 }),
+            style,
+        );
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        assert_eq!(
+            scene.bands("DP-1"),
+            [Band::BackgroundBelow, Band::OverlayBelow]
+        );
+        assert_eq!(scene.draw("DP-1", Band::BackgroundBelow).len(), 1);
+        assert_eq!(scene.draw("DP-1", Band::TopAbove).len(), 0);
+        assert_eq!(scene.surface_at("DP-1", [960., 540.], None), Some(bar));
+        assert_eq!(
+            scene.surface_at("DP-1", [960., 540.], Some(Band::BackgroundBelow)),
+            Some(wallpaper)
+        );
+    }
+
+    #[test]
+    fn what_scrolls_moves_what_it_holds_as_far_as_it_reaches_and_no_further() {
+        let mut scene = Scene::new();
+        let (_, list) = surface(
+            &mut scene,
+            serde_json::json!({}),
+            serde_json::json!({ "height": 100, "width": 50, "overflow": "scroll", "flexDirection": "column" }),
+        );
+        let rows: Vec<NodeId> = (0..5)
+            .map(|_| {
+                let row =
+                    scene.create("box", &serde_json::json!({ "height": 50, "flexShrink": 0 }));
+                scene.append(list, row, None);
+                row
+            })
+            .collect();
+        scene.lay_out();
+        let top = scene.layout(list).unwrap()[1];
+        assert!(scene.scroll(list, 80.));
+        scene.lay_out();
+        settle(&mut scene);
+        assert_eq!(scene.frame(rows[0]).unwrap()[1], top - 80.);
+        // Five rows of fifty reach 150 past a hundred.
+        scene.scroll(list, 500.);
+        scene.lay_out();
+        settle(&mut scene);
+        assert_eq!(scene.frame(rows[4]).unwrap()[1], top + 50.);
+    }
+
+    #[test]
+    fn what_scrolls_tells_how_far_it_is_and_goes_and_is_scrolled_to_a_place() {
+        let mut scene = Scene::new();
+        let (_, list) = surface(
+            &mut scene,
+            serde_json::json!({}),
+            serde_json::json!({
+                "height": 100, "width": 50, "overflow": "scroll", "flexDirection": "column",
+                "events": ["scrolled"],
+            }),
+        );
+        for _ in 0..4 {
+            let row = scene.create("box", &serde_json::json!({ "height": 50, "flexShrink": 0 }));
+            scene.append(list, row, None);
+        }
+        scene.lay_out();
+        // Scrolled to its top, reaching a hundred past its bottom, and a hundred tall.
+        assert_eq!(scene.take_scrolled(), [(list, [0., 100., 100.])]);
+        scene.lay_out();
+        assert!(
+            scene.take_scrolled().is_empty(),
+            "told again with nothing new"
+        );
+
+        assert!(scene.scroll_to(list, 60.));
+        scene.lay_out();
+        assert_eq!(scene.take_scrolled(), [(list, [60., 100., 100.])]);
+        scene.scroll_to(list, 400.);
+        scene.lay_out();
+        assert_eq!(scene.take_scrolled(), [(list, [100., 100., 100.])]);
+    }
+
+    #[test]
+    fn hovering_is_on_what_the_pointer_is_on_and_what_holds_it() {
+        let mut scene = Scene::new();
+        let (_, card) = surface(
+            &mut scene,
+            serde_json::json!({}),
+            serde_json::json!({ "width": 200, "height": 100, "background": "fg", "events": ["hover"] }),
+        );
+        let button = scene.create(
+            "box",
+            &serde_json::json!({ "width": 40, "height": 40, "events": ["hover", "click"] }),
+        );
+        scene.append(card, button, None);
+        scene.lay_out();
+        scene.advance(1., Some(1.));
+        let at = scene.layout(button).unwrap();
+        let on_button = scene.hovered("DP-1", [at[0] + 5., at[1] + 5.], None);
+        assert_eq!(on_button, [button, card]);
+        let beside = scene.hovered("DP-1", [at[0] + 100., at[1] + 5.], None);
+        assert_eq!(beside, [card]);
+    }
+
+    #[test]
+    fn what_hears_where_its_put_is_told_when_that_changes_hidden_or_not() {
+        let mut scene = Scene::new();
+        let (_, held) = surface(
+            &mut scene,
+            serde_json::json!({}),
+            serde_json::json!({ "width": 100, "height": 20, "events": ["layout"], "hidden": true }),
+        );
+        scene.lay_out();
+        assert_eq!(scene.take_laid_out(), [(held, [910., 530., 100., 20.])]);
+        scene.set(held, &serde_json::json!({ "width": 120 }));
+        scene.lay_out();
+        assert_eq!(scene.take_laid_out(), [(held, [900., 530., 120., 20.])]);
+        scene.set(held, &serde_json::json!({ "background": "fg" }));
+        scene.lay_out();
+        assert!(scene.take_laid_out().is_empty());
     }
 
     #[test]
     fn the_shell_keeps_the_top_for_its_islands_and_bentos_gaps() {
         let style = serde_json::json!({ "gaps": 16 });
-        let shell = Shell::load(&[(String::from("DP-1"), (1920., 1080.))], None, style).unwrap();
+        let shell = Shell::load(
+            &[(String::from("DP-1"), (1920., 1080.))],
+            None,
+            crate::scene::host::UNIX,
+            style,
+            Default::default(),
+        )
+        .unwrap();
+        shell.scene.borrow_mut().lay_out();
         assert_eq!(
             shell.scene.borrow().reserved("DP-1"),
             [16. + 36., 0., 0., 0.]
@@ -2109,12 +3470,14 @@ mod tests {
         let shell = Shell::load(
             &[(String::from("DP-1"), (1920., 1080.))],
             None,
+            crate::scene::host::UNIX,
             serde_json::json!({ "gaps": 8 }),
+            Default::default(),
         )
         .unwrap();
         let glass = |scene: &Scene| -> Vec<[f32; 4]> {
             scene
-                .draw("DP-1")
+                .draw_all("DP-1")
                 .into_iter()
                 .filter_map(|item| match item {
                     Item::Shape {
@@ -2130,7 +3493,7 @@ mod tests {
         scene.lay_out();
         scene.advance(1., Some(1.));
         let before = glass(&scene);
-        let clock = scene.hit("DP-1", [960., 20.], CLICK).unwrap();
+        let clock = scene.hit("DP-1", [960., 20.], CLICK, None).unwrap();
         drop(scene);
         shell.send(&serde_json::json!({ "type": "click", "id": clock, "button": 1 }));
 

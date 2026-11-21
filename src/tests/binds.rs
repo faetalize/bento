@@ -94,6 +94,11 @@ fn parse(keymap: &Keymap, input: &str) -> Vec<Op> {
 
 fn set_up(config: &str) -> (Fixture, ClientId, WlSurface) {
     let mut config = Config::parse_mem(config).unwrap();
+    // These are about how the config's binds behave: bento's own shortcuts are turned off, as
+    // `unbind` turns them off, so their default keys reach the surface.
+    let defaults = niri_config::bind_set::bento_defaults();
+    let off = defaults.iter().filter_map(niri_config::bind_set::action_of);
+    config.unbound.extend(off.cloned());
 
     for bind in &mut config.binds.0 {
         let actions = match &mut bind.action {
@@ -109,6 +114,11 @@ fn set_up(config: &str) -> (Fixture, ClientId, WlSurface) {
         }
     }
 
+    set_up_with(config)
+}
+
+/// A window on an output, with `config` as it is.
+fn set_up_with(config: Config) -> (Fixture, ClientId, WlSurface) {
     let mut f = Fixture::with_config(config);
     f.add_output(1, (1920, 1080));
 
@@ -206,7 +216,9 @@ fn run_f(f: &mut Fixture, id: ClientId, surface: &WlSurface, input: &str) -> Str
 
                 let pointer = f.client(id).state.virtual_pointer();
                 pointer.axis_source(source);
-                pointer.axis(0, wl_pointer::Axis::VerticalScroll, amount);
+                // One step of a wheel, as a mouse sends it.
+                let steps = amount.signum() as i32;
+                pointer.axis_discrete(0, wl_pointer::Axis::VerticalScroll, amount, steps);
                 pointer.frame();
             }
         }
@@ -2470,5 +2482,77 @@ fn redundant_modifier_binds() {
     assert_eq!(
         run("binds { Alt+Q { release { close-window; }; }; }", input),
         run("binds { Alt+Alt+Q { release { close-window; }; }; }", input)
+    );
+}
+
+#[test]
+fn the_overlay_shown_at_startup_lists_the_engines_binds_once_it_runs() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    assert!(f.niri().hotkey_overlay.is_open());
+    // A turn of bento's loop, as after each event.
+    f.niri_state().refresh_and_flush_clients();
+
+    let binds = f.niri().hotkey_overlay.binds().to_vec();
+    let engine = binds.iter().filter_map(niri_config::bind_set::action_of);
+    let engine: Vec<_> = engine
+        .filter(|action| matches!(action, Action::LayoutAction(..)))
+        .collect();
+    assert!(
+        !engine.is_empty(),
+        "the overlay shows no binds of the engine's"
+    );
+}
+
+#[test]
+fn the_default_wheel_binds_run() {
+    // No binds of one's own: bento's default Mod+WheelScrollDown switches to the workspace below,
+    // which takes the keyboard from the window.
+    let (mut f, id, surface) = set_up_with(Config::default());
+    let out = run_f(&mut f, id, &surface, "+LWIN WheelScrollDown -LWIN");
+    assert!(
+        out.contains("surface leave"),
+        "the scroll didn't switch workspaces:\n{out}"
+    );
+}
+
+#[test]
+fn the_switcher_closes_windows_and_takes_screenshots_on_the_default_keys() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let mods = niri_config::Modifiers::ALT;
+    let actions: Vec<Action> = f
+        .niri()
+        .window_mru_ui
+        .opened_bindings(mods)
+        .filter_map(niri_config::bind_set::action_of)
+        .cloned()
+        .collect();
+    assert!(
+        actions.contains(&Action::MruCloseCurrentWindow),
+        "{actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, Action::Screenshot(..))),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn the_overlay_names_the_engines_actions_once_it_runs() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    f.niri_state().refresh_and_flush_clients();
+
+    let meta = crate::layout::tiling::engine::meta().unwrap();
+    let bound = meta.actions.iter().find(|action| !action.binds.is_empty());
+    let description = bound.and_then(|action| action.description.clone()).unwrap();
+    let description = description.trim_end_matches('.');
+    let text = f.niri().hotkey_overlay.a11y_text();
+    assert!(
+        text.contains(description),
+        "{description:?} isn't in:\n{text}"
     );
 }

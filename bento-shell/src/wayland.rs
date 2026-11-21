@@ -72,7 +72,8 @@ enum Event {
     Style(f64, f64),
     /// Whether animations are on, and their slowdown.
     Animations(bool, f64),
-    ToggleLauncher,
+    /// One of the shell's own actions, by its name, with its arguments.
+    Action(String, Vec<String>),
 }
 
 #[derive(Default)]
@@ -89,7 +90,7 @@ pub struct Bento {
     state: RefCell<State>,
     style: Cell<Style>,
     on_style: Listeners<Style>,
-    on_toggle_launcher: Listeners<()>,
+    on_action: Listeners<(String, Vec<String>)>,
 }
 
 impl Bento {
@@ -116,7 +117,7 @@ impl Bento {
             state: RefCell::new(state),
             style: Cell::new(Style::default()),
             on_style: RefCell::default(),
-            on_toggle_launcher: RefCell::default(),
+            on_action: RefCell::default(),
         });
         bento.deliver();
 
@@ -166,7 +167,7 @@ impl Bento {
                             style.animations = on;
                             style.slowdown = slowdown;
                         }
-                        Event::ToggleLauncher => unreachable!(),
+                        Event::Action(..) => unreachable!(),
                     }
                     self.style.set(style);
                     crate::spring::set_motion(style.animations.then_some(style.slowdown));
@@ -174,9 +175,9 @@ impl Bento {
                         f(style);
                     }
                 }
-                Event::ToggleLauncher => {
-                    for f in self.on_toggle_launcher.borrow().iter() {
-                        f(());
+                Event::Action(name, args) => {
+                    for f in self.on_action.borrow().iter() {
+                        f((name.clone(), args.clone()));
                     }
                 }
             }
@@ -191,10 +192,11 @@ impl Bento {
         self.on_style.borrow_mut().push(Box::new(f));
     }
 
-    pub fn connect_toggle_launcher(&self, f: impl Fn() + 'static) {
-        self.on_toggle_launcher
+    /// Calls `f` with the name and arguments of each of the shell's own actions a bind runs.
+    pub fn connect_action(&self, f: impl Fn(&str, &[String]) + 'static) {
+        self.on_action
             .borrow_mut()
-            .push(Box::new(move |()| f()));
+            .push(Box::new(move |(name, args)| f(&name, &args)));
     }
 
     /// The glass behind a mapped surface. A surface gets a new one each time it's mapped.
@@ -393,7 +395,10 @@ impl Dispatch<BentoShellV1, ()> for State {
             bento_shell_v1::Event::Animations { on, slowdown } => {
                 state.events.push(Event::Animations(on != 0, slowdown));
             }
-            bento_shell_v1::Event::ToggleLauncher => state.events.push(Event::ToggleLauncher),
+            bento_shell_v1::Event::Action { name, args } => {
+                let args = serde_json::from_str(&args).unwrap_or_default();
+                state.events.push(Event::Action(name, args));
+            }
         }
     }
 }

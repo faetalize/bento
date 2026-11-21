@@ -15,10 +15,6 @@ function host(create, opts = {}, meta = {}) {
 }
 
 /** A host running an API 1 engine made by `create`. */
-function hostV1(create, opts = {}, meta = {}) {
-    return new TestHost({ meta: { api: 1, name: "test-v1", ...meta }, default: create }, opts);
-}
-
 /** Places each window that's added, and focuses it. */
 function placing(bento, rect = { x: 0, y: 0, w: 10, h: 10 }) {
     bento.addEventListener("windowadd", (e) => {
@@ -46,9 +42,10 @@ test("load checks the module and describes the engine", () => {
                             { name: "to", type: "workspace" },
                             { name: "on", type: "monitor", default: "DP-1" },
                         ],
+                        bind: ["Mod+G", { key: "Mod+Shift+G", args: [2, "DP-2"] }],
                     },
                 },
-                options: {
+                settings: {
                     widths: { type: "size", list: true, default: [{ proportion: 0.5 }] },
                     mode: { type: "choice", choices: ["a", "b"], default: "a" },
                 },
@@ -68,35 +65,43 @@ test("load checks the module and describes the engine", () => {
             ["on", "monitor", "DP-1"],
         ],
     );
+    // Its default keys, each with the arguments it runs the action with.
+    assert.deepEqual(meta.actions[0].binds, [
+        { key: "Mod+G", args: [] },
+        { key: "Mod+Shift+G", args: [2, "DP-2"] },
+    ]);
     assert.deepEqual(
-        meta.options.map((o) => [o.name, o.type, o.list]),
+        meta.settings.map((o) => [o.name, o.type, o.list]),
         [
             ["widths", "size", true],
             ["mode", "choice", false],
         ],
     );
-    assert.deepEqual(meta.options[1].choices, ["a", "b"]);
+    assert.deepEqual(meta.settings[1].choices, ["a", "b"]);
     assert.equal(meta.windowRules[0].name, "width");
 });
 
 test("load refuses engines that don't fit", () => {
     const load = (meta, fn = () => {}) => () => prelude.load({ meta, default: fn });
     assert.throws(load({ api: 3, name: "x" }), /API version 3/);
+    // Engines for the first version of the API are to be ported.
+    assert.throws(load({ api: 1, name: "x" }), /API version 1, and bento runs engines for version 2 only/);
     assert.throws(load({ api: 2 }), /must be a string/);
     assert.throws(load({ api: 2, name: "x" }, null), /default function/);
     assert.throws(load({ api: 2, name: "x", actions: { a: { args: [{ name: "n", type: "nope" }] } } }), /unknown type/);
-    assert.throws(load({ api: 2, name: "x", options: { o: { type: "colour", default: "1" } } }), /unknown type/);
-    // Colours and gradients are for options and window rules, not for binds' arguments.
+    assert.throws(load({ api: 2, name: "x", settings: { o: { type: "colour", default: "1" } } }), /unknown type/);
+    // Colours and gradients are for settings and window rules, not for binds' arguments.
     assert.throws(load({ api: 2, name: "x", actions: { a: { args: [{ name: "n", type: "color" }] } } }), /unknown type/);
     assert.throws(load({ api: 2, name: "x", windowRules: { r: { type: "colour" } } }), /unknown type/);
     // A gradient is written with the properties of one node.
-    assert.throws(load({ api: 2, name: "x", options: { g: { type: "gradient", list: true, default: null } } }), /can't be a list/);
-    assert.throws(load({ api: 2, name: "x", options: { o: { type: "choice", default: "a" } } }), /list of choices/);
-    // Workspaces and monitors are API 2 types.
-    assert.throws(
-        load({ api: 1, name: "x", actions: { a: { args: [{ name: "n", type: "workspace" }] } } }),
-        /unknown type/,
-    );
+    assert.throws(load({ api: 2, name: "x", settings: { g: { type: "gradient", list: true, default: null } } }), /can't be a list/);
+    assert.throws(load({ api: 2, name: "x", settings: { o: { type: "choice", default: "a" } } }), /list of choices/);
+    // Engines and shells declare settings the same way.
+    assert.throws(load({ api: 2, name: "x", options: {} }), /meta\.settings/);
+    assert.throws(load({ api: 2, name: "x", settings: { o: { type: "number", page: 1 } } }), /`page` of setting o/);
+    // A default bind is a key, or a key with the arguments it runs the action with.
+    assert.throws(load({ api: 2, name: "x", actions: { a: { bind: 3 } } }), /must be a key/);
+    assert.throws(load({ api: 2, name: "x", actions: { a: { bind: [{ key: "Mod+A", args: [{}] }] } } }), /args of bind 1/);
 });
 
 // Events and objects.
@@ -424,16 +429,16 @@ test("state is saved on unload, and windows are adopted when the engine starts a
     ]);
 });
 
-test("options reach the engine as bento resolves them", () => {
+test("settings reach the engine as bento resolves them", () => {
     const seen = [];
     const h = host(
         (bento) => {
-            bento.addEventListener("configchange", () => seen.push({ ...bento.options }));
-            bento.exposeState(() => ({ ...bento.options }));
+            bento.addEventListener("configchange", () => seen.push({ ...bento.settings }));
+            bento.exposeState(() => ({ ...bento.settings }));
         },
-        { options: { a: 2, w: "25%" } },
+        { settings: { a: 2, w: "25%" } },
         {
-            options: {
+            settings: {
                 a: { type: "number", default: 1 },
                 b: { type: "boolean", default: true },
                 w: { type: "size", default: "50%" },
@@ -448,7 +453,7 @@ test("options reach the engine as bento resolves them", () => {
         p: [{ proportion: 0.5 }, { fixed: 800 }],
     });
 
-    h.setOptions({ a: 3 });
+    h.setSettings({ a: 3 });
     assert.equal(seen.length, 1);
     assert.deepEqual(seen[0].a, 3);
     assert.deepEqual(seen[0].w, { proportion: 0.5 });
@@ -460,7 +465,7 @@ test("colours and gradients are option types", () => {
             meta: {
                 api: 2,
                 name: "painted",
-                options: {
+                settings: {
                     tint: { type: "color", default: "#102030" },
                     glow: { type: "gradient", default: null },
                 },
@@ -470,7 +475,7 @@ test("colours and gradients are option types", () => {
         }),
     );
     assert.deepEqual(
-        meta.options.map((o) => [o.name, o.type, o.default]),
+        meta.settings.map((o) => [o.name, o.type, o.default]),
         [
             ["tint", "color", "#102030"],
             ["glow", "gradient", null],
@@ -487,11 +492,11 @@ test("colours and gradients are option types", () => {
     const glow = { from: "#000", to: "#fff", angle: 45, relativeTo: "view", in: "oklab" };
     const h = host(
         (bento) => {
-            bento.exposeState(() => ({ ...bento.options }));
+            bento.exposeState(() => ({ ...bento.settings }));
         },
-        { options: { glow } },
+        { settings: { glow } },
         {
-            options: {
+            settings: {
                 tint: { type: "color", default: "#102030" },
                 glow: { type: "gradient", default: null },
             },
@@ -500,24 +505,24 @@ test("colours and gradients are option types", () => {
     assert.deepEqual(h.exposedState(), { tint: "#102030", glow });
 });
 
-test("workspaces have the options of their monitor and their own on top of the engine's", () => {
+test("workspaces have the settings of their monitor and their own on top of the engine's", () => {
     const fired = [];
     const h = host(
         (bento) => {
             bento.addEventListener("configchange", () => fired.push("configchange"));
             bento.exposeState(() => ({
-                top: { ...bento.options },
-                workspaces: bento.monitors.map((m) => m.workspaces.map((ws) => ({ ...ws.options }))),
+                top: { ...bento.settings },
+                workspaces: bento.monitors.map((m) => m.workspaces.map((ws) => ({ ...ws.settings }))),
             }));
         },
         {
             monitors: TWO_MONITORS,
-            options: { a: 1, b: 1 },
-            outputOptions: { "dp-2": { a: 2, b: 2 } },
-            workspaceOptions: { Web: { b: 3 } },
+            settings: { a: 1, b: 1 },
+            outputSettings: { "dp-2": { a: 2, b: 2 } },
+            workspaceSettings: { Web: { b: 3 } },
         },
         {
-            options: {
+            settings: {
                 a: { type: "number", default: 0 },
                 b: { type: "number", default: 0 },
                 c: { type: "number", default: 0 },
@@ -530,7 +535,7 @@ test("workspaces have the options of their monitor and their own on top of the e
     fired.length = 0;
 
     const state = h.exposedState();
-    // `bento.options` stays the engine's.
+    // `bento.settings` stays the engine's.
     assert.deepEqual(state.top, { a: 1, b: 1, c: 0 });
     assert.deepEqual(state.workspaces, [
         [
@@ -544,19 +549,19 @@ test("workspaces have the options of their monitor and their own on top of the e
     ]);
 
     // A change to one scope tells the engine, and only that scope's workspaces change.
-    h.setOutputOptions("DP-2", { a: 5 });
+    h.setOutputSettings("DP-2", { a: 5 });
     assert.deepEqual(fired, ["configchange"]);
     assert.deepEqual(h.exposedState().workspaces[1], [
         { a: 5, b: 3, c: 0 },
         { a: 5, b: 1, c: 0 },
     ]);
-    h.setWorkspaceOptions("web", null);
+    h.setWorkspaceSettings("web", null);
     assert.deepEqual(h.exposedState().workspaces[0][1], { a: 1, b: 1, c: 0 });
     assert.equal(fired.length, 2);
 
-    // Renaming a workspace changes which options it has.
+    // Renaming a workspace changes which settings it has.
     h.workspaces.get(1).name = "web";
-    h.setWorkspaceOptions("web", { c: 9 });
+    h.setWorkspaceSettings("web", { c: 9 });
     assert.deepEqual(h.exposedState().workspaces[0][0], { a: 1, b: 1, c: 9 });
 });
 
@@ -761,7 +766,7 @@ test("the engine can focus a monitor", () => {
     assert.equal(h.focusedMonitor, "DP-2");
 });
 
-test("the camera moves with the options the engine gives", () => {
+test("the camera moves with the settings the engine gives", () => {
     const h = host(
         (bento) => {
             placing(bento);
@@ -796,25 +801,31 @@ test("horizontal swipes are reported, and the engine moves the camera", () => {
     assert.equal(h.lastCamera.velocity, 500);
 });
 
-test("drags over a workspace are events, and the drop adds the window", () => {
+test("a drag's start, moves and end reach the window, which stays the engine's", () => {
     const seen = [];
     const h = host((bento) => {
-        placing(bento);
-        const ws = bento.monitors[0].workspaces[0];
-        for (const type of ["dragenter", "dragmove", "dragleave"]) {
-            ws.addEventListener(type, (e) => seen.push([type, e.window?.id ?? null, e.pointer?.x ?? null, e.rect?.w ?? null]));
-        }
+        placing(bento, { x: 100, y: 0, w: 20, h: 20 });
         bento.addEventListener("windowadd", (e) => {
-            if (e.reason === "drop") seen.push(["drop", e.pointer.x, e.rect.x]);
+            const win = e.window;
+            win.addEventListener("dragstart", (d) => seen.push(["dragstart", d.offset.x, d.pointer.x]));
+            win.addEventListener("dragmove", (d) => seen.push(["dragmove", d.workspace?.id ?? null, d.pointer?.x ?? null]));
+            win.addEventListener("dragend", (d) => seen.push(["dragend", d.dropped]));
+            win.addEventListener("remove", (r) => seen.push(["remove", r.reason]));
         });
     });
     const a = h.open();
-    h.drag(a, h.workspace(0).id, [{ x: 100, y: 10 }, { x: 120, y: 10 }]);
+    const ws = h.workspace(0).id;
+    h.drag(a, ws, [{ x: 120, y: 10 }]);
+    h.send({ type: "dragstart", id: a, offset: { x: 5, y: 5 }, pointer: { x: 105, y: 5 } });
+    h.send({ type: "dragmove", id: a, workspace: null, pointer: null });
+    h.send({ type: "dragend", id: a, dropped: false });
     assert.deepEqual(seen, [
-        ["dragenter", a, 100, 20],
-        ["dragmove", a, 120, 20],
-        ["dragleave", null, null, null],
-        ["drop", 120, 110],
+        ["dragstart", 10, 110],
+        ["dragmove", ws, 120],
+        ["dragend", true],
+        ["dragstart", 5, 105],
+        ["dragmove", null, null],
+        ["dragend", false],
     ]);
     assert.deepEqual(h.stacking(), [a]);
 });
@@ -1355,7 +1366,7 @@ test("beginResize needs edges, and a window that's in the engine", () => {
     assert.throws(() => win.beginMove(), /not in the layout engine/);
 });
 
-test("a move with the pointer takes the window out and puts it back, like bento's own", () => {
+test("a move with the pointer keeps the window in the engine, like bento's own", () => {
     const log = [];
     const h = host(
         titleBars(
@@ -1363,6 +1374,8 @@ test("a move with the pointer takes the window out and puts it back, like bento'
             (win, bar, e) => {
                 log.push(["add", e.reason]);
                 win.addEventListener("remove", (r) => log.push(["remove", r.reason]));
+                win.addEventListener("dragstart", () => log.push(["dragstart"]));
+                win.addEventListener("dragend", (d) => log.push(["dragend", d.dropped]));
             },
         ),
     );
@@ -1371,7 +1384,7 @@ test("a move with the pointer takes the window out and puts it back, like bento'
     assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
 
     h.drag(a, h.workspace(0).id, [{ x: 30, y: 30 }]);
-    assert.deepEqual(log, [["add", "open"], ["remove", "drag"], ["add", "drop"]]);
+    assert.deepEqual(log, [["add", "open"], ["dragstart"], ["dragend", true]]);
 });
 
 test("a resize with the pointer sends the same events as bento's own", () => {
@@ -1472,7 +1485,7 @@ test("decorations only take booleans", () => {
     h.action("go");
 });
 
-test("decorations come back when a window leaves the engine and when the engine starts over", () => {
+test("decorations stay through a drag, and come back when the engine starts over", () => {
     const seen = [];
     const h = host(
         titleBars(
@@ -1487,259 +1500,13 @@ test("decorations come back when a window leaves the engine and when the engine 
     const off = { border: false, focusRing: true, shadow: false };
     assert.deepEqual(h.windows.get(a).decorations, off);
 
-    // A drag takes the window out, and it comes back as bento draws it.
+    // A dragged window stays the engine's, as the engine decorated it.
     h.drag(a, h.workspace(0).id, [{ x: 30, y: 30 }]);
-    assert.deepEqual(seen.map(([reason]) => reason), ["open", "drop"]);
-    assert.deepEqual(seen[1][1], ALL_ON);
+    assert.deepEqual(seen.map(([reason]) => reason), ["open"]);
+    assert.deepEqual(h.windows.get(a).decorations, off);
 
     // A new instance of the engine finds them on, and turns them off again if it wants.
     h.reload();
     assert.deepEqual(seen.at(-1), ["adopt", ALL_ON]);
     assert.deepEqual(h.windows.get(a).decorations, off);
-});
-
-// The API 1 adapter.
-
-/** A V1 engine that places every window in the same spot, and records what it's told. */
-function simple(log = []) {
-    return (ws) => ({
-        windowAdded(win, how) {
-            log.push(["added", win.id, how.reason, how.activate]);
-            ws.place(win, { x: 0, y: 0, w: 100, h: 100 });
-            if (how.activate) ws.focus(win);
-        },
-        windowRemoved(win, how) {
-            log.push(["removed", win.id, how.reason]);
-        },
-    });
-}
-
-test("an API 1 engine runs once for each workspace", () => {
-    let created = 0;
-    const h = hostV1(
-        (ws) => {
-            created++;
-            return simple()(ws);
-        },
-        { monitors: TWO_MONITORS },
-    );
-    assert.equal(created, 4);
-
-    h.addMonitor({ name: "DP-3", size: { w: 800, h: 600 }, scale: 1, workspaces: 1, position: { x: 2560, y: 0 } });
-    h.flush();
-    assert.equal(created, 5);
-});
-
-test("windows go to the instance of their workspace, and moves are a remove and an add", () => {
-    const logs = [];
-    let n = 0;
-    const h = hostV1((ws) => {
-        const log = [];
-        logs.push(log);
-        n++;
-        return simple(log)(ws);
-    });
-    assert.equal(n, 2);
-    const second = h.workspace(1).id;
-    const a = h.open();
-    const b = h.open({ workspace: second });
-    assert.deepEqual(logs[0], [["added", a, "open", true]]);
-    assert.deepEqual(logs[1], [["added", b, "open", true]]);
-    assert.deepEqual(h.rect(a), { x: 0, y: 0, w: 100, h: 100 });
-    assert.equal(h.workspaces.get(h.workspace(0).id).focused, a);
-
-    h.move(a, second, false);
-    assert.deepEqual(logs[0].at(-1), ["removed", a, "move"]);
-    assert.deepEqual(logs[1].at(-1), ["added", a, "move", false]);
-
-    h.close(a);
-    assert.deepEqual(logs[1].at(-1), ["removed", a, "close"]);
-});
-
-test("an API 1 engine gets the existing windows through adopt, with its saved state", () => {
-    const adopted = [];
-    const h = hostV1((ws) => ({
-        ...simple()(ws),
-        adopt(windows, focused, state) {
-            adopted.push([windows.map((w) => w.id), focused?.id ?? null, state]);
-            for (const win of windows) ws.place(win, win.rect);
-        },
-        save() {
-            return { saved: true };
-        },
-    }));
-    const a = h.open();
-    adopted.length = 0;
-
-    h.reload();
-    assert.deepEqual(adopted, [
-        [[a], a, { saved: true }],
-        [[], null, { saved: true }],
-    ]);
-});
-
-test("an API 1 engine's queries and actions work", () => {
-    const calls = [];
-    const h = hostV1(
-        (ws) => ({
-            ...simple()(ws),
-            action(name, args, target) {
-                calls.push([name, args, target?.id ?? null]);
-                return true;
-            },
-            newWindowSize(info) {
-                return { w: info.borders.w + 40, h: 50 };
-            },
-        }),
-        {},
-        { actions: { stuff: { args: [{ name: "n", type: "number", default: 1 }] } } },
-    );
-    const a = h.open();
-    h.action("stuff", 2);
-    assert.deepEqual(calls, [["stuff", [2], a]]);
-    assert.deepEqual(h.newWindowSize(undefined, { borders: { w: 4, h: 4 } }), { w: 44, h: 50 });
-});
-
-test("an API 1 engine's mode requests and activations are its own", () => {
-    const calls = [];
-    const h = hostV1((ws) => ({
-        ...simple()(ws),
-        modeRequested(win, mode, request) {
-            calls.push(["mode", win.id, mode, request]);
-            ws.setMode(win, mode);
-        },
-        activate(win) {
-            calls.push(["activate", win.id]);
-            ws.focus(win);
-        },
-    }));
-    const a = h.open();
-    const b = h.open();
-    h.requestMode(a, "maximized");
-    h.activate(a);
-    assert.deepEqual(calls, [
-        ["mode", a, "maximized", { maximized: true }],
-        ["activate", a],
-    ]);
-    assert.equal(h.mode(a), "maximized");
-    assert.equal(h.focused(), a);
-    assert.notEqual(a, b);
-});
-
-test("an API 1 engine decides about resizes, which are refused without resizeBegin", () => {
-    const refused = hostV1(simple());
-    const a = refused.open();
-    assert.equal(refused.resize(a, { right: true }, { x: 1, y: 0 }), false);
-
-    const seen = [];
-    const h = hostV1((ws) => ({
-        ...simple()(ws),
-        resizeBegin: (win, resize) => resize.edges.right,
-        resizeUpdate: (win, resize) => seen.push(resize.delta.x),
-        resizeEnd: () => seen.push("end"),
-    }));
-    const b = h.open();
-    assert.equal(h.resize(b, { left: true }, { x: 1, y: 0 }), false);
-    assert.equal(h.resize(b, { right: true }, { x: 5, y: 0 }), true);
-    assert.deepEqual(seen, [5, "end"]);
-});
-
-test("swipes move the camera for an API 1 engine, which gets gestureEnd", () => {
-    const seen = [];
-    const h = hostV1((ws) => ({
-        ...simple()(ws),
-        gestureBegin() {
-            seen.push("begin");
-            // Camera moves are ignored while the swipe moves it.
-            ws.moveCamera({ x: 999 });
-        },
-        gestureEnd(velocity, projected) {
-            seen.push([velocity.x, projected.x > ws.camera.x]);
-        },
-    }));
-    h.swipe(h.workspace(0).id, [10, 20], 100);
-    assert.deepEqual(h.camera(), { x: 30, y: 0, zoom: 1 });
-    assert.deepEqual(seen, ["begin", [100, true]]);
-});
-
-test("setHint draws a box that setHint(null) takes away", () => {
-    const h = hostV1(
-        (ws) => ({
-            ...simple()(ws),
-            action(name) {
-                ws.setHint(name === "hint" ? { x: 1, y: 2, w: 3, h: 4 } : null);
-                return true;
-            },
-        }),
-        {},
-        { actions: { hint: {}, unhint: {} } },
-    );
-    h.open();
-    const boxes = () => [...h.tree().nodes].filter(([, node]) => node.kind === "box");
-    h.action("hint");
-    assert.deepEqual(
-        boxes().map(([, node]) => node.props.rect),
-        [{ x: 1, y: 2, w: 3, h: 4 }],
-    );
-    h.action("unhint");
-    assert.equal(boxes().length, 0);
-});
-
-test("tab bars are drawn, and clicking a tab activates its window", () => {
-    const activated = [];
-    const h = hostV1(
-        (ws) => ({
-            ...simple()(ws),
-            action() {
-                ws.setTabBar("tabs", { area: { x: 100, y: 100, w: 200, h: 200 }, windows: ws.windows, active: ws.windows[0] });
-                return true;
-            },
-            activate(win) {
-                activated.push(win.id);
-            },
-        }),
-        {},
-        { actions: { tabs: {} } },
-    );
-    const a = h.open();
-    const b = h.open();
-    h.action("tabs");
-    const tabs = [...h.tree().nodes].filter(([, node]) => node.kind === "box" && node.props.interactive);
-    assert.equal(tabs.length, 2);
-    h.pointer(tabs[1][0], "click");
-    assert.deepEqual(activated, [b]);
-    assert.notEqual(a, b);
-
-    // A window that's gone leaves the tab bar.
-    h.close(b);
-    assert.equal([...h.tree().nodes].filter(([, node]) => node.kind === "box").length, 1);
-});
-
-test("an API 1 engine's drop target is drawn while a window is dragged", () => {
-    const h = hostV1((ws) => ({
-        ...simple()(ws),
-        dropTarget: (win, pointer) => ({ x: pointer.x, y: pointer.y, w: 5, h: 5 }),
-    }));
-    const a = h.open();
-    const ws = h.workspace(0).id;
-    const info = h.windowInfo(h.windows.get(a));
-    h.send({ type: "dragenter", workspace: ws, window: info, pointer: { x: 10, y: 20 }, rect: { x: 0, y: 0, w: 5, h: 5 } });
-    const boxes = () => [...h.tree().nodes].filter(([, node]) => node.kind === "box");
-    assert.deepEqual(boxes()[0][1].props.rect, { x: 10, y: 20, w: 5, h: 5 });
-    h.send({ type: "dragleave", workspace: ws });
-    assert.equal(boxes().length, 0);
-});
-
-test("setActiveInColumn has no effect on an API 1 window", () => {
-    let win;
-    const h = hostV1((ws) => ({
-        windowAdded(w) {
-            win = w;
-            ws.place(w, { x: 0, y: 0, w: 10, h: 10 });
-            ws.setActiveInColumn(w, true);
-        },
-        windowRemoved() {},
-    }));
-    h.open();
-    assert.equal(win.activeInColumn, null);
 });

@@ -275,8 +275,14 @@ fn an_overlay_surface_takes_the_keyboard_from_bentos_shell() {
     let name = f.niri_output(1).name();
     let mut scene = crate::scene::host::SceneHost::default();
     let outputs = [(name.clone(), (1920., 1080.))];
-    scene.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
-    scene.toggle_launcher(Some(name));
+    scene.ensure_loaded(
+        &outputs,
+        None,
+        crate::scene::host::UNIX,
+        None,
+        serde_json::json!({ "gaps": 8 }),
+    );
+    scene.shell_action("toggle-launcher", &[], Some(name));
     f.niri().scene = Some(scene);
     f.dispatch();
     assert!(f.niri().shell_holds_keyboard());

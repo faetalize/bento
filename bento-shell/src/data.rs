@@ -196,6 +196,7 @@ fn tray_item(item: &TrayItem, index: usize) -> Value {
     };
     json!({
         "id": item.id,
+        "name": item.name,
         "title": item.title,
         "icon": icon,
         "menu": item.item_is_menu,
@@ -407,7 +408,22 @@ pub fn run() -> glib::ExitCode {
                 "clipboard-clear" => clipboard.clear(),
                 "activate" => tray.activate(&item(), 0, 0),
                 "secondary" => tray.secondary_activate(&item(), 0, 0),
-                "context" => tray.context_menu(&item(), 0, 0),
+                // The app's menu, for the shell to draw. An item without one is asked to show
+                // its own, and the shell gets an empty one, with what it adds of its own.
+                "tray-menu" => {
+                    let (id, tray_) = (item(), tray.clone());
+                    tray.menu_json(&id.clone(), move |menu| {
+                        if menu.is_none() {
+                            tray_.context_menu(&id, 0, 0);
+                        }
+                        let menu = menu.unwrap_or_else(|| json!([]));
+                        say(&json!({ "type": "tray-menu", "id": id, "menu": menu }));
+                    });
+                }
+                "tray-menu-click" => {
+                    let picked = command["item"].as_i64().unwrap_or_default();
+                    tray.menu_clicked(&item(), i32::try_from(picked).unwrap_or_default());
+                }
                 "suspend" => power::suspend(),
                 "reboot" => power::reboot(),
                 "power-off" => power::power_off(),

@@ -336,10 +336,15 @@ fn connect(ui: &Rc<Ui>, window: &adw::ApplicationWindow) {
 
 impl Ui {
     /// Opens the page with this id. Returns false if there's none.
+    /// Opens a page by its id, or a place on it as `page#anchor`, like `binds#binds.engine`.
     pub fn open_page(self: &Rc<Self>, id: &str) -> bool {
+        let (id, anchor) = match id.split_once('#') {
+            Some((id, anchor)) => (id, Some(anchor.to_owned())),
+            None => (id, None),
+        };
         match self.categories.iter().position(|c| c.id == id) {
             Some(idx) => {
-                self.show(idx, None);
+                self.show(idx, anchor);
                 true
             }
             None => false,
@@ -358,10 +363,24 @@ impl Ui {
         let category = self.categories[idx];
         if self.built.borrow_mut().insert(idx) {
             let content = match &category.content {
-                Content::Settings(groups) => page::frame(&page::settings_page(groups, &self.ctx)),
-                Content::Custom { build, .. } => page::frame(&build(&self.ctx)),
+                Content::Settings(groups) => page::settings_page(groups, &self.ctx),
+                Content::Custom { build, .. } => build(&self.ctx),
                 Content::Planned => unreachable!("planned pages stay out of the sidebar"),
             };
+            // What the engine and the shell declare for the page goes after its own, but on the
+            // Engine and Shell pages, which place it themselves.
+            let content = match category.id {
+                id if niri_config::SETTINGS_PAGES.contains(&id)
+                    && !matches!(id, "engine" | "shell") =>
+                {
+                    let column = gtk::Box::new(gtk::Orientation::Vertical, 24);
+                    column.append(&content);
+                    column.append(&crate::pages::placed(&self.ctx, id));
+                    column.upcast()
+                }
+                _ => content,
+            };
+            let content = page::frame(&content);
             self.pages.add_named(&content, Some(category.id));
         }
         self.pages.set_visible_child_name(category.id);
@@ -424,8 +443,16 @@ impl Ui {
     }
 }
 
-/// Scrolls a widget into view and flashes it, opening the expander row it's in first.
+/// Scrolls a widget into view and flashes it, showing the stack page it's on, like a tab, and
+/// opening the expander row it's in first.
 fn reveal(widget: &gtk::Widget) {
+    let mut child = widget.clone();
+    while let Some(parent) = child.parent() {
+        if let Some(stack) = parent.downcast_ref::<gtk::Stack>() {
+            stack.set_visible_child(&child);
+        }
+        child = parent;
+    }
     let expander = widget
         .parent()
         .and_then(|parent| parent.ancestor(adw::ExpanderRow::static_type()))

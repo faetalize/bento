@@ -25,3 +25,10 @@ pub fn version() -> Result<String, String> {
         _ => Err(String::from("bento sent an unexpected reply")),
     }
 }
+
+pub fn shell() -> Result<bento_ipc::Shell, String> {
+    match request(Request::Get { what: Get::Shell })? {
+        Response::Shell(shell) => Ok(shell),
+        _ => Err(String::from("bento sent an unexpected reply")),
+    }
+}

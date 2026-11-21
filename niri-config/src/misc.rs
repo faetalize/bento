@@ -25,15 +25,74 @@ pub struct Shell {
     /// written `built-in false`, the way bento Settings turns it off.
     #[knuffel(child)]
     pub built_in: Option<Flag>,
-    /// Temperatures in Fahrenheit rather than Celsius.
+    /// Which shell bento draws: one of its own by name, `"unix"` or `"windows"`, or a file of
+    /// one's own, by its path, with the file of its settings and binds next to it:
+    /// `script "~/my-shell.tsx" settings="~/.config/bento/shells/my-shell.kdl"`. bento's own
+    /// `"unix"` when it's left out.
     #[knuffel(child)]
-    pub fahrenheit: bool,
-    /// What the control center's screenshot button runs, rather than bento's own screenshot.
-    #[knuffel(child)]
-    pub screenshot: Option<ShellCommand>,
-    /// What the control center's screen record button runs.
-    #[knuffel(child)]
-    pub screen_record: Option<ShellCommand>,
+    pub script: Option<ShellScriptNode>,
+}
+
+/// The `script` node of [`Shell`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellScriptNode {
+    /// The shell, as written.
+    pub name: String,
+    /// The file of a shell file's settings and binds, as written. bento's own shells share
+    /// `shell.kdl` next to the config instead.
+    pub settings: Option<String>,
+}
+
+impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for ShellScriptNode {
+    fn decode_node(
+        node: &knuffel::ast::SpannedNode<S>,
+        ctx: &mut knuffel::decode::Context<S>,
+    ) -> Result<Self, knuffel::errors::DecodeError<S>> {
+        use knuffel::errors::DecodeError;
+        let mut arguments = node.arguments.iter();
+        let name: String = match arguments.next() {
+            Some(value) => knuffel::traits::DecodeScalar::decode(value, ctx)?,
+            None => return Err(DecodeError::missing(node, "the shell's name or path")),
+        };
+        for value in arguments {
+            ctx.emit_error(DecodeError::unexpected(
+                &value.literal,
+                "argument",
+                "a shell is one name or path",
+            ));
+        }
+        if let Some(child) = node.children().next() {
+            ctx.emit_error(DecodeError::unexpected(
+                child,
+                "node",
+                "a shell has no children",
+            ));
+        }
+        let mut settings = None;
+        for (property, value) in &node.properties {
+            if &***property != "settings" {
+                ctx.emit_error(DecodeError::unexpected(
+                    property,
+                    "property",
+                    format!("unexpected property `{}`", property.escape_default()),
+                ));
+                continue;
+            }
+            if matches!(
+                ShellScript::from_config(Some(&name)),
+                ShellScript::BuiltIn(_)
+            ) {
+                ctx.emit_error(DecodeError::unexpected(
+                    property,
+                    "property",
+                    "bento's own shells' settings are always in `shell.kdl` next to this config",
+                ));
+                continue;
+            }
+            settings = Some(knuffel::traits::DecodeScalar::decode(value, ctx)?);
+        }
+        Ok(Self { name, settings })
+    }
 }
 
 impl Shell {
@@ -41,18 +100,82 @@ impl Shell {
     pub fn built_in(&self) -> bool {
         self.built_in.is_some_and(|flag| flag.0)
     }
+
+    /// Which shell bento draws.
+    pub fn script(&self) -> ShellScript {
+        ShellScript::from_config(self.script.as_ref().map(|s| s.name.as_str()))
+    }
+
+    /// The file of the shell's settings and binds, with `dir` the folder of the user's config:
+    /// bento's own shells share `shell.kdl` there, and a shell file's is the one the config names
+    /// next to it, if any, with `~` for the home folder and relative to `dir`.
+    pub fn settings_file(&self, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        match self.script() {
+            ShellScript::BuiltIn(_) => Some(dir.join("shell.kdl")),
+            ShellScript::File(_) => {
+                let written = self.script.as_ref()?.settings.as_deref()?;
+                let path = std::path::Path::new(written);
+                Some(match path.strip_prefix("~") {
+                    Ok(rest) => {
+                        std::env::home_dir().map_or_else(|| path.to_owned(), |h| h.join(rest))
+                    }
+                    Err(_) => dir.join(path),
+                })
+            }
+        }
+    }
 }
 
-/// A command one of the shell's buttons runs, with `sh -c`, and the notification it shows once
-/// the command is done, if it has a title.
-#[derive(knuffel::Decode, Debug, Default, Clone, PartialEq, Eq)]
-pub struct ShellCommand {
-    #[knuffel(child, unwrap(argument))]
-    pub command: Option<String>,
-    #[knuffel(child, unwrap(argument))]
-    pub notification: Option<String>,
-    #[knuffel(child, unwrap(argument))]
-    pub notification_body: Option<String>,
+/// The file of the shell's settings and binds for the config at `config_path`, as bento Settings
+/// finds it: the same file bento reads, which [`shell_settings_path_in`] finds as the config is
+/// parsed.
+pub fn shell_settings_path(
+    config_path: &std::path::Path,
+    config: &crate::Config,
+) -> Option<std::path::PathBuf> {
+    let dir = config_path.parent().unwrap_or(std::path::Path::new(""));
+    shell_settings_path_in(dir, config.shell.as_ref())
+}
+
+/// The file of the shell's settings and binds for a config read from the folder `dir`, with
+/// `shell` its `shell` section: see [`Shell::settings_file`].
+pub fn shell_settings_path_in(
+    dir: &std::path::Path,
+    shell: Option<&Shell>,
+) -> Option<std::path::PathBuf> {
+    shell.cloned().unwrap_or_default().settings_file(dir)
+}
+
+/// Which shell bento draws, the way the config names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellScript {
+    /// One of bento's own shells, by name.
+    BuiltIn(String),
+    /// A shell file, by its path as written, which can start with `~`.
+    File(std::path::PathBuf),
+}
+
+impl ShellScript {
+    /// The shell bento draws when the config names none.
+    pub const DEFAULT: &str = "unix";
+
+    /// The shell that `script` names: a path when it has a `/` or a script's extension, one of
+    /// bento's own otherwise.
+    pub fn from_config(script: Option<&str>) -> Self {
+        let script = script.map(str::trim).filter(|s| !s.is_empty());
+        match script {
+            None => Self::BuiltIn(String::from(Self::DEFAULT)),
+            Some(script)
+                if script.contains('/')
+                    || [".tsx", ".ts", ".jsx", ".js"]
+                        .iter()
+                        .any(|e| script.ends_with(e)) =>
+            {
+                Self::File(std::path::PathBuf::from(script))
+            }
+            Some(name) => Self::BuiltIn(String::from(name)),
+        }
+    }
 }
 
 /// Where the user is, for what depends on it, like the weather.

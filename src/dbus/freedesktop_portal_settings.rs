@@ -4,11 +4,15 @@ use futures_util::StreamExt;
 use niri_config::Color;
 use zbus::zvariant::{OwnedValue, Value};
 
+use crate::layout::TitleButtons;
+
 const NAMESPACE: &str = "org.gnome.desktop.interface";
 const ICON_THEME: &str = "icon-theme";
 const APPEARANCE: &str = "org.freedesktop.appearance";
 const ACCENT_COLOR: &str = "accent-color";
 const COLOR_SCHEME: &str = "color-scheme";
+const WM: &str = "org.gnome.desktop.wm.preferences";
+const BUTTON_LAYOUT: &str = "button-layout";
 
 pub enum PortalSettingsToNiri {
     /// The icon theme from GNOME's interface settings; `None` if the portal has no value for it.
@@ -17,6 +21,8 @@ pub enum PortalSettingsToNiri {
     AccentColor(Option<Color>),
     /// Whether the person prefers dark style.
     Dark(bool),
+    /// The buttons title bars have on each side; `None` if the portal has no value for it.
+    TitleButtons(Option<TitleButtons>),
 }
 
 /// The message for a setting the portal gave, if it's one bento follows.
@@ -25,6 +31,9 @@ fn message(namespace: &str, key: &str, value: &Value) -> Option<PortalSettingsTo
         (NAMESPACE, ICON_THEME) => Some(PortalSettingsToNiri::IconTheme(string_of(value))),
         (APPEARANCE, ACCENT_COLOR) => Some(PortalSettingsToNiri::AccentColor(color_of(value))),
         (APPEARANCE, COLOR_SCHEME) => Some(PortalSettingsToNiri::Dark(dark_of(value))),
+        (WM, BUTTON_LAYOUT) => Some(PortalSettingsToNiri::TitleButtons(
+            string_of(value).map(|layout| TitleButtons::parse(&layout)),
+        )),
         _ => None,
     }
 }
@@ -67,7 +76,8 @@ fn string_of(value: &Value) -> Option<String> {
     }
 }
 
-/// Follows the settings portal for the icon theme, which apps read the same way.
+/// Follows the settings portal for the icon theme, the accent colour, the colour scheme and the
+/// title bar buttons, which apps read the same way.
 pub fn start(
     to_niri: calloop::channel::Sender<PortalSettingsToNiri>,
 ) -> anyhow::Result<zbus::blocking::Connection> {
@@ -98,7 +108,7 @@ pub fn start(
             }
         };
 
-        let namespaces: &[&str] = &[NAMESPACE, APPEARANCE];
+        let namespaces: &[&str] = &[NAMESPACE, APPEARANCE, WM];
         let all: zbus::Result<HashMap<String, HashMap<String, OwnedValue>>> =
             proxy.call("ReadAll", &(namespaces,)).await;
         match all {
@@ -114,11 +124,20 @@ pub fn start(
                 let dark = appearance
                     .and_then(|settings| settings.get(COLOR_SCHEME))
                     .is_some_and(|value| dark_of(value));
-                trace!("initial icon theme: {theme:?}, accent colour: {accent:?}, dark: {dark}");
+                let buttons = all
+                    .get(WM)
+                    .and_then(|settings| settings.get(BUTTON_LAYOUT))
+                    .and_then(|value| string_of(value))
+                    .map(|layout| TitleButtons::parse(&layout));
+                trace!(
+                    "initial icon theme: {theme:?}, accent colour: {accent:?}, dark: {dark}, \
+                     title buttons: {buttons:?}"
+                );
                 for msg in [
                     PortalSettingsToNiri::IconTheme(theme),
                     PortalSettingsToNiri::AccentColor(accent),
                     PortalSettingsToNiri::Dark(dark),
+                    PortalSettingsToNiri::TitleButtons(buttons),
                 ] {
                     if let Err(err) = to_niri.send(msg) {
                         warn!("error sending message to niri: {err:?}");

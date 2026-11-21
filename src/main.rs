@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::FromRawFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::{env, mem};
@@ -113,14 +113,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         anyhow::anyhow!("the layout engine doesn't match the config").into(),
                     );
                 }
+                // Which chords another action takes over, with bento's and the engine's defaults:
+                // no shell runs here, so the shell's aren't known.
                 let mod_key = config.input.mod_key.unwrap_or(niri_config::ModKey::Super);
-                for bind in &config.taken_over.0 {
-                    let key = niri::ui::hotkey_overlay::key_name(false, mod_key, &bind.key);
-                    let file = config.bind_files.get(&bind.key).unwrap_or(Path::new("?"));
-                    info!(
-                        "{key} is bound in {} too, which takes it over",
-                        file.display()
-                    );
+                let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
+                defaults.extend(niri::layout::tiling::engine::default_binds());
+                let resolved =
+                    niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &defaults);
+                for taken in &resolved.taken_over {
+                    let key = niri::ui::hotkey_overlay::key_name(false, mod_key, &taken.bind.key);
+                    let whose = if taken.default { "default" } else { "bind" };
+                    let by = match taken.by {
+                        niri_config::bind_set::Declarer::Bento => "bento's",
+                        niri_config::bind_set::Declarer::Engine => "the engine's",
+                        niri_config::bind_set::Declarer::Shell => "the shell's",
+                    };
+                    info!("{key}: {by} bind takes it over from a {whose}");
                 }
                 info!("config is valid");
                 return Ok(());
