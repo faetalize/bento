@@ -472,6 +472,14 @@ export class Window extends EventTarget {
         return true;
     }
 
+    close() {
+        this.#check();
+        if (!this.#s.querying) {
+            this.#s.rec.ops.push({ op: "closeWindow", window: this.#d.id });
+        }
+        return true;
+    }
+
     moveTo(workspace) {
         this.#check();
         const target = this.#s.workspaces.get(workspace?.id);

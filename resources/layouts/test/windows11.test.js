@@ -951,3 +951,54 @@ test("bento's own group actions show as tabs too", async () => {
     assert.deepEqual(h.rect(a), h.rect(b));
     assert.equal(h.exposedState().groups[0].tabs, true);
 });
+
+test("a tab lights up under the pointer, and its window's preview shows after a second", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    h.drag(b, h.activeWorkspace().id, [{ x: 400, y: 300 }, ABOVE]);
+    const tab = () => h.tree().node(tabOf(h, "A"));
+    const copies = () => h.tree().order().filter((id) => h.tree().node(id).kind === "copy");
+
+    h.pointer(tabOf(h, "A"), "pointerenter");
+    assert.equal(tab().props.background, "#ffffff12");
+    h.advanceTime(900);
+    assert.deepEqual(copies(), []);
+    h.advanceTime(100);
+    assert.equal(copies().length, 1);
+    assert.equal(h.tree().node(copies()[0]).props.window, a);
+
+    // Leaving takes the preview away and puts the tab back as it was.
+    h.pointer(tabOf(h, "A"), "pointerleave");
+    assert.deepEqual(copies(), []);
+    assert.equal(tab().props.background, null);
+
+    // The active tab is on screen already: it lights up, with no preview.
+    h.pointer(tabOf(h, "B"), "pointerenter");
+    h.advanceTime(1000);
+    assert.deepEqual(copies(), []);
+});
+
+test("a tab's close button asks its window's app to close it", async () => {
+    const h = await load();
+    h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    h.drag(b, h.activeWorkspace().id, [{ x: 400, y: 300 }, ABOVE]);
+    const group = groupOf(h, b);
+    const close = textNode(h, "✕");
+    // The first ✕ is a tab's, before the group's own buttons; find the one inside B's tab.
+    const inTab = h
+        .tree()
+        .order()
+        .filter((id) => h.tree().node(id).props.text === "✕")
+        .map((id) => h.tree().node(id).parent)
+        .find((button) => h.tree().node(button).parent === tabOf(h, "B"));
+    assert.ok(close !== undefined && inTab !== undefined);
+
+    // Pressing it neither picks nor drags the tab.
+    h.pointer(inTab, "pointerdown");
+    assert.equal(h.takeGrab(), null);
+    h.pointer(inTab, "click");
+    assert.deepEqual(h.closeRequests, [b]);
+    assert.deepEqual(groupOf(h, b).windows, group.windows);
+});

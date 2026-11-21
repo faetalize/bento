@@ -169,6 +169,14 @@ const TAB_INSET = 4;
 const ICON = 16;
 const TAB_TEXT = 18;
 const TAB_DIM = "#ffffff99";
+/** An inactive tab under the pointer. */
+const TAB_HOVER = "#ffffff12";
+/** How large a tab's close button is. */
+const TAB_CLOSE = 20;
+/** How long the pointer rests on a tab before its window's preview shows, in ms. */
+const PREVIEW_DELAY = 1000;
+/** The largest a tab's window is drawn in its preview. */
+const TAB_PREVIEW = { w: 320, h: 200 };
 /** About how wide a button's glyph is drawn. */
 const GLYPH = 10;
 /** What a group's buttons show; close ungroups. */
@@ -1464,8 +1472,70 @@ export default function create(bento) {
     }
 
     function removeStrip(id) {
+        if (hover?.group === id) endHover();
         strips.get(id)?.remove();
         strips.delete(id);
+    }
+
+    /**
+     * The tab under the pointer: its group and window, the timer that shows its window's
+     * preview, and the preview once it shows.
+     */
+    let hover = null;
+
+    /** The pointer came onto `win`'s tab at `tab`: its preview shows once the pointer rests. */
+    function startHover(group, win, tab) {
+        endHover();
+        const timer = bento.setTimeout(() => showTabPreview(win, tab), PREVIEW_DELAY);
+        hover = { group: group.id, win: win.id, timer, card: null };
+    }
+
+    /** The pointer left the tab, pressed it, or the tab is gone: no preview. */
+    function endHover() {
+        if (hover === null) return;
+        bento.clearTimeout(hover.timer);
+        hover.card?.remove();
+        hover = null;
+    }
+
+    /**
+     * A preview of `win` under its tab at `tab`, of an inactive tab: its window, live and scaled
+     * down, on a card like the strip's.
+     */
+    function showTabPreview(win, tab) {
+        const group = win.group;
+        const strip = group === null ? undefined : strips.get(group.id);
+        if (hover === null || strip === undefined || strip.parent === null || group.active === win) {
+            return;
+        }
+        const { w, h } = win.size;
+        const scale = Math.min(TAB_PREVIEW.w / Math.max(w, 1), TAB_PREVIEW.h / Math.max(h, 1), 1);
+        const inner = { w: Math.round(w * scale), h: Math.round(h * scale) };
+        const area = group.active.workspace.monitor.workingArea;
+        const card = {
+            x: clamp(tab.x, area.x, area.x + area.w - inner.w - 2 * PAD),
+            y: strip.props.rect.y + strip.props.rect.h + TAB_GAP,
+            w: inner.w + 2 * PAD,
+            h: inner.h + 2 * PAD,
+        };
+        const node = bento.createNode("box", {
+            rect: card,
+            cornerRadius: RADIUS,
+            background: PANEL,
+            border: { width: 1, color: PANEL_EDGE },
+            opacity: 0,
+            transitions: { opacity: MOTION },
+        });
+        node.append(
+            bento.createNode("copy", {
+                rect: { x: card.x + PAD, y: card.y + PAD, w: inner.w, h: inner.h },
+                window: win,
+                cornerRadius: THUMB_RADIUS,
+            }),
+        );
+        strip.parent.append(node);
+        node.set({ opacity: 1 });
+        hover.card = node;
     }
 
     /**
@@ -1517,18 +1587,31 @@ export default function create(bento) {
         const room = end - start - (windows.length - 1) * TAB_GAP;
         const w = Math.max(1, Math.min(TAB_MAX, Math.floor(room / windows.length)));
         const h = size;
+        // Its tabs are drawn anew, so a preview of one of them goes.
+        if (hover?.group === group.id) endHover();
         windows.forEach((win, i) => {
             const tab = { x: start + i * (w + TAB_GAP), y: rect.y + TAB_INSET, w, h };
+            const lit = win === active ? HIGHLIGHT : null;
             const node = bento.createNode("box", {
                 rect: tab,
                 cornerRadius: RADIUS - 4,
-                background: win === active ? HIGHLIGHT : null,
+                background: lit,
                 interactive: true,
                 clip: true,
+                transitions: { background: MOTION },
             });
             node.addEventListener("pointerdown", (e) => {
                 e.stopPropagation();
+                endHover();
                 pressTab(win, e);
+            });
+            node.addEventListener("pointerenter", () => {
+                if (win !== group.active) node.set({ background: TAB_HOVER });
+                startHover(group, win, tab);
+            });
+            node.addEventListener("pointerleave", () => {
+                node.set({ background: lit });
+                if (hover?.win === win.id) endHover();
             });
             node.append(
                 bento.createNode("image", {
@@ -1541,12 +1624,20 @@ export default function create(bento) {
                     rect: {
                         x: tab.x + 16 + ICON,
                         y: tab.y + (h - TAB_TEXT) / 2,
-                        w: w - 24 - ICON,
+                        w: Math.max(0, w - 28 - ICON - TAB_CLOSE),
                         h: TAB_TEXT,
                     },
                     text: win.title ?? win.appId ?? "",
                     font: FONT,
                     color: win === active ? TEXT : TAB_DIM,
+                }),
+            );
+            node.append(
+                closeTab(win, {
+                    x: tab.x + w - 4 - TAB_CLOSE,
+                    y: tab.y + (h - TAB_CLOSE) / 2,
+                    w: TAB_CLOSE,
+                    h: TAB_CLOSE,
                 }),
             );
             strip.append(node);
@@ -1564,6 +1655,39 @@ export default function create(bento) {
         const known = (names) => (names ?? []).filter((name) => BUTTONS[name] !== undefined);
         if (given === null) return { left: [], right: ["minimize", "maximize", "close"] };
         return { left: known(given.left), right: known(given.right) };
+    }
+
+    /** A tab's close button at `rect`, which asks `win`'s app to close it. */
+    function closeTab(win, rect) {
+        const node = bento.createNode("box", {
+            rect,
+            cornerRadius: RADIUS - 6,
+            interactive: true,
+            transitions: { background: MOTION },
+        });
+        // The press is the button's, not the tab's, so it doesn't pick or drag the tab.
+        node.addEventListener("pointerdown", (e) => e.stopPropagation());
+        node.addEventListener("pointerenter", () => node.set({ background: HIGHLIGHT }));
+        node.addEventListener("pointerleave", () => node.set({ background: null }));
+        node.addEventListener("click", (e) => {
+            e.stopPropagation();
+            endHover();
+            win.close();
+        });
+        node.append(
+            bento.createNode("text", {
+                rect: {
+                    x: rect.x + (rect.w - GLYPH) / 2,
+                    y: rect.y + (rect.h - TAB_TEXT) / 2,
+                    w: GLYPH + 4,
+                    h: TAB_TEXT,
+                },
+                text: BUTTONS.close,
+                font: FONT,
+                color: TAB_DIM,
+            }),
+        );
+        return node;
     }
 
     /** One of a group's buttons, `name` from `BUTTONS`, at `rect`. */

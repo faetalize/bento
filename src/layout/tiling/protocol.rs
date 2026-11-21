@@ -336,6 +336,10 @@ pub enum Op {
         window: u64,
         workspace: u64,
     },
+    /// Ask the app to close the window.
+    CloseWindow {
+        window: u64,
+    },
     CreateGroup {
         id: u64,
         windows: Vec<u64>,

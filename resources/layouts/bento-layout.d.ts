@@ -671,6 +671,11 @@ export interface Window extends EventTarget<WindowEvents> {
     focus(): boolean;
     /** Draws it above its siblings in the tree. */
     raise(): boolean;
+    /**
+     * Asks its app to close it, as bento's close action does, like a close button the engine
+     * draws. The app may ask first, or refuse; the window's `remove` comes when it closes.
+     */
+    close(): boolean;
     /** Moves it to another workspace, on any monitor. The engine places it there. */
     moveTo(workspace: Workspace): boolean;
     /** Tells it to be fullscreen, maximized or normal. The engine still places it. */

@@ -2981,3 +2981,27 @@ fn engines_see_the_title_buttons_and_hear_when_they_change() {
     assert_eq!(state()["changes"], 1);
     assert!(!layout.set_title_buttons(Some(TitleButtons::parse("close:maximize"))));
 }
+
+/// An engine that places windows and closes the focused one with its action.
+const CLOSING: &str = r#"
+export const meta = { api: 2, name: "closing", actions: { close: {} } };
+export default function create(bento) {
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 0, y: 0, w: 100, h: 100 });
+        e.window.focus();
+    });
+    bento.addEventListener("action", (e) => e.window?.close());
+}
+"#;
+
+#[test]
+fn an_engine_can_ask_to_close_a_window_which_bento_takes_once() {
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("closing", CLOSING), ops);
+    assert_eq!(layout.take_closes(), [] as [usize; 0]);
+
+    check_ops_on_layout(&mut layout, [action("close")]);
+    assert_eq!(layout.take_closes(), [1]);
+    assert_eq!(layout.take_closes(), [] as [usize; 0]);
+}

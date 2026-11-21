@@ -935,6 +935,14 @@ impl State {
         // layout.refresh() since this is where these surfaces handle commits.
         self.notify_blocker_cleared();
 
+        // Windows the layout engine asked to close: their apps are asked, as by the close action.
+        for window in self.niri.layout.take_closes() {
+            if let Some((_, mapped)) = self.niri.layout.windows().find(|(_, m)| m.window == window)
+            {
+                mapped.toplevel().send_close();
+            }
+        }
+
         // These should be called periodically, before flushing the clients.
         self.niri.popups.cleanup();
         self.refresh_popup_grab();

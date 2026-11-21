@@ -275,6 +275,8 @@ pub struct Host {
     drag: Option<Drag>,
     /// What the layout asked to start with the pointer, until the input code takes it.
     grab: Option<Grab>,
+    /// Windows the layout asked to close, until bento takes them, see [`Layout::take_closes`].
+    closes: Vec<u64>,
     /// Whether events are being sent, which carrying out what the layout answers doesn't start
     /// again.
     flushing: bool,
@@ -312,6 +314,7 @@ impl Host {
         self.resend_windows.clear();
         self.drag = None;
         self.grab = None;
+        self.closes.clear();
         self.instance += 1;
         // The layout that held the keyboard and waited for timers is gone, and isn't told.
         self.keyboard_grabbed = false;
@@ -1024,6 +1027,7 @@ impl<W: LayoutElement> Layout<W> {
                 self.groups.activate(group, window);
             }
             Op::DissolveGroup { group } => self.groups.dissolve(group),
+            Op::CloseWindow { window } => self.host.closes.push(window),
             Op::Search { scope } => self.start_search(scope),
             Op::EndSearch => self.forget_search(),
         }
@@ -1598,6 +1602,15 @@ impl<W: LayoutElement> Layout<W> {
             "modifiers": modifiers_json(modifiers),
             "delta": Xy::from_point(delta),
         }));
+    }
+
+    /// The windows that the layout asked to close since bento last took them, for bento to ask
+    /// their apps, as its own close action does.
+    pub fn take_closes(&mut self) -> Vec<W::Id> {
+        std::mem::take(&mut self.host.closes)
+            .into_iter()
+            .filter_map(|window| self.window_by_engine_id(window))
+            .collect()
     }
 
     /// The move or resize that the layout began while it handled the last press on one of its

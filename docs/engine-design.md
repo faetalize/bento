@@ -348,7 +348,9 @@ direction.
 
 An engine can turn off, per window, the border, focus ring and shadow that bento draws around
 it, to draw its own decorations instead. An engine that draws title bars sees which buttons the
-desktop's settings put on each side, like GNOME's button layout, and hears when they change.
+desktop's settings put on each side, like GNOME's button layout, and hears when they change. It
+can ask a window's app to close it, as bento's close action does, like from a close button it
+draws.
 
 ### Engines decide whether focus follows the pointer
 

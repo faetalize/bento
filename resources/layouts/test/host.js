@@ -85,6 +85,8 @@ export class TestHost {
         this.monitors = new Map();
         this.workspaces = new Map();
         this.windows = new Map();
+        /** Windows the engine asked to close, in order; the test closes them, like their apps. */
+        this.closeRequests = [];
         /** Groups of windows, which bento owns: `{ id, windows, active }`. */
         this.groups = [];
         this.nextGroupId = 1;
@@ -475,6 +477,9 @@ export class TestHost {
                     break;
                 case "moveWindow":
                     this.moveWindow(op.window, op.workspace);
+                    break;
+                case "closeWindow":
+                    this.closeRequests.push(op.window);
                     break;
                 case "createGroup":
                     this.createGroup(op.id, op.windows, op.active);
