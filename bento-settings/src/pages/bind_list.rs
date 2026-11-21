@@ -39,6 +39,8 @@ pub struct Sources {
     /// The parsed config's binds, those of included files too, with their files.
     pub binds: Vec<Bind>,
     pub bind_files: BindFiles,
+    /// The files the config includes, as they're written, for how their binds write them.
+    pub include_files: Vec<(PathBuf, Document)>,
     /// Every action the config turns off.
     pub unbound: Vec<Action>,
     /// The shell's file's binds and the actions it turns off, parsed.
@@ -515,17 +517,28 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
         let Some(action) = bind_set::action_of(bind) else {
             continue;
         };
-        let node = ActionNode {
-            name: format!("{action:?}"),
-            args: Vec::new(),
-            properties: Vec::new(),
-        };
+        // As the file writes it, so it's listed by its action's title.
+        let written = src
+            .include_files
+            .iter()
+            .filter(|(file, _)| file == path)
+            .flat_map(|(_, doc)| doc.binds())
+            .find(|b| b.key.parse::<Key>().is_ok_and(|key| key == bind.key));
+        let node = written
+            .as_ref()
+            .and_then(|b| b.action.clone())
+            .unwrap_or_else(|| ActionNode {
+                name: format!("{action:?}"),
+                args: Vec::new(),
+                properties: Vec::new(),
+            });
+        let text = written.map_or_else(|| format!("{:?}", bind.key), |b| b.key);
         let i = at(&mut list, action.clone(), node);
         user.push((
             i,
             EntryBind {
                 key: bind.key,
-                text: format!("{:?}", bind.key),
+                text,
                 source: Source::Include(path.to_path_buf()),
                 bind: None,
                 taken: None,
@@ -775,6 +788,7 @@ mod tests {
             engine_path: Some(PathBuf::from("engines/bento.kdl")),
             binds: config.binds.0,
             bind_files: config.bind_files,
+            include_files: Vec::new(),
             unbound: config.unbound,
             shell_binds: shell_settings.binds.into_iter().map(|(_, b)| b).collect(),
             shell_unbound: shell_settings.unbound.into_iter().map(|(_, a)| a).collect(),
@@ -793,6 +807,32 @@ mod tests {
             .filter(|name| name != SHELL_ACTION && general_group(name) == "Other")
             .collect();
         assert!(ungrouped.is_empty(), "{ungrouped:?}");
+    }
+
+    #[test]
+    fn a_bind_of_an_included_file_is_listed_as_the_file_writes_it() {
+        let mut src = sources("");
+        let written = "binds {\n    Mod+F12 { spawn \"foo\"; }\n}\n";
+        let mut bind = Config::parse_mem(written).unwrap().binds.0.remove(0);
+        let path = PathBuf::from("/home/me/.config/bento/other.kdl");
+        src.bind_files.0.push((bind.key, path.clone()));
+        bind.allow_when_locked = false;
+        src.binds.push(bind);
+        src.include_files
+            .push((path.clone(), Document::parse(written.to_owned()).unwrap()));
+
+        let list = entries(&src);
+        let entry = list
+            .iter()
+            .find(|e| {
+                e.binds
+                    .iter()
+                    .any(|b| b.source == Source::Include(path.clone()))
+            })
+            .unwrap();
+        assert_eq!(entry.node.text(), "spawn \"foo\"");
+        assert_eq!(entry.binds[0].text, "Mod+F12");
+        assert_eq!(entry.title(), "Run a program");
     }
 
     #[test]

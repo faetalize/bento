@@ -81,10 +81,27 @@ fn sources(store: &Store) -> Sources {
         engine_path,
         binds: config.binds.0.clone(),
         bind_files: config.bind_files.clone(),
+        include_files: include_files(&config.bind_files, store),
         unbound: config.unbound.clone(),
         shell_binds: shell_settings.binds.into_iter().map(|(_, b)| b).collect(),
         shell_unbound: shell_settings.unbound.into_iter().map(|(_, a)| a).collect(),
     }
+}
+
+/// The files the config includes binds from, but the config and the engine's file, as written.
+fn include_files(
+    bind_files: &niri_config::BindFiles,
+    store: &Store,
+) -> Vec<(std::path::PathBuf, crate::kdl::Document)> {
+    let mut files: Vec<(std::path::PathBuf, crate::kdl::Document)> = Vec::new();
+    for (_, path) in &bind_files.0 {
+        let ours = path == store.config_path() || store.engine_path().as_ref() == Some(path);
+        if ours || files.iter().any(|(file, _)| file == path) {
+            continue;
+        }
+        files.push((path.clone(), bind_list::read(path)));
+    }
+    files
 }
 
 /// The title of a section of the page.
