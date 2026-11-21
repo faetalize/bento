@@ -129,11 +129,13 @@ its description and arguments, as an engine's are. A bind runs it with
 `shell-action "name" args…`. The module that declares an action handles it, like the launcher's
 `toggle-launcher` and the start menu's `toggle-start-menu`, so a shell without a launcher has no
 action for one. bento's own list of actions has only what bento does itself. A shell program
-outside bento gets the `shell-action` binds too, by name, and handles the ones it has.
+outside bento gets the `shell-action` binds too, by name, and handles the ones it has; nothing
+in bento declares those, so they're the user's own, in the main config's `binds {}`.
 
 An action can come with binds, like the start menu's Mod alone, the launcher's Mod+D and the
 clipboard's Mod+V, as engines' actions can: they're bound while the module runs, and the user's
-changes to them go in the main config. How defaults, changes and chords claimed twice work is the
+changes to them go in the block of whoever declares them, next to its settings, the way an
+engine's go in its file. How defaults, changes and chords claimed twice work is the
 same for every declarer; see "Binds: defaults stay with whoever declares them" in
 `engine-design.md`.
 
@@ -141,8 +143,23 @@ What the user chooses is a setting, and what a shell notes for itself as it's us
 Disturb or what's been seen, is state. Something the shell writes as it's used and the user chose,
 like pinned apps, is a setting.
 
-Settings are kept in `~/.config/bento/shell/settings.kdl`, a block for each module and each shell
-by its name. They're the user's. What a shell prefers for a module it uses, like a clock on two
+bento's own shells keep their settings, and the user's binds for their actions, in
+`~/.config/bento/shell.kdl`: a block for each module and each shell by its name, with its
+settings and its binds. A module's block applies to whichever of bento's shells runs. The
+file is the user's, and holds only what the user changed: the defaults stay in the shells and
+their modules.
+
+A shell of one's own is a step out of bento's defaults, and has a file of its own, chosen as it's
+picked, the way a custom engine's is. Switching to it in bento Settings, by picking its file or
+making a copy of one of bento's, asks where its settings come from: "Start Fresh" makes an empty
+file in `~/.config/bento/shells/`, named after the shell's file, with a number if that name is
+taken, and "Use a Backup…" picks a `.kdl` the user has. The config names it next to the shell,
+`shell { script "~/my-shell.tsx" settings="~/.config/bento/shells/my-shell.kdl" }`. Its modules'
+settings and binds under it stay in that file: what's set under it doesn't reach bento's shells,
+and theirs doesn't reach it, unless the user picks `shell.kdl` itself. If its file is missing,
+the shell runs on its defaults and the Shell page says so.
+
+What a shell prefers for a module it uses, like a clock on two
 lines in a taskbar, isn't a setting: it's what it places the module with, its props. A module of one's own in place of bento's has the settings of its name. State is kept
 apart, in bento's state folder.
 

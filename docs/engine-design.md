@@ -533,15 +533,16 @@ actions: {
 A chord of modifiers alone, like `Mod`, runs its action as they're let go with nothing pressed in
 between, so they still start other binds: in a file it's written with a `release` section.
 
-The user's changes go where that declarer's are written: binds of bento's own and the shell's
-actions in the main config's `binds {}`, an engine's in its file's. Giving an action binds of
+The user's changes go where that declarer's settings are written: binds of bento's own actions
+in the main config's `binds {}`, an engine's in its file's, and a shell's or a module's in its
+block of the shell's file. Giving an action binds of
 one's own replaces all of its default binds. An action that's turned off is written with
 `unbind`, which names it the way a bind writes it:
 
 ```kdl
 binds {
     Mod+Shift+S { screenshot; }
-    unbind { shell-action "toggle-start-menu"; }
+    unbind { power-off-monitors; }
     unbind { focus-workspace 1; }
 }
 ```
