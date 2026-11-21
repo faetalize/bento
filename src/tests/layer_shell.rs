@@ -279,6 +279,7 @@ fn an_overlay_surface_takes_the_keyboard_from_bentos_shell() {
         &outputs,
         None,
         crate::scene::host::UNIX,
+        None,
         serde_json::json!({ "gaps": 8 }),
     );
     scene.shell_action("toggle-launcher", &[], Some(name));

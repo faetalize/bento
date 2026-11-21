@@ -436,6 +436,7 @@ fn engine_settings_and_rules_are_checked_against_the_running_engine() {
     let (dir, layout) = typed_engine("check");
     let tiling = niri_config::Tiling {
         layout,
+        settings_file: None,
         settings: vec![
             (String::from("nope"), vec![TilingOption::Bool(true)]),
             (String::from("center"), strings(&["sideways"])),

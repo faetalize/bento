@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime};
@@ -313,13 +313,14 @@ impl std::fmt::Debug for SceneHost {
 impl SceneHost {
     /// Loads the shell that starts from module `entry`, again when its files changed or it's
     /// another one, onto `outputs`, each with its logical size, with bento's own shell and modules
-    /// read from `dir` if it's given. A shell that fails to load leaves the last one, or bento's
-    /// unix shell when there's none yet.
+    /// read from `dir` if it's given, and its settings and binds from `settings_file`. A shell
+    /// that fails to load leaves the last one, or bento's unix shell when there's none yet.
     pub fn ensure_loaded(
         &mut self,
         outputs: &[(String, (f32, f32))],
         dir: Option<&Path>,
         entry: &str,
+        settings_file: Option<PathBuf>,
         style: serde_json::Value,
     ) {
         if !self.wrote_reference {
@@ -328,10 +329,17 @@ impl SceneHost {
                 super::reference::write();
             }
         }
-        let settings = self
-            .settings
-            .get_or_insert_with(|| Rc::new(RefCell::new(Settings::load())))
-            .clone();
+        let mut other_file = false;
+        let settings = match &self.settings {
+            Some(settings) => {
+                other_file = settings.borrow_mut().set_path(settings_file);
+                settings.clone()
+            }
+            None => self
+                .settings
+                .insert(Rc::new(RefCell::new(Settings::load(settings_file))))
+                .clone(),
+        };
 
         let mtimes = (String::from(entry), script::mtimes(dir, entry));
         if self.loaded_mtimes.as_ref() != Some(&mtimes) {
@@ -363,7 +371,7 @@ impl SceneHost {
                 }
                 Err(err) => warn!("error loading the shell: {err:?}"),
             }
-        } else if settings.borrow_mut().reload_if_changed() {
+        } else if settings.borrow_mut().reload_if_changed() || other_file {
             if let Some(shell) = &self.shell {
                 let values = settings.borrow().all_values();
                 shell.send(&serde_json::json!({ "type": "settings", "settings": values }));
@@ -511,6 +519,18 @@ impl SceneHost {
     pub fn default_binds(&self) -> Vec<niri_config::binds::Bind> {
         let settings = self.settings.as_ref().map(|s| s.borrow());
         settings.map(|s| s.binds()).unwrap_or_default()
+    }
+
+    /// The user's binds for the running shell's actions, from its file.
+    pub fn user_binds(&self) -> Vec<niri_config::binds::Bind> {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        settings.map(|s| s.user_binds()).unwrap_or_default()
+    }
+
+    /// The running shell's actions the user turned off in its file.
+    pub fn unbound(&self) -> Vec<niri_config::Action> {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        settings.map(|s| s.unbound()).unwrap_or_default()
     }
 
     /// Whether the pointer is over the shell.
@@ -1242,7 +1262,7 @@ mod tests {
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         host.data_line(&DEVICES.replace('\n', " "));
@@ -1265,7 +1285,7 @@ mod tests {
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         // How much the launcher draws on an output: what's below the islands.
@@ -1358,7 +1378,7 @@ mod tests {
     fn the_launcher_never_jumps_typing_as_it_opens_and_turns_around_where_it_is() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         // Close to real time, which the script's timers run on.
         let mut now = Instant::now();
         let mut step = |host: &mut SceneHost| {
@@ -1422,7 +1442,7 @@ mod tests {
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         let drawn = |host: &SceneHost, output: &str| {
@@ -1561,7 +1581,7 @@ mod tests {
             .borrow_mut()
             .write_file("windows {\n    height 60\n}\n");
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         now += Duration::from_millis(16);
         host.advance(now, None);
         assert_eq!(host.reserved("DP-1"), [0., 0., 60., 0.]);
@@ -1572,7 +1592,7 @@ mod tests {
         settings
             .borrow_mut()
             .write_file("windows {\n    alignment \"left\"\n}\n");
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         settle(&mut host, &mut now);
         let start = middle_of(&host, "DP-1", "ph-squares-four-symbolic");
         assert!(start[0] < 60., "{start:?}");
@@ -1646,7 +1666,7 @@ mod tests {
         settings
             .borrow_mut()
             .write_file("windows {\n    alignment \"left\"\n}\n");
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         settle(&mut host, &mut now);
         let (menu, button) = places(&mut host, &mut now);
         assert!(menu < 100., "menu {menu}, button {button}");
@@ -2045,7 +2065,7 @@ mod tests {
             .borrow_mut()
             .write_file("tray {\n    pinned \"thing\"\n}\n");
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         host.data_line(TRAY);
         settle(&mut host, &mut now);
         let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
@@ -2218,7 +2238,7 @@ mod tests {
     fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, style);
+        host.ensure_loaded(&outputs, None, UNIX, None, style);
         host.set_workspaces(serde_json::json!({
             "DP-1": [
                 { "index": 0, "name": null, "active": true, "focused": true, "id": 7 },
@@ -2959,7 +2979,7 @@ mod tests {
              screenshot-notification-body \"Saved.\"\n}\n",
         );
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         open_control_center(&mut host, &mut now);
         commands(&host);
         let button = middle_of(&host, "DP-1", "camera-photo-symbolic");
@@ -3027,7 +3047,7 @@ mod tests {
             serde_json::json!({ "name": "Reykjavik", "latitude": 64.15, "longitude": -21.94 });
         let style = serde_json::json!({ "gaps": 8, "config": { "location": place } });
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, style);
+        host.ensure_loaded(&outputs, None, UNIX, None, style);
         let asked = commands(&host)
             .into_iter()
             .find(|c| c["cmd"] == "weather")
@@ -3262,7 +3282,7 @@ mod tests {
         let started = Instant::now();
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (2560., 1440.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         host.set_workspaces(serde_json::json!({
             "DP-1": [{ "index": 0, "name": null, "active": true, "focused": true, "id": 7 }],
         }));
@@ -3650,7 +3670,7 @@ mod tests {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
         let style = serde_json::json!({ "gaps": 8, "animations": false, "slowdown": 1 });
-        host.ensure_loaded(&outputs, None, UNIX, style);
+        host.ensure_loaded(&outputs, None, UNIX, None, style);
         host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         host.advance(Instant::now(), None);
         let glass = launcher_glass(&host).unwrap();
@@ -3664,7 +3684,7 @@ mod tests {
     fn the_caret_keeps_up_with_typing() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         // The script's timers, like the caret's blink, run on real time, so this one stays close
         // to it and settles the springs without them.
         let mut now = Instant::now();
@@ -3739,7 +3759,7 @@ mod tests {
     fn what_the_data_program_says_reaches_the_shell_and_a_reloaded_one() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         host.data_line(r#"{"type":"network","connected":true,"icon":"network-wired-symbolic"}"#);
         let mut now = Instant::now();
         settle(&mut host, &mut now);
@@ -3754,7 +3774,7 @@ mod tests {
 
         // Loaded again, the shell hears the last of it straight away.
         host.loaded_mtimes = None;
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         settle(&mut host, &mut now);
         assert!(shows_wired(&host));
     }
@@ -3763,7 +3783,7 @@ mod tests {
     fn a_click_opens_the_calendar_and_escape_or_a_press_elsewhere_closes_it() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, UNIX, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
 

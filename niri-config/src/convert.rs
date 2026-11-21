@@ -25,7 +25,7 @@ use knuffel::ast::{self, Literal};
 use knuffel::span::Span;
 
 use crate::actions::native_actions;
-use crate::tiling::{engine_config_path, TilingLayout};
+use crate::tiling::{engine_config_path, Tiling, TilingLayout};
 use crate::{Color, GradientInterpolation};
 
 type Node = ast::SpannedNode<Span>;
@@ -942,8 +942,11 @@ pub struct Written {
 /// Writes a conversion as bento's main config at `config_path` and the niri engine's file next to
 /// it. Files that exist are kept as backups first, with `.before-migration` added to their names.
 pub fn write(conversion: &Conversion, config_path: &Path) -> io::Result<Written> {
-    let layout = TilingLayout::BuiltIn(String::from("niri"));
-    let engine_path = engine_config_path(config_path, &layout);
+    let tiling = Tiling {
+        layout: TilingLayout::BuiltIn(String::from("niri")),
+        ..Tiling::default()
+    };
+    let engine_path = engine_config_path(config_path, &tiling).expect("a built-in engine's file");
 
     let mut backups = Vec::new();
     for path in [config_path, engine_path.as_path()] {

@@ -16,6 +16,7 @@ use adw::prelude::*;
 use gtk::glib::translate::FromGlib;
 use gtk::{gdk, gio, glib};
 use niri_config::bind_set::Declarer;
+use niri_config::binds::BindFile;
 use niri_config::input::ModKey;
 use niri_config::{Key, Modifiers, Trigger};
 use niri_ipc::{LayoutEngineAction, LayoutEngineActionArgType as ArgType};
@@ -61,17 +62,28 @@ fn sources(store: &Store) -> Sources {
         })
         .unwrap_or_default();
     let engine_path = store.engine_path();
+    let shell_path = store.shell_path();
+    let read_if = |path: &Option<std::path::PathBuf>| {
+        path.as_ref()
+            .filter(|path| path.exists())
+            .map(|path| bind_list::read(path))
+    };
+    let shell_file = read_if(&shell_path);
+    let shell_settings = store.shell_settings();
     Sources {
         native: niri_config::actions::native_actions(),
         engine,
         shell,
         main: bind_list::read(store.config_path()),
-        engine_file: engine_path.exists().then(|| bind_list::read(&engine_path)),
+        engine_file: read_if(&engine_path),
+        shell_file,
         main_path: store.config_path().to_owned(),
         engine_path,
         binds: config.binds.0.clone(),
         bind_files: config.bind_files.clone(),
         unbound: config.unbound.clone(),
+        shell_binds: shell_settings.binds.into_iter().map(|(_, b)| b).collect(),
+        shell_unbound: shell_settings.unbound.into_iter().map(|(_, a)| a).collect(),
     }
 }
 
@@ -93,18 +105,30 @@ fn whose(declarer: Declarer) -> &'static str {
     }
 }
 
-/// Writes `change` to `entry`, in the main config and in the engine's file.
+/// Writes `change` to `entry`: what the user wrote for it comes out of every file, and the change
+/// goes in its own, the main config, the engine's file or the shell's.
 fn apply(store: &Store, entry: &Entry, change: Change) {
     let id = format!("binds.{}", entry.node.text());
-    let (one, other) = (entry.clone(), change.clone());
-    store.edit_in(File::Main, &id, move |doc| {
-        bind_list::apply(doc, &one, &other, false)
-    });
-    if store.engine_path().exists() || entry.file() == File::Engine {
-        let one = entry.clone();
-        store.edit_in(File::Engine, &id, move |doc| {
-            bind_list::apply(doc, &one, &change, true)
-        });
+    let files = [
+        (File::Main, BindFile::Main, true),
+        (
+            File::Engine,
+            BindFile::Engine,
+            store.engine_path().is_some_and(|p| p.exists()),
+        ),
+        (
+            File::ShellSettings,
+            BindFile::Shell,
+            store.shell_path().is_some_and(|p| p.exists()),
+        ),
+    ];
+    for (file, bind_file, exists) in files {
+        if exists || entry.file() == file {
+            let (one, change) = (entry.clone(), change.clone());
+            store.edit_in(file, &id, move |doc| {
+                bind_list::apply(doc, &one, &change, bind_file)
+            });
+        }
     }
 }
 
@@ -1075,8 +1099,12 @@ fn open_new(ctx: &PageContext, parent: &impl IsA<gtk::Widget>) {
                 return;
             }
         };
-        let engine = choice.declarer == Declarer::Engine;
-        let Some(action) = bind_list::parse(&node, engine) else {
+        // As the main config writes it: the shell's actions with `shell-action`.
+        let file = match choice.declarer {
+            Declarer::Engine => BindFile::Engine,
+            Declarer::Bento | Declarer::Shell => BindFile::Main,
+        };
+        let Some(action) = bind_list::parse(&node, file) else {
             ctx.toast("That action can't be bound");
             return;
         };
@@ -1125,8 +1153,8 @@ fn reset_all(ctx: &PageContext, parent: &gtk::Button) {
         Some("Reset All Binds?"),
         Some(
             "Every action goes back to its default binds: the binds of your own and the \
-             actions you turned off are taken out of the config and the engine's file. \
-             Binds from included files stay as they are.",
+             actions you turned off are taken out of the config, the engine's file and the \
+             shell's. Binds from included files stay as they are.",
         ),
     );
     alert.add_response("cancel", "Cancel");
@@ -1149,8 +1177,17 @@ fn reset_all(ctx: &PageContext, parent: &gtk::Button) {
             }
         };
         ctx.store.edit_in(File::Main, "binds.reset", clear);
-        if ctx.store.engine_path().exists() {
+        if ctx.store.engine_path().is_some_and(|path| path.exists()) {
             ctx.store.edit_in(File::Engine, "binds.reset", clear);
+        }
+        // The shell's binds are in its modules' blocks, next to their settings, which stay.
+        if ctx.store.shell_path().is_some_and(|path| path.exists()) {
+            ctx.store
+                .edit_in(File::ShellSettings, "binds.reset", move |doc| {
+                    for name in doc.block_names() {
+                        doc.edit_block(&name, clear);
+                    }
+                });
         }
     });
 }

@@ -399,6 +399,86 @@ impl Document {
         true
     }
 
+    /// The names of the document's top-level blocks, like a shell file's modules, in order, each
+    /// once.
+    pub fn block_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for node in self.nodes() {
+            if node.braces.is_some() && !names.contains(&node.name) {
+                names.push(node.name);
+            }
+        }
+        names
+    }
+
+    /// The contents of every top-level block called `name`, each as a document of its own, like
+    /// a module's settings and binds in a shell file.
+    pub fn blocks(&self, name: &str) -> Vec<Document> {
+        self.nodes()
+            .iter()
+            .filter(|node| node.name == name)
+            .filter_map(|node| {
+                let (open, close) = node.braces?;
+                Document::parse(dedent(&self.text[open + 1..close])).ok()
+            })
+            .collect()
+    }
+
+    /// Edits the contents of the last top-level block called `name` as a document of its own,
+    /// made at the end if there's none. A block left empty is taken away.
+    pub fn edit_block(&mut self, name: &str, f: impl FnOnce(&mut Document)) {
+        let nodes = self.nodes();
+        let found = nodes
+            .iter()
+            .rfind(|node| node.name == name && node.braces.is_some());
+        let inner = found
+            .and_then(|node| node.braces)
+            .map(|(open, close)| dedent(&self.text[open + 1..close]))
+            .unwrap_or_default();
+        let Ok(mut doc) = Document::parse(inner) else {
+            return;
+        };
+        f(&mut doc);
+        // A `binds {}` left with nothing in it goes too.
+        let mut empty: Vec<(usize, usize)> = doc
+            .nodes()
+            .iter()
+            .filter(|node| node.name == "binds" && node.children.is_empty())
+            .map(|node| removal_range(&doc.text, node))
+            .collect();
+        empty.sort_unstable();
+        for (start, end) in empty.into_iter().rev() {
+            doc.text.replace_range(start..end, "");
+        }
+        let contents = doc.text.trim();
+
+        match found {
+            Some(node) if contents.is_empty() => {
+                let (start, end) = removal_range(&self.text, node);
+                self.text.replace_range(start..end, "");
+            }
+            Some(node) => {
+                let (open, close) = node.braces.expect("found with braces");
+                let indent = format!("{}    ", indent_at(&self.text, node.start));
+                let body = indented(contents, &indent);
+                let outer = indent_at(&self.text, node.start).to_owned();
+                self.text
+                    .replace_range(open + 1..close, &format!("\n{body}\n{outer}"));
+            }
+            None if contents.is_empty() => (),
+            None => {
+                if !self.text.is_empty() && !self.text.ends_with('\n') {
+                    self.text.push('\n');
+                }
+                if !self.text.is_empty() {
+                    self.text.push('\n');
+                }
+                let body = indented(contents, "    ");
+                write!(self.text, "{name} {{\n{body}\n}}\n").unwrap();
+            }
+        }
+    }
+
     /// Replaces every `binds` section with `section`, a whole `binds {}` section of its own.
     pub fn replace_binds(&mut self, section: &str) {
         let nodes = self.nodes();
@@ -646,6 +726,35 @@ fn indent_at(text: &str, pos: usize) -> &str {
 }
 
 /// What to delete to remove a node: its whole line when it's alone on it.
+/// `text` with the indentation its lines share taken off.
+fn dedent(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let common = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    let mut out = String::new();
+    for line in lines {
+        out.push_str(line.get(common..).unwrap_or(line.trim_start()));
+        out.push('\n');
+    }
+    out.trim().to_owned() + "\n"
+}
+
+/// `text` with `indent` before each of its lines that has anything on it.
+fn indented(text: &str, indent: &str) -> String {
+    let lines = text.lines().map(|line| {
+        if line.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{indent}{line}")
+        }
+    });
+    lines.collect::<Vec<_>>().join("\n")
+}
+
 fn removal_range(text: &str, node: &Node) -> (usize, usize) {
     let line = line_start(text, node.start);
     let alone_before = text[line..node.start].trim().is_empty();
@@ -825,6 +934,51 @@ mod tests {
 
     fn key(text: &str) -> Key {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_block_is_edited_as_a_document_of_its_own() {
+        let bind = |key: &str, name: &str| BindNode {
+            key: String::from(key),
+            properties: Vec::new(),
+            action: Some(ActionNode {
+                name: String::from(name),
+                args: Vec::new(),
+                properties: Vec::new(),
+            }),
+        };
+        // Into a block that's there, after its settings.
+        let text = "sound {\n    pinned \"hdmi\"\n}\n";
+        let out = edit(text, |doc| {
+            doc.edit_block("sound", |block| {
+                block.set_bind(&key("Mod+F1"), &bind("Mod+F1", "switch-audio-output"));
+            })
+        });
+        assert_eq!(
+            out,
+            "sound {\n    pinned \"hdmi\"\n\n    binds {\n        Mod+F1 { switch-audio-output; }\n    }\n}\n"
+        );
+        let doc = Document::parse(out.clone()).unwrap();
+        assert_eq!(doc.blocks("sound")[0].binds()[0].key, "Mod+F1");
+        assert_eq!(doc.block_names(), ["sound"]);
+
+        // A block that isn't there is made, and one left empty goes.
+        let out = edit("", |doc| {
+            doc.edit_block("clock", |block| {
+                block.add_unbind(&bind("x", "show-clock").action.unwrap())
+            })
+        });
+        assert_eq!(
+            out,
+            "clock {\n    binds {\n        unbind { show-clock; }\n    }\n}\n"
+        );
+        let out = edit(&out, |doc| {
+            doc.edit_block("clock", |block| {
+                let off = block.unbinds();
+                block.remove_unbind(&off[0]);
+            })
+        });
+        assert_eq!(out.trim(), "");
     }
 
     fn spawn(key: &str, command: &str) -> BindNode {

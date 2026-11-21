@@ -12,8 +12,8 @@
 use std::path::{Path, PathBuf};
 
 use niri_config::bind_set::{self, Declarer};
-use niri_config::binds::parse_action;
 use niri_config::binds::Bind;
+use niri_config::binds::{parse_action, BindFile};
 use niri_config::{Action, BindFiles, Key};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOptionValue};
 
@@ -32,13 +32,18 @@ pub struct Sources {
     pub shell: Vec<(String, LayoutEngineAction)>,
     pub main: Document,
     pub engine_file: Option<Document>,
+    /// The shell's file, with a block for each module and shell holding its binds.
+    pub shell_file: Option<Document>,
     pub main_path: PathBuf,
-    pub engine_path: PathBuf,
+    pub engine_path: Option<PathBuf>,
     /// The parsed config's binds, those of included files too, with their files.
     pub binds: Vec<Bind>,
     pub bind_files: BindFiles,
     /// Every action the config turns off.
     pub unbound: Vec<Action>,
+    /// The shell's file's binds and the actions it turns off, parsed.
+    pub shell_binds: Vec<Bind>,
+    pub shell_unbound: Vec<Action>,
 }
 
 /// The tab of the page an action is listed in, by who declares it.
@@ -149,6 +154,8 @@ pub enum Source {
     Main,
     /// The engine's file.
     Engine,
+    /// The shell's file, in the block of whoever declares the action.
+    Shell,
     /// A file the main config includes, which the page doesn't change.
     Include(PathBuf),
 }
@@ -190,7 +197,7 @@ impl Entry {
             || self
                 .binds
                 .iter()
-                .any(|k| matches!(k.source, Source::Main | Source::Engine))
+                .any(|k| matches!(k.source, Source::Main | Source::Engine | Source::Shell))
     }
 
     /// Whether its binds can be changed on the page: none of them is from an included file, and
@@ -199,15 +206,27 @@ impl Entry {
         self.binds.iter().all(|k| match k.source {
             Source::Default => true,
             Source::Include(_) => false,
-            Source::Main | Source::Engine => k.bind.as_ref().is_some_and(|b| b.action.is_some()),
+            Source::Main | Source::Engine | Source::Shell => {
+                k.bind.as_ref().is_some_and(|b| b.action.is_some())
+            }
         })
     }
 
-    /// The file its user binds and `unbind` go in.
+    /// The file its user binds and `unbind` go in: bento's actions' in the main config, the
+    /// engine's in its file, and the shell's in its block of the shell's file.
     pub fn file(&self) -> crate::store::File {
         match self.declarer {
+            Declarer::Bento => crate::store::File::Main,
             Declarer::Engine => crate::store::File::Engine,
-            Declarer::Bento | Declarer::Shell => crate::store::File::Main,
+            Declarer::Shell => crate::store::File::ShellSettings,
+        }
+    }
+
+    /// The block of the shell's file its binds go in: its module's, or the shell's.
+    pub fn block(&self) -> &str {
+        match &self.section {
+            Section::Module(name) => name,
+            _ => "shell",
         }
     }
 
@@ -272,9 +291,39 @@ pub fn action_node(declarer: Declarer, name: &str, args: &[LayoutEngineOptionVal
     }
 }
 
-/// The parsed action of `node`, as the main config reads it, or the engine's file with `engine`.
-pub fn parse(node: &ActionNode, engine: bool) -> Option<Action> {
-    parse_action(&format!("{};", node.text()), engine)
+/// The parsed action of `node`, as `file` reads it.
+pub fn parse(node: &ActionNode, file: BindFile) -> Option<Action> {
+    parse_action(&format!("{};", node.text()), file)
+}
+
+/// A shell action as the shell's file writes it, `name args…`, as the main config writes it,
+/// `shell-action "name" args…`.
+fn wrapped(node: &ActionNode) -> ActionNode {
+    ActionNode {
+        name: String::from(SHELL_ACTION),
+        args: std::iter::once(Value::Str(node.name.clone()))
+            .chain(node.args.iter().cloned())
+            .collect(),
+        properties: node.properties.clone(),
+    }
+}
+
+/// The user's binds and `unbind`s in `src`'s files, each with where it's written and how that
+/// file names actions, a shell file's actions written as the main config writes them.
+fn user_files(src: &Sources) -> Vec<(Document, Source, BindFile)> {
+    let copy = |doc: &Document| Document::parse(doc.text().to_owned()).expect("it parsed");
+    let mut files = vec![(copy(&src.main), Source::Main, BindFile::Main)];
+    if let Some(doc) = &src.engine_file {
+        files.push((copy(doc), Source::Engine, BindFile::Engine));
+    }
+    if let Some(doc) = &src.shell_file {
+        for name in doc.block_names() {
+            for block in doc.blocks(&name) {
+                files.push((block, Source::Shell, BindFile::Shell));
+            }
+        }
+    }
+    files
 }
 
 /// Whether `required` arguments are missing, so the action can't be bound without arguments.
@@ -347,7 +396,7 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
         let Some(node) = bind.action.clone() else {
             continue;
         };
-        let Some(action) = parse(&node, false) else {
+        let Some(action) = parse(&node, BindFile::Main) else {
             continue;
         };
         let i = at(&mut list, action, node.clone());
@@ -403,7 +452,7 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
         }
         let node = action_node(declarer, &decl.name, &[]);
         let action = match declarer {
-            Declarer::Bento => parse(&node, false),
+            Declarer::Bento => parse(&node, BindFile::Main),
             Declarer::Engine => Some(bind_set::engine_action(&decl.name, &[])),
             Declarer::Shell => Some(bind_set::shell_action(&decl.name, &[])),
         };
@@ -412,20 +461,18 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
         }
     }
 
-    // The user's binds, from the main config and the engine's file.
+    // The user's binds, from the main config, the engine's file and the shell's.
     let mut user: Vec<(usize, EntryBind)> = Vec::new();
-    let files = [
-        (Some(&src.main), Source::Main, false),
-        (src.engine_file.as_ref(), Source::Engine, true),
-    ];
-    for (doc, source, engine) in files {
-        let Some(doc) = doc else { continue };
+    for (doc, source, file) in user_files(src) {
         for bind in doc.binds() {
             let Ok(key) = bind.key.parse::<Key>() else {
                 continue;
             };
             let parsed = match &bind.action {
-                Some(node) => parse(node, engine).map(|a| (a, node.clone())),
+                Some(node) if file == BindFile::Shell => {
+                    parse(node, file).map(|a| (a, wrapped(node)))
+                }
+                Some(node) => parse(node, file).map(|a| (a, node.clone())),
                 // Written with press and release actions: the parsed config has its action.
                 None => src
                     .binds
@@ -462,7 +509,7 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
         let Some(path) = src.bind_files.get(&bind.key) else {
             continue;
         };
-        if path == src.main_path || path == src.engine_path {
+        if path == src.main_path || src.engine_path.as_deref() == Some(path) {
             continue;
         }
         let Some(action) = bind_set::action_of(bind) else {
@@ -486,11 +533,15 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
         ));
     }
     // What's turned off.
-    for (doc, engine) in [(Some(&src.main), false), (src.engine_file.as_ref(), true)] {
-        let Some(doc) = doc else { continue };
+    for (doc, _, file) in user_files(src) {
         for node in doc.unbinds() {
-            let Some(action) = parse(&node, engine) else {
+            let Some(action) = parse(&node, file) else {
                 continue;
+            };
+            let node = if file == BindFile::Shell {
+                wrapped(&node)
+            } else {
+                node
             };
             let i = at(&mut list, action, node);
             list[i].disabled = true;
@@ -532,7 +583,14 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
     }
     let shell: Vec<LayoutEngineAction> = src.shell.iter().map(|(_, a)| a.clone()).collect();
     all_defaults.extend(bind_set::declared_binds(&shell, bind_set::shell_action));
-    let resolved = bind_set::resolve(&src.binds, &src.unbound, &all_defaults);
+    let user: Vec<Bind> = src.binds.iter().chain(&src.shell_binds).cloned().collect();
+    let unbound: Vec<Action> = src
+        .unbound
+        .iter()
+        .chain(&src.shell_unbound)
+        .cloned()
+        .collect();
+    let resolved = bind_set::resolve(&user, &unbound, &all_defaults);
     for taken in &resolved.taken_over {
         let Some(action) = bind_set::action_of(&taken.bind) else {
             continue;
@@ -554,15 +612,16 @@ pub fn entries(src: &Sources) -> Vec<Entry> {
     list
 }
 
-/// The binds of the user's own for `entry` taken away, from both files, with its `unbind`.
-fn forget(doc: &mut Document, entry: &Entry, engine: bool) {
+/// The binds of the user's own for `entry` taken away from `doc`, a file that names actions as
+/// `file` does, with its `unbind`.
+fn forget(doc: &mut Document, entry: &Entry, file: BindFile) {
     let keys: Vec<Key> = doc
         .binds()
         .into_iter()
         .filter(|bind| {
             bind.action
                 .as_ref()
-                .and_then(|node| parse(node, engine))
+                .and_then(|node| parse(node, file))
                 .is_some_and(|a| a == entry.action)
         })
         .filter_map(|bind| bind.key.parse().ok())
@@ -573,14 +632,14 @@ fn forget(doc: &mut Document, entry: &Entry, engine: bool) {
     let off: Vec<ActionNode> = doc
         .unbinds()
         .into_iter()
-        .filter(|node| parse(node, engine).is_some_and(|a| a == entry.action))
+        .filter(|node| parse(node, file).is_some_and(|a| a == entry.action))
         .collect();
     for node in off {
         doc.remove_unbind(&node);
     }
 }
 
-/// What a change to `entry` does to the main config, and to the engine's file with `engine`.
+/// What a change to an entry does to the files.
 #[derive(Debug, Clone)]
 pub enum Change {
     /// Its binds become these; the defaults as they are, settings and all, are written as nothing.
@@ -591,16 +650,37 @@ pub enum Change {
     Reset,
 }
 
-/// Applies `change` to `entry` in `doc`, the main config, or the engine's file with `engine`.
-pub fn apply(doc: &mut Document, entry: &Entry, change: &Change, engine: bool) {
-    forget(doc, entry, engine);
-    let mine = (entry.file() == crate::store::File::Engine) == engine;
-    if !mine {
+/// Applies `change` to `entry` in `doc`, a file that names actions as `file` does: what the user
+/// wrote for it is taken out of every file, and the change written in its own, the shell's
+/// actions' in their block of the shell's file.
+pub fn apply(doc: &mut Document, entry: &Entry, change: &Change, file: BindFile) {
+    use crate::store::File;
+    if file == BindFile::Shell {
+        for name in doc.block_names() {
+            doc.edit_block(&name, |block| forget(block, entry, file));
+        }
+        if entry.file() == File::ShellSettings {
+            let node = unwrapped(&entry.node);
+            doc.edit_block(entry.block(), |block| write(block, entry, &node, change));
+        }
         return;
     }
+    forget(doc, entry, file);
+    let mine = match file {
+        BindFile::Main => entry.file() == File::Main,
+        BindFile::Engine => entry.file() == File::Engine,
+        BindFile::Shell => false,
+    };
+    if mine {
+        write(doc, entry, &entry.node, change);
+    }
+}
+
+/// Writes `change` to `entry` in `doc`, its action written as `node`.
+fn write(doc: &mut Document, entry: &Entry, node: &ActionNode, change: &Change) {
     match change {
         Change::Reset => (),
-        Change::Disable => doc.add_unbind(&entry.node),
+        Change::Disable => doc.add_unbind(node),
         Change::Keys(binds) => {
             // The defaults as they are, chords and settings alike, are written as nothing.
             let same = |a: &BindNode, b: &BindNode| {
@@ -613,11 +693,15 @@ pub fn apply(doc: &mut Document, entry: &Entry, change: &Change, engine: bool) {
                     .iter()
                     .all(|b| entry.defaults.iter().any(|d| same(b, d)));
             if binds.is_empty() && !entry.defaults.is_empty() {
-                doc.add_unbind(&entry.node);
+                doc.add_unbind(node);
             } else if !at_defaults {
                 for bind in binds {
                     if let Ok(key) = bind.key.parse::<Key>() {
-                        doc.set_bind(&key, bind);
+                        let bind = BindNode {
+                            action: Some(node.clone()),
+                            ..bind.clone()
+                        };
+                        doc.set_bind(&key, &bind);
                     }
                 }
             }
@@ -670,7 +754,13 @@ mod tests {
     }
 
     fn sources(main: &str) -> Sources {
+        sources_with(main, "")
+    }
+
+    /// With `shell` as the shell's file.
+    fn sources_with(main: &str, shell: &str) -> Sources {
         let config = Config::parse_mem(main).unwrap();
+        let shell_settings = niri_config::ShellSettings::parse(shell).unwrap();
         Sources {
             native: niri_config::actions::native_actions(),
             engine: Some((String::from("bento"), vec![decl("swap", &["Mod+X"])])),
@@ -680,11 +770,14 @@ mod tests {
             )],
             main: Document::parse(main.to_owned()).unwrap(),
             engine_file: None,
+            shell_file: Some(Document::parse(shell.to_owned()).unwrap()),
             main_path: PathBuf::from("config.kdl"),
-            engine_path: PathBuf::from("engines/bento.kdl"),
+            engine_path: Some(PathBuf::from("engines/bento.kdl")),
             binds: config.binds.0,
             bind_files: config.bind_files,
             unbound: config.unbound,
+            shell_binds: shell_settings.binds.into_iter().map(|(_, b)| b).collect(),
+            shell_unbound: shell_settings.unbound.into_iter().map(|(_, a)| a).collect(),
         }
     }
 
@@ -716,7 +809,7 @@ mod tests {
             action: Some(volume.node.clone()),
         });
         let mut doc = Document::parse(String::new()).unwrap();
-        apply(&mut doc, volume, &Change::Keys(binds), false);
+        apply(&mut doc, volume, &Change::Keys(binds), BindFile::Main);
         let written = doc.binds();
         let raise = written
             .iter()
@@ -768,7 +861,7 @@ mod tests {
             &mut doc,
             &terminal,
             &Change::Keys(terminal.defaults.clone()),
-            false,
+            BindFile::Main,
         );
         assert!(doc.binds().is_empty() && doc.unbinds().is_empty());
         // Its default chord without the default's settings is a bind of its own.
@@ -776,24 +869,29 @@ mod tests {
             &mut doc,
             &terminal,
             &Change::Keys(vec![bind("Mod+T")]),
-            false,
+            BindFile::Main,
         );
         let keys: Vec<String> = doc.binds().into_iter().map(|b| b.key).collect();
         assert_eq!(keys, ["Mod+T"]);
         // Off, then reset.
-        apply(&mut doc, &terminal, &Change::Disable, false);
+        apply(&mut doc, &terminal, &Change::Disable, BindFile::Main);
         assert_eq!(doc.unbinds(), std::slice::from_ref(&terminal.node));
-        apply(&mut doc, &terminal, &Change::Reset, false);
+        apply(&mut doc, &terminal, &Change::Reset, BindFile::Main);
         assert!(doc.unbinds().is_empty());
         // No binds at all is turning it off.
-        apply(&mut doc, &terminal, &Change::Keys(Vec::new()), false);
+        apply(
+            &mut doc,
+            &terminal,
+            &Change::Keys(Vec::new()),
+            BindFile::Main,
+        );
         assert_eq!(doc.unbinds(), std::slice::from_ref(&terminal.node));
         // Two binds of its own.
         apply(
             &mut doc,
             &terminal,
             &Change::Keys(vec![bind("F1"), bind("F2")]),
-            false,
+            BindFile::Main,
         );
         let keys: Vec<String> = doc.binds().into_iter().map(|b| b.key).collect();
         assert_eq!(keys, ["F1", "F2"]);
@@ -801,35 +899,49 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_action_without_binds_takes_one() {
-        let pinned = || (String::from("sound"), decl("switch-audio-output", &[]));
-        let mut src = sources("");
-        src.shell.push(pinned());
+    fn a_shell_actions_binds_go_in_its_block_of_the_shells_file() {
+        let sound = || (String::from("sound"), decl("switch-audio-output", &[]));
+        let shell_text = "sound {\n    pinned \"hdmi\"\n}\n";
+        let mut src = sources_with("", shell_text);
+        src.shell.push(sound());
         let list = entries(&src);
-        let switch = find(&list, "shell-action \"switch-audio-output\"");
+        let switch = find(&list, "shell-action \"switch-audio-output\"").clone();
         assert!(switch.binds.is_empty());
-        let mut binds = binds_of(switch);
+        let mut binds = binds_of(&switch);
         binds.push(BindNode {
             key: String::from("Mod+F9"),
             properties: Vec::new(),
             action: Some(switch.node.clone()),
         });
-        let mut doc = Document::parse(String::new()).unwrap();
-        apply(&mut doc, switch, &Change::Keys(binds), false);
+        let change = Change::Keys(binds);
+        let mut main = src.main;
+        apply(&mut main, &switch, &change, BindFile::Main);
+        let mut shell = Document::parse(String::from(shell_text)).unwrap();
+        apply(&mut shell, &switch, &change, BindFile::Shell);
 
-        let mut src = sources(doc.text());
-        src.shell.push(pinned());
+        // Nothing in the main config; in the shell's file, its block, named directly.
+        assert_eq!(main.text(), "");
+        assert_eq!(
+            shell.text(),
+            "sound {\n    pinned \"hdmi\"\n\n    binds {\n        Mod+F9 { switch-audio-output; }\n    }\n}\n"
+        );
+        let mut src = sources_with("", shell.text());
+        src.shell.push(sound());
         let list = entries(&src);
-        let keys: Vec<&str> = find(&list, "shell-action \"switch-audio-output\"")
-            .binds
-            .iter()
-            .map(|b| b.text.as_str())
-            .collect();
-        assert_eq!(keys, ["Mod+F9"], "{}", doc.text());
+        let switch = find(&list, "shell-action \"switch-audio-output\"").clone();
+        let keys: Vec<&str> = switch.binds.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(keys, ["Mod+F9"]);
+        assert_eq!(switch.binds[0].source, Source::Shell);
+
+        // Turned off, then back to its defaults, which leaves the block as it was.
+        apply(&mut shell, &switch, &Change::Disable, BindFile::Shell);
+        assert!(shell.text().contains("unbind { switch-audio-output; }"));
+        apply(&mut shell, &switch, &Change::Reset, BindFile::Shell);
+        assert_eq!(shell.text(), shell_text);
     }
 
     #[test]
-    fn a_chord_taken_from_a_bind_of_ones_own_moves_to_the_other_action() {
+    fn a_chord_taken_from_a_bind_of_ones_own_moves_to_a_shell_action() {
         let main = "binds {\n    Mod+Shift+F1 { spawn \"switcher\"; }\n}\n";
         let sound = || (String::from("sound"), decl("switch-audio-output", &[]));
         let mut src = sources(main);
@@ -838,18 +950,21 @@ mod tests {
         let spawn = find(&list, "spawn \"switcher\"").clone();
         let switch = find(&list, "shell-action \"switch-audio-output\"").clone();
         let mut doc = src.main;
+        let mut shell = Document::parse(String::new()).unwrap();
         // The chord off the program, which has no other, then onto the sound switch.
-        apply(&mut doc, &spawn, &Change::Disable, false);
+        apply(&mut doc, &spawn, &Change::Disable, BindFile::Main);
         let bind = BindNode {
             key: String::from("Mod+Shift+F1"),
             properties: Vec::new(),
             action: Some(switch.node.clone()),
         };
-        apply(&mut doc, &switch, &Change::Keys(vec![bind]), false);
+        let change = Change::Keys(vec![bind]);
+        apply(&mut doc, &switch, &change, BindFile::Main);
+        apply(&mut shell, &switch, &change, BindFile::Shell);
 
         let config = Config::parse_mem(doc.text());
         assert!(config.is_ok(), "{}\n{:?}", doc.text(), config.err());
-        let mut src = sources(doc.text());
+        let mut src = sources_with(doc.text(), shell.text());
         src.shell.push(sound());
         let list = entries(&src);
         let keys: Vec<&str> = find(&list, "shell-action \"switch-audio-output\"")
@@ -857,7 +972,7 @@ mod tests {
             .iter()
             .map(|b| b.text.as_str())
             .collect();
-        assert_eq!(keys, ["Mod+Shift+F1"], "{}", doc.text());
+        assert_eq!(keys, ["Mod+Shift+F1"], "{}", shell.text());
     }
 
     #[test]

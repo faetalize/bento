@@ -1287,9 +1287,13 @@ function createStrip(bento, ws) {
         return col;
     }
 
-    /** Width for a column that a window arrives in, from the window rules. */
+    /** Width for a column that a window arrives in, from the window rules. WezTerm picks its own
+     * width unless a rule says otherwise, since it sizes its window before it's configured. */
     function defaultWidth(win) {
-        const preset = rulesWidth(win.rules);
+        const wezterm =
+            win.rules["default-column-width"] === undefined &&
+            win.appId === "org.wezfurlong.wezterm";
+        const preset = wezterm ? null : rulesWidth(win.rules);
         if (preset === null) {
             // Let the window pick, so use the size it has, unless it doesn't have one yet.
             if (win.size.w > 0) return { fixed: win.size.w };

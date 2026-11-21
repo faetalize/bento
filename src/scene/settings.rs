@@ -1,6 +1,7 @@
 //! The shell's settings and actions: what its modules and the shell itself declare in their
-//! `meta`, as engines do. The user sets the settings in `~/.config/bento/shell/settings.kdl`, a
-//! block for each by its name, and binds the actions with `shell-action "name"`.
+//! `meta`, as engines do. The user sets the settings, and binds the actions, in the shell's file,
+//! a block for each by its name: bento's own shells share `~/.config/bento/shell.kdl`, and a shell
+//! file's is the one the config names next to it.
 //!
 //! Settings are declared as engines' are, and are checked and converted the same way. A module
 //! reads its settings as they are, and gets them again when the file changes, without the shell
@@ -10,7 +11,7 @@
 //!
 //! An action can say the key it's bound to by default. The binds are bento's while the module
 //! runs: they take keys over from the main config, as an engine's file does, and a bind of the
-//! action's own in the config replaces its default.
+//! action's own in its block replaces its default.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -29,7 +30,8 @@ use crate::layout::tiling::engine::{
 /// The settings file, and what the running shell declares.
 #[derive(Debug, Default)]
 pub struct Settings {
-    /// The file, or none, in tests, which keep the settings in memory alone.
+    /// The file, or none: in tests, which keep the settings in memory alone, and for a shell file
+    /// the config names no file for, which runs on its defaults.
     path: Option<PathBuf>,
     /// When the file last changed, as it was read.
     mtime: Option<SystemTime>,
@@ -52,20 +54,48 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// The user's settings, from `~/.config/bento/shell/settings.kdl`.
-    pub fn load() -> Self {
-        let path = if cfg!(test) {
-            None
-        } else {
-            directories::BaseDirs::new()
-                .map(|dirs| dirs.config_dir().join("bento/shell/settings.kdl"))
-        };
+    /// The user's settings and binds, from the file at `path`.
+    pub fn load(path: Option<PathBuf>) -> Self {
         let mut settings = Self {
-            path,
+            path: if cfg!(test) { None } else { path },
             ..Self::default()
         };
         settings.read();
         settings
+    }
+
+    /// Reads the file at `path` instead, as when another shell runs. Returns whether it's another
+    /// file.
+    pub fn set_path(&mut self, path: Option<PathBuf>) -> bool {
+        let path = if cfg!(test) { None } else { path };
+        if path == self.path {
+            return false;
+        }
+        self.path = path;
+        self.mtime = None;
+        self.text.clear();
+        self.file = ShellSettings::default();
+        self.error = None;
+        self.read();
+        true
+    }
+
+    /// The user's binds for the shell's actions, from the file's blocks.
+    pub fn user_binds(&self) -> Vec<Bind> {
+        self.file
+            .binds
+            .iter()
+            .map(|(_, bind)| bind.clone())
+            .collect()
+    }
+
+    /// The shell's actions the user turned off in the file's blocks.
+    pub fn unbound(&self) -> Vec<niri_config::Action> {
+        self.file
+            .unbound
+            .iter()
+            .map(|(_, action)| action.clone())
+            .collect()
     }
 
     /// Settings with `text` as the file, which isn't on disk.
@@ -285,6 +315,9 @@ impl Settings {
             doc.set_node(&path, option_values(&value), option_properties(&value));
         }
         let text = String::from(doc.text());
+        if self.path.is_none() && !cfg!(test) {
+            bail!("the shell has no settings file, so its settings can't change");
+        }
         if let Some(file) = &self.path {
             if let Some(dir) = file.parent() {
                 std::fs::create_dir_all(dir)?;
@@ -302,7 +335,7 @@ impl Settings {
     pub fn problems(&self) -> (Vec<String>, Vec<String>) {
         let mut unused = Vec::new();
         let mut wrong = Vec::new();
-        for (name, settings) in &self.file.0 {
+        for (name, settings) in &self.file.blocks {
             let Some((_, declared)) = self.declared.iter().find(|(n, _)| n == name) else {
                 if !unused.contains(name) {
                     unused.push(name.clone());

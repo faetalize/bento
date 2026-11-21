@@ -6,6 +6,7 @@
 //! those.
 
 use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use niri_ipc::{
     LayoutEngineOptionValue as OptionValue, SizeChange,
 };
 
-use super::migrate;
+use super::{migrate, settings_file};
 use crate::ipc;
 use crate::kdl::Value;
 use crate::model::Category;
@@ -76,7 +77,13 @@ struct View {
     shown: RefCell<Option<Shape>>,
 }
 
-type Shape = (TilingLayout, Result<LayoutEngine, String>);
+/// The configured engine, its settings file and whether that's there, and the running engine with
+/// its setting values left out.
+type Shape = (
+    TilingLayout,
+    Option<(PathBuf, bool)>,
+    Result<LayoutEngine, String>,
+);
 
 /// Shows a new value in an option's row. An option with no value is a size left to the window.
 pub(super) type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
@@ -84,14 +91,22 @@ pub(super) type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
 /// Saves a value someone set in a row.
 pub(super) type Change = Rc<dyn Fn(Option<OptionValue>)>;
 
-fn shape(layout: TilingLayout, engine: &Result<LayoutEngine, String>) -> Shape {
+fn shape(ctx: &PageContext, engine: &Result<LayoutEngine, String>) -> Shape {
     let engine = engine.clone().map(|mut engine| {
         for option in &mut engine.settings {
             option.value = option.default.clone();
         }
         engine
     });
-    (layout, engine)
+    let layout = ctx.store.config().tiling.layout.clone();
+    let settings = match layout {
+        TilingLayout::File(_) => ctx.store.engine_path().map(|path| {
+            let exists = path.exists();
+            (path, exists)
+        }),
+        TilingLayout::BuiltIn(_) => None,
+    };
+    (layout, settings, engine)
 }
 
 fn build(ctx: &PageContext) -> gtk::Widget {
@@ -122,7 +137,7 @@ fn build(ctx: &PageContext) -> gtk::Widget {
 
 fn refresh(view: &Rc<View>) {
     let engine = ipc::layout_engine();
-    let shape = shape(view.ctx.store.config().tiling.layout.clone(), &engine);
+    let shape = shape(&view.ctx, &engine);
     if view.shown.borrow().as_ref() == Some(&shape) {
         return;
     }
@@ -132,6 +147,11 @@ fn refresh(view: &Rc<View>) {
     }
     view.column
         .append(&choice_group(view, engine.as_ref().ok()));
+    if let Some((path, _)) = &shape.1 {
+        if let Some(missing) = settings_file::missing(settings_file::Kind::Engine, path) {
+            view.column.append(&missing);
+        }
+    }
     match &engine {
         Ok(engine) => {
             if let Some(error) = &engine.error {
@@ -151,6 +171,15 @@ fn refresh(view: &Rc<View>) {
 fn set_layout(ctx: &PageContext, layout: String) {
     ctx.store.edit("tiling.layout", move |doc| {
         doc.set(&["tiling", "layout"], vec![Value::Str(layout)]);
+    });
+}
+
+/// Runs the engine file at `script`, with its settings file at `settings`.
+fn set_layout_file(ctx: &PageContext, script: &Path, settings: &Path) {
+    let (script, settings) = (tilde(script), tilde(settings));
+    ctx.store.edit("tiling.layout", move |doc| {
+        let properties = vec![(String::from("settings"), Value::Str(settings))];
+        doc.set_node(&["tiling", "layout"], vec![Value::Str(script)], properties);
     });
 }
 
@@ -214,11 +243,31 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
             .activatable(true)
             .build();
         row.add_suffix(&gtk::Image::from_icon_name("ph-folder-open-symbolic"));
-        let view = Rc::downgrade(view);
+        let weak = Rc::downgrade(view);
         row.connect_activated(move |row| {
-            if let Some(view) = view.upgrade() {
+            if let Some(view) = weak.upgrade() {
                 choose_file(&view, row);
             }
+        });
+        group.add(&row);
+
+        // Its settings file, which picks another, the engine staying.
+        let settings = view.ctx.store.engine_path();
+        let row = settings_file::row(settings.as_deref());
+        let weak = Rc::downgrade(view);
+        row.connect_activated(move |row| {
+            let Some(view) = weak.upgrade() else { return };
+            let ctx = view.ctx.clone();
+            let script = path.clone();
+            let done = move |settings: PathBuf| set_layout_file(&ctx, &script, &settings);
+            settings_file::ask(
+                &view.ctx,
+                row,
+                settings_file::Kind::Engine,
+                &path,
+                done,
+                || (),
+            );
         });
         group.add(&row);
     }
@@ -246,14 +295,32 @@ fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
         None::<&gtk::gio::Cancellable>,
         move |result| {
             let Some(view) = view.upgrade() else { return };
-            match result.ok().and_then(|file| file.path()) {
-                Some(path) => set_layout(&view.ctx, tilde(&path)),
-                // Cancelled: rebuild, so the dropdown shows the configured engine again.
-                None => {
-                    view.shown.replace(None);
-                    refresh(&view);
+            // Cancelled: rebuild, so the dropdown shows the configured engine again.
+            let cancelled = {
+                let view = Rc::downgrade(&view);
+                move || {
+                    if let Some(view) = view.upgrade() {
+                        view.shown.replace(None);
+                        refresh(&view);
+                    }
                 }
-            }
+            };
+            let Some(path) = result.ok().and_then(|file| file.path()) else {
+                cancelled();
+                return;
+            };
+            // Then where its settings come from; the engine changes only with them.
+            let ctx = view.ctx.clone();
+            let script = path.clone();
+            let done = move |settings: PathBuf| set_layout_file(&ctx, &script, &settings);
+            settings_file::ask(
+                &view.ctx,
+                &view.column,
+                settings_file::Kind::Engine,
+                &path,
+                done,
+                cancelled,
+            );
         },
     );
 }
@@ -764,13 +831,15 @@ fn summarize(value: &OptionValue) -> String {
 /// Engine tab, which lists them.
 fn binds_row(view: &Rc<View>, engine: &LayoutEngine) -> adw::ActionRow {
     // With its default binds and the user's, as bento settles which runs each chord.
-    let config = view.ctx.store.config();
     let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
     defaults.extend(niri_config::bind_set::declared_binds(
         &engine.actions,
         niri_config::bind_set::engine_action,
     ));
-    let resolved = niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &defaults);
+    let resolved = {
+        let (user, unbound) = view.ctx.store.user_binds();
+        niri_config::bind_set::resolve(&user, &unbound, &defaults)
+    };
     let bound = engine
         .actions
         .iter()

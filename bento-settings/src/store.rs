@@ -37,7 +37,8 @@ pub enum File {
     Main,
     /// The running engine's own file, with its settings and binds.
     Engine,
-    /// The shell's settings, `shell/settings.kdl` next to the config.
+    /// The shell's file, with its settings and binds: `shell.kdl` next to the config for bento's
+    /// own shells, and the one the config names for a shell file.
     ShellSettings,
 }
 
@@ -108,9 +109,48 @@ impl Store {
         &self.0.config_path
     }
 
-    /// The running engine's own file, which may not exist yet.
-    pub fn engine_path(&self) -> PathBuf {
-        engine_config_path(&self.0.config_path, &self.0.config.borrow().tiling.layout)
+    /// The running engine's own file, which may not exist yet: a built-in engine's by its name,
+    /// and an engine file's as the config names it, if it does.
+    pub fn engine_path(&self) -> Option<PathBuf> {
+        engine_config_path(&self.0.config_path, &self.0.config.borrow().tiling)
+    }
+
+    /// The shell's file, which may not exist yet: `shell.kdl` next to the config for bento's own
+    /// shells, and a shell file's as the config names it, if it does.
+    pub fn shell_path(&self) -> Option<PathBuf> {
+        shell_settings_path(&self.0.config_path, &self.0.config.borrow())
+    }
+
+    /// The shell's file as it is now, empty when there's none or it has an error.
+    pub fn shell_settings(&self) -> niri_config::ShellSettings {
+        let text = self
+            .shell_path()
+            .and_then(|path| fs::read_to_string(path).ok());
+        text.and_then(|text| niri_config::ShellSettings::parse(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// The user's binds and the actions they turned off, in the config, the engine's file and the
+    /// shell's, as bento reads them.
+    pub fn user_binds(&self) -> (Vec<niri_config::binds::Bind>, Vec<niri_config::Action>) {
+        let config = self.config();
+        let shell = self.shell_settings();
+        let binds = config.binds.0.iter().cloned();
+        let unbound = config.unbound.iter().cloned();
+        (
+            binds
+                .chain(shell.binds.into_iter().map(|(_, b)| b))
+                .collect(),
+            unbound
+                .chain(shell.unbound.into_iter().map(|(_, a)| a))
+                .collect(),
+        )
+    }
+
+    /// The folder of the config, where new files for engines and shells go.
+    pub fn config_dir(&self) -> PathBuf {
+        let dir = self.0.config_path.parent().unwrap_or(Path::new(""));
+        dir.to_owned()
     }
 
     pub fn config(&self) -> Ref<'_, Config> {
@@ -262,7 +302,14 @@ impl Store {
 
     /// Watches the config and the running engine's file, which changes with the engine.
     fn watch(&self) {
-        let paths = [self.0.config_path.clone(), self.engine_path()];
+        let paths: Vec<PathBuf> = [
+            Some(self.0.config_path.clone()),
+            self.engine_path(),
+            self.shell_path(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         let mut monitors = self.0.monitors.borrow_mut();
         monitors.retain(|(path, _)| paths.contains(path));
         for path in paths {
@@ -328,13 +375,6 @@ fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
     let (shell_edits, edits): (Vec<_>, Vec<_>) = edits
         .into_iter()
         .partition(|edit| edit.file == File::ShellSettings);
-    let mut shell = None;
-    if !shell_edits.is_empty() {
-        let shell_path = shell_settings_path(path);
-        let text = apply(&shell_path, shell_edits)?;
-        niri_config::ShellSettings::parse(&text).map_err(|err| describe(&err))?;
-        shell = Some((shell_path, text));
-    }
     let (engine_edits, main_edits): (Vec<_>, Vec<_>) = edits
         .into_iter()
         .partition(|edit| edit.file == File::Engine);
@@ -356,6 +396,24 @@ fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
     };
     // Check the whole config first, so a bad value never reaches bento.
     let config = parsed.config.map_err(|err| describe(&err))?;
+    if engine_changes && engine.is_none() {
+        return Err(String::from(
+            "The engine has no settings file to write to; pick one on the Engine page",
+        ));
+    }
+
+    // The shell's file is known once the config says which shell runs, as with the engine's.
+    let mut shell = None;
+    if !shell_edits.is_empty() {
+        let Some(shell_path) = shell_settings_path(path, &config) else {
+            return Err(String::from(
+                "The shell has no settings file to write to; pick one on the Shell page",
+            ));
+        };
+        let text = apply(&shell_path, shell_edits)?;
+        niri_config::ShellSettings::parse(&text).map_err(|err| describe(&err))?;
+        shell = Some((shell_path, text));
+    }
 
     let mut written = vec![(path.to_owned(), main)];
     // Only an edit creates the engine's file, or the shell's settings.
@@ -367,10 +425,11 @@ fn save(path: &Path, edits: Vec<Edit>) -> Result<Saved, String> {
     Ok(Saved { written, config })
 }
 
-/// The shell's settings, `shell/settings.kdl` next to the config at `config_path`.
-pub fn shell_settings_path(config_path: &Path) -> PathBuf {
+/// The shell's file in `config`, read from `config_path`: `shell.kdl` next to it for bento's own
+/// shells, and the one the config names for a shell file, if it does.
+pub fn shell_settings_path(config_path: &Path, config: &Config) -> Option<PathBuf> {
     let dir = config_path.parent().unwrap_or(Path::new(""));
-    dir.join("shell").join("settings.kdl")
+    config.shell.clone().unwrap_or_default().settings_file(dir)
 }
 
 /// Applies edits to the file at `path` as it is now, so changes made elsewhere since are kept.
@@ -550,7 +609,7 @@ mod tests {
             let engine_path = dir.join("engines").join("niri.kdl");
 
             let store = Store::load_from(config_path.clone());
-            assert_eq!(store.engine_path(), engine_path);
+            assert_eq!(store.engine_path(), Some(engine_path.clone()));
 
             // Editing the main config leaves the engine's file alone.
             store.edit("layout.gaps", |doc| {

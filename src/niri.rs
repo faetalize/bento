@@ -4111,11 +4111,24 @@ impl Niri {
     pub fn resolved_binds(&self) -> niri_config::bind_set::Resolved {
         let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
         defaults.extend(crate::layout::tiling::engine::default_binds());
+        let config = self.config.borrow();
+        let mut user = config.binds.0.clone();
+        let mut unbound = config.unbound.clone();
         if let Some(scene) = &self.scene {
             defaults.extend(scene.default_binds());
+            // The user's binds for the shell's actions are in the shell's file.
+            user.extend(scene.user_binds());
+            unbound.extend(scene.unbound());
         }
+        niri_config::bind_set::resolve(&user, &unbound, &defaults)
+    }
+
+    /// The file of the shell's settings and binds: bento's own shells share
+    /// `~/.config/bento/shell.kdl`, and a shell file's is the one the config names, if any.
+    pub fn shell_settings_file(&self) -> Option<std::path::PathBuf> {
+        let dir = directories::BaseDirs::new()?.config_dir().join("bento");
         let config = self.config.borrow();
-        niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &defaults)
+        config.shell.clone().unwrap_or_default().settings_file(&dir)
     }
 
     /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps. It holds
@@ -5268,8 +5281,9 @@ impl Niri {
                     "floating": mapped.is_floating(),
                 }));
             });
+        let settings_file = self.shell_settings_file();
         let scene = self.scene.get_or_insert_with(Default::default);
-        scene.ensure_loaded(&outputs, dir.as_deref(), &entry, style);
+        scene.ensure_loaded(&outputs, dir.as_deref(), &entry, settings_file, style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         scene.set_windows(serde_json::Value::Array(windows));
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));

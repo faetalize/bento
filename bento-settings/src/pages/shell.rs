@@ -16,6 +16,7 @@ use bento_ipc::Shell;
 use gtk::glib;
 use niri_config::{Action, ShellScript};
 
+use super::settings_file;
 use crate::ipc;
 use crate::kdl::Value;
 use crate::page::PageContext;
@@ -33,7 +34,14 @@ struct View {
     shown: RefCell<Option<Shape>>,
 }
 
-type Shape = (ShellScript, Result<Shell, String>, Option<String>);
+/// The configured shell, the running one, how many of its actions have a bind, and a shell
+/// file's settings file with whether it's there.
+type Shape = (
+    ShellScript,
+    Result<Shell, String>,
+    Option<String>,
+    Option<(PathBuf, bool)>,
+);
 
 fn shape(ctx: &PageContext, shell: &Result<Shell, String>) -> Shape {
     let binds = shell
@@ -48,7 +56,15 @@ fn shape(ctx: &PageContext, shell: &Result<Shell, String>) -> Shape {
         }
         shell
     });
-    (script(ctx), shell, binds)
+    let script = script(ctx);
+    let settings = match script {
+        ShellScript::File(_) => ctx.store.shell_path().map(|path| {
+            let exists = path.exists();
+            (path, exists)
+        }),
+        ShellScript::BuiltIn(_) => None,
+    };
+    (script, shell, binds, settings)
 }
 
 fn script(ctx: &PageContext) -> ShellScript {
@@ -94,6 +110,11 @@ fn refresh(view: &Rc<View>) {
         view.column.remove(&child);
     }
     view.column.append(&choice_group(view, shape.2.as_deref()));
+    if let Some((path, _)) = &shape.3 {
+        if let Some(missing) = settings_file::missing(settings_file::Kind::Shell, path) {
+            view.column.append(&missing);
+        }
+    }
     match &shell {
         Ok(shell) => {
             if let Some(error) = &shell.error {
@@ -137,14 +158,16 @@ fn binds_summary(ctx: &PageContext, shell: &Shell) -> Option<String> {
         return None;
     }
     // With its default binds and the user's, as bento settles which runs each chord.
-    let config = ctx.store.config();
     let declared: Vec<_> = shell.actions.iter().map(|a| a.action.clone()).collect();
     let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
     defaults.extend(niri_config::bind_set::declared_binds(
         &declared,
         niri_config::bind_set::shell_action,
     ));
-    let resolved = niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &defaults);
+    let resolved = {
+        let (user, unbound) = ctx.store.user_binds();
+        niri_config::bind_set::resolve(&user, &unbound, &defaults)
+    };
     let bound = declared
         .iter()
         .filter(|action| {
@@ -183,6 +206,15 @@ fn binds_row(view: &Rc<View>, summary: &str) -> adw::ActionRow {
 fn set_script(ctx: &PageContext, script: String) {
     ctx.store.edit("shell.script", move |doc| {
         doc.set(&["shell", "script"], vec![Value::Str(script)]);
+    });
+}
+
+/// Runs the shell file at `script`, with its settings file at `settings`.
+fn set_script_file(ctx: &PageContext, script: &Path, settings: &Path) {
+    let (script, settings) = (tilde(script), tilde(settings));
+    ctx.store.edit("shell.script", move |doc| {
+        let properties = vec![(String::from("settings"), Value::Str(settings))];
+        doc.set_node(&["shell", "script"], vec![Value::Str(script)], properties);
     });
 }
 
@@ -241,11 +273,31 @@ fn choice_group(view: &Rc<View>, binds: Option<&str>) -> adw::PreferencesGroup {
             edit.connect_clicked(move |button| crate::page::open_file(button, &full));
             row.add_suffix(&edit);
             row.add_suffix(&gtk::Image::from_icon_name("ph-folder-open-symbolic"));
-            let view = Rc::downgrade(view);
+            let weak = Rc::downgrade(view);
             row.connect_activated(move |row| {
-                if let Some(view) = view.upgrade() {
+                if let Some(view) = weak.upgrade() {
                     choose_file(&view, row);
                 }
+            });
+            group.add(&row);
+
+            // Its settings file, which picks another, the shell staying.
+            let row = settings_file::row(view.ctx.store.shell_path().as_deref());
+            let weak = Rc::downgrade(view);
+            row.connect_activated(move |row| {
+                let Some(view) = weak.upgrade() else { return };
+                let ctx = view.ctx.clone();
+                let script = expand_home(&path);
+                let done = move |settings: PathBuf| set_script_file(&ctx, &script, &settings);
+                let script = expand_home(&path);
+                settings_file::ask(
+                    &view.ctx,
+                    row,
+                    settings_file::Kind::Shell,
+                    &script,
+                    done,
+                    || (),
+                );
             });
             group.add(&row);
         }
@@ -258,14 +310,8 @@ fn choice_group(view: &Rc<View>, binds: Option<&str>) -> adw::PreferencesGroup {
             row.add_suffix(&gtk::Image::from_icon_name("edit-copy-symbolic"));
             let view = Rc::downgrade(view);
             row.connect_activated(move |row| {
-                let Some(view) = view.upgrade() else { return };
-                match copy_built_in(&view.ctx, &name) {
-                    Ok(path) => {
-                        set_script(&view.ctx, tilde(&path));
-                        view.ctx.toast(&format!("Copied to {}", tilde(&path)));
-                        crate::page::open_file(row, &path);
-                    }
-                    Err(err) => view.ctx.toast(&err),
+                if let Some(view) = view.upgrade() {
+                    make_copy(&view, row, &name);
                 }
             });
             group.add(&row);
@@ -277,12 +323,6 @@ fn choice_group(view: &Rc<View>, binds: Option<&str>) -> adw::PreferencesGroup {
     group
 }
 
-/// The shell's folder, `shell/` next to the config.
-fn shell_dir(ctx: &PageContext) -> PathBuf {
-    let config = ctx.store.config_path();
-    config.parent().unwrap_or(Path::new("")).join("shell")
-}
-
 fn expand_home(path: &Path) -> PathBuf {
     match path.strip_prefix("~") {
         Ok(rest) => glib::home_dir().join(rest),
@@ -290,23 +330,54 @@ fn expand_home(path: &Path) -> PathBuf {
     }
 }
 
-/// Copies bento's shell `name` into the shell's folder, from the copy bento keeps of its shells,
-/// as `<name>.tsx`, or `<name>-2.tsx` and so on if that's taken.
-fn copy_built_in(ctx: &PageContext, name: &str) -> Result<PathBuf, String> {
+/// Copies bento's shell `name` to where the user saves it, from the copy bento keeps of its
+/// shells, then asks where its settings come from, and runs the copy with them.
+fn make_copy(view: &Rc<View>, widget: &impl IsA<gtk::Widget>, name: &str) {
     let source = glib::user_data_dir().join(format!("bento/shell/shells/{name}.tsx"));
-    let text = std::fs::read_to_string(&source)
-        .map_err(|err| format!("Couldn't read bento's {name} shell: {err}"))?;
-    let dir = shell_dir(ctx);
-    std::fs::create_dir_all(&dir).map_err(|err| format!("Couldn't make {}: {err}", tilde(&dir)))?;
-    let path = (1..)
-        .map(|n| match n {
-            1 => dir.join(format!("{name}.tsx")),
-            n => dir.join(format!("{name}-{n}.tsx")),
-        })
-        .find(|path| !path.exists())
-        .expect("a name is free");
-    std::fs::write(&path, text).map_err(|err| format!("Couldn't write {}: {err}", tilde(&path)))?;
-    Ok(path)
+    let text = match std::fs::read_to_string(&source) {
+        Ok(text) => text,
+        Err(err) => {
+            view.ctx
+                .toast(&format!("Couldn't read bento's {name} shell: {err}"));
+            return;
+        }
+    };
+    let dialog = gtk::FileDialog::builder()
+        .title("Save a Copy of the Shell")
+        .initial_name(format!("{name}.tsx"))
+        .build();
+    let weak = Rc::downgrade(view);
+    let window = widget.root().and_downcast::<gtk::Window>();
+    dialog.save(
+        window.as_ref(),
+        None::<&gtk::gio::Cancellable>,
+        move |result| {
+            let Some(view) = weak.upgrade() else { return };
+            let Some(path) = result.ok().and_then(|file| file.path()) else {
+                return;
+            };
+            if let Err(err) = std::fs::write(&path, &text) {
+                view.ctx
+                    .toast(&format!("Couldn't write {}: {err}", tilde(&path)));
+                return;
+            }
+            let ctx = view.ctx.clone();
+            let script = path.clone();
+            let done = move |settings: PathBuf| {
+                set_script_file(&ctx, &script, &settings);
+                ctx.toast(&format!("Copied to {}", tilde(&script)));
+                crate::page::open_file(&ctx.toasts, &script);
+            };
+            settings_file::ask(
+                &view.ctx,
+                &view.column,
+                settings_file::Kind::Shell,
+                &path,
+                done,
+                || (),
+            );
+        },
+    );
 }
 
 fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
@@ -320,7 +391,6 @@ fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
     let dialog = gtk::FileDialog::builder()
         .title("Choose a Shell")
         .filters(&filters)
-        .initial_folder(&gtk::gio::File::for_path(shell_dir(&view.ctx)))
         .build();
 
     let view = Rc::downgrade(view);
@@ -330,14 +400,32 @@ fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
         None::<&gtk::gio::Cancellable>,
         move |result| {
             let Some(view) = view.upgrade() else { return };
-            match result.ok().and_then(|file| file.path()) {
-                Some(path) => set_script(&view.ctx, tilde(&path)),
-                // Cancelled: rebuild, so the dropdown shows the configured shell again.
-                None => {
-                    view.shown.replace(None);
-                    refresh(&view);
+            // Cancelled: rebuild, so the dropdown shows the configured shell again.
+            let cancelled = {
+                let view = Rc::downgrade(&view);
+                move || {
+                    if let Some(view) = view.upgrade() {
+                        view.shown.replace(None);
+                        refresh(&view);
+                    }
                 }
-            }
+            };
+            let Some(path) = result.ok().and_then(|file| file.path()) else {
+                cancelled();
+                return;
+            };
+            // Then where its settings come from; the shell changes only with them.
+            let ctx = view.ctx.clone();
+            let script = path.clone();
+            let done = move |settings: PathBuf| set_script_file(&ctx, &script, &settings);
+            settings_file::ask(
+                &view.ctx,
+                &view.column,
+                settings_file::Kind::Shell,
+                &path,
+                done,
+                cancelled,
+            );
         },
     );
 }

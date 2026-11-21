@@ -63,9 +63,8 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
-    default_engine_config, engine_config_path, engine_config_path_in, resolve_gradient,
-    EngineRules, EngineSettings, EngineWindowRule, ScopedSettings, ShellSettings, Tiling,
-    TilingLayout, TilingOption,
+    engine_config_path, engine_config_path_in, resolve_gradient, EngineRules, EngineSettings,
+    EngineWindowRule, ScopedSettings, ShellSettings, Tiling, TilingLayout, TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
@@ -653,8 +652,8 @@ impl Config {
         });
 
         // The engine's file goes last, once the main config has said which engine runs.
-        if let (Ok(_), Some(read_engine)) = (&part, read_engine) {
-            let engine_path = engine_config_path_in(dir, &config.borrow().tiling.layout);
+        let engine_path = engine_config_path_in(dir, &config.borrow().tiling);
+        if let (Ok(_), Some(read_engine), Some(engine_path)) = (&part, read_engine, engine_path) {
             // Watched even while it doesn't exist, so creating it applies it.
             includes.push(engine_path.clone());
             match read_engine(&engine_path) {
@@ -732,28 +731,7 @@ impl ConfigPath {
             })
             .map_config_res(|res| res.context("error loading config"));
 
-        (created_at, self.create_engine_config(result))
-    }
-
-    /// Loads the config like [`ConfigPath::load`], first writing the running built-in engine's
-    /// default file if it has none. For the compositor, which runs the engine.
-    pub fn load_and_create_engine_config(&self) -> ConfigParseResult<Config, miette::Report> {
-        let result = self.load();
-        self.create_engine_config(result)
-    }
-
-    /// Writes the default file of the built-in engine that a loaded config runs, if it has none
-    /// yet, and loads the config again with it.
-    fn create_engine_config(
-        &self,
-        result: ConfigParseResult<Config, miette::Report>,
-    ) -> ConfigParseResult<Config, miette::Report> {
-        match &result.config {
-            Ok(config) if tiling::create_engine_config(self.dir(), &config.tiling.layout) => {
-                self.load()
-            }
-            _ => result,
-        }
+        (created_at, result)
     }
 
     /// The directory of the user's config, where built-in engines' files are in `engines/`, even
@@ -2073,6 +2051,7 @@ mod tests {
                 layout: BuiltIn(
                     "bento",
                 ),
+                settings_file: None,
                 settings: [],
                 output_settings: [],
                 workspace_settings: [],
@@ -3203,6 +3182,72 @@ mod tests {
         );
         assert!(settings.of("clock").is_empty());
         assert!(ShellSettings::parse("taskbar \"x\" {}").is_err());
+    }
+
+    #[test]
+    fn a_blocks_binds_name_its_actions_directly() {
+        let settings = ShellSettings::parse(
+            r#"
+            sound {
+                pinned "hdmi"
+                binds {
+                    Mod+Shift+F1 { switch-audio-output; }
+                    unbind { switch-audio-output "next"; }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let shell = |name: &str, args: &[&str]| {
+            Action::ShellAction(
+                String::from(name),
+                args.iter().map(|a| String::from(*a)).collect(),
+            )
+        };
+        let (block, bind) = &settings.binds[0];
+        assert_eq!(block, "sound");
+        assert_eq!(
+            bind.press_action(),
+            Some(&shell("switch-audio-output", &[]))
+        );
+        assert_eq!(
+            settings.unbound,
+            [(
+                String::from("sound"),
+                shell("switch-audio-output", &["next"])
+            )]
+        );
+        // `binds` isn't a setting of the block.
+        assert_eq!(settings.of("sound").len(), 1);
+
+        // bento's own actions and `shell-action` aren't written there.
+        assert!(ShellSettings::parse("sound {\n binds {\n Mod+T { spawn \"x\"; }\n }\n}").is_err());
+        let wrapped = "sound {\n binds {\n Mod+T { shell-action \"x\"; }\n }\n}";
+        assert!(ShellSettings::parse(wrapped).is_err());
+    }
+
+    #[test]
+    fn a_shell_file_has_the_settings_file_the_config_names_and_no_other() {
+        let dir = Path::new("/home/me/.config/bento");
+        let shell = |text: &str| do_parse(text).shell.unwrap();
+
+        // bento's own shells share `shell.kdl`.
+        let built_in = shell("shell {\n    script \"windows\"\n}\n");
+        assert_eq!(built_in.settings_file(dir), Some(dir.join("shell.kdl")));
+
+        // A shell file has only the one the config names, wherever it is.
+        let file = shell("shell {\n    script \"/src/mine.tsx\"\n}\n");
+        assert_eq!(file.settings_file(dir), None);
+        let file =
+            shell("shell {\n    script \"/src/mine.tsx\" settings=\"/backup/mine.kdl\"\n}\n");
+        assert_eq!(
+            file.settings_file(dir),
+            Some(PathBuf::from("/backup/mine.kdl"))
+        );
+
+        // bento's own shells' file is always `shell.kdl`, so naming one is an error.
+        let text = "shell {\n    script \"unix\" settings=\"x.kdl\"\n}\n";
+        assert!(Config::parse_mem(text).is_err());
     }
 
     #[test]

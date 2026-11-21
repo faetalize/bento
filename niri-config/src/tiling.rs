@@ -7,7 +7,7 @@ use knuffel::Decode as _;
 use niri_ipc::LayoutEngineGradient;
 
 use crate::appearance::{Color, Gradient, GradientInterpolation, GradientRelativeTo};
-use crate::binds::Binds;
+use crate::binds::{Action, Bind, Binds};
 use crate::utils::{expand_home_path, MergeWith};
 use crate::window_rule::Match;
 use crate::{Config, CurrentFile, Includes, OutputName};
@@ -16,12 +16,14 @@ use crate::{Config, CurrentFile, Includes, OutputName};
 ///
 /// ```kdl
 /// tiling {
-///     layout "bento" // or "niri", "windows11", or a path to a .js file
+///     layout "bento" // or "niri", or "windows11"
+///     // or an engine file, with the file of its settings, window rules and binds:
+///     // layout "~/my-engine.js" settings="~/.config/bento/engines/my-engine.kdl"
 /// }
 /// ```
 ///
 /// The settings and window rules come from the engine's own file, next to its binds (see
-/// [`engine_config_path`]):
+/// [`engine_config_path`]), and hold only what the user changed: the defaults are the engine's.
 ///
 /// ```kdl
 /// settings {
@@ -55,6 +57,9 @@ use crate::{Config, CurrentFile, Includes, OutputName};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tiling {
     pub layout: TilingLayout,
+    /// The file of an engine file's settings, as the config names it next to the engine. A
+    /// built-in engine's is found by its name instead.
+    pub settings_file: Option<PathBuf>,
     /// Settings for the layout, by name, with the values as written: a setting is
     /// `name value...`, and several values make a list. The layout declares their types, so
     /// they're checked and converted when it loads.
@@ -214,6 +219,7 @@ impl Default for Tiling {
     fn default() -> Self {
         Self {
             layout: TilingLayout::BuiltIn(String::from("bento")),
+            settings_file: None,
             settings: Vec::new(),
             output_settings: Vec::new(),
             workspace_settings: Vec::new(),
@@ -243,7 +249,33 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for Tiling {
                         continue;
                     };
                     let name: String = knuffel::traits::DecodeScalar::decode(value, ctx)?;
-                    tiling.layout = if name.contains('/') || name.ends_with(".js") {
+                    let file = name.contains('/') || name.ends_with(".js");
+                    tiling.settings_file = None;
+                    for (property, value) in &child.properties {
+                        if &***property != "settings" {
+                            ctx.emit_error(DecodeError::unexpected(
+                                property,
+                                "property",
+                                format!("unexpected property `{}`", property.escape_default()),
+                            ));
+                            continue;
+                        }
+                        if !file {
+                            ctx.emit_error(DecodeError::unexpected(
+                                property,
+                                "property",
+                                "a built-in engine's settings are always in `engines/<name>.kdl` \
+                                 next to this config",
+                            ));
+                            continue;
+                        }
+                        let text: String = knuffel::traits::DecodeScalar::decode(value, ctx)?;
+                        match expand_home_path(PathBuf::from(text), &value.literal, ctx) {
+                            Ok(path) => tiling.settings_file = Some(path),
+                            Err(err) => ctx.emit_error(err),
+                        }
+                    }
+                    tiling.layout = if file {
                         match expand_home_path(PathBuf::from(name), child, ctx) {
                             Ok(path) => {
                                 // Watch the layout file like the config, to reload it on changes.
@@ -279,84 +311,18 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for Tiling {
     }
 }
 
-/// The user's file for the engine's settings, window rules and binds: `engines/<name>.kdl` next to
-/// the main config, by the built-in engine's name or the engine file's.
-pub fn engine_config_path(config_path: &Path, layout: &TilingLayout) -> PathBuf {
-    engine_config_path_in(config_path.parent().unwrap_or(Path::new("")), layout)
+/// The user's file for the engine's settings, window rules and binds: a built-in engine's is
+/// `engines/<name>.kdl` next to the main config, by its name, and an engine file's is the one the
+/// config names next to it, if any.
+pub fn engine_config_path(config_path: &Path, tiling: &Tiling) -> Option<PathBuf> {
+    engine_config_path_in(config_path.parent().unwrap_or(Path::new("")), tiling)
 }
 
-/// The engine's file, in `engines/` under `dir`.
-pub fn engine_config_path_in(dir: &Path, layout: &TilingLayout) -> PathBuf {
-    let name = match layout {
-        TilingLayout::BuiltIn(name) => name.clone(),
-        TilingLayout::File(path) => path
-            .file_stem()
-            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
-    };
-    dir.join("engines").join(format!("{name}.kdl"))
-}
-
-/// The default file of a built-in engine, with its binds and settings.
-pub fn default_engine_config(name: &str) -> Option<&'static str> {
-    let config = DEFAULT_ENGINE_CONFIGS.iter().find(|(n, _)| *n == name);
-    config.map(|(_, text)| *text)
-}
-
-/// Default files of the engines that ship with bento, with their binds and settings.
-const DEFAULT_ENGINE_CONFIGS: &[(&str, &str)] = &[
-    ("bento", include_str!("../../resources/layouts/bento.kdl")),
-    ("niri", include_str!("../../resources/layouts/niri.kdl")),
-    (
-        "windows11",
-        include_str!("../../resources/layouts/windows11.kdl"),
-    ),
-];
-
-/// Writes the starting file of the engine in `layout` if it has none yet, the way bento writes the
-/// default config on first start: a built-in engine's from bento, and an engine file's from the
-/// `.kdl` its author ships next to it, if any. From then on the file is the user's. Returns
-/// whether it wrote one.
-pub fn create_engine_config(dir: &Path, layout: &TilingLayout) -> bool {
-    let shipped;
-    let (name, text) = match layout {
-        TilingLayout::BuiltIn(name) => {
-            let Some((_, text)) = DEFAULT_ENGINE_CONFIGS.iter().find(|(n, _)| n == name) else {
-                return false;
-            };
-            (name.clone(), *text)
-        }
-        TilingLayout::File(path) => {
-            let Ok(text) = std::fs::read_to_string(path.with_extension("kdl")) else {
-                return false;
-            };
-            shipped = text;
-            (path.to_string_lossy().into_owned(), shipped.as_str())
-        }
-    };
-    let path = engine_config_path_in(dir, layout);
-    if path.exists() {
-        return false;
-    }
-    let result = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| {
-            // `create_new` so a file made meanwhile is never overwritten.
-            let mut file = std::fs::File::options()
-                .write(true)
-                .create_new(true)
-                .open(&path)?;
-            std::io::Write::write_all(&mut file, text.as_bytes())
-        });
-    match result {
-        Ok(()) => {
-            info!("wrote the default {name} engine config to {path:?}");
-            true
-        }
-        Err(err) => {
-            warn!("error writing the default {name} engine config to {path:?}: {err}");
-            false
-        }
+/// The engine's file, with a built-in engine's in `engines/` under `dir`.
+pub fn engine_config_path_in(dir: &Path, tiling: &Tiling) -> Option<PathBuf> {
+    match &tiling.layout {
+        TilingLayout::BuiltIn(name) => Some(dir.join("engines").join(format!("{name}.kdl"))),
+        TilingLayout::File(_) => tiling.settings_file.clone(),
     }
 }
 
@@ -466,36 +432,64 @@ fn decode_settings<S: knuffel::traits::ErrorSpan>(
     Ok(settings)
 }
 
-/// The shell's settings, as `~/.config/bento/shell/settings.kdl` writes them: a block for each
-/// module and each shell, by its name, with its settings written the way an engine's are.
+/// The shell's settings and the user's binds for its actions, as its file writes them: a block
+/// for each module and each shell, by its name, with its settings written the way an engine's
+/// are, and its binds in a `binds {}` of its own that names its actions directly. bento's own
+/// shells share `shell.kdl` next to the config; a shell file's is the one the config names.
 ///
 /// ```kdl
 /// taskbar {
 ///     pinned "firefox" "org.gnome.Nautilus"
 /// }
 ///
-/// windows {
-///     height 48
+/// sound {
+///     binds {
+///         Mod+Shift+F1 { switch-audio-output; }
+///     }
+/// }
+///
+/// start-menu {
+///     binds {
+///         unbind { toggle-start-menu; }
+///     }
 /// }
 /// ```
 ///
 /// The modules and shells declare their settings' types, so the values are checked and converted
 /// once they're loaded.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ShellSettings(pub Vec<(String, EngineSettings)>);
+pub struct ShellSettings {
+    /// Each block's settings, by the block's name, in the order they're written.
+    pub blocks: Vec<(String, EngineSettings)>,
+    /// The user's binds, each with the name of the block it's in.
+    pub binds: Vec<(String, Bind)>,
+    /// The actions the user turned off, each with the name of the block it's in.
+    pub unbound: Vec<(String, Action)>,
+}
 
 impl ShellSettings {
     pub fn parse(text: &str) -> Result<Self, knuffel::Error> {
-        let blocks = knuffel::parse::<Vec<SettingsBlock>>("settings.kdl", text)?;
-        Ok(Self(
-            blocks.into_iter().map(|block| (block.0, block.1)).collect(),
-        ))
+        let blocks = knuffel::parse_with_context::<Vec<SettingsBlock>, knuffel::span::Span, _>(
+            "shell.kdl",
+            text,
+            |ctx| ctx.set(ShellFile),
+        )?;
+        let mut settings = Self::default();
+        for block in blocks {
+            settings
+                .binds
+                .extend(block.binds.into_iter().map(|b| (block.name.clone(), b)));
+            let unbound = block.unbound.into_iter().map(|a| (block.name.clone(), a));
+            settings.unbound.extend(unbound);
+            settings.blocks.push((block.name, block.settings));
+        }
+        Ok(settings)
     }
 
     /// The settings of the module or shell `name`, from every block of its name in order, so that
     /// one written later wins.
     pub fn of(&self, name: &str) -> EngineSettings {
-        let blocks = self.0.iter().filter(|(block, _)| block == name);
+        let blocks = self.blocks.iter().filter(|(block, _)| block == name);
         blocks
             .flat_map(|(_, settings)| settings.iter().cloned())
             .collect()
@@ -503,7 +497,12 @@ impl ShellSettings {
 }
 
 /// A block of [`ShellSettings`].
-struct SettingsBlock(String, EngineSettings);
+struct SettingsBlock {
+    name: String,
+    settings: EngineSettings,
+    binds: Vec<Bind>,
+    unbound: Vec<Action>,
+}
 
 impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for SettingsBlock {
     fn decode_node(
@@ -517,10 +516,33 @@ impl<S: knuffel::traits::ErrorSpan> knuffel::Decode<S> for SettingsBlock {
                 "a block of settings is only its name",
             ));
         }
-        let name = String::from(&**node.node_name);
-        Ok(Self(name, decode_settings(node, ctx)?))
+        let mut block = Self {
+            name: String::from(&**node.node_name),
+            settings: Vec::new(),
+            binds: Vec::new(),
+            unbound: Vec::new(),
+        };
+        for child in node.children() {
+            if &**child.node_name == "binds" {
+                match <Binds as knuffel::Decode<S>>::decode_node(child, ctx) {
+                    Ok(binds) => block.binds.extend(binds.0),
+                    Err(err) => ctx.emit_error(err),
+                }
+                block
+                    .unbound
+                    .extend(crate::binds::decode_unbinds(child, ctx));
+            } else {
+                let name = String::from(&**child.node_name);
+                block.settings.push((name, decode_values(child, ctx)?));
+            }
+        }
+        Ok(block)
     }
 }
+
+/// Marks the shell's file in the knuffel context. Its binds name the shell's actions directly, so
+/// an action bento doesn't have becomes a `shell-action` there.
+pub(crate) struct ShellFile;
 
 /// An `output "DP-2" { settings { … } }` or `workspace "web" { settings { … } }` node.
 fn decode_scoped<S: knuffel::traits::ErrorSpan>(
@@ -806,6 +828,7 @@ mod tests {
             config.tiling,
             Tiling {
                 layout: TilingLayout::BuiltIn(String::from("niri")),
+                settings_file: None,
                 settings: vec![
                     (String::from("gravity"), vec![TilingOption::Bool(false)]),
                     (String::from("rows"), vec![TilingOption::Number(12.)]),
@@ -1192,14 +1215,14 @@ mod tests {
     }
 
     #[test]
-    fn default_engine_configs_fit_the_default_config() {
+    fn the_default_config_fits_every_built_in_engine() {
         let main = include_str!("../../resources/default-config.kdl");
-        for (name, engine) in DEFAULT_ENGINE_CONFIGS {
+        for name in ["bento", "niri", "windows11"] {
             let main = main.replace(r#"layout "bento""#, &format!("layout {name:?}"));
-            let config = Config::parse_mem_with_engine(&main, engine)
+            // A built-in engine's file starts empty: its defaults are the engine's.
+            let config = Config::parse_mem_with_engine(&main, "")
                 .unwrap_or_else(|err| panic!("{name}: {:?}", miette::Report::new(err)));
-            // An engine's default keys are in its declarations: its starting file, and the main
-            // config's, have none.
+            // An engine's default keys are in its declarations, and the main config has none.
             assert!(config.binds.0.is_empty(), "{name}");
         }
     }
@@ -1261,15 +1284,65 @@ mod tests {
         )
         .unwrap();
 
+        std::fs::create_dir_all(user.join("engines")).unwrap();
+        std::fs::write(
+            user.join("engines/niri.kdl"),
+            "settings {\n    tab-indicator false\n}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(system.join("engines")).unwrap();
+        std::fs::write(
+            system.join("engines/niri.kdl"),
+            "settings {\n    nope 1\n}\n",
+        )
+        .unwrap();
+
         let path = crate::ConfigPath::Regular {
             user_path: user.join("config.kdl"),
             system_path: system.join("config.kdl"),
         };
-        path.load_and_create_engine_config().config.unwrap();
-
-        assert!(user.join("engines/niri.kdl").exists());
-        assert!(!system.join("engines").exists());
+        let config = path.load().config.unwrap();
         std::fs::remove_dir_all(&root).unwrap();
+        let names: Vec<&str> = config
+            .tiling
+            .settings
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(names, ["tab-indicator"]);
+    }
+
+    #[test]
+    fn an_engine_file_reads_the_settings_file_the_config_names_and_no_other() {
+        let config_path = Path::new("/home/me/.config/bento/config.kdl");
+        let read = |text: &str| {
+            let asked = std::cell::RefCell::new(Vec::new());
+            let config = Config::parse_with_engine(config_path, text, |path| {
+                asked.borrow_mut().push(path.to_path_buf());
+                Ok(String::from("settings {\n    rows 2\n}\n"))
+            })
+            .config
+            .unwrap();
+            (config, asked.take())
+        };
+
+        // Without a file named, none is read, not even one of the engine's name.
+        let (config, asked) = read("tiling {\n    layout \"mine.js\"\n}\n");
+        assert!(asked.is_empty());
+        assert!(config.tiling.settings.is_empty());
+
+        // With one named, that one, wherever it is.
+        let (config, asked) =
+            read("tiling {\n    layout \"mine.js\" settings=\"backups/mine.kdl\"\n}\n");
+        assert_eq!(
+            asked,
+            [PathBuf::from("/home/me/.config/bento/backups/mine.kdl")]
+        );
+        assert_eq!(config.tiling.settings.len(), 1);
+
+        // A built-in engine's is always found by its name, so naming one is an error.
+        let text = "tiling {\n    layout \"niri\" settings=\"x.kdl\"\n}\n";
+        assert!(Config::parse_mem(text).is_err());
     }
 
     #[test]

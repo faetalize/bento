@@ -20,6 +20,7 @@ mod location;
 mod migrate;
 mod planned;
 mod preview;
+mod settings_file;
 mod shell;
 mod system;
 mod theme;
