@@ -91,8 +91,9 @@ under the pointer, and dragged.
 
 Which shell runs is chosen the way the engine is: in bento's config, and in bento's settings,
 among bento's shells and a file of one's own. bento's own shells aren't edited in place; one is
-duplicated into a file of one's own to start from, and that file is the shell that runs. A
-shell's files and one's own modules live in `~/.config/bento/shell/`; a module there takes the
+duplicated into a file of one's own to start from, saved wherever the user picks, and that file
+is the shell that runs. A shell of one's own lives wherever its author keeps it, and the config
+names its path. One's own modules live in `~/.config/bento/shell/`; a module there takes the
 place of bento's module of its name everywhere, and bento's own stays there to build on. bento
 reloads them when they change, without building anything or logging out. Scripts react to events
 and say where things go; they never run in the per-frame loop. A script that fails leaves the last

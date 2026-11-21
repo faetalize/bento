@@ -264,27 +264,32 @@ bento draws its own shell too, while it's being built: islands of glass along th
 ```kdl
 shell {
     built-in
-    script "unix" // or "windows", or a path to a shell of your own, like "~/.config/bento/shell/mine.tsx"
+    script "unix" // or "windows"
+    // or a shell of your own, wherever you keep it, with the file of its settings and binds:
+    // script "~/src/my-shell.tsx" settings="~/.config/bento/shells/my-shell.kdl"
 }
 ```
 
-bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one to start a shell of your own from; bento's own aren't edited in place. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
+bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one, saved wherever you like, to start a shell of your own from; bento's own aren't edited in place. Picking a shell of your own there asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/shells/`, and Use a Backup… takes one you have, wherever it is. Either way the config names it next to the shell, and what you set under that shell stays in its file. A shell's default export is its root component. A file of one's own in `~/.config/bento/shell/modules/` takes the place of bento's module of its name, like `modules/clock.tsx`, and `bento:stock/modules/clock` stays bento's own, to build on. bento loads the shell again whenever a file changes.
 
-Modules and shells declare their settings and actions in their `meta`, the way engines do. Settings, like the apps pinned to the taskbar, are kept in `~/.config/bento/shell/settings.kdl`, a block for each module and shell by its name, and show in bento Settings only when they name its page, like the taskbar's height on the Shell page; pins are changed where they are:
+Modules and shells declare their settings and actions in their `meta`, the way engines do, with their defaults. What you change is kept in the shell's file: `~/.config/bento/shell.kdl` for bento's own shells, shared by them, or the one the config names for a shell of your own. It has a block for each module and shell by its name, with its settings, and its binds in a `binds {}` that names its actions directly. Settings show in bento Settings only when they name its page, like the taskbar's height on the Shell page; pins are changed where they are.
+
+Actions come with binds, like the start menu's `toggle-start-menu` on Mod alone and the clipboard's `toggle-clipboard` on Mod+V. Settings → Binds lists the running shell's in its Shell tab, by module, and binds of your own replace an action's:
 
 ```kdl
+// ~/.config/bento/shell.kdl
 taskbar {
     pinned "firefox" "org.gnome.Nautilus"
 }
-```
 
-Actions are what a bind runs, by name with `shell-action`, with what the action takes after its name. Some come with binds, like the start menu's `toggle-start-menu` on Mod alone and the clipboard's `toggle-clipboard` on Mod+V. Settings → Binds lists the running shell's in its Shell tab, by module, and binds of your own replace an action's:
-
-```kdl
-binds {
-    Mod+Shift+V { shell-action "toggle-clipboard"; }
+clipboard {
+    binds {
+        Mod+Shift+V { toggle-clipboard; }
+    }
 }
 ```
+
+A shell program outside bento gets binds too, by name with `shell-action` in the main config's `binds {}`, with what the action takes after its name.
 
 What a shell can use, an editor shows: bento keeps a copy of its modules, its shells and their types in `~/.local/share/bento/shell/`, and a `tsconfig.json` in `~/.config/bento/shell/` that points an editor there. `bento msg shell` prints the running shell's settings and actions.
 
@@ -414,16 +419,19 @@ tiling {
 
 ```kdl
 tiling {
-    // A path, absolute or relative to the config file.
-    layout "~/.config/bento/layouts/spiral.js"
+    // A path, absolute or relative to the config file, with the file of its settings.
+    layout "~/src/spiral.js" settings="~/.config/bento/engines/spiral.kdl"
 }
 ```
 
 Engines aren't interchangeable presets.
 Each one defines how the workspace works, with actions of its own.
-So each engine has a config file of its own for its settings, its window rules and your keys for its actions, loaded only while that engine runs: `engines/<name>.kdl` next to the config, by the built-in engine's name or the engine file's, so `~/.config/bento/engines/bento.kdl`, or `engines/spiral.kdl` for the one above.
+So each engine has a config file of its own for its settings, its window rules and your binds for its actions, loaded only while that engine runs.
+A built-in engine's is `engines/<name>.kdl` next to the config, like `~/.config/bento/engines/bento.kdl`.
+An engine file's is the one the config names next to it, like `engines/spiral.kdl` above, and none is read if it names none.
+Picking an engine file in bento Settings asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/engines/`, and Use a Backup… takes one you have, wherever it is.
 
-The first time an engine runs without its file, bento writes a starting one there, with its settings at their defaults; for an engine file, that's the `.kdl` its author ships next to it, if any. From then on the file is yours.
+The file holds only what you change: an engine's defaults, for its settings, window rules and binds, stay in the engine, so a newer engine's defaults reach you, except what you changed.
 Switching engines switches which file is loaded, so nothing breaks.
 
 When the engine file changes, bento reloads it, just like the config.
