@@ -9,6 +9,13 @@
 // the others along it. After a window snaps, Snap Assist offers the other windows to fill the
 // space left. Alt+Tab switches windows, most recently used first, and windows can be minimized.
 //
+// Windows group as tabs, like the tabs of the early Windows 10 builds' Sets: a window dropped on
+// the top band of another, or on its group's tab strip, joins it as a tab. A group shares one
+// frame: the tab strip at its top, and its active window under it, with the others hidden there.
+// A tab's press makes its window active, and dragging a tab pulls its window out of the group.
+// Dragging the active window by its own title bar takes the whole group along. Which windows are
+// grouped is bento's, so groups made by bento's own group actions show as tabs too.
+//
 // The engine keeps, for each window:
 // - `free`, the rect it has when it's neither snapped nor maximized, which it goes back to;
 // - `zone`, where it's snapped, as fractions of the working area: `{ x: 0, y: 0, w: 0.5, h: 1 }`
@@ -148,6 +155,16 @@ const PREVIEW_EDGE = "#ffffff8c";
 const ZONE = "#ffffff33";
 const ZONE_PICKED = "#ffffffbf";
 const RADIUS = 12;
+/** How tall a group's tab strip is, at the top of its frame. */
+const STRIP = 36;
+/** How far down from a window's top a dragged window joins it as a tab when it's dropped. */
+const BAND = 40;
+const TAB_MAX = 240;
+const TAB_GAP = 4;
+const TAB_INSET = 4;
+const ICON = 16;
+const TAB_TEXT = 18;
+const TAB_DIM = "#ffffff99";
 /** How what's drawn moves and fades: quickly, without overshooting. */
 const MOTION = { duration: 180, curve: "ease-out-cubic" };
 /**
@@ -191,6 +208,17 @@ export default function create(bento) {
     let ui = null;
     /** The resize going on: the window, and at its start its rect and the snapped zones. */
     let resizing = null;
+    /** Per group id: its tab strip, drawn above its active window. */
+    const strips = new Map();
+    /** Per group id: its windows' ids as last shown, to tell which group a dragged window left. */
+    const members = new Map();
+    /** The window whose tab was last pressed, which a drag then pulls out of its group. */
+    let pulled = null;
+    /**
+     * A group's active window dragged by its own title bar, `{ id, others }`: the rest of its
+     * group stays hidden and comes back together with it where it's dropped.
+     */
+    let carried = null;
 
     const saved = bento.savedState;
     if (saved !== null && typeof saved === "object") {
@@ -220,6 +248,8 @@ export default function create(bento) {
         const s = stateOf(win);
         win.setData({ free: s.free, zone: s.zone, minimized: s.minimized });
         bento.stateChanged();
+        // The rest of its group follow the active window.
+        if (inGroup(win) && win.group.active === win) present(win.group);
     }
 
     /** Snapped to a zone and shown there: not maximized, fullscreen or minimized. */
@@ -280,14 +310,21 @@ export default function create(bento) {
         return { x: left, y: top, w: Math.max(1, right - left), h: Math.max(1, bottom - top) };
     }
 
-    /** Where a window goes, from its mode and state. */
-    function targetRect(win) {
+    /** The frame a window has, from its mode and state: with its group's tab strip, if any. */
+    function frameRect(win) {
         const ws = win.workspace;
         const s = stateOf(win);
         if (win.mode === "fullscreen") return { x: 0, y: 0, ...ws.monitor.size };
         if (win.mode === "maximized") return { ...ws.monitor.workingArea };
         if (s.zone !== null) return zoneRect(ws, s.zone);
         return s.free;
+    }
+
+    /** Where a window goes: its frame, under the tab strip when it's in a group. */
+    function targetRect(win) {
+        const frame = frameRect(win);
+        if (frame === null || !inGroup(win) || win.mode === "fullscreen") return frame;
+        return { x: frame.x, y: frame.y + STRIP, w: frame.w, h: Math.max(1, frame.h - STRIP) };
     }
 
     function apply(win, opts) {
@@ -496,6 +533,8 @@ export default function create(bento) {
         const ws = win.workspace;
         if (win.node.parent === ws.tree) {
             win.raise();
+            const strip = inGroup(win) ? strips.get(win.group.id) : undefined;
+            if (strip !== undefined && win.group.active === win) placeStrip(win, strip);
             raiseLayer(ws);
         }
     }
@@ -541,7 +580,10 @@ export default function create(bento) {
     function dragOver(ws, e) {
         const target = dropTarget(ws, e.pointer);
         if (target === null) {
-            hidePreview(ws);
+            // Over another window's top band, a strip where its tabs would be.
+            const joining = groupTarget(ws, e.pointer, e.window);
+            if (joining === null) hidePreview(ws);
+            else showPreview(ws, stripRect(joining), e.rect);
         } else {
             const rect = target === MAXIMIZE ? { ...ws.monitor.workingArea } : zoneRect(ws, target);
             showPreview(ws, rect, e.rect);
@@ -554,6 +596,11 @@ export default function create(bento) {
 
     /** Focuses a window and raises it, bringing it back first if it's minimized. */
     function activate(win) {
+        // A tab comes to the front of its group.
+        if (inGroup(win) && win.group.active !== win) {
+            win.group.activate(win);
+            present(win.group);
+        }
         if (stateOf(win).minimized || !win.visible) unminimize(win);
         win.focus();
         raise(win);
@@ -1127,7 +1174,12 @@ export default function create(bento) {
     /** Windows that Snap Assist can offer next to `win`: the others that aren't snapped. */
     function assistCandidates(win) {
         return byRecent(win.workspace).filter(
-            (other) => other !== win && !isSnapped(other) && other.mode !== "fullscreen",
+            (other) =>
+                other !== win &&
+                !isSnapped(other) &&
+                other.mode !== "fullscreen" &&
+                // A tab behind another is where its group is already.
+                !(inGroup(other) && other.group.active !== other),
         );
     }
 
@@ -1290,6 +1342,225 @@ export default function create(bento) {
     });
 
     // ---------------------------------------------------------------------------------------------
+    // Groups, shown as tabs
+    // ---------------------------------------------------------------------------------------------
+
+    /** Whether a window is in a group with another. */
+    function inGroup(win) {
+        return win.group !== null && win.group.windows.length > 1;
+    }
+
+    /** Where the tab strip of a group with `active` goes: the top of its frame. */
+    function stripRect(active) {
+        const frame = frameRect(active);
+        return frame === null ? null : { x: frame.x, y: frame.y, w: frame.w, h: STRIP };
+    }
+
+    /**
+     * The window a window dragged with the pointer at `p` would join as a tab: the window under
+     * the pointer, when the pointer is on its top band, or on the tab strip of its group. A window
+     * above another hides the other's band.
+     */
+    function groupTarget(ws, p, dragged) {
+        for (const win of ws.windows.slice().reverse()) {
+            if (win.id === dragged?.id || !win.visible || win.mode === "fullscreen") continue;
+            const frame = frameRect(win);
+            if (frame === null) continue;
+            const inside =
+                p.x >= frame.x && p.x < frame.x + frame.w && p.y >= frame.y && p.y < frame.y + frame.h;
+            if (!inside) continue;
+            return p.y < frame.y + (inGroup(win) ? STRIP : BAND) ? win : null;
+        }
+        return null;
+    }
+
+    /**
+     * Shows a group as tabs: its active window in the group's frame under the tab strip, with
+     * the others hidden there, all of them sharing its place. A group whose windows are all
+     * carried away with a dragged one stays hidden until it's dropped.
+     */
+    function present(group) {
+        const active = group.active;
+        const ws = active.workspace;
+        members.set(group.id, group.windows.map((win) => win.id));
+        if (carried !== null && group.windows.every((win) => carried.others.includes(win.id))) {
+            group.windows.forEach((win) => win.setVisible(false));
+            removeStrip(group.id);
+            return;
+        }
+        const as = stateOf(active);
+        for (const win of group.windows) {
+            if (win === active) continue;
+            if (win.workspace !== ws) win.moveTo(ws);
+            const s = stateOf(win);
+            s.free = as.free === null ? null : { ...as.free };
+            s.zone = as.zone === null ? null : { ...as.zone };
+            s.minimized = false;
+            const mode = active.mode === "fullscreen" ? "normal" : active.mode;
+            if (win.mode !== mode) win.setMode(mode);
+            win.setVisible(false);
+            apply(win);
+            win.setData({ free: s.free, zone: s.zone, minimized: false });
+        }
+        active.setVisible(!as.minimized);
+        apply(active);
+        drawStrip(group);
+        bento.stateChanged();
+    }
+
+    function removeStrip(id) {
+        strips.get(id)?.remove();
+        strips.delete(id);
+    }
+
+    /** The tab strip above a group's active window: a tab for each window, the active one lit. */
+    function drawStrip(group) {
+        const active = group.active;
+        const ws = active.workspace;
+        const rect = stripRect(active);
+        if (rect === null || !active.visible || active.mode === "fullscreen") {
+            removeStrip(group.id);
+            return;
+        }
+        let strip = strips.get(group.id);
+        if (strip === undefined) {
+            strip = bento.createNode("box", { interactive: true });
+            strips.set(group.id, strip);
+        }
+        for (const child of strip.children.slice()) child.remove();
+        strip.set({
+            rect,
+            cornerRadius: RADIUS,
+            background: PANEL,
+            border: { width: 1, color: PANEL_EDGE },
+        });
+        const windows = group.windows;
+        const room = rect.w - 2 * TAB_INSET - (windows.length - 1) * TAB_GAP;
+        const w = Math.max(1, Math.min(TAB_MAX, Math.floor(room / windows.length)));
+        const h = STRIP - 2 * TAB_INSET;
+        windows.forEach((win, i) => {
+            const tab = {
+                x: rect.x + TAB_INSET + i * (w + TAB_GAP),
+                y: rect.y + TAB_INSET,
+                w,
+                h,
+            };
+            const node = bento.createNode("box", {
+                rect: tab,
+                cornerRadius: RADIUS - 4,
+                background: win === active ? HIGHLIGHT : null,
+                interactive: true,
+                clip: true,
+            });
+            node.addEventListener("pointerdown", (e) => pressTab(win, e));
+            node.append(
+                bento.createNode("image", {
+                    rect: { x: tab.x + 8, y: tab.y + (h - ICON) / 2, w: ICON, h: ICON },
+                    image: win.appId ?? "application-x-executable",
+                }),
+            );
+            node.append(
+                bento.createNode("text", {
+                    rect: { x: tab.x + 16 + ICON, y: tab.y + (h - TAB_TEXT) / 2, w: w - 24 - ICON, h: TAB_TEXT },
+                    text: win.title ?? win.appId ?? "",
+                    font: FONT,
+                    color: win === active ? TEXT : TAB_DIM,
+                }),
+            );
+            strip.append(node);
+        });
+        placeStrip(active, strip);
+    }
+
+    /** Stacks a group's tab strip right above its active window. */
+    function placeStrip(active, strip) {
+        const tree = active.workspace.tree;
+        const children = tree.children;
+        const next = children[children.indexOf(active.node) + 1];
+        if (next === strip) return;
+        if (next === undefined) tree.append(strip);
+        else tree.append(strip, next);
+    }
+
+    /**
+     * A press on a tab: its window becomes the group's active one, and dragging it from there
+     * pulls it out of the group, as a move of its own.
+     */
+    function pressTab(win, e) {
+        if (e.button !== 1) return;
+        const group = win.group;
+        if (group === null) return;
+        if (group.active !== win) {
+            group.activate(win);
+            present(group);
+        }
+        win.focus();
+        raise(win);
+        pulled = win.id;
+        win.beginMove();
+    }
+
+    /**
+     * `win`, dropped on `target`'s top band or tab strip, and the windows carried with it, join
+     * the target's group, or make one with it, as its active tab, in its place.
+     */
+    function join(win, target, others) {
+        const ws = target.workspace;
+        for (const other of others) {
+            if (other.workspace !== ws) other.moveTo(ws);
+        }
+        const ts = stateOf(target);
+        const s = stateOf(win);
+        s.free = ts.free === null ? null : { ...ts.free };
+        s.zone = ts.zone === null ? null : { ...ts.zone };
+        s.minimized = false;
+        if (win.mode !== target.mode) win.setMode(target.mode);
+        let group = inGroup(target) ? target.group : null;
+        if (group !== null) {
+            for (const other of [win, ...others]) group.add(other);
+            group.activate(win);
+        } else {
+            group = bento.createGroup([target, win, ...others], win);
+        }
+        if (group !== null) present(group);
+        win.focus();
+        raise(win);
+        save(win);
+    }
+
+    /** Puts the windows carried away with `win` back in a group with it, where it was dropped. */
+    function regroup(win, others) {
+        const ws = win.workspace;
+        for (const other of others) {
+            if (other.workspace !== ws) other.moveTo(ws);
+        }
+        const group = bento.createGroup([win, ...others], win);
+        if (group !== null) present(group);
+    }
+
+    /** A group is gone: its windows that are still here show again, each on its own. */
+    function ungrouped(id) {
+        removeStrip(id);
+        const ids = members.get(id) ?? [];
+        members.delete(id);
+        for (const wid of ids) {
+            const win = bento.window(wid);
+            if (win === null || win.group !== null) continue;
+            if (carried?.others.includes(wid)) continue;
+            win.setVisible(!stateOf(win).minimized);
+            apply(win);
+        }
+        bento.stateChanged();
+    }
+
+    bento.addEventListener("groupadd", (e) => {
+        const group = e.group;
+        group.addEventListener("change", () => present(group));
+        group.addEventListener("remove", () => ungrouped(group.id));
+        present(group);
+    });
+
+    // ---------------------------------------------------------------------------------------------
     // Windows
     // ---------------------------------------------------------------------------------------------
 
@@ -1303,8 +1574,16 @@ export default function create(bento) {
         const ws = win.workspace;
         closeUiOn(ws);
         if (resizing?.id === win.id) resizing = null;
-        // A dragged window comes back when it's dropped, with what it had.
-        if (e.reason === "drag") return;
+        // A dragged window comes back when it's dropped, with what it had. Dragged by its own
+        // title bar, its group comes along; by its tab, it's pulled out of it.
+        if (e.reason === "drag") {
+            const group = [...members].find(([, ids]) => ids.includes(win.id));
+            if (group !== undefined && pulled !== win.id) {
+                carried = { id: win.id, others: group[1].filter((id) => id !== win.id) };
+            }
+            pulled = null;
+            return;
+        }
         forget(win);
         if (ws.focused === null || ws.focused === win) focusNext(ws, win);
         bento.stateChanged();
@@ -1422,6 +1701,17 @@ export default function create(bento) {
         const ws = win.workspace;
         const s = stateOf(win);
         hidePreview(ws);
+        const others = carried?.id === win.id ? carried.others.map((id) => bento.window(id)) : [];
+        const along = others.filter((other) => other !== null);
+        carried = null;
+        const joining =
+            e.pointer === null || dropTarget(ws, e.pointer) !== null
+                ? null
+                : groupTarget(ws, e.pointer, win);
+        if (joining !== null) {
+            join(win, joining, along);
+            return;
+        }
         const wasFree = isFree(win);
         const size = fitSize(ws, s.free ?? e.rect ?? defaultSize(ws));
         const target = e.pointer === null ? null : dropTarget(ws, e.pointer);
@@ -1445,6 +1735,7 @@ export default function create(bento) {
         if (target === MAXIMIZE) win.setMode("maximized");
         apply(win);
         save(win);
+        if (along.length > 0) regroup(win, along);
         if (e.activate) {
             win.focus();
             raise(win);
@@ -1493,6 +1784,8 @@ export default function create(bento) {
 
     bento.addEventListener("focuschange", () => {
         const win = bento.focused;
+        // Focus going to another window ends a tab's press; a drag leaves none focused meanwhile.
+        if (pulled !== null && win !== null && win.id !== pulled) pulled = null;
         if (win === null) return;
         touch(win);
         raise(win);
@@ -1556,6 +1849,7 @@ export default function create(bento) {
             return { id: win.id, zone: s.zone, free: s.free, minimized: s.minimized };
         }),
         recent: recent.filter((id) => bento.window(id) !== null),
+        groups: [...members].map(([id, ids]) => ({ id, windows: ids, tabs: strips.has(id) })),
         showing:
             ui === null
                 ? null
