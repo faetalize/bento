@@ -13,13 +13,14 @@ use std::{env, mem, thread};
 use _server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDecorationsMode;
 use anyhow::{bail, ensure, Context};
 use calloop::futures::Scheduler;
+use niri_config::bind_set::Declarer;
 use niri_config::debug::PreviewRender;
 use niri_config::input::XkbFile;
 use niri_config::output::MaxBpc;
 use niri_config::window_rule::VrrRule;
 use niri_config::{
-    Bind, Config, FloatOrInt, Key, Modifiers, OutputName, TrackLayout, WarpMouseToFocusMode,
-    WorkspaceReference, Xkb,
+    Bind, Config, FloatOrInt, Key, ModKey, Modifiers, OutputName, TrackLayout,
+    WarpMouseToFocusMode, WorkspaceReference, Xkb,
 };
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::input::{InputTime, Keycode, TouchSlot};
@@ -183,11 +184,12 @@ use crate::render_helpers::{
     encompassing_geo, render_to_dmabuf, render_to_encompassing_texture, render_to_shm,
     render_to_texture, render_to_vec, shaders, RenderCtx, RenderTarget,
 };
+use crate::scene::Band;
 #[cfg(feature = "xdp-gnome-screencast")]
 use crate::screencasting::Screencasting;
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::{ExitConfirmDialog, ExitConfirmDialogRenderElement};
-use crate::ui::hotkey_overlay::HotkeyOverlay;
+use crate::ui::hotkey_overlay::{ActionDescriptions, HotkeyOverlay};
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
@@ -473,6 +475,12 @@ pub struct Niri {
     pub overview_scroll_swipe_gesture: ScrollSwipeGesture,
     pub vertical_wheel_tracker: ScrollTracker,
     pub horizontal_wheel_tracker: ScrollTracker,
+    /// The binds in use, kept until what they're made from changes: see `refresh_binds`.
+    binds: Rc<niri_config::bind_set::Resolved>,
+    /// What `binds` were made from, or `None` when they're to be made again.
+    binds_made_from: Option<BindSources>,
+    /// The engine's and the shell's actions' descriptions, as their declarers give them.
+    action_descriptions: Rc<ActionDescriptions>,
     pub mods_with_mouse_binds: HashSet<Modifiers>,
     pub mods_with_horizontal_wheel_binds: HashSet<Modifiers>,
     pub mods_with_vertical_wheel_binds: HashSet<Modifiers>,
@@ -670,8 +678,9 @@ pub struct PointContents {
     // If the point is over a node that the tiling layout draws, which takes the pointer from the
     // windows below it, this is that node.
     pub node: Option<NodeHit>,
-    // If the point is over bento's own shell, the output's name and the point on it.
-    pub shell: Option<(String, [f32; 2])>,
+    // If the point is over bento's own shell, the output's name, the point on it, and the band
+    // of the surface it's over.
+    pub shell: Option<(String, [f32; 2], crate::scene::Band)>,
     // Point is over something above bento's own shell: an overlay surface, or one of bento's own
     // screens. A press there isn't one on the desktop around what the shell shows.
     pub above_shell: bool,
@@ -836,6 +845,19 @@ pub struct State {
     pub niri: Niri,
 }
 
+/// What the binds in use are made from, past the config.
+#[derive(Debug, PartialEq)]
+struct BindSources {
+    mod_key: ModKey,
+    /// The running engine's generation, which changes as an engine loads.
+    engine: u64,
+    /// The running shell's declared binds, the user's binds for its actions and the ones the user
+    /// turned off, if bento draws its own shell.
+    shell_defaults: Option<Vec<Bind>>,
+    shell_user: Option<Vec<Bind>>,
+    shell_unbound: Option<Vec<niri_config::Action>>,
+}
+
 impl State {
     pub fn new(
         config: Config,
@@ -933,6 +955,14 @@ impl State {
         // layout.refresh() since this is where these surfaces handle commits.
         self.notify_blocker_cleared();
 
+        // Windows the layout engine asked to close: their apps are asked, as by the close action.
+        for window in self.niri.layout.take_closes() {
+            if let Some((_, mapped)) = self.niri.layout.windows().find(|(_, m)| m.window == window)
+            {
+                mapped.toplevel().send_close();
+            }
+        }
+
         // These should be called periodically, before flushing the clients.
         self.niri.popups.cleanup();
         self.refresh_popup_grab();
@@ -963,6 +993,8 @@ impl State {
         self.niri.refresh_mapped_cast_window_rules();
 
         self.niri.refresh_window_rules();
+        let mod_key = self.backend.mod_key(&self.niri.config.borrow());
+        self.niri.refresh_binds(mod_key);
         self.refresh_ipc_outputs();
         self.run_scene_actions();
         self.ipc_refresh();
@@ -1893,21 +1925,13 @@ impl State {
             preserved_output_config = Some(mem::take(&mut old_config.outputs));
         }
 
-        let binds_changed = config.binds != old_config.binds;
+        let binds_changed =
+            config.binds != old_config.binds || config.unbound != old_config.unbound;
         let new_mod_key = self.backend.mod_key(&config);
         let mut hotkey_overlay_changed =
             config.hotkey_overlay.hide_not_bound != old_config.hotkey_overlay.hide_not_bound;
         if new_mod_key != self.backend.mod_key(&old_config) || binds_changed {
             hotkey_overlay_changed = true;
-            self.niri.mods_with_mouse_binds = mods_with_mouse_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_horizontal_wheel_binds =
-                mods_with_horizontal_wheel_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_vertical_wheel_binds =
-                mods_with_vertical_wheel_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_tablet_stylus_binds =
-                mods_with_tablet_stylus_binds(new_mod_key, &config.binds);
-            self.niri.mods_with_finger_scroll_binds =
-                mods_with_finger_scroll_binds(new_mod_key, &config.binds);
         }
         if hotkey_overlay_changed {
             self.niri
@@ -2040,8 +2064,9 @@ impl State {
         }
 
         if binds_changed {
-            self.niri.window_mru_ui.update_binds();
+            self.niri.binds_made_from = None;
         }
+        self.niri.refresh_binds(new_mod_key);
 
         if recent_windows_changed {
             self.niri.window_mru_ui.update_config();
@@ -2600,6 +2625,12 @@ impl State {
                     self.niri.queue_redraw_all();
                 }
             }
+            PortalSettingsToNiri::TitleButtons(buttons) => {
+                trace!("portal title buttons: {buttons:?}");
+                if self.niri.layout.set_title_buttons(buttons) {
+                    self.niri.queue_redraw_all();
+                }
+            }
         }
     }
 
@@ -2696,7 +2727,10 @@ impl Niri {
 
         let icon_theme = IconTheme::new();
         let mut layout = Layout::new(animation_clock.clone(), &config_);
-        layout.set_icon_theme(icon_theme.name());
+        // The theme is read ahead, so that the first icons don't wait for the disk.
+        if !layout.set_icon_theme(icon_theme.name()) {
+            crate::layout::surfaces::icons::warm(icon_theme.name());
+        }
         if let Err(problems) = crate::layout::tiling::engine::check(&config_) {
             for problem in problems {
                 warn!("{problem}");
@@ -2869,13 +2903,6 @@ impl Niri {
             CursorManager::new(&config_.cursor.xcursor_theme, config_.cursor.xcursor_size);
 
         let mod_key = backend.mod_key(&config.borrow());
-        let mods_with_mouse_binds = mods_with_mouse_binds(mod_key, &config_.binds);
-        let mods_with_horizontal_wheel_binds =
-            mods_with_horizontal_wheel_binds(mod_key, &config_.binds);
-        let mods_with_vertical_wheel_binds =
-            mods_with_vertical_wheel_binds(mod_key, &config_.binds);
-        let mods_with_finger_scroll_binds = mods_with_finger_scroll_binds(mod_key, &config_.binds);
-        let mods_with_tablet_stylus_binds = mods_with_tablet_stylus_binds(mod_key, &config_.binds);
 
         let screenshot_ui = ScreenshotUi::new(animation_clock.clone(), config.clone());
         let window_mru_ui = WindowMruUi::new(config.clone());
@@ -2884,10 +2911,8 @@ impl Niri {
         let mut wallpapers = Wallpapers::new(&event_loop);
         wallpapers.update(&config_);
 
-        let mut hotkey_overlay = HotkeyOverlay::new(config.clone(), mod_key);
-        if !config_.hotkey_overlay.skip_at_startup {
-            hotkey_overlay.show();
-        }
+        let hotkey_overlay = HotkeyOverlay::new(config.clone(), mod_key);
+        let show_hotkey_overlay = !config_.hotkey_overlay.skip_at_startup;
 
         let exit_confirm_dialog = ExitConfirmDialog::new(animation_clock.clone(), config.clone());
 
@@ -3107,15 +3132,18 @@ impl Niri {
             overview_scroll_swipe_gesture: ScrollSwipeGesture::new(),
             vertical_wheel_tracker: ScrollTracker::new(120),
             horizontal_wheel_tracker: ScrollTracker::new(120),
-            mods_with_mouse_binds,
-            mods_with_horizontal_wheel_binds,
-            mods_with_vertical_wheel_binds,
-            mods_with_tablet_stylus_binds,
+            binds: Rc::default(),
+            binds_made_from: None,
+            action_descriptions: Rc::default(),
+            mods_with_mouse_binds: HashSet::new(),
+            mods_with_horizontal_wheel_binds: HashSet::new(),
+            mods_with_vertical_wheel_binds: HashSet::new(),
+            mods_with_tablet_stylus_binds: HashSet::new(),
 
             // 10 is copied from Clutter: DISCRETE_SCROLL_STEP.
             vertical_finger_scroll_tracker: ScrollTracker::new(10),
             horizontal_finger_scroll_tracker: ScrollTracker::new(10),
-            mods_with_finger_scroll_binds,
+            mods_with_finger_scroll_binds: HashSet::new(),
 
             lock_state: LockState::Unlocked,
             locked_hint: None,
@@ -3157,6 +3185,12 @@ impl Niri {
         };
 
         niri.reset_pointer_inactivity_timer();
+
+        niri.refresh_binds(mod_key);
+        if show_hotkey_overlay {
+            // The engine and the shell may not run yet: the overlay shows theirs once they do.
+            niri.show_hotkey_overlay();
+        }
 
         niri
     }
@@ -3947,41 +3981,61 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
-        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
-        let shell_under = || {
+        // bento's own shell's surfaces, in their bands among the layers. Those under the windows
+        // move with the workspaces, and take no input in the overview.
+        let shell_under = |band: Band| {
             let name = output.name();
-            let point = [pos_within_output.x as f32, pos_within_output.y as f32];
+            let mut point = [pos_within_output.x as f32, pos_within_output.y as f32];
+            if band < Band::TopBelow {
+                let (_, geo) = mon.workspace_under(pos_within_output)?;
+                point[0] -= geo.loc.x as f32;
+                point[1] -= geo.loc.y as f32;
+            }
             self.scene
                 .as_ref()
-                .filter(|scene| scene.covers(&name, point))
-                .map(|_| (name, point))
+                .filter(|scene| scene.covers(&name, point, band))
+                .map(|_| (name, point, band))
         };
+        let mut under = None;
+        macro_rules! shell {
+            ($band:expr) => {
+                if under.is_none() {
+                    if let Some(hit) = shell_under($band) {
+                        rv.shell = Some(hit);
+                        return rv;
+                    }
+                }
+            };
+        }
 
-        let mut under =
-            layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
+        shell!(Band::OverlayAbove);
+        under = layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
         rv.above_shell = under.is_some();
+        shell!(Band::OverlayBelow);
 
         let is_overview_open = self.layout.is_overview_open();
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
-            if under.is_none() {
-                if let Some(hit) = shell_under() {
-                    rv.shell = Some(hit);
-                    return rv;
-                }
-            }
             under = under
                 .or_else(interactive_moved_window_under)
                 .or_else(node_under)
-                .or_else(window_under)
+                .or_else(window_under);
+            shell!(Band::TopAbove);
+            under = under
                 .or_else(|| layer_popup_under(Layer::Top))
-                .or_else(|| layer_toplevel_under(Layer::Top))
+                .or_else(|| layer_toplevel_under(Layer::Top));
+            shell!(Band::TopBelow);
+            under = under
                 .or_else(|| layer_popup_under(Layer::Bottom))
-                .or_else(|| layer_popup_under(Layer::Background))
-                .or_else(|| layer_toplevel_under(Layer::Bottom))
-                .or_else(|| layer_toplevel_under(Layer::Background));
+                .or_else(|| layer_popup_under(Layer::Background));
+            shell!(Band::BottomAbove);
+            under = under.or_else(|| layer_toplevel_under(Layer::Bottom));
+            shell!(Band::BottomBelow);
+            shell!(Band::BackgroundAbove);
+            under = under.or_else(|| layer_toplevel_under(Layer::Background));
+            shell!(Band::BackgroundBelow);
         } else {
             if self.is_inside_hot_corner(output, pos_within_output) {
                 rv.overview = is_overview_open;
@@ -3989,16 +4043,11 @@ impl Niri {
                 return rv;
             }
 
-            if under.is_none() {
-                if let Some(hit) = shell_under() {
-                    rv.shell = Some(hit);
-                    return rv;
-                }
-            }
-
+            shell!(Band::TopAbove);
             under = under
                 .or_else(|| layer_popup_under(Layer::Top))
                 .or_else(|| layer_toplevel_under(Layer::Top));
+            shell!(Band::TopBelow);
 
             if is_overview_open && under.is_none() {
                 rv.overview = true;
@@ -4015,9 +4064,12 @@ impl Niri {
             under = under.or_else(node_under).or_else(window_under);
 
             if !is_overview_open {
-                under = under
-                    .or_else(|| layer_toplevel_under(Layer::Bottom))
-                    .or_else(|| layer_toplevel_under(Layer::Background));
+                shell!(Band::BottomAbove);
+                under = under.or_else(|| layer_toplevel_under(Layer::Bottom));
+                shell!(Band::BottomBelow);
+                shell!(Band::BackgroundAbove);
+                under = under.or_else(|| layer_toplevel_under(Layer::Background));
+                shell!(Band::BackgroundBelow);
             }
         }
 
@@ -4062,7 +4114,7 @@ impl Niri {
         let at = under
             .shell
             .as_ref()
-            .map(|(name, point)| (name.as_str(), *point));
+            .map(|(name, point, band)| (name.as_str(), *point, *band));
         let cursor = scene.pointer_moved(at);
         if let Some(cursor) = cursor {
             let icon = match cursor.as_str() {
@@ -4080,6 +4132,90 @@ impl Niri {
                 .set_cursor_image(CursorImageStatus::default_named());
             self.queue_redraw_all();
         }
+    }
+
+    /// Which bind each key runs: the user's binds, with the defaults of bento, the running engine
+    /// and the running shell, as `bind_set::resolve` settled them when `refresh_binds` last made
+    /// them.
+    pub fn resolved_binds(&self) -> Rc<niri_config::bind_set::Resolved> {
+        self.binds.clone()
+    }
+
+    /// Makes the binds in use again if what they're made from changed: the config, which marks
+    /// them to be made again as it loads, `mod_key`, the running engine, and the shell's declared
+    /// binds and the user's binds for its actions. Everything that reads the binds follows: the
+    /// modifiers that hold scrolls and buttons for binds, the switcher's keys, and the open hotkey
+    /// overlay, which can open at startup before the engine and the shell have declared theirs.
+    pub fn refresh_binds(&mut self, mod_key: ModKey) {
+        let sources = BindSources {
+            mod_key,
+            engine: crate::layout::tiling::engine::generation(),
+            shell_defaults: self.scene.as_ref().map(|s| s.default_binds()),
+            shell_user: self.scene.as_ref().map(|s| s.user_binds()),
+            shell_unbound: self.scene.as_ref().map(|s| s.unbound()),
+        };
+        if self.binds_made_from.as_ref() == Some(&sources) {
+            return;
+        }
+
+        let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
+        defaults.extend(crate::layout::tiling::engine::default_binds());
+        defaults.extend(sources.shell_defaults.iter().flatten().cloned());
+        let config = self.config.borrow();
+        let mut user = config.binds.0.clone();
+        // The user's binds for the shell's actions are in the shell's file.
+        user.extend(sources.shell_user.iter().flatten().cloned());
+        let mut unbound = config.unbound.clone();
+        unbound.extend(sources.shell_unbound.iter().flatten().cloned());
+        drop(config);
+        let resolved = niri_config::bind_set::resolve(&user, &unbound, &defaults);
+
+        let in_use = &resolved.in_use;
+        self.mods_with_mouse_binds = mods_with_mouse_binds(mod_key, in_use);
+        self.mods_with_horizontal_wheel_binds = mods_with_horizontal_wheel_binds(mod_key, in_use);
+        self.mods_with_vertical_wheel_binds = mods_with_vertical_wheel_binds(mod_key, in_use);
+        self.mods_with_tablet_stylus_binds = mods_with_tablet_stylus_binds(mod_key, in_use);
+        self.mods_with_finger_scroll_binds = mods_with_finger_scroll_binds(mod_key, in_use);
+        self.window_mru_ui.update_binds(in_use);
+
+        let mut descriptions = ActionDescriptions::new();
+        let engine = crate::layout::tiling::engine::meta();
+        let engine = engine.into_iter().flat_map(|meta| meta.actions);
+        let engine = engine.map(|action| (Declarer::Engine, action));
+        let shell = self.scene.as_ref().map(|scene| {
+            let (_, source) = self.shell_entry();
+            scene.ipc_info(source).actions
+        });
+        let shell = shell.into_iter().flatten();
+        let shell = shell.map(|action| (Declarer::Shell, action.action));
+        for (declarer, action) in engine.chain(shell) {
+            if let Some(description) = action.description {
+                descriptions.insert((declarer, action.name), description);
+            }
+        }
+
+        self.binds = Rc::new(resolved);
+        self.action_descriptions = Rc::new(descriptions);
+        self.binds_made_from = Some(sources);
+
+        let binds = self.binds.in_use.clone();
+        let descriptions = self.action_descriptions.clone();
+        if self.hotkey_overlay.update(binds, descriptions) {
+            self.queue_redraw_all();
+        }
+    }
+
+    /// Shows the hotkey overlay with the binds in use. Returns whether it wasn't showing.
+    pub fn show_hotkey_overlay(&mut self) -> bool {
+        let binds = self.binds.in_use.clone();
+        let descriptions = self.action_descriptions.clone();
+        self.hotkey_overlay.show(binds, descriptions)
+    }
+
+    /// The file of the shell's settings and binds, as the config found it where it was read:
+    /// `shell.kdl` there for bento's own shells, and the one the config names for a shell file.
+    pub fn shell_settings_file(&self) -> Option<std::path::PathBuf> {
+        self.config.borrow().shell_settings_file.clone()
     }
 
     /// Whether bento's own shell holds the keyboard, which then doesn't go to the apps. It holds
@@ -5191,34 +5327,19 @@ impl Niri {
                 .flatten()
                 .unwrap_or(dir)
         });
+        let (entry, _) = self.shell_entry();
         let style = self.shell_style();
-        // What the config sets for the shell rides along with the style, and scripts hear of
-        // either changing.
+        // What bento's config has for the shell, where the user is, rides along with the style,
+        // and scripts hear of either changing.
         let settings = {
             let config = self.config.borrow();
-            let shell = config.shell.clone().unwrap_or_default();
-            let command = |c: Option<niri_config::ShellCommand>| {
-                c.filter(|c| c.command.as_deref().is_some_and(|c| !c.trim().is_empty()))
-                    .map(|c| {
-                        serde_json::json!({
-                            "command": c.command,
-                            "notification": c.notification.filter(|t| !t.trim().is_empty()),
-                            "body": c.notification_body,
-                        })
-                    })
-            };
             let location = &config.location;
             let place = location.latitude.zip(location.longitude).map(|(lat, lon)| {
                 serde_json::json!({
                     "name": location.name, "latitude": lat.0, "longitude": lon.0,
                 })
             });
-            serde_json::json!({
-                "location": place,
-                "fahrenheit": shell.fahrenheit,
-                "screenshot": command(shell.screenshot),
-                "screenRecord": command(shell.screen_record),
-            })
+            serde_json::json!({ "location": place })
         };
         let style = serde_json::json!({
             "gaps": style.gaps,
@@ -5226,11 +5347,32 @@ impl Niri {
             "animations": style.animations,
             "slowdown": style.slowdown,
             "response": response,
+            "dark": crate::render_helpers::glass::style().0,
             "config": settings,
         });
+        // The windows, for a taskbar: what each is, and where.
+        let mut windows = Vec::new();
+        self.layout
+            .with_windows(|mapped, output, workspace, _layout| {
+                let (title, app_id) = crate::utils::with_toplevel_role(mapped.toplevel(), |role| {
+                    (role.title.clone(), role.app_id.clone())
+                });
+                windows.push(serde_json::json!({
+                    "id": mapped.id().get(),
+                    "appId": app_id,
+                    "title": title,
+                    "workspace": workspace.map(|id| id.get()),
+                    "output": output.map(|o| o.name()),
+                    "focused": mapped.is_focused(),
+                    "urgent": mapped.is_urgent(),
+                    "floating": mapped.is_floating(),
+                }));
+            });
+        let settings_file = self.shell_settings_file();
         let scene = self.scene.get_or_insert_with(Default::default);
-        scene.ensure_loaded(&outputs, dir.as_deref(), style);
+        scene.ensure_loaded(&outputs, dir.as_deref(), &entry, settings_file, style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
+        scene.set_windows(serde_json::Value::Array(windows));
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));
         scene.set_minimap(serde_json::Value::Object(minimap));
         let moving = scene.advance_with(Instant::now(), slowdown, response);
@@ -5466,25 +5608,85 @@ impl Niri {
             }};
         }
 
-        // The overlay layer elements go next.
+        // bento's own shell's surfaces in a band: what they show over their glass. Bands with
+        // nothing in them push nothing, so a fullscreen window can still go straight to the
+        // display. Those under the windows go with each workspace, as the layers there do.
+        let output_name = output.name();
+        let scene_blur = self.config.borrow().blur;
+        macro_rules! push_shell {
+            ($band:expr) => {{
+                if let Some(scene) = &self.scene {
+                    // Its window copies, over what it draws.
+                    for copy in scene.copies(&output_name, $band) {
+                        let Some((_, win)) = self
+                            .layout
+                            .windows()
+                            .find(|(_, w)| w.id().get() == copy.window)
+                        else {
+                            continue;
+                        };
+                        let rect = |r: [f32; 4]| {
+                            Rectangle::new(
+                                Point::from((f64::from(r[0]), f64::from(r[1]))),
+                                Size::from((f64::from(r[2]), f64::from(r[3]))),
+                            )
+                        };
+                        crate::layout::tiling::render_window_copy(
+                            ctx.r(),
+                            win,
+                            rect(copy.rect),
+                            f64::from(copy.radius),
+                            f64::from(copy.opacity),
+                            copy.clip.map(|c| (rect(c.rect), f64::from(c.radii[0]))),
+                            output_scale.x,
+                            &mut |elem| push(OutputRenderElements::ShellCopy(elem)),
+                        );
+                    }
+                    scene.render_content(&output_name, $band, None, &mut |elem| {
+                        push(OutputRenderElements::Scene(elem))
+                    });
+                    scene.render_glass(
+                        &output_name,
+                        $band,
+                        None,
+                        output_scale.x,
+                        scene_blur,
+                        self.glass_frame(output),
+                        &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
+                    );
+                }
+            }};
+            ($band:expr, $ns:expr, $geo:expr) => {{
+                if let Some(scene) = &self.scene {
+                    scene.render_content(&output_name, $band, $ns, &mut |elem| {
+                        if let Some(elem) = scale_relocate_crop(elem, output_scale, zoom, $geo) {
+                            push(elem.into());
+                        }
+                    });
+                    scene.render_glass(
+                        &output_name,
+                        $band,
+                        $ns,
+                        output_scale.x,
+                        scene_blur,
+                        self.glass_frame(output),
+                        &mut |elem| {
+                            let elem = LayerSurfaceRenderElement::BackgroundEffect(elem);
+                            if let Some(elem) = scale_relocate_crop(elem, output_scale, zoom, $geo)
+                            {
+                                push(elem.into());
+                            }
+                        },
+                    );
+                }
+            }};
+        }
+
+        // The overlay layer elements go next, with the shell's surfaces above and below them.
+        push_shell!(Band::OverlayAbove);
         push_popups_from_layer!(Layer::Overlay);
         push_normal_from_layer!(Layer::Overlay);
-
-        // bento's own shell, above the windows, fullscreen ones too, and under overlay surfaces.
-        // Showing nothing, it pushes nothing, so a fullscreen window can still go straight to the
-        // display.
-        if let Some(scene) = &self.scene {
-            let blur = self.config.borrow().blur;
-            let name = output.name();
-            scene.render_content(&name, &mut |elem| push(OutputRenderElements::Scene(elem)));
-            scene.render_glass(
-                &name,
-                output_scale.x,
-                blur,
-                self.glass_frame(output),
-                &mut |elem| push(LayerSurfaceRenderElement::BackgroundEffect(elem).into()),
-            );
-        }
+        push_shell!(Band::OverlayBelow);
 
         // When rendering above the top layer, we put the regular monitor elements first.
         // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
@@ -5494,13 +5696,19 @@ impl Niri {
 
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
+            push_shell!(Band::TopAbove);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
+            push_shell!(Band::TopBelow);
 
             push_popups_from_layer!(Layer::Bottom);
             push_popups_from_layer!(Layer::Background);
+            push_shell!(Band::BottomAbove);
             push_normal_from_layer!(Layer::Bottom);
+            push_shell!(Band::BottomBelow);
+            push_shell!(Band::BackgroundAbove);
             push_normal_from_layer!(Layer::Background);
+            push_shell!(Band::BackgroundBelow);
 
             // We don't expect more than one workspace when render_above_top_layer().
             if let Some((ws, _geo)) = mon.workspaces_with_render_geo().next() {
@@ -5513,8 +5721,10 @@ impl Niri {
                 }
             }
         } else {
+            push_shell!(Band::TopAbove);
             push_popups_from_layer!(Layer::Top);
             push_normal_from_layer!(Layer::Top);
+            push_shell!(Band::TopBelow);
 
             self.layout
                 .render_interactive_move_for_output(ctx.r(), output, &mut |elem| push(elem.into()));
@@ -5550,8 +5760,12 @@ impl Niri {
                 // damage tracker.
                 let ns = Some(ws.id().get() as usize);
                 let xray_pos = XrayPos::new(geo.loc, zoom);
+                push_shell!(Band::BottomAbove, ns, geo);
                 push_normal_from_layer!(Layer::Bottom, ns, xray_pos, process!(geo));
+                push_shell!(Band::BottomBelow, ns, geo);
+                push_shell!(Band::BackgroundAbove, ns, geo);
                 push_normal_from_layer!(Layer::Background, ns, xray_pos, process!(geo));
+                push_shell!(Band::BackgroundBelow, ns, geo);
 
                 let wallpaper = ws
                     .background_image()
@@ -8271,6 +8485,10 @@ niri_render_elements! {
         ExitConfirmDialog = ExitConfirmDialogRenderElement,
         Texture = PrimaryGpuTextureRenderElement,
         Scene = crate::scene::host::SceneElement,
+        ShellCopy = crate::layout::tiling::TilingSpaceRenderElement<R>,
+        RelocatedScene = CropRenderElement<RelocateRenderElement<RescaleRenderElement<
+            crate::scene::host::SceneElement
+        >>>,
         // Used for the CPU-rendered panels.
         RelocatedMemoryBuffer = RelocateRenderElement<MemoryRenderBufferRenderElement<R>>,
     }

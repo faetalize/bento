@@ -19,6 +19,9 @@ pub struct App {
     pub keywords: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// The app id its windows have, when it isn't the desktop entry's id.
+    #[serde(rename = "wmClass", skip_serializing_if = "Option::is_none")]
+    pub wm_class: Option<String>,
     #[serde(skip)]
     exec: String,
     #[serde(skip)]
@@ -167,6 +170,7 @@ fn parse(id: &str, text: &str) -> Option<App> {
             })
             .unwrap_or_default(),
         icon: field("Icon"),
+        wm_class: field("StartupWMClass"),
         exec: field("Exec")?,
         terminal: yes("Terminal"),
     })

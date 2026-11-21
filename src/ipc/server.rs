@@ -504,6 +504,27 @@ async fn get(ctx: &ClientCtx, what: Get) -> Result<Response, String> {
             Response::EngineState(state.map_err(|err| format!("{err:#}"))?)
         }
         Get::Actions => Response::Actions(native_actions()),
+        Get::Shell => {
+            let shell = on_main(ctx, |state| {
+                let niri = &state.niri;
+                let built_in = niri
+                    .config
+                    .borrow()
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.built_in());
+                if !built_in {
+                    return Err(String::from("bento doesn't draw its own shell"));
+                }
+                let (_, source) = niri.shell_entry();
+                let scene = niri.scene.as_ref();
+                scene
+                    .map(|scene| scene.ipc_info(source))
+                    .ok_or_else(|| String::from("the shell hasn't loaded yet"))
+            })
+            .await?;
+            Response::Shell(shell?)
+        }
     };
 
     Ok(response)

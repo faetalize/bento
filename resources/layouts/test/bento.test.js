@@ -35,7 +35,7 @@ const ROW_STEP = METRICS.cellH + METRICS.gap;
 async function setup(opts = {}) {
     return TestHost.load("../bento.js", {
         ...opts,
-        options: { "default-width": "100", ...(opts.options ?? {}) },
+        settings: { "default-width": "100", ...(opts.settings ?? {}) },
     });
 }
 
@@ -156,19 +156,47 @@ function pickToGroup(host, ids, mods = { super: true }) {
     host.setModifiers({});
 }
 
+/** Starts dragging window `id` with the pointer, which holds it `offset` from its top left. */
+function dragStart(host, id, offset = { x: 10, y: 10 }) {
+    const r = host.rect(id);
+    host.send({ type: "dragstart", id, offset, pointer: { x: r.x + offset.x, y: r.y + offset.y } });
+}
+
+/**
+ * Moves the pointer that drags window `id` to `pointer` on the canvas of `workspace`, the active
+ * one by default, or off every workspace with `null`.
+ */
+function dragMove(host, id, pointer, workspace = host.activeWorkspace().id) {
+    host.send({ type: "dragmove", id, workspace: pointer === null ? null : workspace, pointer });
+}
+
+/** Ends the drag of window `id`, dropping it, or cancelling the drag with `dropped` false. */
+function dragEnd(host, id, dropped = true) {
+    host.send({ type: "dragend", id, dropped });
+}
+
+/** How far a drag pulls a window to make it come loose. */
+const PULL = 300;
+
+/**
+ * Starts dragging window `id`, held `offset` from its top left, and pulls it far enough down for
+ * it to come loose.
+ */
+function pullLoose(host, id, offset = { x: 10, y: 10 }) {
+    const r = host.rect(id);
+    dragStart(host, id, offset);
+    dragMove(host, id, { x: r.x + offset.x, y: r.y + offset.y + PULL });
+}
+
 /**
  * Drags window `id` with the pointer to `pointer` on the canvas and drops it there. Returns what
  * was drawn while it was over there: the targets, the one it was on, and the landing highlight.
  */
 function dragOnto(host, id, pointer) {
-    const r = host.rect(id);
-    const rect = { x: pointer.x - 10, y: pointer.y - 10, w: r.w, h: r.h };
-    const info = lift(host, id);
-    const workspace = host.activeWorkspace().id;
-    host.send({ type: "dragenter", workspace, window: info, pointer, rect });
+    pullLoose(host, id);
+    dragMove(host, id, pointer);
     const shown = { targets: targets(host), current: currentTarget(host), landing: hint(host) };
-    host.send({ type: "dragleave", workspace });
-    drop(host, id, pointer, rect);
+    dragEnd(host, id);
     return shown;
 }
 
@@ -215,16 +243,14 @@ function ipc(host) {
         .sort((a, b) => a[0] - b[0]);
 }
 
-/** Lifts a window out of the layout for a drag, or because it floats. Returns what bento tells. */
-function lift(host, id, reason = "drag") {
+/** Takes a window out of the layout because it floats. */
+function float(host, id) {
     const win = host.windows.get(id);
-    const info = host.windowInfo(win);
-    host.close(id, reason);
+    host.close(id, "float");
     host.windows.set(id, win);
-    return info;
 }
 
-/** Gives a lifted window back to the engine, on the active workspace. */
+/** Gives a window that floats back to the engine, on the active workspace. */
 function readd(host, id, how) {
     const win = host.windows.get(id);
     const workspace = host.activeWorkspace().id;
@@ -234,29 +260,16 @@ function readd(host, id, how) {
     host.send({ type: "windowadd", window: host.windowInfo(win), how });
 }
 
-/** The highlight for a window dragged to `rect` with the pointer at `pointer`. */
-function dropTarget(host, id, pointer, rect, info = host.windowInfo(host.windows.get(id))) {
-    const workspace = host.activeWorkspace().id;
-    host.send({ type: "dragenter", workspace, window: info, pointer, rect });
-    const target = hint(host);
-    host.send({ type: "dragleave", workspace });
-    return target;
-}
-
-/** Drops a lifted window at `rect`, with the pointer at `pointer`. */
-function drop(host, id, pointer, rect) {
-    readd(host, id, { reason: "drop", activate: true, rect, pointer, nextTo: null });
-}
-
-/** Drags a window grabbed at `start` on screen and drops it with the pointer at `end`. */
-function drag(host, id, start, end) {
+/**
+ * Drags a window grabbed at `start` on screen with the pointer to `end`, and returns the landing
+ * highlight shown there. `dragEnd` drops it.
+ */
+function dragTo(host, id, start, end) {
     const camera = host.camera();
-    const r = host.rect(id);
-    const pointer = { x: end.x + camera.x, y: end.y + camera.y };
-    const rect = { x: r.x + end.x - start.x, y: r.y + end.y - start.y, w: r.w, h: r.h };
-    const info = lift(host, id);
-    dropTarget(host, id, pointer, rect, info);
-    drop(host, id, pointer, rect);
+    const r = host.screenRect(id);
+    pullLoose(host, id, { x: start.x - r.x, y: start.y - r.y });
+    dragMove(host, id, { x: end.x + camera.x, y: end.y + camera.y });
+    return hint(host);
 }
 
 /** Windows 1 full height, window 2 half height on top to its right, with a hole below 2. */
@@ -473,12 +486,9 @@ describe("grid layout", () => {
         const end = { x: 16 + 2 * COL_STEP + 4, y: 16 + 6 * ROW_STEP + 4 };
 
         // The highlight shows where it lands.
-        const r = host.rect(3);
-        const pointer = { x: end.x + host.camera().x, y: end.y };
-        const rect = { x: r.x + end.x - start.x, y: r.y + end.y - start.y, w: r.w, h: r.h };
-        assert.deepEqual(dropTarget(host, 3, pointer, rect), cellRect(2, 6, 2, 6));
+        assert.deepEqual(dragTo(host, 3, start, end), cellRect(2, 6, 2, 6));
 
-        drag(host, 3, start, end);
+        dragEnd(host, 3);
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 2, 6"]);
         assert.equal(host.focused(), 3);
     });
@@ -509,7 +519,7 @@ describe("grid layout", () => {
     });
 
     test("dropping on a seam stuffs the window into it", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         const w = host.open({ rules: { "default-width": { fixed: 100 } } });
@@ -524,7 +534,7 @@ describe("grid layout", () => {
     });
 
     test("dropping between two windows of a group joins it there", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         const w = host.open();
@@ -551,8 +561,8 @@ describe("grid layout", () => {
         assert.equal(host.focused(), 2);
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 0, 6"]);
 
-        // Lift window 2 out of the layout. Window 1 hasn't jumped.
-        lift(host, 2);
+        // Window 2 comes loose from the layout. Window 1 hasn't jumped.
+        pullLoose(host, 2);
         assert.deepEqual(cells(host, [1]), ["2 × 6 at 0, 0"]);
         assert.equal(host.focused(), 1);
     });
@@ -565,7 +575,7 @@ describe("grid layout", () => {
         assert.deepEqual(cells(host), ["2 × 6 at 0, 0", "2 × 6 at 2, 0", "2 × 6 at 0, 6"]);
 
         // Windows 1 and 2 stay where they were.
-        lift(host, 3);
+        pullLoose(host, 3);
         assert.deepEqual(cells(host, [1, 2]), ["2 × 6 at 0, 0", "2 × 6 at 2, 0"]);
     });
 
@@ -659,7 +669,7 @@ describe("grid layout", () => {
     });
 
     test("stacked windows count as a single column for centering", async () => {
-        const host = await setup({ options: { "always-center-single-window": true } });
+        const host = await setup({ settings: { "always-center-single-window": true } });
         host.open();
         halfHeight(host, 1);
         host.open();
@@ -676,7 +686,7 @@ describe("grid layout", () => {
     });
 
     test("center on overflow compares with the window beside", async () => {
-        const host = await setUpStackAndOne(60, { options: { "center-focused-window": "on-overflow" } });
+        const host = await setUpStackAndOne(60, { settings: { "center-focused-window": "on-overflow" } });
         host.action("focus-left");
         assert.equal(host.focused(), 1);
         // Window 1 and window 3 beside it don't fit together, so window 1 is centered. Window 2
@@ -717,7 +727,7 @@ describe("grid layout", () => {
 
         // The window floats where it was tiled, then is tiled again from there.
         const rect = host.rect(2);
-        lift(host, 2, "float");
+        float(host, 2);
         readd(host, 2, { reason: "tile", activate: true, rect, pointer: null, nextTo: null });
         assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "7 × 6 at 2, 0"]);
     });
@@ -932,7 +942,7 @@ describe("grid layout", () => {
 describe("split and swap", () => {
     /** A and B stacked on the left half, C on the right half at full height. */
     async function setUpStackAndOne() {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         host.activate(a);
@@ -969,7 +979,7 @@ describe("split and swap", () => {
     });
 
     test("splitting stacked gives the window the half facing it", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         const a = host.open();
         const b = host.open();
         host.action("split-v");
@@ -1145,7 +1155,7 @@ describe("sticky vertical resizing", () => {
 });
 
 describe("stuff", () => {
-    const half = { options: { "default-width": "50%" } };
+    const half = { settings: { "default-width": "50%" } };
     const rect = (x, y, w, h) => ({ x, y, w, h });
 
     test("stuffing between windows side by side splits their span in three", async () => {
@@ -1259,7 +1269,7 @@ describe("stuff", () => {
 });
 
 describe("layout API", () => {
-    test("declares its actions, options and window rules", async () => {
+    test("declares its actions, settings and window rules", async () => {
         const host = await setup();
         assert.equal(host.meta.name, "bento");
         const names = host.meta.actions.map((action) => action.name);
@@ -1278,7 +1288,7 @@ describe("layout API", () => {
             [["workspace", "workspace"]],
         );
         assert.deepEqual(
-            host.meta.options.map(({ name, default: value }) => [name, value]),
+            host.meta.settings.map(({ name, default: value }) => [name, value]),
             [
                 ["gravity", true],
                 ["center-focused-window", "never"],
@@ -1416,7 +1426,7 @@ describe("layout API", () => {
     });
 
     test("a group shows as a carousel, whose slits activate their windows", async () => {
-        const host = await setup({ options: { "default-width": "50%" } });
+        const host = await setup({ settings: { "default-width": "50%" } });
         host.open();
         host.open();
         host.groupWindows([1, 2], 1);
@@ -1650,7 +1660,7 @@ describe("layout API", () => {
         host.action("move-down");
 
         // Without gravity, windows stay where they're moved.
-        host.setOptions({ gravity: false });
+        host.setSettings({ gravity: false });
         repeat(5, () => host.action("move-down"));
         assert.deepEqual(cells(host, [3]), ["2 × 6 at 4, 6"]);
         host.action("move-left");
@@ -1665,7 +1675,7 @@ describe("layout API", () => {
         // Turning gravity back on slides windows left.
         host.activate(3);
         host.action("move-right");
-        host.setOptions({ gravity: true });
+        host.setSettings({ gravity: true });
         assert.deepEqual(cells(host, [3]), ["2 × 6 at 2, 6"]);
     });
 
@@ -1685,42 +1695,196 @@ describe("layout API", () => {
 
         // Struts shrink the working area.
         host.config = { ...host.config, struts: { left: 0, right: 0, top: 100, bottom: 0 } };
-        host.setOptions(host.options);
+        host.setSettings(host.settings);
         assert.equal(host.screenRect(1).y, 116);
     });
 
     test("the highlight on an empty workspace is where the window will land", async () => {
+        // A window 2 cells by 6 on another workspace, dragged onto an empty one.
         const host = await setup();
         const workspace = host.activeWorkspace();
-        workspace.camera = { x: 5000, y: 0 };
+        const other = host.workspace(1).id;
+        host.open();
+        host.move(1, other);
+        halfHeight(host, 1);
+        workspace.camera = { x: 5000, y: 0, zoom: 1 };
         host.flush();
-        const info = {
-            id: 99,
-            appId: null,
-            title: null,
-            workspace: workspace.id,
-            size: { w: 0, h: 0 },
-            minSize: { w: 0, h: 0 },
-            maxSize: { w: 0, h: 0 },
-            borders: { w: 0, h: 0 },
-            decorations: { border: true, focusRing: true, shadow: true },
-            mode: "normal",
-            urgent: false,
-            rules: {},
-            data: null,
-        };
-        const target = dropTarget(
-            host,
-            99,
-            { x: 5600, y: 300 },
-            { x: 5500, y: 20, w: 99, h: 336 },
-            info,
-        );
+        dragStart(host, 1, { x: 100, y: 280 });
+        dragMove(host, 1, { x: 5600, y: 300 }, workspace.id);
+        const target = hint(host);
         const cell = cellRect(0, 0, 2, 6);
         assert.deepEqual(
             { x: target.x - host.camera().x, y: target.y, w: target.w, h: target.h },
             { ...cell, x: cell.x + METRICS.gap },
         );
+
+        // It lands there.
+        dragEnd(host, 1);
+        assert.equal(host.windows.get(1).workspace, workspace.id);
+        assert.deepEqual(host.screenRect(1), { ...cell, x: cell.x + METRICS.gap });
+    });
+});
+
+describe("dragging windows", () => {
+    test("a fullscreen or maximized window comes loose at its normal size", async () => {
+        for (const mode of ["fullscreen", "maximized"]) {
+            const host = await setup();
+            host.open();
+            const normal = host.rect(1);
+            host.requestMode(1, mode);
+            pullLoose(host, 1);
+            assert.equal(host.mode(1), "normal");
+            assert.deepEqual([host.rect(1).w, host.rect(1).h], [normal.w, normal.h], mode);
+            dragEnd(host, 1);
+            assert.deepEqual([host.rect(1).w, host.rect(1).h], [normal.w, normal.h], mode);
+        }
+    });
+
+    test("a window holds its place until the pointer pulls it loose", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        const before = host.rect(2);
+        dragStart(host, 2);
+
+        // On a rubber band, it goes less far than the pointer, and stays on the grid.
+        dragMove(host, 2, { x: before.x + 10 + 100, y: before.y + 10 });
+        const held = host.rect(2);
+        assert.ok(before.x < held.x && held.x < before.x + 50);
+        assert.deepEqual({ ...held, x: before.x }, before);
+        assert.deepEqual(groupedAreas(host), []);
+        assert.equal(exposed(host).items.length, 2);
+        assert.equal(hint(host), null);
+
+        // Letting go before it comes loose puts it back in its place.
+        dragEnd(host, 2);
+        assert.deepEqual(host.rect(2), before);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
+    });
+
+    test("a loose window follows the pointer, see-through, above the others", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        host.open();
+        const { w, h } = host.rect(2);
+        pullLoose(host, 2, { x: 30, y: 40 });
+
+        // It left the grid, so window 3 slid left into its place.
+        assert.deepEqual(cells(host, [1, 3]), ["2 × 12 at 0, 0", "2 × 12 at 2, 0"]);
+        assert.equal(exposed(host).items.length, 2);
+
+        dragMove(host, 2, { x: 500, y: 200 });
+        assert.deepEqual(host.rect(2), { x: 470, y: 160, w, h });
+        assert.equal(host.tree().node("w2").props.opacity, 0.75);
+        assert.equal(host.stacking().at(-1), 2);
+        dragMove(host, 2, { x: 600, y: 250 });
+        assert.deepEqual(host.rect(2), { x: 570, y: 210, w, h });
+
+        // Dropped, it's on the grid again, opaque and focused.
+        dragEnd(host, 2);
+        assert.equal(exposed(host).items.length, 3);
+        assert.equal(host.tree().node("w2").props.opacity, 1);
+        assert.equal(host.focused(), 2);
+    });
+
+    test("a cancelled drag puts the window back where it came from", async () => {
+        // Windows 1 and 2 on the top half, 3 under 1.
+        const host = await setUpTwoOverOne();
+        const before = cells(host);
+
+        // Window 2 slides left into the place of window 1 while it's loose, and is pushed back.
+        pullLoose(host, 1);
+        dragMove(host, 1, { x: 600, y: 300 });
+        assert.deepEqual(cells(host, [2]), ["2 × 6 at 0, 0"]);
+        dragEnd(host, 1, false);
+        assert.deepEqual(cells(host), before);
+        assert.equal(host.focused(), 1);
+        assert.equal(host.tree().node("w1").props.opacity, 1);
+
+        // So does one dropped away from every workspace.
+        pullLoose(host, 1);
+        dragMove(host, 1, null);
+        dragEnd(host, 1);
+        assert.deepEqual(cells(host), before);
+    });
+
+    test("a window dragged out of its group goes back into it when the drag is cancelled", async () => {
+        const host = await setup({ settings: { "default-width": "50%" } });
+        const a = host.open();
+        const b = host.open();
+        const c = host.open();
+        host.groupWindows([a, b, c], a);
+        const group = host.groupOf(a);
+
+        // It leaves the group, which stays the same group.
+        pullLoose(host, b);
+        assert.equal(host.groupOf(b), null);
+        assert.equal(host.groupOf(a), group);
+        assert.deepEqual(host.groupOf(a).windows, [a, c]);
+        assert.deepEqual(groupedAreas(host), [[a, c]]);
+
+        dragEnd(host, b, false);
+        assert.deepEqual(host.groupOf(a).windows, [a, b, c]);
+        assert.equal(host.groupOf(a).active, b);
+    });
+
+    test("closing a dragged window takes its hints away", async () => {
+        const host = await setup();
+        host.open();
+        host.open();
+        host.open();
+        pullLoose(host, 3);
+        dragMove(host, 3, middle(host.rect(1)));
+        assert.ok(targets(host).length > 0);
+        host.close(3);
+        assert.deepEqual(targets(host), []);
+        assert.equal(hint(host), null);
+
+        // One that hasn't come loose yet just goes.
+        dragStart(host, 2);
+        dragMove(host, 2, { x: host.rect(2).x + 50, y: 100 });
+        host.close(2);
+        assert.deepEqual(cells(host), ["2 × 12 at 0, 0"]);
+    });
+
+    test("the view scrolls while a dragged window rests near its edge", async () => {
+        // Four windows half as wide as the view, with the view on the first two.
+        const host = await setup({ settings: { "default-width": "50%" } });
+        repeat(4, () => host.open());
+        host.activate(1);
+        const start = host.camera().x;
+
+        // Window 1 comes loose, and the pointer rests 5 px from the right edge of the view.
+        pullLoose(host, 1);
+        const edge = { x: start + 1280 - 5, y: 300 };
+        dragMove(host, 1, edge);
+        const screen = host.screenRect(1);
+
+        // It waits a moment first.
+        host.advanceTime(50);
+        assert.equal(host.camera().x, start);
+
+        // Then the view scrolls, and the window stays under the pointer.
+        host.advanceTime(100);
+        const scrolled = host.camera().x;
+        assert.ok(scrolled > start);
+        assert.deepEqual(host.screenRect(1), screen);
+
+        // Away from the edge, it stops.
+        dragMove(host, 1, { x: scrolled + 640, y: 300 });
+        host.advanceTime(500);
+        assert.equal(host.camera().x, scrolled);
+
+        // It goes no further than where the rightmost window is at the left edge of the view.
+        dragMove(host, 1, { x: scrolled + 1280 - 5, y: 300 });
+        host.advanceTime(10_000);
+        const right = Math.max(...[2, 3, 4].map((id) => host.rect(id).x + host.rect(id).w));
+        assert.equal(host.camera().x, right);
+
+        // Dropping it stops the scrolling.
+        dragEnd(host, 1);
+        assert.equal(host.timers.size, 0);
     });
 });
 
@@ -1906,22 +2070,27 @@ describe("what the engine exposes and draws", () => {
         const host = await setup();
         host.open();
         host.open();
-        const info = lift(host, 2);
         const workspace = host.activeWorkspace().id;
-        host.send({
-            type: "dragenter",
-            workspace,
-            window: info,
-            pointer: { x: 100, y: 100 },
-            rect: { x: 90, y: 90, w: 100, h: 100 },
-        });
+        pullLoose(host, 2);
+        dragMove(host, 2, { x: 100, y: 100 });
         assert.notEqual(hint(host), null);
-        host.send({ type: "dragleave", workspace });
+
+        // Away from every workspace.
+        dragMove(host, 2, null);
         assert.equal(hint(host), null);
+
+        // Over another workspace, the window goes along and the hint shows there instead.
+        dragMove(host, 2, { x: 100, y: 100 });
+        assert.notEqual(hint(host), null);
+        const other = host.workspace(1).id;
+        dragMove(host, 2, { x: 100, y: 100 }, other);
+        assert.equal(hint(host, workspace), null);
+        assert.notEqual(hint(host, other), null);
+        assert.equal(host.windows.get(2).workspace, other);
     });
 
     test("the hints follow their color option", async () => {
-        const host = await setup({ options: { "hint-color": "#ff000080" } });
+        const host = await setup({ settings: { "hint-color": "#ff000080" } });
         host.open();
         host.action("swap");
         assert.ok(drawn(host).some((node) => node.background === "#ff000080"));
@@ -2457,12 +2626,12 @@ describe("grid", () => {
     });
 });
 
-test("focus follows the mouse as the options say", async () => {
+test("focus follows the mouse as the settings say", async () => {
     const off = await setup();
     off.open();
     assert.deepEqual(off.focusFollowsMouse, { on: false, maxScroll: null });
 
-    const on = await setup({ options: { "focus-follows-mouse": "always" } });
+    const on = await setup({ settings: { "focus-follows-mouse": "always" } });
     on.open();
     assert.deepEqual(on.focusFollowsMouse, { on: true, maxScroll: null });
 });

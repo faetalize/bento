@@ -15,13 +15,11 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::SurfaceCachedState;
 
 use super::floating::{FloatingSpace, FloatingSpaceRenderElement};
-use super::monitor::TiledDrop;
 use super::shadow::Shadow;
 use super::tile::{PendingMove, Tile, TileRenderSnapshot};
 use super::tiling::{TilingSpace, TilingSpaceRenderElement};
 use super::{
-    ActivateWindow, HitType, InsertPosition, InteractiveResizeData, LayoutElement, Options,
-    RemovedTile, SizeFrac,
+    ActivateWindow, HitType, InteractiveResizeData, LayoutElement, Options, RemovedTile, SizeFrac,
 };
 use crate::animation::Clock;
 use crate::layout::RenderLayer;
@@ -1478,21 +1476,6 @@ impl<W: LayoutElement> Workspace<W> {
         } else {
             false
         }
-    }
-
-    /// Where a tile dragged with the pointer at `pos` would go, with the tile at `tile_pos`.
-    pub(super) fn scrolling_insert_position(
-        &self,
-        pos: Point<f64, Logical>,
-        tile: &Tile<W>,
-        tile_pos: Point<f64, Logical>,
-    ) -> InsertPosition {
-        self.scrolling.insert_position(pos, tile, tile_pos)
-    }
-
-    /// Makes a dropped window go where it was dropped when it's added next.
-    pub(super) fn set_tiling_drop(&mut self, window: W::Id, drop: TiledDrop) {
-        self.scrolling.set_drop(window, drop);
     }
 
     pub fn view_offset_gesture_begin(&mut self, is_touchpad: bool) {

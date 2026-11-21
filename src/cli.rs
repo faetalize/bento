@@ -105,6 +105,8 @@ pub enum Msg {
     EngineState,
     /// List bento's own actions.
     Actions,
+    /// Print the shell bento draws, and the settings it and its modules declare.
+    Shell,
     /// Pick a window with the mouse and print information about it.
     PickWindow,
     /// Pick a color from the screen with the mouse.

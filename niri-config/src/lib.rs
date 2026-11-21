@@ -31,9 +31,11 @@ pub mod macros;
 pub mod actions;
 pub mod animations;
 pub mod appearance;
+pub mod bind_set;
 pub mod binds;
 pub mod convert;
 pub mod debug;
+pub mod edit;
 pub mod error;
 pub mod gestures;
 pub mod input;
@@ -61,9 +63,8 @@ pub use crate::output::{Output, OutputName, Outputs, Position, Vrr};
 use crate::recent_windows::RecentWindowsPart;
 pub use crate::recent_windows::{MruDirection, MruFilter, MruPreviews, MruScope, RecentWindows};
 pub use crate::tiling::{
-    default_engine_config, engine_config_path, engine_config_path_in, resolve_gradient,
-    EngineOptions, EngineRules, EngineWindowRule, ScopedOptions, Tiling, TilingLayout,
-    TilingOption,
+    engine_config_path, engine_config_path_in, resolve_gradient, EngineRules, EngineSettings,
+    EngineWindowRule, ScopedSettings, ShellSettings, Tiling, TilingLayout, TilingOption,
 };
 use crate::tiling::{EngineFile, EnginePart};
 pub use crate::utils::FloatOrInt;
@@ -78,6 +79,20 @@ const RECURSION_LIMIT: u8 = 10;
 /// The config bento writes on first start.
 pub const DEFAULT_CONFIG: &str = include_str!("../../resources/default-config.kdl");
 
+/// The pages of bento Settings that a setting an engine or a shell declares can name to show on,
+/// by their id. Editors get them as a type, and bento Settings has a page for each.
+pub const SETTINGS_PAGES: &[&str] = &[
+    "appearance",
+    "layout",
+    "engine",
+    "shell",
+    "keyboard",
+    "mouse",
+    "touchpad",
+    "location",
+    "system",
+];
+
 /// Reads the engine's file at a path, like `fs::read_to_string`.
 type ReadEngine<'a> = dyn FnOnce(&Path) -> std::io::Result<String> + 'a;
 
@@ -88,6 +103,9 @@ pub struct Config {
     pub spawn_at_startup: Vec<SpawnAtStartup>,
     pub spawn_sh_at_startup: Vec<SpawnShAtStartup>,
     pub shell: Option<Shell>,
+    /// The file of the shell's settings and binds, as [`shell_settings_path_in`] finds it for the
+    /// folder the config was read from. None for a config that isn't on disk.
+    pub shell_settings_file: Option<PathBuf>,
     pub location: Location,
     pub layout: Layout,
     pub tiling: Tiling,
@@ -105,13 +123,12 @@ pub struct Config {
     pub xwayland_satellite: XwaylandSatellite,
     pub window_rules: Vec<WindowRule>,
     pub layer_rules: Vec<LayerRule>,
+    /// The user's binds, from the main config and the running engine's file. Which of them are in
+    /// use, with the defaults of whoever declares their actions, is [`bind_set::resolve`]'s.
     pub binds: Binds,
     pub bind_files: BindFiles,
-    /// The main config's binds whose keys the running engine's file binds too, which its binds
-    /// take over while it runs.
-    pub taken_over: Binds,
-    /// The files `taken_over`'s binds are written in.
-    pub taken_over_files: BindFiles,
+    /// The actions the user turned off with `unbind`, from the main config and the engine's file.
+    pub unbound: Vec<Action>,
     pub switch_events: SwitchBinds,
     pub debug: Debug,
     pub workspaces: Vec<Workspace>,
@@ -277,6 +294,8 @@ where
 
                 // Single-part sections.
                 "binds" => {
+                    let unbound = binds::decode_unbinds(node, ctx);
+                    config.borrow_mut().unbound.extend(unbound);
                     let part = Binds::decode_node(node, ctx)?;
 
                     // We replace conflicting binds, rather than error, to support the use-case
@@ -547,7 +566,11 @@ impl Config {
             "default config must not have includes",
         );
 
-        res.config.unwrap()
+        // It isn't read from the user's folder, so it has no shell's file there.
+        Self {
+            shell_settings_file: None,
+            ..res.config.unwrap()
+        }
     }
 
     pub fn load(path: &Path) -> ConfigParseResult<Self, miette::Report> {
@@ -636,8 +659,8 @@ impl Config {
         });
 
         // The engine's file goes last, once the main config has said which engine runs.
-        if let (Ok(_), Some(read_engine)) = (&part, read_engine) {
-            let engine_path = engine_config_path_in(dir, &config.borrow().tiling.layout);
+        let engine_path = engine_config_path_in(dir, &config.borrow().tiling);
+        if let (Ok(_), Some(read_engine), Some(engine_path)) = (&part, read_engine, engine_path) {
             // Watched even while it doesn't exist, so creating it applies it.
             includes.push(engine_path.clone());
             match read_engine(&engine_path) {
@@ -668,13 +691,21 @@ impl Config {
             }
         }
 
-        let config = part.map(|_| config.take());
+        let config = part.map(|_| {
+            let mut config = config.take();
+            config.shell_settings_file = shell_settings_path_in(dir, config.shell.as_ref());
+            config
+        });
         ConfigParseResult { config, includes }
     }
 
     /// Parses a config that isn't on disk, without an engine file.
     pub fn parse_mem(text: &str) -> Result<Self, ConfigIncludeError> {
-        Self::parse_inner(Path::new("config.kdl"), Path::new(""), text, None).config
+        let config = Self::parse_inner(Path::new("config.kdl"), Path::new(""), text, None).config;
+        config.map(|config| Self {
+            shell_settings_file: None,
+            ..config
+        })
     }
 
     /// Parses a config that isn't on disk, with `engine` as the running engine's file.
@@ -715,28 +746,7 @@ impl ConfigPath {
             })
             .map_config_res(|res| res.context("error loading config"));
 
-        (created_at, self.create_engine_config(result))
-    }
-
-    /// Loads the config like [`ConfigPath::load`], first writing the running built-in engine's
-    /// default file if it has none. For the compositor, which runs the engine.
-    pub fn load_and_create_engine_config(&self) -> ConfigParseResult<Config, miette::Report> {
-        let result = self.load();
-        self.create_engine_config(result)
-    }
-
-    /// Writes the default file of the built-in engine that a loaded config runs, if it has none
-    /// yet, and loads the config again with it.
-    fn create_engine_config(
-        &self,
-        result: ConfigParseResult<Config, miette::Report>,
-    ) -> ConfigParseResult<Config, miette::Report> {
-        match &result.config {
-            Ok(config) if tiling::create_engine_config(self.dir(), &config.tiling.layout) => {
-                self.load()
-            }
-            _ => result,
-        }
+        (created_at, result)
     }
 
     /// The directory of the user's config, where built-in engines' files are in `engines/`, even
@@ -1924,6 +1934,7 @@ mod tests {
                 },
             ],
             shell: None,
+            shell_settings_file: None,
             location: Location {
                 name: None,
                 latitude: None,
@@ -2056,9 +2067,10 @@ mod tests {
                 layout: BuiltIn(
                     "bento",
                 ),
-                options: [],
-                output_options: [],
-                workspace_options: [],
+                settings_file: None,
+                settings: [],
+                output_settings: [],
+                workspace_settings: [],
                 window_rules: [],
             },
             prefer_no_csd: true,
@@ -2887,10 +2899,7 @@ mod tests {
                 ],
             ),
             bind_files: BindFiles(16),
-            taken_over: Binds(
-                [],
-            ),
-            taken_over_files: BindFiles(0),
+            unbound: [],
             switch_events: SwitchBinds {
                 lid_open: None,
                 lid_close: None,
@@ -3123,15 +3132,7 @@ mod tests {
             }
             shell {
                 built-in
-                fahrenheit
-                screenshot {
-                    command "grim -g \"$(slurp)\" - | swappy -f -"
-                    notification "Screenshot taken"
-                    notification-body "It's in Pictures."
-                }
-                screen-record {
-                    command "wf-recorder"
-                }
+                script "windows"
             }
             "#,
         );
@@ -3142,22 +3143,162 @@ mod tests {
         // Settings alone name no program to run as the shell.
         assert!(shell.command.is_empty());
         assert!(shell.built_in());
+        assert_eq!(
+            shell.script(),
+            ShellScript::BuiltIn(String::from("windows"))
+        );
         let off = do_parse("shell \"bento-shell\" {\n    built-in false\n}\n");
-        assert!(!off.shell.unwrap().built_in());
-        assert!(shell.fahrenheit);
-        let screenshot = shell.screenshot.unwrap();
+        let off = off.shell.unwrap();
+        assert!(!off.built_in());
+        // bento's unix shell, when the config names none.
+        assert_eq!(off.script(), ShellScript::BuiltIn(String::from("unix")));
+        let file = ShellScript::from_config(Some("~/.config/bento/shell/mine.tsx"));
         assert_eq!(
-            screenshot.command.as_deref(),
-            Some(r#"grim -g "$(slurp)" - | swappy -f -"#)
+            file,
+            ShellScript::File(PathBuf::from("~/.config/bento/shell/mine.tsx"))
         );
-        assert_eq!(screenshot.notification.as_deref(), Some("Screenshot taken"));
+    }
+
+    #[test]
+    fn the_shells_settings_file_has_a_block_for_each_module_and_shell() {
+        let settings = ShellSettings::parse(
+            r#"
+            taskbar {
+                pinned "firefox" "org.gnome.Nautilus"
+            }
+            windows {
+                height 48
+            }
+            taskbar {
+                pinned "foot"
+            }
+            "#,
+        )
+        .unwrap();
+        // Blocks of one name add up, and what's written later wins.
         assert_eq!(
-            screenshot.notification_body.as_deref(),
-            Some("It's in Pictures.")
+            settings.of("taskbar"),
+            vec![
+                (
+                    String::from("pinned"),
+                    vec![
+                        TilingOption::String(String::from("firefox")),
+                        TilingOption::String(String::from("org.gnome.Nautilus")),
+                    ]
+                ),
+                (
+                    String::from("pinned"),
+                    vec![TilingOption::String(String::from("foot"))]
+                ),
+            ]
         );
-        let record = shell.screen_record.unwrap();
-        assert_eq!(record.command.as_deref(), Some("wf-recorder"));
-        assert_eq!(record.notification, None);
+        assert_eq!(
+            settings.of("windows"),
+            vec![(String::from("height"), vec![TilingOption::Number(48.)])]
+        );
+        assert!(settings.of("clock").is_empty());
+        assert!(ShellSettings::parse("taskbar \"x\" {}").is_err());
+    }
+
+    #[test]
+    fn a_blocks_binds_name_its_actions_directly() {
+        let settings = ShellSettings::parse(
+            r#"
+            sound {
+                pinned "hdmi"
+                binds {
+                    Mod+Shift+F1 { switch-audio-output; }
+                    unbind { switch-audio-output "next"; }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let shell = |name: &str, args: &[&str]| {
+            Action::ShellAction(
+                String::from(name),
+                args.iter().map(|a| String::from(*a)).collect(),
+            )
+        };
+        let (block, bind) = &settings.binds[0];
+        assert_eq!(block, "sound");
+        assert_eq!(
+            bind.press_action(),
+            Some(&shell("switch-audio-output", &[]))
+        );
+        assert_eq!(
+            settings.unbound,
+            [(
+                String::from("sound"),
+                shell("switch-audio-output", &["next"])
+            )]
+        );
+        // `binds` isn't a setting of the block.
+        assert_eq!(settings.of("sound").len(), 1);
+
+        // bento's own actions and `shell-action` aren't written there.
+        assert!(ShellSettings::parse("sound {\n binds {\n Mod+T { spawn \"x\"; }\n }\n}").is_err());
+        let wrapped = "sound {\n binds {\n Mod+T { shell-action \"x\"; }\n }\n}";
+        assert!(ShellSettings::parse(wrapped).is_err());
+    }
+
+    #[test]
+    fn the_shells_settings_file_is_next_to_the_config_it_was_read_from() {
+        // A config given with `-c` or `NIRI_CONFIG`: bento's own shells' file is next to it, where
+        // bento Settings writes it.
+        let path = Path::new("/somewhere/else/config.kdl");
+        let config = Config::parse(path, "").config.unwrap();
+        let next_to = Some(PathBuf::from("/somewhere/else/shell.kdl"));
+        assert_eq!(config.shell_settings_file, next_to);
+        assert_eq!(shell_settings_path(path, &config), next_to);
+        // A shell file's is the one the config names, from the config's folder.
+        let text = "shell {\n    script \"/src/mine.tsx\" settings=\"mine.kdl\"\n}\n";
+        let config = Config::parse(path, text).config.unwrap();
+        let named = Some(PathBuf::from("/somewhere/else/mine.kdl"));
+        assert_eq!(config.shell_settings_file, named);
+        assert_eq!(shell_settings_path(path, &config), named);
+        // A config that isn't on disk has none.
+        assert_eq!(do_parse("").shell_settings_file, None);
+
+        // The system's config, read while the user has none, has it in the user's folder, as the
+        // engines' files are.
+        let dir = std::env::temp_dir().join(format!("bento-shell-file-{}", std::process::id()));
+        fs::create_dir_all(dir.join("etc")).unwrap();
+        fs::write(dir.join("etc/config.kdl"), "").unwrap();
+        let config_path = ConfigPath::Regular {
+            user_path: dir.join("user/config.kdl"),
+            system_path: dir.join("etc/config.kdl"),
+        };
+        let config = config_path.load().config;
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            config.unwrap().shell_settings_file,
+            Some(dir.join("user/shell.kdl"))
+        );
+    }
+
+    #[test]
+    fn a_shell_file_has_the_settings_file_the_config_names_and_no_other() {
+        let dir = Path::new("/home/me/.config/bento");
+        let shell = |text: &str| do_parse(text).shell.unwrap();
+
+        // bento's own shells share `shell.kdl`.
+        let built_in = shell("shell {\n    script \"windows\"\n}\n");
+        assert_eq!(built_in.settings_file(dir), Some(dir.join("shell.kdl")));
+
+        // A shell file has only the one the config names, wherever it is.
+        let file = shell("shell {\n    script \"/src/mine.tsx\"\n}\n");
+        assert_eq!(file.settings_file(dir), None);
+        let file =
+            shell("shell {\n    script \"/src/mine.tsx\" settings=\"/backup/mine.kdl\"\n}\n");
+        assert_eq!(
+            file.settings_file(dir),
+            Some(PathBuf::from("/backup/mine.kdl"))
+        );
+
+        // bento's own shells' file is always `shell.kdl`, so naming one is an error.
+        let text = "shell {\n    script \"unix\" settings=\"x.kdl\"\n}\n";
+        assert!(Config::parse_mem(text).is_err());
     }
 
     #[test]
@@ -3172,6 +3313,7 @@ mod tests {
         // will not have any binds. Clear them out so they don't spam the diff.
         default_config.window_rules.clear();
         default_config.binds.0.clear();
+        default_config.bind_files.0.clear();
 
         assert_snapshot!(
             diff_lines(
@@ -3195,14 +3337,9 @@ mod tests {
         +                "bento-shell",
         +            ],
         +            built_in: None,
-        +            fahrenheit: false,
-        +            screenshot: None,
-        +            screen_record: None,
+        +            script: None,
         +        },
         +    ),
-
-        -    bind_files: BindFiles(0),
-        +    bind_files: BindFiles(107),
         "#,
         );
     }

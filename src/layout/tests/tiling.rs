@@ -175,8 +175,6 @@ fn drag_windows11(dx: f64) -> Layout<TestWindow> {
         },
         Op::InteractiveMoveUpdate {
             window: 3,
-            dx,
-            dy: 0.,
             output_idx: 1,
             px: 600. + dx,
             py: 300.,
@@ -193,21 +191,35 @@ fn drop_windows11(layout: &mut Layout<TestWindow>) {
 }
 
 #[test]
-fn a_windows11_window_follows_the_pointer_from_the_start() {
-    // A tiled window holds its place until the pointer is far from it; a free one comes along
-    // at once, as a floating window does.
+fn a_dragged_window_stays_the_engines_which_places_it_under_the_pointer() {
     let mut layout = drag_windows11(12.);
     assert!(matches!(
         layout.interactive_move,
-        Some(InteractiveMoveState::Moving(_))
+        Some(InteractiveMoveState::Engine { .. })
     ));
+    let before = format_tiles(&layout);
+
+    // windows11 hears the move with the next frame, and keeps the window under the pointer.
+    layout.send_drag_move();
+    check_ops_on_layout(&mut layout, settle());
+    // The pointer moved 12 px to the right, and so did window 3.
+    assert_snapshot!(before, @"
+      100 × 200 at x:  590 y:260
+      100 × 200 at x:  622 y:292
+      100 × 200 at x:  654 y:324 focused
+    ");
+    assert_snapshot!(format_tiles(&layout), @"
+      100 × 200 at x:  590 y:260
+      100 × 200 at x:  622 y:292
+      100 × 200 at x:  666 y:324 focused
+    ");
     drop_windows11(&mut layout);
 }
 
 #[test]
 fn dragging_under_windows11_leaves_the_view_alone() {
-    // Near the screen's edge, bento scrolls the view under a tiling engine; the camera is the
-    // engine's, and windows11's never moves.
+    // The camera is the engine's, so bento never scrolls it during a drag, and windows11's
+    // never moves.
     let mut layout = drag_windows11(12.);
     for (_, _, ws) in layout.workspaces() {
         assert!(!ws.scrolling().is_camera_gesture());
@@ -298,8 +310,8 @@ fn engine_actions_cannot_take_native_names() {
     std::fs::write(
         &path,
         r#"
-        export const meta = { api: 1, name: "clash", actions: { spawn: { description: "x" } } };
-        export default function create(ws) { return {}; }
+        export const meta = { api: 2, name: "clash", actions: { spawn: { description: "x" } } };
+        export default function create(bento) {}
         "#,
     )
     .unwrap();
@@ -317,7 +329,7 @@ fn engine_actions_cannot_take_native_names() {
     );
 }
 
-/// An engine file that declares an option and a window rule property of every type, in a
+/// An engine file that declares a setting and a window rule property of every type, in a
 /// directory of its own that the caller removes.
 fn typed_engine(name: &str) -> (std::path::PathBuf, niri_config::TilingLayout) {
     let dir = std::env::temp_dir().join(format!("bento-engine-{name}-{}", std::process::id()));
@@ -329,7 +341,7 @@ fn typed_engine(name: &str) -> (std::path::PathBuf, niri_config::TilingLayout) {
         export const meta = {
             api: 2,
             name: "typed",
-            options: {
+            settings: {
                 "center": { type: "choice", choices: ["never", "always"], default: "never" },
                 "width": { type: "size", default: "50%" },
                 "presets": { type: "size", list: true, default: ["33%", "50%"] },
@@ -359,7 +371,7 @@ fn strings(values: &[&str]) -> Vec<niri_config::TilingOption> {
 }
 
 #[test]
-fn engine_options_and_rules_are_converted_by_their_declared_types() {
+fn engine_settings_and_rules_are_converted_by_their_declared_types() {
     use niri_config::{EngineRules, TilingOption};
     use serde_json::json;
 
@@ -368,7 +380,7 @@ fn engine_options_and_rules_are_converted_by_their_declared_types() {
     let (dir, layout) = typed_engine("convert");
     let tiling = niri_config::Tiling {
         layout,
-        options: vec![
+        settings: vec![
             (String::from("center"), strings(&["always"])),
             // A size with no value is left to the window.
             (String::from("width"), vec![]),
@@ -379,10 +391,10 @@ fn engine_options_and_rules_are_converted_by_their_declared_types() {
     };
     engine::ensure_loaded(&tiling);
 
-    // Options the config leaves out, or gets wrong, have their defaults.
-    let options = engine::options_json(&tiling);
+    // Settings the config leaves out, or gets wrong, have their defaults.
+    let settings = engine::settings_json(&tiling);
     assert_eq!(
-        options,
+        settings,
         json!({
             "center": "always",
             "width": null,
@@ -428,7 +440,7 @@ fn engine_options_and_rules_are_converted_by_their_declared_types() {
 }
 
 #[test]
-fn engine_options_and_rules_are_checked_against_the_running_engine() {
+fn engine_settings_and_rules_are_checked_against_the_running_engine() {
     use niri_config::{EngineRules, EngineWindowRule, TilingOption};
 
     use crate::layout::tiling::engine;
@@ -436,7 +448,8 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
     let (dir, layout) = typed_engine("check");
     let tiling = niri_config::Tiling {
         layout,
-        options: vec![
+        settings_file: None,
+        settings: vec![
             (String::from("nope"), vec![TilingOption::Bool(true)]),
             (String::from("center"), strings(&["sideways"])),
             (String::from("width"), strings(&["+10%"])),
@@ -446,13 +459,13 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
             (String::from("tint"), strings(&["blue"])),
             (String::from("glow"), strings(&["#fff"])),
         ],
-        output_options: vec![niri_config::ScopedOptions {
+        output_settings: vec![niri_config::ScopedSettings {
             name: String::from("DP-2"),
-            options: vec![(String::from("tint"), strings(&["#12"]))],
+            settings: vec![(String::from("tint"), strings(&["#12"]))],
         }],
-        workspace_options: vec![niri_config::ScopedOptions {
+        workspace_settings: vec![niri_config::ScopedSettings {
             name: String::from("web"),
-            options: vec![(String::from("nope"), vec![TilingOption::Bool(true)])],
+            settings: vec![(String::from("nope"), vec![TilingOption::Bool(true)])],
         }],
         window_rules: vec![EngineWindowRule {
             matches: Vec::new(),
@@ -475,15 +488,15 @@ fn engine_options_and_rules_are_checked_against_the_running_engine() {
     assert_eq!(
         problems,
         [
-            r#"the typed layout engine has no option called "nope""#,
-            r#"layout engine option "center" must be one of ["never", "always"]"#,
-            r#"layout engine option "width" must be a size, like "50%" or "800""#,
-            r#"layout engine option "presets" must be a size, like "50%" or "800""#,
-            r#"layout engine option "gap" needs a value"#,
-            r##"layout engine option "tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
-            r##"layout engine option "glow" must be a gradient, like `from="#000" to="#fff"`"##,
-            r##"layout engine option "tint" of output "DP-2" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
-            r#"the typed layout engine has no option called "nope" of workspace "web""#,
+            r#"the typed layout engine has no setting called "nope""#,
+            r#"layout engine setting "center" must be one of ["never", "always"]"#,
+            r#"layout engine setting "width" must be a size, like "50%" or "800""#,
+            r#"layout engine setting "presets" must be a size, like "50%" or "800""#,
+            r#"layout engine setting "gap" needs a value"#,
+            r##"layout engine setting "tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
+            r##"layout engine setting "glow" must be a gradient, like `from="#000" to="#fff"`"##,
+            r##"layout engine setting "tint" of output "DP-2" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
+            r#"the typed layout engine has no setting called "nope" of workspace "web""#,
             r#"layout engine window rule "open-maximized" must be true or false"#,
             r##"layout engine window rule "tab-tint" must be a colour, like "#rrggbb" or "#rrggbbaa""##,
             r#"the typed layout engine has no window rule called "zzz""#,
@@ -504,7 +517,7 @@ fn engine_defaults_must_fit_their_types() {
         export const meta = {
             api: 2,
             name: "wrong",
-            options: { "center": { type: "choice", choices: ["a"], default: "b" } },
+            settings: { "center": { type: "choice", choices: ["a"], default: "b" } },
         };
         export default function create(bento) {}
         "#,
@@ -517,13 +530,13 @@ fn engine_defaults_must_fit_their_types() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(problems.len(), 1);
     assert!(
-        problems[0].contains(r#"default for its option "center" is wrong"#),
+        problems[0].contains(r#"default for its setting "center" is wrong"#),
         "{problems:?}"
     );
 }
 
 #[test]
-fn layout_engine_ipc_info_has_options_and_actions() {
+fn layout_engine_ipc_info_has_settings_and_actions() {
     use niri_ipc::{
         LayoutEngineActionArgType, LayoutEngineOptionType, LayoutEngineOptionValue,
         LayoutEngineSource,
@@ -533,7 +546,7 @@ fn layout_engine_ipc_info_has_options_and_actions() {
 
     let tiling = niri_config::Tiling {
         layout: niri_config::TilingLayout::BuiltIn(String::from("bento")),
-        options: vec![(
+        settings: vec![(
             String::from("gravity"),
             vec![niri_config::TilingOption::Bool(false)],
         )],
@@ -545,7 +558,7 @@ fn layout_engine_ipc_info_has_options_and_actions() {
     assert_eq!(info.name, "bento");
     assert_eq!(info.source, LayoutEngineSource::BuiltIn {});
 
-    let gravity = &info.options[0];
+    let gravity = &info.settings[0];
     assert_eq!(gravity.name, "gravity");
     assert_eq!(gravity.r#type, LayoutEngineOptionType::Boolean);
     assert!(!gravity.list);
@@ -666,8 +679,8 @@ fn one_engine_sees_every_monitor_and_workspace() {
 }
 
 #[test]
-fn workspaces_have_the_options_of_their_output_and_their_own() {
-    use niri_config::{ScopedOptions, TilingOption};
+fn workspaces_have_the_settings_of_their_output_and_their_own() {
+    use niri_config::{ScopedSettings, TilingOption};
 
     use crate::layout::tiling::engine;
 
@@ -675,27 +688,27 @@ fn workspaces_have_the_options_of_their_output_and_their_own() {
         export const meta = {
             api: 2,
             name: "scoped",
-            options: { rows: { type: "number", default: 1 } },
+            settings: { rows: { type: "number", default: 1 } },
         };
         export default function create(bento) {
             bento.exposeState(() => ({
-                top: bento.options.rows,
+                top: bento.settings.rows,
                 workspaces: bento.monitors.flatMap((m) =>
-                    m.workspaces.map((ws) => [m.name, ws.name, ws.options.rows]),
+                    m.workspaces.map((ws) => [m.name, ws.name, ws.settings.rows]),
                 ),
             }));
         }
     "#;
     let rows = |rows: f64| vec![(String::from("rows"), vec![TilingOption::Number(rows)])];
     let mut options = options_for_source("scoped-options", source);
-    options.tiling.options = rows(4.);
-    options.tiling.output_options = vec![ScopedOptions {
+    options.tiling.settings = rows(4.);
+    options.tiling.output_settings = vec![ScopedSettings {
         name: String::from("output2"),
-        options: rows(6.),
+        settings: rows(6.),
     }];
-    options.tiling.workspace_options = vec![ScopedOptions {
+    options.tiling.workspace_settings = vec![ScopedSettings {
         name: String::from("ws1"),
-        options: rows(8.),
+        settings: rows(8.),
     }];
 
     let ops = [
@@ -710,7 +723,7 @@ fn workspaces_have_the_options_of_their_output_and_their_own() {
     drop(layout);
 
     let state = engine::exposed_state().unwrap();
-    // `Bento.options` stays the top-level ones.
+    // `Bento.settings` stays the top-level ones.
     assert_eq!(state["top"], serde_json::json!(4));
     let workspaces = state["workspaces"].as_array().unwrap();
     let rows_of = |monitor: &str, name: Option<&str>| {
@@ -1654,10 +1667,10 @@ export default function create(bento) {
         log.push(["windowadd", e.reason, win.decorations.shadow]);
         win.place({ x: 0, y: 0, w: 200, h: 100 });
         win.focus();
-        // Something to tell that it comes back on after the window left the engine.
+        // Something to tell that the window stays as the engine left it.
         win.setDecorations({ shadow: false });
-        for (const type of ["remove", "resizebegin", "resizeupdate", "resizeend"]) {
-            win.addEventListener(type, (r) => log.push([type, r.reason ?? null]));
+        for (const type of ["remove", "resizebegin", "resizeupdate", "resizeend", "dragstart", "dragend"]) {
+            win.addEventListener(type, (r) => log.push([type, r.reason ?? r.dropped ?? null]));
         }
         const bar = bento.createNode("box", { rect: { x: 0, y: 0, w: 200, h: 20 }, interactive: true });
         win.workspace.tree.append(bar);
@@ -1703,8 +1716,6 @@ fn a_press_on_a_node_can_begin_a_move_that_the_engine_sees_like_any() {
         },
         Op::InteractiveMoveUpdate {
             window: 1,
-            dx: 300.,
-            dy: 0.,
             output_idx: 1,
             px: 310.,
             py: 10.,
@@ -1715,14 +1726,17 @@ fn a_press_on_a_node_can_begin_a_move_that_the_engine_sees_like_any() {
     check_ops_on_layout(&mut layout, ops);
     drop(layout);
 
-    // The window left, and came back as bento draws it: with its shadow, which the engine turned
-    // off for the window it had before.
+    // The window stayed the engine's, which heard the drag begin and end with a drop.
     let log = crate::layout::tiling::engine::exposed_state().unwrap();
-    let log = log.as_array().unwrap();
-    assert_eq!(log[0], serde_json::json!(["windowadd", "open", true]));
-    assert_eq!(log[1], serde_json::json!(["pointerdown", 1, true]));
-    assert_eq!(log[2], serde_json::json!(["remove", "drag"]));
-    assert_eq!(log[3], serde_json::json!(["windowadd", "drop", true]));
+    assert_eq!(
+        log.as_array().unwrap()[..],
+        [
+            serde_json::json!(["windowadd", "open", true]),
+            serde_json::json!(["pointerdown", 1, true]),
+            serde_json::json!(["dragstart", null]),
+            serde_json::json!(["dragend", true]),
+        ]
+    );
 }
 
 #[test]
@@ -2798,37 +2812,29 @@ fn a_search_knows_where_its_field_is() {
     assert!(!layout.is_on_search_field(&output, Point::from((50., 110.))));
 }
 
-/// An engine that places windows side by side and logs the drags over its workspaces, with the
-/// pointer's x for moves.
+/// An engine that places windows side by side and logs the drags of its windows.
 const DRAGS: &str = r#"
 export const meta = { api: 2, name: "drags", floating: false };
 export default function create(bento) {
     const log = [];
     bento.exposeState(() => ({ log }));
     bento.addEventListener("windowadd", (e) => {
+        const win = e.window;
         const placed = bento.windows.length - 1;
-        e.window.place({ x: placed * 400, y: 0, w: 400, h: 400 });
+        win.place({ x: placed * 400, y: 0, w: 400, h: 400 });
+        win.addEventListener("dragstart", (d) => log.push(["dragstart", d.offset, d.pointer]));
+        win.addEventListener("dragmove", (d) => log.push(["dragmove", d.workspace?.id ?? null, d.pointer?.x ?? null]));
+        win.addEventListener("dragend", (d) => log.push(["dragend", d.dropped]));
     });
-    const watch = (ws) => {
-        ws.addEventListener("dragenter", () => log.push(["dragenter"]));
-        ws.addEventListener("dragmove", (d) => log.push(["dragmove", Math.round(d.pointer.x)]));
-        ws.addEventListener("dragleave", () => log.push(["dragleave"]));
-    };
-    for (const monitor of bento.monitors) monitor.workspaces.forEach(watch);
-    bento.addEventListener("workspaceadd", (e) => watch(e.workspace));
 }
 "#;
 
-#[test]
-fn a_drag_moves_over_the_engine_once_a_frame_with_the_latest_pointer() {
-    let moved = |px: f64, dx: f64| Op::InteractiveMoveUpdate {
-        window: 2,
-        dx,
-        dy: 0.,
-        output_idx: 1,
-        px,
-        py: 100.,
-    };
+fn drags_log() -> serde_json::Value {
+    crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone()
+}
+
+/// Opens two windows side by side and starts dragging the second by a point 50 px into it.
+fn drag_second_of_two() -> Layout<TestWindow> {
     let ops = [
         Op::AddOutput(1),
         add_window(1),
@@ -2839,19 +2845,196 @@ fn a_drag_moves_over_the_engine_once_a_frame_with_the_latest_pointer() {
             px: 450.,
             py: 100.,
         },
-        // The window starts moving once the pointer is 256 px away.
-        moved(500., 300.),
-        moved(550., 50.),
-        moved(600., 50.),
     ];
-    let mut layout = check_ops_with_options(options_for_source("drags", DRAGS), ops);
+    check_ops_with_options(options_for_source("drags", DRAGS), ops)
+}
+
+fn moved(px: f64) -> Op {
+    Op::InteractiveMoveUpdate {
+        window: 2,
+        output_idx: 1,
+        px,
+        py: 100.,
+    }
+}
+
+#[test]
+fn a_drag_tells_the_engine_where_the_window_is_held() {
+    let mut layout = drag_second_of_two();
+    layout.flush_engine();
+    let ws = layout.active_workspace().unwrap().id().get();
+    assert_eq!(
+        drags_log(),
+        serde_json::json!([["dragstart", { "x": 50, "y": 100 }, { "x": 450, "y": 100 }]])
+    );
+
+    // The window stays where the engine has it: bento doesn't carry it.
+    let before = format_tiles(&layout);
+    check_ops_on_layout(&mut layout, [moved(700.)]);
+    assert_eq!(format_tiles(&layout), before);
+
+    check_ops_on_layout(&mut layout, [Op::InteractiveMoveEnd { window: 2 }]);
+    layout.flush_engine();
+    let log = drags_log();
+    let log = log.as_array().unwrap();
+    assert_eq!(log[1], serde_json::json!(["dragmove", ws, 700]));
+    assert_eq!(log[2], serde_json::json!(["dragend", true]));
+}
+
+#[test]
+fn a_drag_moves_over_the_engine_once_a_frame_with_the_latest_pointer() {
+    let mut layout = drag_second_of_two();
+    check_ops_on_layout(&mut layout, [moved(500.), moved(550.), moved(600.)]);
 
     // The moves wait for the next frame, and then only the latest goes.
     layout.flush_engine();
-    let log = || crate::layout::tiling::engine::exposed_state().unwrap()["log"].clone();
-    assert_eq!(log(), serde_json::json!([["dragenter"]]));
+    let ws = layout.active_workspace().unwrap().id().get();
+    let moves = || {
+        drags_log()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry[0] == "dragmove")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(moves(), [] as [serde_json::Value; 0]);
     layout.send_drag_move();
-    assert_eq!(log(), serde_json::json!([["dragenter"], ["dragmove", 600]]));
+    assert_eq!(moves(), [serde_json::json!(["dragmove", ws, 600])]);
     layout.send_drag_move();
-    assert_eq!(log(), serde_json::json!([["dragenter"], ["dragmove", 600]]));
+    assert_eq!(moves(), [serde_json::json!(["dragmove", ws, 600])]);
+    check_ops_on_layout(&mut layout, [Op::InteractiveMoveEnd { window: 2 }]);
+}
+
+#[test]
+fn a_cancelled_drag_tells_the_engine_after_the_last_move() {
+    let mut layout = drag_second_of_two();
+    check_ops_on_layout(
+        &mut layout,
+        [moved(600.), Op::InteractiveMoveCancel { window: 2 }],
+    );
+    layout.flush_engine();
+    let log = drags_log();
+    let log = log.as_array().unwrap();
+    assert_eq!(log[1][0], "dragmove");
+    assert_eq!(log[2], serde_json::json!(["dragend", false]));
+}
+
+#[test]
+fn a_window_closed_while_dragged_ends_the_drag() {
+    let mut layout = drag_second_of_two();
+    check_ops_on_layout(&mut layout, [moved(600.), Op::CloseWindow(2)]);
+    assert!(layout.interactive_move.is_none());
+    layout.send_drag_move();
+    layout.flush_engine();
+    let log = drags_log();
+    assert_eq!(log.as_array().unwrap().len(), 1, "{log:?}");
+}
+
+#[test]
+fn title_buttons_read_like_gnomes_button_layout() {
+    use crate::layout::TitleButtons;
+
+    let buttons = |left: &[&str], right: &[&str]| TitleButtons {
+        left: left.iter().map(|name| String::from(*name)).collect(),
+        right: right.iter().map(|name| String::from(*name)).collect(),
+    };
+    assert_eq!(
+        TitleButtons::parse("appmenu:minimize,maximize,close"),
+        buttons(&["appmenu"], &["minimize", "maximize", "close"])
+    );
+    assert_eq!(
+        TitleButtons::parse("close,minimize:"),
+        buttons(&["close", "minimize"], &[])
+    );
+    assert_eq!(TitleButtons::parse(":close"), buttons(&[], &["close"]));
+    assert_eq!(TitleButtons::parse(""), buttons(&[], &[]));
+}
+
+/// An engine that shows what bento says about title buttons, and counts the config changes.
+const TITLE_BUTTONS: &str = r#"
+export const meta = { api: 2, name: "title-buttons" };
+export default function create(bento) {
+    let changes = 0;
+    bento.addEventListener("configchange", () => changes++);
+    bento.exposeState(() => ({ buttons: bento.monitors[0]?.workspaces[0]?.config.titleButtons, changes }));
+}
+"#;
+
+#[test]
+fn engines_see_the_title_buttons_and_hear_when_they_change() {
+    use crate::layout::TitleButtons;
+
+    let mut layout = check_ops_with_options(
+        options_for_source("title-buttons", TITLE_BUTTONS),
+        [Op::AddOutput(1)],
+    );
+    layout.flush_engine();
+    let state = || crate::layout::tiling::engine::exposed_state().unwrap();
+    assert_eq!(state()["buttons"], serde_json::Value::Null);
+
+    assert!(layout.set_title_buttons(Some(TitleButtons::parse("close:maximize"))));
+    assert_eq!(
+        state()["buttons"],
+        serde_json::json!({ "left": ["close"], "right": ["maximize"] })
+    );
+    assert_eq!(state()["changes"], 1);
+    assert!(!layout.set_title_buttons(Some(TitleButtons::parse("close:maximize"))));
+}
+
+/// An engine that places windows and closes the focused one with its action.
+const CLOSING: &str = r#"
+export const meta = { api: 2, name: "closing", actions: { close: {} } };
+export default function create(bento) {
+    bento.addEventListener("windowadd", (e) => {
+        e.window.place({ x: 0, y: 0, w: 100, h: 100 });
+        e.window.focus();
+    });
+    bento.addEventListener("action", (e) => e.window?.close());
+}
+"#;
+
+#[test]
+fn an_engine_can_ask_to_close_a_window_which_bento_takes_once() {
+    let mut ops = vec![Op::AddOutput(1), add_window(1)];
+    ops.extend(settle());
+    let mut layout = check_ops_with_options(options_for_source("closing", CLOSING), ops);
+    assert_eq!(layout.take_closes(), [] as [usize; 0]);
+
+    check_ops_on_layout(&mut layout, [action("close")]);
+    assert_eq!(layout.take_closes(), [1]);
+    assert_eq!(layout.take_closes(), [] as [usize; 0]);
+}
+
+#[test]
+fn a_window_dropped_between_workspaces_in_the_overview_gets_a_new_one() {
+    // In the overview, above the first workspace is where a new one would go.
+    let mut ops = vec![Op::AddOutput(1), add_window(1), add_window(2)];
+    ops.extend(settle());
+    ops.extend([
+        Op::ToggleOverview,
+        Op::CompleteAnimations,
+        Op::InteractiveMoveBegin {
+            window: 2,
+            output_idx: 1,
+            px: 640.,
+            py: 360.,
+        },
+        Op::InteractiveMoveUpdate {
+            window: 2,
+            output_idx: 1,
+            px: 640.,
+            py: 1.,
+        },
+        Op::InteractiveMoveEnd { window: 2 },
+    ]);
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for("niri"), ops);
+
+    let windows_by_workspace: Vec<Vec<usize>> = layout
+        .workspaces()
+        .map(|(_, _, ws)| ws.windows().map(|win| *win.id()).collect())
+        .collect();
+    assert_eq!(windows_by_workspace[0], [2], "{windows_by_workspace:?}");
+    assert_eq!(windows_by_workspace[1], [1], "{windows_by_workspace:?}");
 }

@@ -136,6 +136,27 @@ impl Shell {
 }
 
 impl crate::niri::Niri {
+    /// The module bento's own shell starts from, as the config names it, and where it comes
+    /// from: `bento:shells/<name>` for one of bento's own, or the file's path.
+    pub fn shell_entry(&self) -> (String, bento_ipc::ShellSource) {
+        let config = self.config.borrow();
+        let shell = config.shell.clone().unwrap_or_default();
+        match shell.script() {
+            niri_config::ShellScript::BuiltIn(name) => (
+                format!("bento:shells/{name}"),
+                bento_ipc::ShellSource::BuiltIn { name },
+            ),
+            niri_config::ShellScript::File(path) => {
+                let path = crate::utils::expand_home(&path)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(path);
+                let path = path.to_string_lossy().into_owned();
+                (path.clone(), bento_ipc::ShellSource::File { path })
+            }
+        }
+    }
+
     /// The gaps between windows, the corner radius the config gives every window, and how
     /// bento animates.
     pub fn shell_style(&self) -> ShellStyle {

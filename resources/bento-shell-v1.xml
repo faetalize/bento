@@ -62,10 +62,13 @@
       <arg name="slowdown" type="fixed"/>
     </event>
 
-    <event name="toggle_launcher">
-      <description summary="show or hide the launcher">
-        Sent when the toggle-launcher action runs, like from a shortcut.
+    <event name="action">
+      <description summary="run one of the shell's own actions">
+        Sent when a shell-action bind runs, like from a shortcut: the action's name, like
+        toggle-launcher, and its arguments.
       </description>
+      <arg name="name" type="string"/>
+      <arg name="args" type="string" summary="the arguments, as a JSON list of strings"/>
     </event>
   </interface>
 

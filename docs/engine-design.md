@@ -70,7 +70,7 @@ class Bento {                    // what create(bento) receives
     get monitors() {}            // Monitor[]
     get focused() {}             // the focused Window, or null
     get config() {}              // bento's native settings: gaps, borders...
-    get options() {}             // this engine's options, from its .kdl file
+    get settings() {}            // this engine's settings, from its .kdl file
 
     window(id) {}                // find a Window by id
     setTimeout(callback, ms) {}  // call back later, see "Engines can wait"
@@ -216,13 +216,13 @@ button shows.
 ### bento's native config works under every engine
 
 bento only ships what makes sense under every engine: spawning, screenshots, workspaces,
-monitors, floating, gaps, borders and the like. Native binds and options never fail validation
+monitors, floating, gaps, borders and the like. Native binds and settings never fail validation
 because of the engine. If something only works with some engines, it doesn't belong in bento.
 
 Everything that belongs to a paradigm comes from the engine that declares it. niri's column
 actions (`focus-column-left`, `move-column-left`, `consume-or-expel-window-left`...) and the
 column parts of `layout {}` (`preset-column-widths`, `default-column-width`,
-`center-focused-column`...) become `niri.js`'s own actions and options. `bento validate`
+`center-focused-column`...) become `niri.js`'s own actions and settings. `bento validate`
 complains only when the config uses something the running engine doesn't declare.
 
 ### Engines declare every action they have
@@ -255,7 +255,9 @@ engine loads.
 Window rules split like binds. Rules that make sense under every engine, like `open-floating`,
 `opacity` or `block-out-from`, are bento's. Rules that belong to a paradigm, like
 `default-column-width` or `is-active-in-column`, are declared by the engine, written in its
-`.kdl` file and checked by `bento validate`, the same as its actions and options.
+`.kdl` file and checked by `bento validate`, the same as its actions and settings. An engine's
+default window rules are declared in the engine, like its settings' defaults, not written into
+the user's file.
 
 ### Engines own horizontal swipes
 
@@ -324,18 +326,36 @@ Moving and resizing a window with the pointer are bento's mechanics, and the eng
 they do. Besides bento's own ways to start them, like dragging with the modifier held, an engine
 can start them itself, like when the title bar it draws is dragged.
 
-An engine whose windows move freely, like `windows11.js`, says so, and bento then drags its
-windows the way it drags floating ones: from the first pixel, opaque, and by the title bar in
-any direction. bento's own view scrolling during a drag is for tiling engines, so it never
-happens under such an engine: the camera stays where the engine puts it.
+A window dragged with the pointer stays the engine's the whole time: it doesn't leave the
+engine while it's carried and come back where it's dropped. bento runs the drag itself, grabbing
+the pointer, showing the cursor and following it across monitors, and tells the engine:
+
+- that a drag of one of its windows began, and where on the window the pointer holds it;
+- each move, with the pointer and the workspace under it;
+- its end, dropped where the pointer is or cancelled.
+
+bento doesn't move the window meanwhile: the engine places it on every move, under the pointer
+or wherever it likes, and draws it as it likes, smaller over a place it would join or faded over
+one it wouldn't. The window keeps its group, its state and its place in the engine's order, and
+the engine moves it to another workspace or monitor when the pointer goes there, since one engine
+sees every workspace. A tiling engine that takes a window out of its layout while it's carried
+does so itself, and so does one that scrolls its view near an edge during a drag: the camera is
+the engine's.
+
+An engine whose windows move freely, like `windows11.js`, says so, and bento then starts its
+drags the way it starts floating windows': from the first pixel, and by the title bar in any
+direction.
 
 An engine can turn off, per window, the border, focus ring and shadow that bento draws around
-it, to draw its own decorations instead.
+it, to draw its own decorations instead. An engine that draws title bars sees which buttons the
+desktop's settings put on each side, like GNOME's button layout, and hears when they change. It
+can ask a window's app to close it, as bento's close action does, like from a close button it
+draws.
 
 ### Engines decide whether focus follows the pointer
 
 Whether a window gets focus when the pointer comes onto it is part of an engine's paradigm, so
-it's the engine's to say, not bento's config: `niri.js` and `bento.js` have it as an option, and
+it's the engine's to say, not bento's config: `niri.js` and `bento.js` have it as a setting, and
 `windows11.js` never has it. bento does the focusing as the engine asks, for the engine's
 windows, floating ones and panels that take the keyboard on demand, and the engine can limit it
 to windows that focusing doesn't scroll the view to.
@@ -406,7 +426,7 @@ The state an engine keeps, like `niri.js`'s columns, is accessible to the rest o
 the shell, bento Settings and scripts can read it directly. Nothing has to translate an engine's
 concepts into bento's for them to be seen.
 
-Engine state isn't declared. Unlike an option, which always maps to a control whatever it
+Engine state isn't declared. Unlike a setting, which always maps to a control whatever it
 means, state only makes sense to code that knows the engine, and that code learns its shape
 from the objects themselves. Engines expose their state as they like.
 
@@ -444,10 +464,11 @@ a row is replaced by the fallback engine, which places windows side by side and 
 until its file changes. When a new version of a running engine fails to load, the running one
 stays. The error shows in `bento validate`, `bento msg engine` and bento Settings.
 
-### Old engines keep working for a while
+### Only the current API runs
 
-The object model is a new API version. bento keeps running `api: 1` engines for a while
-alongside it.
+bento runs engines for the current API version only. An engine for another version fails to
+load, and says which version bento runs. Until bento's first release, the API changes without
+keeping old versions or migrating old engines.
 
 ### Moving from niri is a one-off conversion
 
@@ -457,78 +478,153 @@ the engine to `niri.js`, asks for the user's `config.kdl`, and sets everything u
 
 ### Each engine has its own config file
 
-The main config holds bento's native settings. Each engine's binds and options live in a `.kdl`
-file of their own, and bento loads the one for the running engine. Switching engines switches
-which file is loaded, so nothing breaks, while validation stays strict against the running
-engine.
+The main config holds bento's native settings. Each engine's settings and the user's own binds
+for its actions live in a `.kdl` file of their own, and bento loads the one for the running
+engine. Switching engines switches which file is loaded, so nothing breaks, while validation
+stays strict against the running engine.
 
-An engine's options are booleans, numbers, strings, choices, sizes, colours or gradients, as the
-engine declares, and all but gradients can be lists. They can differ per monitor and per named workspace, like bento's
-own `layout {}` settings: the engine's file can set options for an `output` or a `workspace`, and
-the engine reads each workspace's options from the workspace.
-
-A key can be bound in both files. The engine's file only loads while its engine runs, so it's
-the narrower layer, and its bind takes the key over meanwhile, the way a workspace's options
-override its output's. Switching engines never fails on a key; `bento validate` and bento
-Settings say which keys the running engine takes over.
+An engine's settings are booleans, numbers, strings, choices, sizes, colours or gradients, as the
+engine declares, and all but gradients can be lists. Engines and shells declare settings and
+actions the same way, in `meta.settings` and `meta.actions`, and a setting shows in bento
+Settings only on the page it names, as a shell's does. They can differ per monitor and per named
+workspace, like bento's own `layout {}` settings: the engine's file can set them for an `output`
+or a `workspace`, and the engine reads each workspace's settings from the workspace.
 
 The main config picks the engine with `tiling { layout "…" }`. A built-in engine's file is
-`~/.config/bento/engines/<name>.kdl`, like `engines/niri.kdl`. An engine from a file has its
-`.kdl` next to the `.js`, with the same name: `layout "~/layouts/mine.js"` loads
-`~/layouts/mine.kdl`. The engine's file holds its `options {}` and its `binds {}`.
+`~/.config/bento/engines/<name>.kdl`, by its name, so nothing records it. A custom engine, from a
+file, is a step out of bento's defaults, and its file comes with that choice: the config names it
+next to the engine, `tiling { layout "~/layouts/mine.js" settings="~/.config/bento/engines/mine.kdl" }`.
+The engine's file holds its `settings {}`, its window rules and its `binds {}`; it's the user's,
+and an engine's author never writes to it.
 
 Config files never use `layout-action`: the engine's file names its actions directly, and the
 main config can't bind them at all. `layout-action "name" args...` is only for running an action
 of the running engine from the command line, `bento msg action layout-action ...`.
 
-The built-in engines ship a default `.kdl` with their binds and options, and bento copies it to
-`engines/<name>.kdl` the first time the engine runs without one, the way it writes the default
-main config on first start. From then on the file is the user's, with no fallback to the
-defaults. An engine loaded from a file ships its `.kdl` next to its `.js`.
+An engine's defaults, for its settings, its window rules and its binds, stay in the engine and
+are read from it each time it runs, so a newer engine's defaults reach the user except for what
+the user changed. Nothing is copied: the user's file holds only the user's changes, and a
+built-in engine's file is made with the user's first change.
 
-bento's default main config binds only actions that work under every engine: spawning,
-workspaces, monitors, screenshots, floating and the like. Binds to actions an engine declares,
-niri's column actions included, are in that engine's default file.
+Switching to a custom engine in bento Settings picks its `.js`, then asks where its settings come
+from. "Start Fresh" makes an empty file in `~/.config/bento/engines/`, named after the engine's
+file, with a number if that name is taken; "Use a Backup…" picks a `.kdl` the user has. Settings
+writes the engine and its file into the config together, and cancelling leaves the engine as it
+was. The Engine page then shows the engine's file and its settings file, each of which can be
+picked again. If a custom engine's settings file is missing, the engine runs on its defaults and
+the Engine page says so.
 
-All the files share one namespace: binding the same key in the main config and in the running
-engine's file is an error, not one quietly winning over the other.
+### Binds: defaults stay with whoever declares them
+
+An action is what a bind runs: one of bento's, the running engine's or a shell module's, with its
+name, its arguments and options, and what it does, like `spawn "alacritty"`, `focus-workspace 1`
+or `quit skip-confirmation=true`. The same name with other arguments is another action.
+
+A bind is a chord that runs an action, with the bind's own settings: `repeat`, `cooldown-ms`,
+`allow-when-locked`, `allow-inhibiting` and `hotkey-overlay-title`. A chord is a key, a mouse
+button or a scroll, with its modifiers.
+
+bento's binds are a set in which each chord runs at most one action, while an action has any
+number of chords, or none: `F1` and `F2` can both run `spawn "alacritty"`, each with settings of
+its own, but one chord can't run two actions. So the chord tells a bind apart, and the set has no
+duplicates: a bind whose chord is taken replaces the bind that has it, or isn't made.
+
+The defaults stay with whoever declares the actions, and the user's files hold only what the user
+changed, as GNOME's keyboard shortcuts do:
+
+- bento's own default binds ship inside bento, with its table of its own actions;
+- an engine's are in its declarations, each action's `bind`;
+- a shell module's are in its declarations, each action's `bind`.
+
+`bind` is one chord, or a list. An entry of a list can be a chord, or a chord with the arguments
+it runs the action with:
+
+```js
+actions: {
+    "set-column-width": {
+        args: [{ name: "change", type: "size" }],
+        bind: [{ key: "Mod+Minus", args: ["-10%"] }, { key: "Mod+Equal", args: ["+10%"] }],
+    },
+    "toggle-start-menu": { bind: "Mod" },
+}
+```
+
+A chord of modifiers alone, like `Mod`, runs its action as they're let go with nothing pressed in
+between, so they still start other binds: in a file it's written with a `release` section.
+
+The user's changes go where that declarer's settings are written: binds of bento's own actions
+in the main config's `binds {}`, an engine's in its file's, and a shell's or a module's in its
+block of the shell's file. Giving an action binds of
+one's own replaces all of its default binds. An action that's turned off is written with
+`unbind`, which names it the way a bind writes it:
+
+```kdl
+binds {
+    Mod+Shift+S { screenshot; }
+    unbind { power-off-monitors; }
+    unbind { focus-workspace 1; }
+}
+```
+
+Resetting an action to its defaults deletes what the user wrote for it: its binds and its
+`unbind`. New defaults in a newer bento, a newer engine or a newer module reach the user, except
+for the actions the user changed.
+
+When binds of different declarers claim one chord, it goes to the narrowest declarer that binds
+it: a shell module's, then the running engine's, then bento's own, since the narrower one is only
+there while it runs. Within one declarer, the user's binds come before its defaults. A bind whose
+chord is taken over this way is kept aside, and bento Settings and `bento validate` say which.
 
 ### bento declares its own actions
 
 bento's native actions are declared like an engine's: one table gives each one its name, a
-description and typed arguments, in the same shape as `meta.actions`. The Shortcuts page reads
-it and the engine's declarations the same way, and the hotkey overlay takes its titles from it.
+description and typed arguments, in the same shape as `meta.actions`, and bento's default binds
+ship with it. The Binds page reads it and the engine's and the shell's declarations the same
+way, and the hotkey overlay takes its titles from it.
 
-### Shortcuts can be edited in bento Settings
+### Binds can be edited in bento Settings
 
-The Shortcuts page is for setting shortcuts, not only reading them. It shows one list of
-binds, native and engine ones together, and doesn't show which file a bind lives in. Each bind is
-a key with its action and the action's arguments, so `spawn` with different commands is just
-several binds. Adding a shortcut picks the key, then the action and its arguments.
+The Binds page lists actions, each with its binds: a row per action shows its chords, several,
+or "Disabled". Every action that takes no arguments has a row, bound or not, so it can be found
+and reset. An action that takes arguments, like `spawn` or `focus-workspace`, has a row for each
+set of arguments that has binds, or had them by default.
 
-The app writes each change to the right file: a bind to an action the running engine declares
-goes in the engine's file, and every other bind goes in the main config.
+The page has three tabs: General for bento's actions, Engine for the running engine's, and Shell
+for the running shell's. General groups bento's actions by what they do: Windows, Floating
+Windows, Window Groups, Workspaces, Monitors, Screenshots & Casting, Input, Launchers, System and
+Debug. Engine has one group, and Shell a group for each module, like "Start Menu" or
+"Clipboard". Each tab shows how many actions it lists.
 
-A bind's other settings, `repeat`, `cooldown-ms`, `allow-when-locked`, `allow-inhibiting` and
-`hotkey-overlay-title`, can be changed in its edit dialog, under a collapsed "Advanced" section.
-An edit keeps whatever it doesn't change, so settings written by hand survive.
+The search bar filters every tab at once and stays on the tab shown: each tab's count becomes the
+number of its matches, and a tab with none is greyed out. It matches an action's title, arguments
+and chords.
 
-While the page records a key, its window inhibits bento's shortcuts through the
-keyboard-shortcuts-inhibit protocol, so bound keys reach it instead of running. Binds with
+"Add Bind" records a chord and picks the action it runs, with its arguments and the bind's
+settings. Any action can be picked, since any action can take another chord. The picker is in
+the tabs' sections, General, the engine, and a heading for each module, and finds an action by
+any word of its title; the shell's actions are picked under their modules, not as a bare
+`shell-action`. A bind for an action that's listed already joins its row.
+
+An action's dialog lists its binds, each with its chord, its own settings and a way to take it
+off, and records another chord by pressing it. While recording, Backspace turns the action off
+and Escape stops recording. "Disable" writes an `unbind`, and "Reset to Default" deletes what the
+user wrote for it. An action the user bound that has no default binds is removed instead. "Reset
+All" puts every action back on its defaults.
+
+Taking a chord that's already bound says what it runs now and offers to replace that bind, which
+writes an `unbind` if that leaves an action with default binds with none.
+
+Each bind's settings are its own: binds of one action can differ in them. A default bind's
+settings come with it, so editing an action keeps them, and an edit keeps whatever it doesn't
+change, so settings written by hand survive.
+
+While the page records a chord, its window inhibits bento's binds through the
+keyboard-shortcuts-inhibit protocol, so bound chords reach it instead of running. Binds with
 `allow-inhibiting=false` still go to bento.
 
 Recording takes mouse and scroll triggers as well as keys: scrolling or clicking with modifiers
 held records `WheelScroll…`, `TouchpadScroll…` or a mouse button, the way a key press records the
 key.
-
-A new shortcut can take a key that's already bound. The dialog says what the key does now and
-offers to replace it, which removes the old bind from whichever file holds it. A key bound in an
-included file can't be replaced, so the dialog says it's taken and where it comes from.
-
-Restoring defaults works like GNOME's Keyboard Shortcuts: a changed shortcut can be reset on its
-own, which puts its action back on its default key, and "Reset All" puts back the shipped binds
-in the main config and the engine's file. An engine loaded from a file has no shipped defaults
-apart from its own `.kdl`, so only bento's own shortcuts reset under it.
 
 Binds from included files show on the page but can't be changed there, and their rows say which
 file they come from. Those files often belong to something else, like a shell that generates
@@ -536,11 +632,11 @@ them: an edit in place would be lost when it rewrites the file, and an override 
 config only wins when the `include` comes before its `binds {}`. The parsed config remembers
 which file each bind comes from.
 
-The page has a search bar that matches a bind's action, arguments and keys. The Engine page
-doesn't list shortcuts again: it says how many actions the running engine has and how many have
-a shortcut, and links to the Shortcuts page. Every action, bound or not, is in the add dialog's
-action picker.
+The Engine and Shell pages don't list binds again: the last row of the group that picks the
+engine or the shell says how many actions it has and how many have a bind, and opens the Binds
+page on its tab.
 
-The page lists bento's actions and the running engine's. It can't see the actions of engines that
-aren't running: Settings never runs engine code itself, and learns an engine's declarations only
-from the running one. Switching engines on the Engine page brings up that engine's shortcuts.
+The page lists bento's actions, the running engine's and the running shell's. It can't see the
+actions of engines that aren't running: Settings never runs engine code itself, and learns an
+engine's declarations only from the running one. Switching engines on the Engine page brings up
+that engine's actions.

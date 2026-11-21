@@ -156,12 +156,9 @@ impl TouchOverviewGrab {
                 if let Some((output, pos_within_output)) = data.niri.output_under(self.new_location)
                 {
                     let output = output.clone();
-                    data.niri.layout.interactive_move_update(
-                        window,
-                        delta,
-                        output,
-                        pos_within_output,
-                    )
+                    data.niri
+                        .layout
+                        .interactive_move_update(window, output, pos_within_output)
                 } else {
                     false
                 }

@@ -94,9 +94,9 @@ function monitorKey(d) {
     return JSON.stringify([d.size, d.scale, d.workingArea, d.left, d.right, d.up, d.down]);
 }
 
-/** What `configchange` is about for a workspace: bento's settings and the engine's options. */
+/** What `configchange` is about for a workspace: bento's config and the engine's settings. */
 function configKey(d) {
-    return JSON.stringify([d.config, d.options]);
+    return JSON.stringify([d.config, d.settings]);
 }
 
 function windowKey(d) {
@@ -288,8 +288,8 @@ export class Workspace extends EventTarget {
         return this.#d.config;
     }
 
-    get options() {
-        return this.#d.options;
+    get settings() {
+        return this.#d.settings;
     }
 
     get tilingArea() {
@@ -472,6 +472,14 @@ export class Window extends EventTarget {
         return true;
     }
 
+    close() {
+        this.#check();
+        if (!this.#s.querying) {
+            this.#s.rec.ops.push({ op: "closeWindow", window: this.#d.id });
+        }
+        return true;
+    }
+
     moveTo(workspace) {
         this.#check();
         const target = this.#s.workspaces.get(workspace?.id);
@@ -597,8 +605,8 @@ export class Bento extends EventTarget {
         return Object.freeze(this.#s.groups.facades);
     }
 
-    get options() {
-        return this.#s.options;
+    get settings() {
+        return this.#s.settings;
     }
 
     get savedState() {
@@ -763,7 +771,7 @@ export class Session {
         /** Whether the event being handled is something the person did, see `grabKeyboard`. */
         this.personStarted = false;
         this.modifiers = NO_MODIFIERS;
-        this.setOptions(given);
+        this.setSettings(given);
         this.bento = new Bento(this);
     }
 
@@ -802,12 +810,12 @@ export class Session {
         }
     }
 
-    /** Sets the engine's options, and returns whether they changed. */
-    setOptions(given) {
-        // bento checks the options, fills in defaults and converts them by type before sending.
-        const options = Object.freeze(copyJson(given ?? {}));
-        const changed = JSON.stringify(options) !== JSON.stringify(this.options);
-        this.options = options;
+    /** Sets the engine's settings, and returns whether they changed. */
+    setSettings(given) {
+        // bento checks the settings, fills in defaults and converts them by type before sending.
+        const settings = Object.freeze(copyJson(given ?? {}));
+        const changed = JSON.stringify(settings) !== JSON.stringify(this.settings);
+        this.settings = settings;
         return changed;
     }
 
@@ -1021,11 +1029,19 @@ export class Session {
                 scale: info.view.scale,
             };
             d.camera = { x: info.camera.x, y: info.camera.y, zoom: info.camera.zoom };
+            const buttons = info.config.titleButtons ?? null;
             d.config = Object.freeze({
                 gaps: info.config.gaps,
                 struts: Object.freeze({ ...info.config.struts }),
+                titleButtons:
+                    buttons === null
+                        ? null
+                        : Object.freeze({
+                              left: Object.freeze([...buttons.left]),
+                              right: Object.freeze([...buttons.right]),
+                          }),
             });
-            d.options = Object.freeze(copyJson(info.options ?? {}));
+            d.settings = Object.freeze(copyJson(info.settings ?? {}));
             d.focused = info.focused;
         }
 
@@ -1054,7 +1070,7 @@ export class Session {
         if ("focusedMonitor" in sync) {
             this.focusedMonitor = sync.focusedMonitor;
         }
-        const optionsChanged = "options" in sync && this.setOptions(sync.options);
+        const settingsChanged = "settings" in sync && this.setSettings(sync.settings);
         if ("keyboardAvailable" in sync) {
             this.keyboardAvailable = sync.keyboardAvailable;
         }
@@ -1104,7 +1120,7 @@ export class Session {
         const configChanged = [...this.workspaces.values()].some(
             (d) => configBefore.has(d) && configBefore.get(d) !== configKey(d),
         );
-        if (optionsChanged || configChanged) {
+        if (settingsChanged || configChanged) {
             fire.push(event(this.bento, "configchange"));
         }
         for (const d of removedMonitors) {
@@ -1146,14 +1162,6 @@ export class Session {
         this.windows.set(d.id, d);
         attachWindowNode(ws.root, d.node);
         return d;
-    }
-
-    /** A window that isn't in the engine, for events about a window that left it, like a drag. */
-    detachedWindow(info) {
-        const d = { id: info.id, workspace: info.workspace, rect: null, visible: true, data: info.data ?? null, node: null };
-        this.updateWindow(d, info);
-        d.facade = new Window(this, d);
-        return d.facade;
     }
 
     /** Takes a window away after the engine has been told, and clears what refers to it. */

@@ -4,10 +4,14 @@
 mod about;
 mod account;
 mod appearance;
+mod bind_list;
+pub mod binds;
 mod blur;
 mod blur_live;
 mod blur_preview;
+mod chord_line;
 mod control_center;
+mod declared;
 mod engine;
 mod input;
 mod layout;
@@ -16,11 +20,14 @@ mod location;
 mod migrate;
 mod planned;
 mod preview;
-pub mod shortcuts;
+mod settings_file;
+mod shell;
 mod system;
 mod theme;
 mod title_buttons;
 mod wallpaper;
+
+pub use declared::placed;
 
 use crate::model::{Content, Section};
 
@@ -45,7 +52,7 @@ pub fn sections() -> Vec<Section> {
                 input::mouse(),
                 input::touchpad(),
                 planned::gestures(),
-                shortcuts::category(),
+                binds::category(),
             ],
         ),
         Section::new(
@@ -71,4 +78,20 @@ pub fn sections() -> Vec<Section> {
         })
         .filter(|section| !section.categories.is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_page_a_setting_can_name_is_a_page_of_the_app() {
+        let ids: Vec<&str> = sections()
+            .iter()
+            .flat_map(|section| section.categories.iter().map(|category| category.id))
+            .collect();
+        for page in niri_config::SETTINGS_PAGES {
+            assert!(ids.contains(page), "the app has no page {page:?}");
+        }
+    }
 }

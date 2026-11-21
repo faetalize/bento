@@ -1,11 +1,12 @@
-//! The layout engine: which one runs, its options and its actions.
+//! The layout engine: which one runs, its settings and its actions.
 //!
 //! Which engine to run comes from the config. What it offers comes from the running engine over
-//! IPC, since an engine declares its options and actions itself. Each option gets the field of its
-//! declared type: a switch, a number, text, a choice, a size, a color, a gradient, or a list of
+//! IPC, since an engine declares its settings and actions itself. Each setting gets the field of
+//! its declared type: a switch, a number, text, a choice, a size, a color, a gradient, or a list of
 //! those.
 
 use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -17,12 +18,12 @@ use niri_ipc::{
     LayoutEngineOptionValue as OptionValue, SizeChange,
 };
 
-use super::migrate;
+use super::{migrate, settings_file};
 use crate::ipc;
-use crate::kdl::{self, Value};
+use crate::kdl::Value;
 use crate::model::Category;
 use crate::page::PageContext;
-use crate::store::{option_properties, option_values, tilde, File};
+use crate::store::tilde;
 
 pub fn category() -> Category {
     Category::custom("engine", "Engine", build)
@@ -52,13 +53,13 @@ pub fn category() -> Category {
             ],
         )
         .search_item(
-            "engine.options",
-            "Engine Options",
+            "engine.settings",
+            "Engine Settings",
             &["gravity", "configure", "column width", "tab indicator"],
         )
         .search_item(
             "engine.actions",
-            "Engine Shortcuts",
+            "Engine Binds",
             &["layout-action", "actions", "binds", "keybinds"],
         )
         .search_item(
@@ -71,35 +72,41 @@ pub fn category() -> Category {
 struct View {
     ctx: PageContext,
     column: gtk::Box,
-    /// The configured layout and the running engine with its option values left out. The page is
-    /// rebuilt only when this changes; new option values update the rows in place, so a row isn't
-    /// replaced while someone is using it.
+    /// The configured layout and the running engine with its setting values left out. The page
+    /// is rebuilt only when this changes; the settings' rows keep themselves up to date.
     shown: RefCell<Option<Shape>>,
-    options: RefCell<Vec<OptionRow>>,
-    /// Set while rows show new values, so their change signals don't write them back.
-    updating: Rc<Cell<bool>>,
 }
 
-type Shape = (TilingLayout, Result<LayoutEngine, String>);
+/// The configured engine, its settings file and whether that's there, and the running engine with
+/// its setting values left out.
+type Shape = (
+    TilingLayout,
+    Option<(PathBuf, bool)>,
+    Result<LayoutEngine, String>,
+);
 
 /// Shows a new value in an option's row. An option with no value is a size left to the window.
-type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
+pub(super) type ShowValue = Box<dyn Fn(&Option<OptionValue>)>;
 
 /// Saves a value someone set in a row.
-type Change = Rc<dyn Fn(Option<OptionValue>)>;
+pub(super) type Change = Rc<dyn Fn(Option<OptionValue>)>;
 
-struct OptionRow {
-    show: ShowValue,
-}
-
-fn shape(layout: TilingLayout, engine: &Result<LayoutEngine, String>) -> Shape {
+fn shape(ctx: &PageContext, engine: &Result<LayoutEngine, String>) -> Shape {
     let engine = engine.clone().map(|mut engine| {
-        for option in &mut engine.options {
+        for option in &mut engine.settings {
             option.value = option.default.clone();
         }
         engine
     });
-    (layout, engine)
+    let layout = ctx.store.config().tiling.layout.clone();
+    let settings = match layout {
+        TilingLayout::File(_) => ctx.store.engine_path().map(|path| {
+            let exists = path.exists();
+            (path, exists)
+        }),
+        TilingLayout::BuiltIn(_) => None,
+    };
+    (layout, settings, engine)
 }
 
 fn build(ctx: &PageContext) -> gtk::Widget {
@@ -107,8 +114,6 @@ fn build(ctx: &PageContext) -> gtk::Widget {
         ctx: ctx.clone(),
         column: gtk::Box::new(gtk::Orientation::Vertical, 24),
         shown: RefCell::new(None),
-        options: RefCell::new(Vec::new()),
-        updating: Rc::new(Cell::new(false)),
     });
     refresh(&view);
 
@@ -132,28 +137,30 @@ fn build(ctx: &PageContext) -> gtk::Widget {
 
 fn refresh(view: &Rc<View>) {
     let engine = ipc::layout_engine();
-    let shape = shape(view.ctx.store.config().tiling.layout.clone(), &engine);
+    let shape = shape(&view.ctx, &engine);
     if view.shown.borrow().as_ref() == Some(&shape) {
-        if let Ok(engine) = &engine {
-            show_values(view, engine);
-        }
         return;
     }
 
     while let Some(child) = view.column.first_child() {
         view.column.remove(&child);
     }
-    view.options.borrow_mut().clear();
     view.column
         .append(&choice_group(view, engine.as_ref().ok()));
+    if let Some((path, _)) = &shape.1 {
+        if let Some(missing) = settings_file::missing(settings_file::Kind::Engine, path) {
+            view.column.append(&missing);
+        }
+    }
     match &engine {
         Ok(engine) => {
             if let Some(error) = &engine.error {
                 view.column.append(&failed_group(error));
             }
-            view.column.append(&options_group(view, engine));
-            view.column.append(&shortcuts_group(view, engine));
-            show_values(view, engine);
+            // The engine's settings, but those it puts on another page.
+            let settings = crate::pages::placed(&view.ctx, "engine");
+            view.ctx.anchor("engine.settings", &settings);
+            view.column.append(&settings);
         }
         Err(err) => view.column.append(&offline_group(view, err)),
     }
@@ -161,17 +168,18 @@ fn refresh(view: &Rc<View>) {
     view.shown.replace(Some(shape));
 }
 
-fn show_values(view: &View, engine: &LayoutEngine) {
-    view.updating.set(true);
-    for (row, option) in view.options.borrow().iter().zip(&engine.options) {
-        (row.show)(&option.value);
-    }
-    view.updating.set(false);
-}
-
 fn set_layout(ctx: &PageContext, layout: String) {
     ctx.store.edit("tiling.layout", move |doc| {
         doc.set(&["tiling", "layout"], vec![Value::Str(layout)]);
+    });
+}
+
+/// Runs the engine file at `script`, with its settings file at `settings`.
+fn set_layout_file(ctx: &PageContext, script: &Path, settings: &Path) {
+    let (script, settings) = (tilde(script), tilde(settings));
+    ctx.store.edit("tiling.layout", move |doc| {
+        let properties = vec![(String::from("settings"), Value::Str(settings))];
+        doc.set_node(&["tiling", "layout"], vec![Value::Str(script)], properties);
     });
 }
 
@@ -182,6 +190,7 @@ const BUILT_IN: &[(&str, &str)] = &[
     ("windows11", "Windows 11"),
 ];
 
+/// The engine chosen, its file, and the running engine's binds summed up last.
 fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
     view.ctx.anchor("engine.choice", &group);
@@ -234,13 +243,36 @@ fn choice_group(view: &Rc<View>, running: Option<&LayoutEngine>) -> adw::Prefere
             .activatable(true)
             .build();
         row.add_suffix(&gtk::Image::from_icon_name("ph-folder-open-symbolic"));
-        let view = Rc::downgrade(view);
+        let weak = Rc::downgrade(view);
         row.connect_activated(move |row| {
-            if let Some(view) = view.upgrade() {
+            if let Some(view) = weak.upgrade() {
                 choose_file(&view, row);
             }
         });
         group.add(&row);
+
+        // Its settings file, which picks another, the engine staying.
+        let settings = view.ctx.store.engine_path();
+        let row = settings_file::row(settings.as_deref());
+        let weak = Rc::downgrade(view);
+        row.connect_activated(move |row| {
+            let Some(view) = weak.upgrade() else { return };
+            let ctx = view.ctx.clone();
+            let script = path.clone();
+            let done = move |settings: PathBuf| set_layout_file(&ctx, &script, &settings);
+            settings_file::ask(
+                &view.ctx,
+                row,
+                settings_file::Kind::Engine,
+                &path,
+                done,
+                || (),
+            );
+        });
+        group.add(&row);
+    }
+    if let Some(engine) = running {
+        group.add(&binds_row(view, engine));
     }
     group
 }
@@ -263,60 +295,48 @@ fn choose_file(view: &Rc<View>, widget: &impl IsA<gtk::Widget>) {
         None::<&gtk::gio::Cancellable>,
         move |result| {
             let Some(view) = view.upgrade() else { return };
-            match result.ok().and_then(|file| file.path()) {
-                Some(path) => set_layout(&view.ctx, tilde(&path)),
-                // Cancelled: rebuild, so the dropdown shows the configured engine again.
-                None => {
-                    view.shown.replace(None);
-                    refresh(&view);
+            // Cancelled: rebuild, so the dropdown shows the configured engine again.
+            let cancelled = {
+                let view = Rc::downgrade(&view);
+                move || {
+                    if let Some(view) = view.upgrade() {
+                        view.shown.replace(None);
+                        refresh(&view);
+                    }
                 }
-            }
+            };
+            let Some(path) = result.ok().and_then(|file| file.path()) else {
+                cancelled();
+                return;
+            };
+            // Then where its settings come from; the engine changes only with them.
+            let ctx = view.ctx.clone();
+            let script = path.clone();
+            let done = move |settings: PathBuf| set_layout_file(&ctx, &script, &settings);
+            settings_file::ask(
+                &view.ctx,
+                &view.column,
+                settings_file::Kind::Engine,
+                &path,
+                done,
+                cancelled,
+            );
         },
     );
 }
 
-fn options_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder().title("Options").build();
-    view.ctx.anchor("engine.options", &group);
-
-    if engine.options.is_empty() {
-        let row = adw::ActionRow::builder()
-            .title("No Options")
-            .css_classes(["dim-label"])
-            .build();
-        group.add(&row);
-    }
-    for option in &engine.options {
-        group.add(&option_row(view, option));
-    }
-    group
-}
-
-fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
-    let path = format!("options.{}", option.name);
+/// The row for an option of an engine, or a setting of a shell, which are typed alike: the field
+/// of its type, or a list of them. `change` gets what someone sets, unless `quiet` is set while
+/// the row shows a new value.
+pub(super) fn option_widget(
+    option: &LayoutEngineOption,
+    quiet: Rc<Cell<bool>>,
+    change: Change,
+) -> (gtk::Widget, ShowValue) {
     let title = crate::page::title_from(&option.name);
     let description = option.description.clone().unwrap_or_default();
-
-    let change: Change = {
-        let ctx = view.ctx.clone();
-        let path = path.clone();
-        let default = option.default.clone();
-        Rc::new(move |value: Option<OptionValue>| {
-            let (key, path, default) = (path.clone(), path.clone(), default.clone());
-            ctx.store.edit_in(File::Engine, &key, move |doc| {
-                let parts = kdl::split(&path);
-                // An option at its default stays out of the file.
-                if value == default {
-                    doc.remove(&parts);
-                } else {
-                    doc.set_node(&parts, option_values(&value), option_properties(&value));
-                }
-            });
-        })
-    };
-
     let digits = digits(&option.default);
-    let (row, show): (gtk::Widget, ShowValue) = if option.list {
+    if option.list {
         let list = ListRow::new(option, &title, &description, digits, change);
         let show = {
             let list = list.clone();
@@ -330,14 +350,10 @@ fn option_row(view: &Rc<View>, option: &LayoutEngineOption) -> gtk::Widget {
             subtitle: &description,
             digits,
             choices: &option.choices,
-            // Set while rows show new values, so their change signals don't write them back.
-            quiet: view.updating.clone(),
+            quiet,
         };
         field.build(change)
-    };
-    view.ctx.anchor(&path, &row);
-    view.options.borrow_mut().push(OptionRow { show });
-    row
+    }
 }
 
 /// How many decimals a number option shows: as many as its default needs, up to two.
@@ -811,41 +827,47 @@ fn summarize(value: &OptionValue) -> String {
     }
 }
 
-/// How many actions the engine has and how many have a shortcut, with a link to the Shortcuts page,
-/// which lists them with bento's own.
-fn shortcuts_group(view: &Rc<View>, engine: &LayoutEngine) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::new();
-    view.ctx.anchor("engine.actions", &group);
-
-    let config = view.ctx.store.config();
+/// How many actions the engine has and how many have a bind, with a link to the Binds page's
+/// Engine tab, which lists them.
+fn binds_row(view: &Rc<View>, engine: &LayoutEngine) -> adw::ActionRow {
+    // With its default binds and the user's, as bento settles which runs each chord.
+    let mut defaults = niri_config::bind_set::bento_defaults().to_vec();
+    defaults.extend(niri_config::bind_set::declared_binds(
+        &engine.actions,
+        niri_config::bind_set::engine_action,
+    ));
+    let resolved = {
+        let (user, unbound) = view.ctx.store.user_binds();
+        niri_config::bind_set::resolve(&user, &unbound, &defaults)
+    };
     let bound = engine
         .actions
         .iter()
         .filter(|action| {
-            config.binds.0.iter().any(|bind| {
-                [bind.press_action(), bind.release_action()]
-                    .into_iter()
-                    .flatten()
-                    .any(|a| matches!(a, Action::LayoutAction(name, ..) if *name == action.name))
+            resolved.in_use.iter().any(|bind| {
+                matches!(
+                    niri_config::bind_set::action_of(bind),
+                    Some(Action::LayoutAction(name, ..)) if *name == action.name
+                )
             })
         })
         .count();
     let total = engine.actions.len();
     let row = adw::ActionRow::builder()
         .use_markup(false)
-        .title("Shortcuts")
+        .title("Binds")
         .subtitle(format!(
-            "This engine has {total} {}, {bound} with a shortcut",
+            "This engine has {total} {}, {bound} with a bind",
             if total == 1 { "action" } else { "actions" }
         ))
         .activatable(true)
         .build();
     row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
     row.connect_activated(|row| {
-        let _ = row.activate_action("win.open-page", Some(&"shortcuts".to_variant()));
+        let _ = row.activate_action("win.open-page", Some(&"binds#binds.engine".to_variant()));
     });
-    group.add(&row);
-    group
+    view.ctx.anchor("engine.actions", &row);
+    row
 }
 
 /// Says why the configured engine isn't running, when bento runs the fallback one instead.
@@ -865,7 +887,7 @@ fn failed_group(error: &str) -> adw::PreferencesGroup {
 
 fn offline_group(view: &Rc<View>, err: &str) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    view.ctx.anchor("engine.options", &group);
+    view.ctx.anchor("engine.settings", &group);
     view.ctx.anchor("engine.actions", &group);
 
     let row = adw::ActionRow::builder()

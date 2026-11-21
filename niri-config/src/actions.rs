@@ -41,33 +41,18 @@ pub fn native_actions() -> Vec<Declaration> {
         action("toggle-touchpad", "Turn the touchpad off or on.", vec![]),
         action(
             "toggle-keyboard-shortcuts-inhibit",
-            "Let the focused window take bento's shortcuts, or stop letting it.",
+            "Let the focused window take bento's binds, or stop letting it.",
             vec![],
         ),
         action(
             "show-hotkey-overlay",
-            "Show the important shortcuts.",
+            "Show the important binds.",
             vec![],
         ),
         action(
-            "toggle-launcher",
-            "Show or hide the shell's launcher.",
-            vec![],
-        ),
-        action(
-            "edit-workspace",
-            "Show or hide the shell's editor for the focused workspace, to name it or take its name away.",
-            vec![],
-        ),
-        action(
-            "toggle-clipboard",
-            "Show or hide the shell's clipboard history.",
-            vec![],
-        ),
-        action(
-            "switch-audio-output",
-            "Switch the sound to the next of the outputs pinned in the shell.",
-            vec![],
+            "shell-action",
+            "Run one of the shell's own actions, by the name the module that declares it gives it, with what it takes after the name.",
+            vec![required("name", Type::String, "The action's name.")],
         ),
         action(
             "switch-layout",
@@ -492,6 +477,7 @@ fn action(name: &str, description: &str, args: Vec<Arg>) -> Declaration {
         name: String::from(name),
         description: Some(String::from(description)),
         args,
+        binds: Vec::new(),
     }
 }
 

@@ -7,8 +7,7 @@ use calloop::timer::{TimeoutAction, Timer};
 use calloop::RegistrationToken;
 use input::event::gesture::GestureEventCoordinates as _;
 use niri_config::{
-    Action, Bind, Binds, BoundAction, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds,
-    Trigger,
+    Action, Bind, BoundAction, Config, Key, ModKey, Modifiers, MruDirection, SwitchBinds, Trigger,
 };
 use niri_ipc::LayoutSwitchTarget;
 use smithay::backend::input::{
@@ -712,9 +711,11 @@ impl State {
                 let engine_info =
                     (engine_grabbed || is_searching).then(|| engine_grab::key_info(&keysym));
                 let res = {
+                    let shortcuts = this.niri.resolved_binds();
                     let config = this.niri.config.borrow();
                     let bindings = make_binds_iter(
                         &config,
+                        &shortcuts.in_use,
                         &this.niri.screenshot_ui,
                         &mut this.niri.window_mru_ui,
                         this.niri.keyboard_focus.is_overview(),
@@ -1685,33 +1686,21 @@ impl State {
                 self.niri.queue_redraw_all();
             }
             Action::ShowHotkeyOverlay => {
-                if self.niri.hotkey_overlay.show() {
+                if self.niri.show_hotkey_overlay() {
                     self.niri.queue_redraw_all();
 
                     #[cfg(feature = "dbus")]
                     self.niri.a11y_announce_hotkey_overlay();
                 }
             }
-            Action::EditWorkspace | Action::ToggleClipboard | Action::SwitchAudioOutput => {
-                // These are the shell's to do.
-                if let Some(scene) = &self.niri.scene {
-                    let kind = match action {
-                        Action::EditWorkspace => "edit-workspace",
-                        Action::ToggleClipboard => "toggle-clipboard",
-                        _ => "switch-audio-output",
-                    };
-                    let output = self.niri.layout.active_output().map(|o| o.name());
-                    scene.event(kind, output);
-                    self.niri.queue_redraw_all();
-                }
-            }
-            Action::ToggleLauncher => match &self.niri.scene {
+            // The shell's, bento's own or a program's.
+            Action::ShellAction(name, args) => match &self.niri.scene {
                 Some(scene) => {
                     let output = self.niri.layout.active_output().map(|o| o.name());
-                    scene.toggle_launcher(output);
+                    scene.shell_action(&name, &args, output);
                     self.niri.queue_redraw_all();
                 }
-                None => self.niri.bento_shell_state.toggle_launcher(),
+                None => self.niri.bento_shell_state.action(&name, &args),
             },
             Action::MoveWorkspaceToMonitorLeft => {
                 if let Some(output) = self.niri.output_left() {
@@ -2459,9 +2448,11 @@ impl State {
     ) -> Option<Bind> {
         let modifiers = modifiers_from_state(mods);
 
+        let shortcuts = self.niri.resolved_binds();
         let config = self.niri.config.borrow();
         let bindings = make_binds_iter(
             &config,
+            &shortcuts.in_use,
             &self.niri.screenshot_ui,
             &mut self.niri.window_mru_ui,
             self.niri.keyboard_focus.is_overview(),
@@ -2565,7 +2556,7 @@ impl State {
             let at_ref = under
                 .shell
                 .as_ref()
-                .map(|(name, point)| (name.as_str(), *point));
+                .map(|(name, point, band)| (name.as_str(), *point, *band));
             let number = node_button(button).unwrap_or(0);
             let scene = self.niri.scene.as_mut().unwrap();
             let taken = if ButtonState::Pressed == button_state {
@@ -3482,10 +3473,10 @@ impl State {
                                 window,
                             );
                             tool.set_grab(self, grab, time, serial, Focus::Clear);
-                        } else if let Some((name, point)) = &under.shell {
+                        } else if let Some((name, point, band)) = &under.shell {
                             // bento's own shell is on top of windows, like nodes.
                             if let Some(scene) = &mut self.niri.scene {
-                                scene.press(TABLET_KEY, 1, Some((name.as_str(), *point)));
+                                scene.press(TABLET_KEY, 1, Some((name.as_str(), *point, *band)));
                             }
                             self.niri.queue_redraw_all();
                         } else if let Some(hit) = &under.node {
@@ -3545,7 +3536,9 @@ impl State {
                     .or(self.niri.tablet_cursor_location);
                 let at = pos.and_then(|pos| self.niri.contents_under(pos).shell);
                 if let Some(scene) = &mut self.niri.scene {
-                    let at = at.as_ref().map(|(name, point)| (name.as_str(), *point));
+                    let at = at
+                        .as_ref()
+                        .map(|(name, point, band)| (name.as_str(), *point, *band));
                     if scene.release(TABLET_KEY, 1, at) {
                         self.niri.queue_redraw_all();
                     }
@@ -4091,7 +4084,7 @@ impl State {
                 let at = under
                     .shell
                     .as_ref()
-                    .map(|(name, point)| (name.as_str(), *point));
+                    .map(|(name, point, band)| (name.as_str(), *point, *band));
                 if scene.press(touch_key(slot), 1, at) {
                     self.niri.queue_redraw_all();
                     return;
@@ -5163,9 +5156,13 @@ pub fn apply_libinput_settings(
     }
 }
 
-pub fn mods_with_binds(mod_key: ModKey, binds: &Binds, triggers: &[Trigger]) -> HashSet<Modifiers> {
+pub fn mods_with_binds(
+    mod_key: ModKey,
+    binds: &[Bind],
+    triggers: &[Trigger],
+) -> HashSet<Modifiers> {
     let mut rv = HashSet::new();
-    for bind in &binds.0 {
+    for bind in binds {
         if !triggers.contains(&bind.key.trigger) {
             continue;
         }
@@ -5182,7 +5179,7 @@ pub fn mods_with_binds(mod_key: ModKey, binds: &Binds, triggers: &[Trigger]) -> 
     rv
 }
 
-pub fn mods_with_mouse_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_mouse_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5196,7 +5193,7 @@ pub fn mods_with_mouse_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifier
     )
 }
 
-pub fn mods_with_horizontal_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_horizontal_wheel_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5204,7 +5201,7 @@ pub fn mods_with_horizontal_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashS
     )
 }
 
-pub fn mods_with_vertical_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_vertical_wheel_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5212,7 +5209,7 @@ pub fn mods_with_vertical_wheel_binds(mod_key: ModKey, binds: &Binds) -> HashSet
     )
 }
 
-pub fn mods_with_finger_scroll_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_finger_scroll_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5225,7 +5222,7 @@ pub fn mods_with_finger_scroll_binds(mod_key: ModKey, binds: &Binds) -> HashSet<
     )
 }
 
-pub fn mods_with_tablet_stylus_binds(mod_key: ModKey, binds: &Binds) -> HashSet<Modifiers> {
+pub fn mods_with_tablet_stylus_binds(mod_key: ModKey, binds: &[Bind]) -> HashSet<Modifiers> {
     mods_with_binds(
         mod_key,
         binds,
@@ -5294,15 +5291,15 @@ fn hardcoded_overview_binds<'a>() -> impl Iterator<Item = &'a Bind> + Clone {
 /// Includes dynamically populated bindings like the MRU UI.
 fn make_binds_iter<'a>(
     config: &'a Config,
+    shortcuts: &'a [Bind],
     screenshot_ui: &'a ScreenshotUi,
     mru: &'a mut WindowMruUi,
     overview_focused: bool,
     mods: Modifiers,
 ) -> impl Iterator<Item = &'a Bind> + Clone {
-    let general_binds = config.binds.0.iter();
-
-    // Figure out the binds to use depending on whether the MRU is enabled and/or open.
-    let general_binds = (!mru.is_open()).then_some(general_binds);
+    // The user's binds and every declarer's defaults, one bind for each key, as
+    // `bind_set::resolve` gives them; not while the MRU is open.
+    let general_binds = (!mru.is_open()).then_some(shortcuts.iter());
     let general_binds = general_binds.into_iter().flatten();
 
     let mru_binds =
@@ -5330,7 +5327,47 @@ fn make_binds_iter<'a>(
 
 #[cfg(test)]
 mod tests {
+    use niri_config::Binds;
+
     use super::*;
+
+    #[test]
+    fn keys_run_the_resolved_shortcuts_ahead_of_the_mru() {
+        let shell = |name: &str| Action::ShellAction(String::from(name), Vec::new());
+        let config = "binds {\n    Mod+V { spawn \"paste\"; }\n}";
+        let config = std::rc::Rc::new(std::cell::RefCell::new(Config::parse_mem(config).unwrap()));
+        let clipboard = niri_config::bind_set::default_bind(
+            "Mod+V".parse().unwrap(),
+            shell("toggle-clipboard"),
+        );
+        let resolved = {
+            let config = config.borrow();
+            niri_config::bind_set::resolve(&config.binds.0, &config.unbound, &[clipboard])
+        };
+        let clock = crate::animation::Clock::default();
+        let screenshot_ui = ScreenshotUi::new(clock, config.clone());
+        let mut mru = WindowMruUi::new(config.clone());
+        let config = config.borrow();
+        let mods = Modifiers::empty();
+        let binds = make_binds_iter(
+            &config,
+            &resolved.in_use,
+            &screenshot_ui,
+            &mut mru,
+            false,
+            mods,
+        );
+        let held = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        let bind = find_configured_bind(binds, ModKey::Super, Trigger::Keysym(Keysym::v), held);
+        // The shell's default takes Mod+V over from the config's bind.
+        assert_eq!(
+            bind.and_then(|b| b.press_action().cloned()),
+            Some(shell("toggle-clipboard"))
+        );
+    }
 
     const CLOSE_KEYSYM: Keysym = Keysym::q;
     const CLOSE_KEY_CODE: Keycode = Keycode::new(CLOSE_KEYSYM.raw());

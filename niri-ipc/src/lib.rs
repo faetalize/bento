@@ -349,15 +349,14 @@ pub enum Action {
     },
     /// Show the hotkey overlay.
     ShowHotkeyOverlay {},
-    /// Show or hide the shell's launcher.
-    ToggleLauncher {},
-    /// Show or hide the shell's editor for the focused workspace, to name it or take its name
-    /// away.
-    EditWorkspace {},
-    /// Show or hide the shell's clipboard history.
-    ToggleClipboard {},
-    /// Switch the sound to the next of the outputs pinned in the shell.
-    SwitchAudioOutput {},
+    /// Run one of the shell's own actions, by the name the module that declares it gives it.
+    ShellAction {
+        /// Name of the action.
+        name: String,
+        /// Arguments for the action.
+        #[cfg_attr(feature = "clap", arg(allow_hyphen_values = true))]
+        args: Vec<String>,
+    },
     /// Move the focused workspace to the monitor to the left.
     MoveWorkspaceToMonitorLeft {},
     /// Move the focused workspace to the monitor to the right.
@@ -1043,8 +1042,8 @@ pub struct LayoutEngine {
     pub source: LayoutEngineSource,
     /// Whether bento's floating layer exists under this layout engine.
     pub floating: bool,
-    /// Options of the layout engine, in the order it declares them.
-    pub options: Vec<LayoutEngineOption>,
+    /// Settings of the layout engine, in the order it declares them.
+    pub settings: Vec<LayoutEngineOption>,
     /// Properties that the layout engine's window rules can set, in the order it declares them.
     pub window_rules: Vec<LayoutEngineWindowRule>,
     /// Actions that the layout engine has, in the order it declares them. They're bound by name
@@ -1069,7 +1068,8 @@ pub enum LayoutEngineSource {
     },
 }
 
-/// An option of a layout engine, set in the `options {}` section of its config file.
+/// A setting of a layout engine, set in the `settings {}` section of its config file, or of a
+/// shell, set in its block of the shell's settings file.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct LayoutEngineOption {
@@ -1089,6 +1089,12 @@ pub struct LayoutEngineOption {
     /// Current value of the option: the one from the config, or the default. A list option has a
     /// list.
     pub value: Option<LayoutEngineOptionValue>,
+    /// The page of bento Settings it shows on, by its id, if it names one.
+    #[serde(default)]
+    pub page: Option<String>,
+    /// The group on that page it shows in, if it names one.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 /// A property that a layout engine's window rules can set, written in the `window-rule` blocks of
@@ -1186,6 +1192,21 @@ pub struct LayoutEngineAction {
     pub description: Option<String>,
     /// The action's arguments, in order.
     pub args: Vec<LayoutEngineActionArg>,
+    /// The keys it's bound to by default, while whoever declares it runs, each with the
+    /// arguments it runs the action with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<LayoutEngineBind>,
+}
+
+/// A key an action is bound to by default.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct LayoutEngineBind {
+    /// The key, as a bind writes it, like `Mod+V`.
+    pub key: String,
+    /// The arguments it runs the action with, in order.
+    #[serde(default)]
+    pub args: Vec<LayoutEngineOptionValue>,
 }
 
 /// An argument of a layout engine action.

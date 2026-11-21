@@ -9,7 +9,7 @@ use adw::prelude::*;
 use soup::prelude::*;
 
 use crate::kdl::Value;
-use crate::model::{BoolStyle, Category, Group, Setting};
+use crate::model::{Category, Group, Setting};
 use crate::page::{keep_alive, PageContext};
 
 const KEY: &str = "location";
@@ -47,15 +47,6 @@ pub fn category() -> Category {
             Group::new("Coordinates")
                 .setting(latitude())
                 .setting(longitude()),
-        )
-        .group(
-            Group::new("Weather").setting(
-                Setting::switch("Fahrenheit", "shell.fahrenheit", |c| {
-                    c.shell.as_ref().is_some_and(|shell| shell.fahrenheit)
-                })
-                .style(BoolStyle::Presence)
-                .keywords(&["celsius", "temperature", "units", "degrees"]),
-            ),
         )
 }
 

@@ -144,7 +144,7 @@ After linking, niri itself can't run from that config if it uses anything specif
 ### The shell
 
 bento's shell, `bento-shell`, is the desktop around the workspaces: a glass bar along the top of each monitor with the workspaces, the clock, the tray and the status icons, and the calendar, quick settings, notifications and the volume indicator that grow out of it.
-`toggle-launcher`, bound to <kbd>Super</kbd><kbd>D</kbd>, opens its launcher.
+`shell-action "toggle-launcher"` opens its launcher; the default config binds it to <kbd>Super</kbd><kbd>D</kbd>.
 
 The config names the shell, and bento starts it, and starts it again if it exits:
 
@@ -152,7 +152,7 @@ The config names the shell, and bento starts it, and starts it again if it exits
 shell "bento-shell"
 ```
 
-bento hands it a Wayland connection of its own, through `WAYLAND_SOCKET`. On that connection only, the `bento_shell_v1` protocol (`resources/bento-shell-v1.xml`) gives the shell bento's commands for it, like `toggle-launcher`, and glass: the shell gives bento rounded shapes for each of its surfaces, and bento refracts, blurs and lights what's behind them, melting shapes that come close into one piece.
+bento hands it a Wayland connection of its own, through `WAYLAND_SOCKET`. On that connection only, the `bento_shell_v1` protocol (`resources/bento-shell-v1.xml`) gives the shell the `shell-action` binds, like `toggle-launcher`, and glass: the shell gives bento rounded shapes for each of its surfaces, and bento refracts, blurs and lights what's behind them, melting shapes that come close into one piece.
 Without a `shell` line, bento starts no shell.
 
 ### Other desktop shells
@@ -169,8 +169,27 @@ Bento Settings is a GTK app for changing bento's settings without editing the co
 Run `bento-settings`, or `bento-settings engine` to open a page directly, or `bento-settings --search gaps` to search.
 
 It edits `~/.config/bento/config.kdl` and the layout engine's own file in place, and changes only the values you set, so your comments and layout stay as they are.
-Its Shortcuts page lists every bind, bento's and the engine's, and records new ones by pressing them; binds from included files are shown but left alone.
+Its Binds page lists every action, bento's, the engine's and the shell's, in General, Engine and Shell tabs, each with its binds: it records new chords by pressing them, gives each bind its own settings, turns an action off, and resets it to its defaults. Search filters every tab at once, and each tab counts what it shows. Binds from included files are shown but left alone.
 It checks every change with bento's own parser before saving, and bento applies it right away.
+
+### Binds
+
+A bind is a chord, like <kbd>Mod</kbd><kbd>T</kbd>, that runs an action, like `spawn "foot"`, with settings of its own, like working on the lock screen.
+A chord runs one action, and an action can have any number of binds.
+Actions come with default binds from whoever has them: bento's own with bento, an engine's with the engine, and the shell's with its modules, and <kbd>Mod</kbd><kbd>Shift</kbd><kbd>/</kbd> shows the important ones.
+Your `binds {}` holds only what you change: binds you give an action replace its default ones, and `unbind` turns one off, naming the action the way a bind writes it.
+
+```kdl
+binds {
+    Mod+Return { spawn "foot"; }
+    unbind { power-off-monitors; }
+    unbind { shell-action "toggle-start-menu"; }
+}
+```
+
+The engine's binds are changed in its own file the same way, see [Layout engines](#layout-engines).
+A chord binds of different owners claim goes to the shell's, then the engine's, then bento's, since those are only there while they run; `bento validate` and Settings say which chords are taken.
+Settings → Binds does all of this, and resets an action to its defaults.
 
 ### Wallpaper
 
@@ -240,17 +259,52 @@ debug {
 }
 ```
 
-bento draws its own shell too, while it's being built: islands of glass along the top of each output, scripted in JavaScript. `~/.config/bento/shell/main.js`, if it's there, replaces bento's own (`resources/shell/main.js`), and bento loads it again whenever it changes. It's experimental and off unless turned on, with Built-in Shell on the Shell page of bento Settings, or in the config:
+bento draws its own shell too, while it's being built: islands of glass along the top of each output. Shells are written in TSX with [Solid](https://www.solidjs.com), with styles as CSS written in objects; bento compiles them itself as it loads them, so there's nothing to install or build. It's experimental and off unless turned on, with Use Bento Shell on the Shell page of bento Settings, or in the config:
 
 ```kdl
 shell {
     built-in
+    script "unix" // or "windows"
+    // or a shell of your own, wherever you keep it, with the file of its settings and binds:
+    // script "~/src/my-shell.tsx" settings="~/.config/bento/shells/my-shell.kdl"
 }
 ```
 
+bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one, saved wherever you like, to start a shell of your own from; bento's own aren't edited in place. Picking a shell of your own there asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/shells/`, and Use a Backup… takes one you have, wherever it is. Either way the config names it next to the shell, and what you set under that shell stays in its file. A shell's default export is its root component. It uses bento's modules with `bento:modules/<name>`, like `bento:modules/clock`, which are always bento's own; a module of your own is a file of your own, imported by its path, like `import Clock from "./my-clock"`, and yours to keep up. bento loads the shell again whenever one of its files changes.
+
+Modules and shells declare their settings and actions in their `meta`, the way engines do, with their defaults. What you change is kept in the shell's file: `~/.config/bento/shell.kdl` for bento's own shells, shared by them, or the one the config names for a shell of your own. It has a block for each module and shell by its name, with its settings, and its binds in a `binds {}` that names its actions directly. Settings show in bento Settings only when they name its page, like the taskbar's height on the Shell page; pins are changed where they are.
+
+Actions come with binds, like the start menu's `toggle-start-menu` on Mod alone and the clipboard's `toggle-clipboard` on Mod+V. Settings → Binds lists the running shell's in its Shell tab, by module, and binds of your own replace an action's:
+
+```kdl
+// ~/.config/bento/shell.kdl
+taskbar {
+    pinned "firefox" "org.gnome.Nautilus"
+}
+
+clipboard {
+    binds {
+        Mod+Shift+V { toggle-clipboard; }
+    }
+}
+```
+
+A shell program outside bento gets binds too, by name with `shell-action` in the main config's `binds {}`, with what the action takes after its name.
+
+What a shell can use, an editor shows: bento keeps a copy of its modules, its shells and their types in `~/.local/share/bento/shell/`, with a `tsconfig.json` there. bento writes nothing next to your files, so for completion, put a `tsconfig.json` next to your shell that extends bento's and includes its types, with your home folder's path:
+
+```json
+{
+  "extends": "/home/you/.local/share/bento/shell/tsconfig.json",
+  "include": ["**/*", "/home/you/.local/share/bento/shell/types"]
+}
+```
+
+`bento msg shell` prints the running shell's settings and actions.
+
 A shell program named with `shell "…"` keeps running alongside it.
 
-To work on bento's own shell and its widgets, point bento at their folder; it reads `main.js` from there instead of the copy built in, and every other script there as the module `bento:` and its name, like `bento:ui`, and loads them again whenever they change:
+To work on bento's own shell and its modules, point bento at their folder; each file there is read in place of the one built in with its path, like `modules/ui.tsx`, and they're loaded again whenever they change:
 
 ```kdl
 debug {
@@ -260,7 +314,7 @@ debug {
 
 The left island shows the workspaces and a minimap of the one on screen: its tiles where they sit, with the part the view shows marked. Scrolling over the minimap moves the focus along the columns, and a click on a tile focuses its window.
 
-The middle island is the clock, and opens into the calendar, with the weather where you are. Settings → Location sets the place, by its name or its coordinates, and Celsius or Fahrenheit. The weather and the search for places come from [Open-Meteo](https://open-meteo.com), which gets the place's coordinates and what you search for, and nothing else:
+The middle island is the clock, and opens into the calendar, with the weather where you are. Settings → Location sets the place, by its name or its coordinates, and, while the shell has the clock, Celsius or Fahrenheit (`clock { fahrenheit true }` in the shell's settings). The weather and the search for places come from [Open-Meteo](https://open-meteo.com), which gets the place's coordinates and what you search for, and nothing else:
 
 ```kdl
 location {
@@ -278,31 +332,30 @@ The right island is the status, and opens into the control center, laid out like
 - What's playing, from any app that says so over MPRIS.
 - The notifications. A toast goes after a moment and its notification stays here until it's dismissed, unless the app marked it as transient. With Do Not Disturb on, only critical notifications come as toasts.
 
-The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title; Settings → Control Center sets them:
+The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title. They're the control center's settings, which Settings → Shell sets while the shell has the control center, kept in the shell's settings:
 
 ```kdl
-shell {
-    fahrenheit
-    screenshot {
-        command "grim -g \"$(slurp)\" - | swappy -f -"
-        notification "Screenshot taken"
-        notification-body "It's in Pictures."
-    }
-    screen-record {
-        command "wf-recorder -f ~/Videos/recording.mp4"
-    }
+control-center {
+    screenshot-command "grim -g \"$(slurp)\" - | swappy -f -"
+    screenshot-notification "Screenshot taken"
+    screenshot-notification-body "It's in Pictures."
+    record-command "wf-recorder -f ~/Videos/recording.mp4"
 }
 ```
 
-A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and `switch-audio-output` does the same from a shortcut.
+The right island has three parts, with a faint line between each: the tray, quick things like the sound output switcher and the clipboard's button, and the status that opens the control center.
 
-When the volume changes elsewhere, by a volume key or a headset's knob, the right island widens into the volume's level for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
+The tray shows the status icons pinned to it, and the rest behind a chevron. A right click on an icon opens its app's menu, which pins the icon to the tray or takes it off.
 
-The clipboard's button opens its history, and so does `toggle-clipboard`: what was copied, newest first, found by typing, and copied again with a click or Enter (Shift+Delete forgets one). It's kept for the session only, text in memory and pictures in the runtime directory, and what a password manager marks as secret isn't kept. When the app that copied something closes, its copy stays on the clipboard.
+A sound output can be pinned in the control center. While any are, the island has a button that switches to the next pinned output, and the shell's `switch-audio-output` does the same from a bind.
+
+When the volume changes elsewhere, by a volume key or a headset's knob, its level grows out of nothing at the bottom middle of the screen for a moment. Volume, brightness and media keys work while a panel is open, since the shell only holds the keys it types with.
+
+The clipboard's button opens its history, and so does the shell's `toggle-clipboard`: what was copied, newest first, found by typing, and copied again with a click or Enter (Shift+Delete forgets one). It's kept for the session only, text in memory and pictures in the runtime directory, and what a password manager marks as secret isn't kept. When the app that copied something closes, its copy stays on the clipboard.
 
 Notifications show their actions as buttons, and a click on one does its default action. The app gets an activation token with it, so it can bring its window forward.
 
-`edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. None of these actions is bound by default; Settings → Shortcuts binds them.
+The shell's `edit-workspace` opens an editor for the focused workspace: it's renamed as you type, and the editor's buttons take its name away and put back the one it had. These have no binds by default; Settings → Binds gives them some.
 
 A rule can pick the other material for some windows or surfaces:
 
@@ -342,7 +395,7 @@ Requests:
 
 - `get` reads one of `version`, `monitors`, `workspaces`, `windows`, `groups`, `layers`, `focused`, `keyboardLayouts`, `overview`, `casts`, `engine`, `engineState` and `actions`.
   Monitors, workspaces, windows and groups are bento's objects, with the same names layout engines see them by.
-  `engine` is the running engine's name, actions with their arguments, options and window rules.
+  `engine` is the running engine's name, actions with their arguments, settings and window rules.
   `engineState` is whatever the running engine exposes about itself, in a shape of its own.
   `actions` is bento's own actions with their arguments.
 - `action` runs an action by name with its arguments and properties, as written in a bind, and parses it the way the config does, so the same things are invalid.
@@ -375,37 +428,36 @@ tiling {
 
 ```kdl
 tiling {
-    // A path, absolute or relative to the config file.
-    layout "~/.config/bento/layouts/spiral.js"
+    // A path, absolute or relative to the config file, with the file of its settings.
+    layout "~/src/spiral.js" settings="~/.config/bento/engines/spiral.kdl"
 }
 ```
 
 Engines aren't interchangeable presets.
 Each one defines how the workspace works, with actions of its own.
-So each engine has a config file of its own for its options and its binds, loaded only while that engine runs:
+So each engine has a config file of its own for its settings, its window rules and your binds for its actions, loaded only while that engine runs.
+A built-in engine's is `engines/<name>.kdl` next to the config, like `~/.config/bento/engines/bento.kdl`.
+An engine file's is the one the config names next to it, like `engines/spiral.kdl` above, and none is read if it names none.
+Picking an engine file in bento Settings asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/engines/`, and Use a Backup… takes one you have, wherever it is.
 
-- `engines/bento.kdl`, `engines/niri.kdl` and `engines/windows11.kdl` next to the config, so `~/.config/bento/engines/bento.kdl`, for the engines that ship with bento;
-- the engine file's path with `.kdl` instead of `.js` for an engine file, so `~/.config/bento/layouts/spiral.kdl` for the one above.
-
-The first time a built-in engine runs without its file, bento writes its defaults there, with binds for moving around and resizing windows; from then on the file is yours.
+The file holds only what you change: an engine's defaults, for its settings, window rules and binds, stay in the engine, so a newer engine's defaults reach you, except what you changed.
 Switching engines switches which file is loaded, so nothing breaks.
-A key bound in both the config and the engine's file runs the engine's bind while that engine runs, and the config's under the others; `bento validate` lists the keys an engine takes over, and bento Settings shows the config's shortcut as not in use.
 
 When the engine file changes, bento reloads it, just like the config.
 Engines can keep their state across reloads, so your windows stay where they are while you work on an engine.
 
-### Options
+### Engine settings
 
-Engines declare their own options, set in `options` in the engine's file:
+Engines declare their own settings, set in `settings` in the engine's file:
 
 ```kdl
 // ~/.config/bento/engines/bento.kdl
-options {
+settings {
     gravity false
 }
 ```
 
-An option is its name followed by its values, and the engine declares the type of each:
+A setting is its name followed by its values, and the engine declares the type of each:
 
 - a boolean, `true` or `false`;
 - a number;
@@ -418,46 +470,46 @@ An option is its name followed by its values, and the engine declares the type o
 
 A size written with no value, like `default-column-width` alone on its line, leaves it to the window.
 So does a gradient: written alone, it takes the gradient away.
-`bento validate` checks the options against what the engine declares, and so does bento when it loads the config.
-`bento msg engine` lists the running engine's options with their types and current values, and its actions and window rules, and `bento msg -j engine` gives the same as JSON for tools like settings screens.
-bento Settings shows the running engine's options on its Engine page, with a field for each type.
+`bento validate` checks the settings against what the engine declares, and so does bento when it loads the config.
+`bento msg engine` lists the running engine's settings with their types and current values, and its actions and window rules, and `bento msg -j engine` gives the same as JSON for tools like settings screens.
+bento Settings shows the running engine's settings that name a page of it, like `page: "engine"`, with a field for each type; one that names none is the engine's to change where it shows.
 
-Options can differ per output and per named workspace, like the settings of `layout {}`.
-An `output` or `workspace` block in the engine's file holds the options that change there:
+Settings can differ per output and per named workspace, like the settings of `layout {}`.
+An `output` or `workspace` block in the engine's file holds the settings that change there:
 
 ```kdl
 // ~/.config/bento/engines/niri.kdl
-options {
+settings {
     default-column-width "50%"
 }
 
 output "DP-2" {
-    options {
+    settings {
         default-column-width "33.333%"
     }
 }
 
 workspace "web" {
-    options {
+    settings {
         default-column-width "100%"
     }
 }
 ```
 
-A workspace has the options of `options {}`, then those of its output, then its own by name, and each replaces the one before it option by option.
+A workspace has the settings of `settings {}`, then those of its output, then its own by name, and each replaces the one before it setting by setting.
 Outputs are matched like they are in the main config, by connector, or by make, model and serial; workspaces by their name, ignoring case.
-Engines read a workspace's options from the workspace, and `bento.options` stays the top-level ones.
+Engines read a workspace's settings from the workspace, and `bento.settings` stays the top-level ones.
 
 What works under every engine is bento's and stays in the main config.
 Engines get its values, such as `gaps` and `struts`, and decide what they mean.
 Borders, focus rings and shadows look the way the `layout {}` section says, whatever the engine.
-Anything that belongs to one way of tiling, like column widths, is an option of the engine that has it.
+Anything that belongs to one way of tiling, like column widths, is a setting of the engine that has it.
 
 ### Window rules
 
 Window rules split the same way.
 Rules that make sense under every engine, like `open-floating`, `opacity` or `block-out-from`, are bento's, in the main config.
-Rules that belong to an engine's way of working are declared by the engine, and written in its file with the same `match` and `exclude`, and properties written like options:
+Rules that belong to an engine's way of working are declared by the engine, and written in its file with the same `match` and `exclude`, and properties written like settings:
 
 ```kdl
 // ~/.config/bento/engines/niri.kdl
@@ -474,13 +526,13 @@ Where several rules match a window, later ones win, as in the main config.
 
 Moving around and resizing tiled windows is the engine's: each engine has its own actions, named for what they do in it.
 The `niri` engine has niri's, like `focus-column-left` or `consume-or-expel-window-left`, and the `bento` engine has its own, like `focus-left` or `stack-from-right`.
-Bind them in the engine's file by name, followed by any arguments:
+They come with keys of their own, and keys of yours go in the engine's file, by the action's name, followed by any arguments:
 
 ```kdl
 // ~/.config/bento/engines/bento.kdl
 binds {
-    Mod+H { focus-left; }
-    Mod+Minus { set-width "-10%"; }
+    Mod+Shift+H { focus-left; }
+    unbind { swap; }
 }
 ```
 
@@ -490,7 +542,7 @@ Everything else is bento's own and bound in the main config: spawning, screensho
 Grouping is bento's too. A group is a set of windows that engines can address together, and which one is active, nothing more: it doesn't mean tabs, or one place in the layout, or that only one of its windows shows. How it looks is up to the engine, which can show tabs, a carousel or anything else.
 `group-window-left`, `group-window-right`, `group-window-up` and `group-window-down` group the focused window with the nearest one in that direction, by where the engine put them, and `ungroup-window` takes it out.
 Engines can group windows too, and read the groups, through `bento.groups` and `bento.createGroup`.
-Floating windows can't be in a group, and a window that closes, floats or is dragged out leaves its group.
+Floating windows can't be in a group, and a window that closes or floats leaves its group; a dragged window keeps its group, unless the engine takes it out.
 
 Searching windows is bento's too. An engine starts a search over a group's windows, a workspace's, or every window with `bento.search`, and bento keeps the query, takes the typing, and matches it against the windows' titles and app ids: whole words first, then prefixes, then substrings, then letters in order, and not at all windows that don't match.
 While it runs the keyboard goes to the search's field, a node that bento draws and the engine places and styles, and apps get no keys; binds that can't be inhibited still run.
@@ -524,7 +576,7 @@ export const meta = {
     actions: {
         "swap-with-first": { description: "Swap the focused window with the first one." },
     },
-    options: {
+    settings: {
         width: { type: "number", default: 0.5, description: "Window width, as a proportion." },
     },
 };
@@ -541,7 +593,7 @@ export default function create(bento) {
     function layout(ws) {
         const gaps = ws.config.gaps;
         const area = ws.tilingArea;
-        const w = ws.monitor.round(area.w * bento.options.width - gaps);
+        const w = ws.monitor.round(area.w * bento.settings.width - gaps);
         rowOf(ws).forEach((win, i) => {
             win.place({ x: area.x + gaps + i * (w + gaps), y: area.y + gaps, w, h: area.h - gaps * 2 });
         });
@@ -586,15 +638,17 @@ An action that takes arguments says which, in order, so that bento can check bin
 },
 ```
 
+An action's `bind` gives its default keys: a key, or a list of keys and of keys with the arguments they run it with, like `bind: ["Mod+R", { key: "Mod+Minus", args: ["-10%"] }]`.
+
 Argument types are `boolean`, `number`, `string`, `choice` (one of `choices`), `size`, `workspace` and `monitor`.
 A size is written like `"50%"`, `"+10%"` or `"800"` and reaches the engine as `{ op, value, unit }`.
 A workspace is written as an index on the focused monitor, counting from 1, or a name, and a monitor as a connector name like `"DP-2"`; the engine gets the object, or `null` when there isn't one.
 Arguments with a `default` can be left out, and an action without `args` takes none.
 
 An engine can declare window rules too, in `meta.windowRules`, which are written in its file and reach the engine as each window's `rules`.
-Options and rules of type `size` reach it as `{ proportion }` or `{ fixed }`, those of type `color` as the `"#rrggbb"` string, and those of type `gradient` as `{ from, to, angle, relativeTo, in }` with what was written, or `null`.
+Settings and rules of type `size` reach it as `{ proportion }` or `{ fixed }`, those of type `color` as the `"#rrggbb"` string, and those of type `gradient` as `{ from, to, angle, relativeTo, in }` with what was written, or `null`.
 A color or a gradient goes straight into a node's `background`, or the `color` of its `border`.
-An engine reads its options from `bento.options`, or for a workspace from `workspace.options`, which has what the engine's file sets for the workspace's output and for the workspace by name on top.
+An engine reads its settings from `bento.settings`, or for a workspace from `workspace.settings`, which has what the engine's file sets for the workspace's output and for the workspace by name on top.
 
 For a complete engine to start from, copy [`examples/template.js`](resources/layouts/examples/template.js): under 250 lines, comments included, that put one main window on the left and stack the others on the right, with a line drawn between them, comments on every event, what bento does when an engine leaves one out, and tests next to it.
 
@@ -602,7 +656,7 @@ The full API, with every event an engine can handle, is in [`bento-layout.d.ts`]
 In short:
 
 - **Objects** are what the engine reads and changes: monitors, their workspaces, windows, each workspace's camera, and groups. Properties are read-only, and every change is a method call that says whether it worked, like `win.place(rect)`, `win.focus()`, `win.moveTo(workspace)` or `workspace.camera.move({ x })`.
-- **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes and drags over a workspace, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
+- **Events** tell the engine what happened, on the object they concern: `windowadd` on `bento`, `remove` or `moderequest` on a window, `change` on a monitor or workspace, swipes over a workspace, drags of a window, which stays the engine's and is placed by it as it goes, resizes and double clicks on a window's edges, and `action` when a bind runs one of the engine's actions.
 - **Groups** are bento's own: a set of windows that engines can address together, and which one is active. Its windows stay ordinary windows. Any engine can use them, `bento.createGroup` makes one, and native group binds work under every engine. How a group looks is the engine's.
 - **Search** is bento's own: `bento.search(scope)` starts it, and the engine gets a `Search` with the query, the matching windows best first, and the field to place in a tree, and hears `change` and `end`.
 - **Nodes** are what the engine draws: boxes, text and images in a tree for each workspace, which also holds the windows. Tab bars, hints and drop targets are nodes. bento renders the tree and runs the transitions the engine describes, so no engine code runs per frame.
@@ -611,7 +665,7 @@ In short:
 - **Queries** ask the engine without changing anything, like `newwindowsize`, what size a new window should start at.
 
 bento animates everything an engine changes, so engines only say where things go.
-Engines written for API 1, with `api: 1` and one instance for each workspace, still run for now, see [`bento-layout-v1.d.ts`](resources/layouts/bento-layout-v1.d.ts).
+bento runs engines for API version 2 only, `api: 2` in `meta`. Until bento's first release, the API changes without keeping old versions.
 
 ### Testing layout engines
 
@@ -669,10 +723,10 @@ A window's stack is the windows covering the same column of cells: `stack-from-r
 Actions like `focus-index N` count the places where windows start, from left to right starting at 1.
 
 By default, windows slide left within their rows until they touch another window, and the grid has a fixed left edge.
-You can turn this off with the engine's `gravity` option, in `~/.config/bento/engines/bento.kdl`:
+You can turn this off with the engine's `gravity` setting, in `~/.config/bento/engines/bento.kdl`:
 
 ```kdl
-options {
+settings {
     gravity false
 }
 ```
@@ -680,7 +734,7 @@ options {
 Without gravity, windows stay where you put them, and only columns of cells that are completely empty between windows collapse.
 The grid also has no left edge then, so windows can be pushed or moved further left than the first one.
 
-The engine's other options are in its file too, written at their defaults.
+The engine's other settings are in its file too, written at their defaults.
 `center-focused-window` and `always-center-single-window` say when the view centers the focused window, `default-width` is the width new windows open with, and `preset-widths` and `preset-heights` are what `cycle-width` and `cycle-height` go through.
 `hint-color` is the color of the hints.
 Its window rules set `default-width`, `default-height` and `open-full-width`.
@@ -722,32 +776,32 @@ Where the grid ends, actions go on to the monitor or workspace beside it:
 
 Focus goes along with what moves.
 bento's own `move-window-to-workspace` actions move one window and leave its group.
-The engine's file binds the moves on `Mod+Ctrl+Shift`, which the main config leaves free, and has the focus actions as examples to bind on your focus keys.
+The moves are on `Mod+Ctrl+Shift` by default, which bento's own binds leave free.
 
 ## The niri engine
 
 The `niri` engine is niri's scrollable tiling as a bento layout engine, ported from niri's `src/layout/scrolling.rs` to JavaScript in [`resources/layouts/niri.js`](resources/layouts/niri.js).
 Its functions keep niri's names where they do the same thing, so the two are easy to compare.
 
-niri's layout actions, bound in `engines/niri.kdl`, the column options in its `options {}`, window rules that size and place new windows, and tabbed columns all work like in niri.
+niri's layout actions, bound in `engines/niri.kdl`, the column settings in its `settings {}`, window rules that size and place new windows, and tabbed columns all work like in niri.
 It differs in these ways:
 
 - **Its settings are in its file.**
-  `engines/niri.kdl` has `options {}` for `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights`, `default-column-display`, `tab-indicator` and its `tab-indicator-position`, `-width`, `-gap`, `-gaps-between-tabs`, `-length`, `-corner-radius`, `-place-within-column`, `-hide-when-single-tab`, the colors `-active-color`, `-inactive-color` and `-urgent-color`, and the gradients `-active-gradient`, `-inactive-gradient` and `-urgent-gradient`, and `insert-hint` with the color `insert-hint-color` and the gradient `insert-hint-gradient`.
+  `engines/niri.kdl` has `settings {}` for `center-focused-column`, `always-center-single-column`, `default-column-width`, `preset-column-widths`, `preset-window-heights`, `default-column-display`, `tab-indicator` and its `tab-indicator-position`, `-width`, `-gap`, `-gaps-between-tabs`, `-length`, `-corner-radius`, `-place-within-column`, `-hide-when-single-tab`, the colors `-active-color`, `-inactive-color` and `-urgent-color`, and the gradients `-active-gradient`, `-inactive-gradient` and `-urgent-gradient`, and `insert-hint` with the color `insert-hint-color` and the gradient `insert-hint-gradient`.
   A gradient wins over the color next to it, as in niri, and none is set by default.
   A gradient's `relative-to` is `"node"`, the tab or the hint, or `"view"`, where niri says `"window"` or `"workspace-view"`.
   Its window rules set `default-column-width`, `default-window-height`, `default-column-display` and `open-maximized`, and the colors and gradients of the window's tab, as niri's `tab-indicator` rule does: `tab-indicator-active-color`, `-inactive-color`, `-urgent-color`, `tab-indicator-active-gradient`, `-inactive-gradient` and `-urgent-gradient`.
-  A window's rule comes before the options, and in each a gradient before the color.
-- **Its options can differ per output and workspace.**
-  Like niri's `layout {}` in an `output` or a `workspace`, the file's `output "DP-2" { options { … } }` and `workspace "web" { options { … } }` set the options for one output or named workspace, see [Options](#options).
-  Every option of the engine can differ there, and each workspace has its own strip, so they apply where the workspace is.
+  A window's rule comes before the settings, and in each a gradient before the color.
+- **Its settings can differ per output and workspace.**
+  Like niri's `layout {}` in an `output` or a `workspace`, the file's `output "DP-2" { settings { … } }` and `workspace "web" { settings { … } }` set the settings for one output or named workspace, see [Engine settings](#engine-settings).
+  Every setting of the engine can differ there, and each workspace has its own strip, so they apply where the workspace is.
 - **Animations are bento's.**
   bento animates the windows and the view the same way for every engine, with the `window-movement` and `horizontal-view-movement` animations, so they can look slightly different from niri's own.
 - **Actions that cross an edge take the whole column.**
   `focus-column-or-monitor-left`, `focus-window-or-workspace-down`, `move-column-to-workspace`, `move-column-to-monitor-left` and the rest of niri's go on to the monitor or workspace beside, and a trailing `false`, like `move-column-to-workspace 2 false`, keeps the focus where it is, as niri's `focus=false` does.
-  The engine's file binds the moves to another workspace on `Mod+Ctrl+Shift`, and has the moves to another monitor as examples: bento's own binds for moving one window use the keys niri uses for them.
+  The moves to another workspace are on `Mod+Ctrl+Shift` by default: bento's own binds for moving one window use the chords niri uses for them.
 - **Tabbed columns are groups.**
-  A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` options.
+  A tabbed column's windows are one bento group, so a group made by bento's own group actions shows as a tabbed column, and the tab indicator and the insert hint are drawn by the engine, following the `tab-indicator-*` and `insert-hint*` settings.
   Stacked columns stay the engine's own.
 - **Gestures and edges.**
   Swiping sideways scrolls the view and snaps to a column with the swipe's speed, and double-clicking the left or right edge of a window toggles its column's full width, and the top or bottom edge the window's full height.
@@ -774,6 +828,10 @@ Every window is the engine's, so bento's floating layer is off under it, and win
   `Mod+Z` shows the snap layouts (halves, two thirds and a third, three columns, quarters) to snap the focused window into a zone, and then fills the other zones the same way.
 - **Shared edges.**
   Windows snapped side by side resize together: dragging the edge between them moves it for all of them.
+- **Tabs.**
+  Dropping a window just above another, or on a group's tab strip, groups them as tabs, with the strip above the active window.
+  A tab lights up under the pointer, shows a live preview of its window after a second, and has a close button for its window; dragging a tab pulls it out, and dragging the strip moves the whole group.
+  The strip's buttons follow the title bar button layout of the desktop settings, and its close button ungroups the windows without closing them.
 - **Switching and minimizing.**
   `Alt+Tab` shows the workspace's windows, minimized ones included, most recently used first, and letting go of Alt picks one.
   Apps' minimize buttons and taskbars minimize windows, and so does `Mod+Down`; `Mod+Comma` minimizes every window on the workspace, or brings them back.

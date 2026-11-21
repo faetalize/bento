@@ -225,14 +225,17 @@ test("a closing window leaves its group, which is gone at one window", () => {
     assert.deepEqual(log.at(-1), ["remove", id]);
 });
 
-test("a window dragged out of the engine leaves its group", () => {
+test("a dragged window keeps its group", () => {
     const h = host(placing);
     const [a, b] = [h.open(), h.open()];
     h.createGroup(h.nextGroupId++, [a, b], a);
     h.flush();
 
     h.drag(b, h.activeWorkspace().id, [{ x: 5, y: 5 }]);
-    assert.deepEqual(h.groups, []);
+    assert.deepEqual(
+        h.groups.map((group) => group.windows),
+        [[a, b]],
+    );
 });
 
 test("changes the engine makes reach its listeners once", () => {

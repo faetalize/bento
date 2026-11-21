@@ -28,8 +28,8 @@ uniform mat3 input_to_geo;
 uniform mat3 geo_to_input;
 
 // The shapes, each a matrix: x, y, width and height in the element's logical pixels; the radii
-// of its top left, top right, bottom right and bottom left corners; then first in the third
-// column, how close other glass comes for it to melt into it.
+// of its top left, top right, bottom right and bottom left corners; then in the third column, how
+// close other glass comes for it to melt into it, and how opaque it is, as it fades in or out.
 uniform float shape_count;
 uniform mat4 shapes[16];
 
@@ -193,25 +193,29 @@ float inradius_of(vec4 rect) {
 }
 
 // Melts a piece of glass into the glass so far: its outline and the depth of its surface melt as
-// shapes do, and the slope and inradius there follow the nearer piece, blended across the seam
-// by the same weight the smooth minimum gives each, so a thin piece keeps its own beside a wide
-// one and the slope stays the depth's exact slope.
+// shapes do, and the slope and inradius there follow the nearer piece, blended across the seam by
+// the same weight the smooth minimum gives each, so a thin piece keeps its own beside a wide one
+// and the slope stays the depth's exact slope. Its opacity is the nearer piece's, blended only a
+// pixel either side of the middle of the seam, so a piece fading out doesn't fade the edge of the
+// glass it melts into.
 void melt(inout float outline, inout float depth, inout vec2 slope, inout float inradius,
-          float outline2, float depth2, vec2 slope2, float inradius2, float k) {
+          inout float opacity, float outline2, float depth2, vec2 slope2, float inradius2,
+          float opacity2, float k) {
     k = max(k, 1e-3);
     float nearer = clamp(0.5 + 0.5 * (depth2 - depth) / k, 0.0, 1.0);
     slope = mix(slope2, slope, nearer);
     inradius = mix(inradius2, inradius, nearer);
+    opacity = mix(opacity2, opacity, clamp(0.5 + 0.5 * (depth2 - depth), 0.0, 1.0));
     depth = smooth_min(depth, depth2, k);
     outline = smooth_min(outline, outline2, k);
 }
 
-void melt_box(vec2 p, vec4 rect, vec4 radii, float k, inout float outline, inout float depth,
-              inout vec2 slope, inout float inradius) {
+void melt_box(vec2 p, vec4 rect, vec4 radii, float k, float opacity2, inout float outline,
+              inout float depth, inout vec2 slope, inout float inradius, inout float opacity) {
     vec2 slope2;
     float depth2 = surface_box(p, rect, radii, slope2);
-    melt(outline, depth, slope, inradius, rounded_box(p, rect, radii), depth2, slope2,
-         inradius_of(rect), k);
+    melt(outline, depth, slope, inradius, opacity, rounded_box(p, rect, radii), depth2, slope2,
+         inradius_of(rect), opacity2, k);
 }
 
 // The point on a quadratic Bézier curve from `a` to `c`, with control point `b`, nearest `p`.
@@ -290,16 +294,16 @@ float path_end(float i) {
 // both its distance, so its bezel follows its outline in, and the probe in `main` finds how
 // thick it is.
 void melt_path(vec2 p, float nearest2, vec2 nearest, float crossed, inout float outline,
-               inout float depth, inout vec2 slope, inout float inradius) {
+               inout float depth, inout vec2 slope, inout float inradius, inout float opacity) {
     float side = mod(crossed, 2.0) > 0.5 ? -1.0 : 1.0;
     float d = sqrt(nearest2) * side;
     vec2 away = p - nearest;
     vec2 slope2 = dot(away, away) > 1e-12 ? normalize(away) * side : vec2(0.0);
-    melt(outline, depth, slope, inradius, d, d, slope2, NOWHERE, MELT);
+    melt(outline, depth, slope, inradius, opacity, d, d, slope2, NOWHERE, 1.0, MELT);
 }
 
 void melt_paths(vec2 p, inout float outline, inout float depth, inout vec2 slope,
-                inout float inradius) {
+                inout float inradius, inout float opacity) {
     vec2 ray = p + vec2(0.0, RAY_NUDGE);
     float path = 0.0;
     float end = path_end(0.0);
@@ -312,7 +316,7 @@ void melt_paths(vec2 p, inout float outline, inout float depth, inout vec2 slope
             float i = float(m * 2 + k);
             if (i >= curve_count) break;
             if (i >= end) {
-                melt_path(p, nearest2, nearest, crossed, outline, depth, slope, inradius);
+                melt_path(p, nearest2, nearest, crossed, outline, depth, slope, inradius, opacity);
                 path += 1.0;
                 end = path_end(path);
                 nearest2 = NOWHERE * NOWHERE;
@@ -330,23 +334,26 @@ void melt_paths(vec2 p, inout float outline, inout float depth, inout vec2 slope
         }
         if (float(m * 2 + 2) >= curve_count) break;
     }
-    melt_path(p, nearest2, nearest, crossed, outline, depth, slope, inradius);
+    melt_path(p, nearest2, nearest, crossed, outline, depth, slope, inradius, opacity);
 }
 
 // The glass at `p`: the signed distance to its edge, negative inside; how deep its bezel's
 // surface takes the point to be, as a signed distance like the edge's; that surface's slope,
-// pointing out; and the glass's inradius there.
-void pieces(vec2 p, out float outline, out float depth, out vec2 slope, out float inradius) {
+// pointing out; the glass's inradius there; and how opaque it is there.
+void pieces(vec2 p, out float outline, out float depth, out vec2 slope, out float inradius,
+            out float opacity) {
     outline = NOWHERE;
     depth = NOWHERE;
     slope = vec2(0.0);
     inradius = 0.0;
+    opacity = 0.0;
     for (int i = 0; i < 16; i++) {
         if (float(i) >= shape_count) break;
         mat4 shape = shapes[i];
-        melt_box(p, shape[0], shape[1], shape[2].x, outline, depth, slope, inradius);
+        melt_box(p, shape[0], shape[1], shape[2].x, shape[2].y, outline, depth, slope, inradius,
+                 opacity);
     }
-    if (path_count > 0.5) melt_paths(p, outline, depth, slope, inradius);
+    if (path_count > 0.5) melt_paths(p, outline, depth, slope, inradius, opacity);
 }
 
 // A light's reflection on the surface: where the bezel tilts towards it, and weaker from the far
@@ -441,13 +448,14 @@ vec2 pattern_gradient(vec2 p) {
 
 void main() {
     vec2 p = (input_to_geo * vec3(v_coords, 1.0)).xy * geo_size;
-    // The edge, and how deep the bezel's surface is, which way it faces and the glass's inradius
-    // there.
+    // The edge, and how deep the bezel's surface is, which way it faces, the glass's inradius
+    // there and how opaque it is.
     float outline;
     float depth;
     vec2 grad;
     float inradius;
-    pieces(p, outline, depth, grad, inradius);
+    float opacity;
+    pieces(p, outline, depth, grad, inradius, opacity);
 
     float coverage = clamp(0.5 - outline * niri_scale, 0.0, 1.0);
     if (coverage <= 0.0) {
@@ -467,7 +475,8 @@ void main() {
         float depth2;
         vec2 grad2;
         float inradius2;
-        pieces(p - normal * reach, outline2, depth2, grad2, inradius2);
+        float opacity2;
+        pieces(p - normal * reach, outline2, depth2, grad2, inradius2, opacity2);
         inradius = min(inradius, max(0.5 * (reach - depth - depth2), 0.0));
     }
 
@@ -550,7 +559,7 @@ void main() {
     // The lights' reflections go over what's behind, both premultiplied.
     shine = clamp(shine, 0.0, 1.0);
     vec4 result = vec4(vec3(shine), shine) + behind * (1.0 - shine);
-    result = result * coverage * alpha;
+    result = result * coverage * opacity * alpha;
 
 #if defined(DEBUG_FLAGS)
     if (tint == 1.0)

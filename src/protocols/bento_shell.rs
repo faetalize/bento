@@ -133,9 +133,11 @@ impl BentoShellState {
         }
     }
 
-    pub fn toggle_launcher(&self) {
+    /// Runs one of the shell's own actions, as a bind asked, with its arguments.
+    pub fn action(&self, name: &str, args: &[String]) {
+        let args = serde_json::to_string(args).unwrap();
         for shell in &self.shells {
-            shell.toggle_launcher();
+            shell.action(name.to_owned(), args.clone());
         }
     }
 }

@@ -30,27 +30,29 @@ const copyOf = (h, id) =>
     });
 
 /**
- * Drags window `id` over the active workspace through `positions`, without dropping it. It leaves
- * the engine the first time.
+ * Drags window `id` over the active workspace through `positions`, without dropping it, held
+ * `offset` from its top left. The drag starts the first time.
  */
-function dragOver(h, id, positions) {
-    h.dragged ??= new Map();
-    if (!h.dragged.has(id)) {
-        h.dragged.set(id, h.windows.get(id));
-        h.close(id, "drag");
+function dragOver(h, id, positions, offset = { x: 10, y: 10 }) {
+    h.dragging ??= new Set();
+    if (!h.dragging.has(id)) {
+        h.dragging.add(id);
+        const at = h.rect(id);
+        const pointer = { x: at.x + offset.x, y: at.y + offset.y };
+        h.send({ type: "dragstart", id, offset, pointer });
     }
-    const info = h.windowInfo(h.dragged.get(id));
     const workspace = h.activeWorkspace().id;
-    positions.forEach((pointer, i) => {
-        h.send({
-            type: i === 0 ? "dragenter" : "dragmove",
-            workspace,
-            window: info,
-            pointer,
-            rect: { x: pointer.x - 10, y: pointer.y - 10, w: 20, h: 20 },
-        });
-    });
+    for (const pointer of positions) h.send({ type: "dragmove", id, workspace, pointer });
 }
+
+/** Ends the drag of window `id` that `dragOver` started: dropped, or cancelled. */
+function dragEnd(h, id, dropped = true) {
+    h.dragging.delete(id);
+    h.send({ type: "dragend", id, dropped });
+}
+
+/** How window `id`'s node is drawn moved and scaled. */
+const transformOf = (h, id) => h.tree().node(`w${id}`).props.transform ?? { scale: 1, x: 0, y: 0 };
 
 /** The boxes drawn on the active workspace, as their props. */
 function boxes(h) {
@@ -112,8 +114,35 @@ test("clicking a window focuses and raises it", async () => {
     assert.deepEqual(h.stacking(), [b, a]);
 });
 
+test("a dragged window follows the pointer, above the others, onto the workspace under it", async () => {
+    const h = await load({ monitors: [{ name: "DP-1" }, { name: "DP-2" }] });
+    const right = h.workspace(0, "DP-2").id;
+    const a = h.open({ size: SIZE });
+    const b = h.open({ size: SIZE });
+    h.activate(a);
+
+    dragOver(h, b, [{ x: 400, y: 300 }]);
+    assert.deepEqual(h.rect(b), rect(390, 290, 640, 400));
+    assert.equal(h.focused(), b);
+    assert.equal(h.stacking().at(-1), b);
+    dragOver(h, b, [{ x: 500, y: 350 }]);
+    assert.deepEqual(h.rect(b), rect(490, 340, 640, 400));
+
+    // Onto the other monitor, where it's dropped and has the focus.
+    const ws = h.workspace(0, "DP-1").id;
+    h.send({ type: "dragmove", id: b, workspace: right, pointer: { x: 100, y: 100 } });
+    assert.equal(h.windows.get(b).workspace, right);
+    assert.deepEqual(h.rect(b), rect(90, 90, 640, 400));
+    dragEnd(h, b);
+    assert.deepEqual(h.rect(b), rect(90, 90, 640, 400));
+    assert.deepEqual(stateOf(h, b).free, rect(90, 90, 640, 400));
+    assert.equal(h.focusedMonitor, "DP-2");
+    assert.equal(h.focused(), b);
+    assert.deepEqual(h.stacking(ws), [a]);
+});
+
 test("dropping a window at an edge or a corner snaps it, and at the top maximizes it", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     const ws = h.activeWorkspace().id;
 
@@ -136,21 +165,26 @@ test("dropping a window at an edge or a corner snaps it, and at the top maximize
 });
 
 test("a window dragged away from its zone or maximized gets its own size back", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     const ws = h.activeWorkspace().id;
 
     h.drag(a, ws, [{ x: 5, y: 360 }]);
     assert.deepEqual(h.rect(a), LEFT);
-    // It goes under the pointer where it was held, here its middle.
-    h.drag(a, ws, [{ x: 640, y: 360 }]);
-    assert.deepEqual(h.rect(a), rect(320, 350, 640, 400));
+    // As soon as it moves, it's under the pointer where it was held, in proportion: here the
+    // middle of its top part.
+    dragOver(h, a, [], { x: 308, y: 43 });
+    assert.equal(stateOf(h, a).zone, null);
+    assert.deepEqual(h.rect(a), rect(4, 34, 640, 400));
+    dragOver(h, a, [{ x: 640, y: 360 }]);
+    dragEnd(h, a);
+    assert.deepEqual(h.rect(a), rect(320, 335, 640, 400));
 
     h.drag(a, ws, [{ x: 640, y: 5 }]);
     assert.equal(h.mode(a), "maximized");
-    h.drag(a, ws, [{ x: 500, y: 200 }]);
+    h.drag(a, ws, [{ x: 500, y: 200 }], true, { x: 640, y: 36 });
     assert.equal(h.mode(a), "normal");
-    assert.deepEqual(h.rect(a), rect(180, 190, 640, 400));
+    assert.deepEqual(h.rect(a), rect(180, 180, 640, 400));
 
     // A free window stays where it's dropped.
     h.drag(a, ws, [{ x: 300, y: 100 }]);
@@ -158,7 +192,7 @@ test("a window dragged away from its zone or maximized gets its own size back", 
 });
 
 test("snapping by a drop keeps the place it had, which the keyboard restores", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.drag(a, h.activeWorkspace().id, [{ x: 5, y: 360 }]);
     h.action("snap-right");
@@ -172,21 +206,61 @@ test("a preview shows where a dragged window would snap, and fades when it would
 
     dragOver(h, a, [{ x: 400, y: 300 }]);
     assert.equal(previews().length, 0);
-    dragOver(h, a, [{ x: 400, y: 300 }, { x: 5, y: 360 }]);
+    dragOver(h, a, [{ x: 5, y: 360 }]);
     const [preview] = previews();
     assert.deepEqual(preview.rect, LEFT);
     assert.equal(preview.opacity, 1);
-    // It grows from where the dragged window is.
-    assert.deepEqual(preview.enter, { opacity: 0, rect: rect(-5, 350, 20, 20) });
+    // It grows from where the dragged window is, which stays above it.
+    assert.deepEqual(preview.enter, { opacity: 0, rect: rect(-5, 350, 640, 400) });
+    const tree = h.tree();
+    assert.equal(tree.node(tree.rootId).children.at(-1), `w${a}`);
 
-    h.send({ type: "dragleave", workspace: h.activeWorkspace().id });
+    dragOver(h, a, [{ x: 400, y: 300 }]);
+    assert.equal(previews()[0].opacity, 0);
+    h.advanceTime(500);
+    assert.equal(previews().length, 0);
+
+    // And at the end of the drag.
+    dragOver(h, a, [{ x: 5, y: 360 }]);
+    dragEnd(h, a);
     assert.equal(previews()[0].opacity, 0);
     h.advanceTime(500);
     assert.equal(previews().length, 0);
 });
 
+test("a cancelled drag leaves the window where it was carried, without snapping", async () => {
+    const h = await load({ settings: { "snap-assist": false } });
+    const a = h.open({ size: SIZE });
+    const ws = h.activeWorkspace().id;
+    const previews = () => boxes(h).filter((box) => box.background === "#c8c8c84d");
+    h.drag(a, ws, [{ x: 5, y: 360 }]);
+    assert.deepEqual(h.rect(a), LEFT);
+
+    // Held in the middle of its top, it has its own size from the start.
+    h.drag(a, ws, [{ x: 5, y: 360 }], false, { x: 308, y: 10 });
+    assert.deepEqual(h.rect(a), rect(-315, 354, 640, 400));
+    assert.equal(stateOf(h, a).zone, null);
+    assert.equal(h.mode(a), "normal");
+    h.advanceTime(500);
+    assert.equal(previews().length, 0);
+});
+
+test("a window closed while it's dragged takes its preview with it", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE });
+    const b = h.open({ size: SIZE });
+    const previews = () => boxes(h).filter((box) => box.background === "#c8c8c84d");
+    dragOver(h, b, [{ x: 5, y: 360 }]);
+    assert.equal(previews().length, 1);
+    h.close(b);
+    h.advanceTime(500);
+    assert.equal(previews().length, 0);
+    assert.equal(h.focused(), a);
+    assert.deepEqual(h.errors, []);
+});
+
 test("with edge-snap off, a window dropped at an edge stays where it's dropped", async () => {
-    const h = await load({ options: { "edge-snap": false } });
+    const h = await load({ settings: { "edge-snap": false } });
     const a = h.open({ size: SIZE });
     h.drag(a, h.activeWorkspace().id, [{ x: 5, y: 360 }]);
     assert.deepEqual(h.rect(a), rect(-5, 350, 640, 400));
@@ -264,7 +338,7 @@ test("from its own size, up maximizes, and down restores and then minimizes", as
 });
 
 test("snapped windows side by side resize together across their shared edge", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.action("snap-left");
     const b = h.open({ size: SIZE });
@@ -281,7 +355,7 @@ test("snapped windows side by side resize together across their shared edge", as
 });
 
 test("an edge shared by a half and two quarters moves for all three", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.action("snap-left");
     const b = h.open({ size: SIZE });
@@ -549,7 +623,7 @@ test("Snap Assist follows a drop, with the pointer, and can be turned off", asyn
     h.pointer(`w${a}`, "click");
     assert.deepEqual(h.rect(a), LEFT);
 
-    const off = await load({ options: { "snap-assist": false } });
+    const off = await load({ settings: { "snap-assist": false } });
     off.open({ size: SIZE });
     off.open({ size: SIZE });
     off.action("snap-left");
@@ -640,7 +714,7 @@ test("closing the focused window focuses the one used before it", async () => {
 });
 
 test("reloading keeps zones, sizes, minimized windows and the order used", async () => {
-    const h = await load({ options: { "snap-assist": false } });
+    const h = await load({ settings: { "snap-assist": false } });
     const a = h.open({ size: SIZE });
     h.action("snap-left");
     const b = h.open({ size: SIZE });
@@ -664,4 +738,267 @@ test("what's drawn stays above windows that open and get raised", async () => {
     const tree = h.tree();
     const last = tree.node(tree.rootId).children.at(-1);
     assert.equal(tree.node(last).kind, "box");
+});
+
+// Groups, shown as tabs. A window keeps its place in a group, with the tab strip right above it.
+const groupOf = (h, id) => h.groups.find((group) => group.windows.includes(id)) ?? null;
+/** The node drawn with `text`, like a tab's title or a button's glyph. */
+const textNode = (h, text) => {
+    const tree = h.tree();
+    return tree.order().find((node) => tree.node(node).props.text === text);
+};
+/** The tab drawn for the window titled `title`. */
+const tabOf = (h, title) => h.tree().node(textNode(h, title)).parent;
+/** Above the window opened first, where its tab strip would go. */
+const ABOVE = { x: 600, y: 140 };
+/** Where the pointer holds a group's active window when it presses its strip: above its top. */
+const ON_STRIP = { x: 100, y: -18 };
+/** The tab strip of the group that has the window titled `title`. */
+const stripOf = (h, title) => h.tree().node(tabOf(h, title)).parent;
+
+test("a window dropped right above another joins it as a tab", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    const ws = h.activeWorkspace().id;
+
+    // On its top part, a window is just dropped there.
+    h.drag(b, ws, [{ x: 600, y: 170 }]);
+    assert.equal(groupOf(h, b), null);
+
+    // Above it, the two are a group, the dropped one active, in the other's place.
+    h.drag(b, ws, [{ x: 400, y: 300 }, ABOVE]);
+    const group = groupOf(h, b);
+    assert.deepEqual(group.windows, [a, b]);
+    assert.equal(group.active, b);
+    assert.deepEqual(h.rect(b), CENTRED);
+    assert.deepEqual(h.rect(a), CENTRED);
+    assert.equal(h.windows.get(a).visible, false);
+    assert.equal(h.windows.get(b).visible, true);
+    assert.equal(h.exposedState().groups[0].tabs, true);
+});
+
+test("over where it would join a window as a tab, a dragged window is a thumbnail", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    const previews = () => boxes(h).filter((box) => box.background === "#c8c8c84d");
+
+    // Centred on the pointer, as large as fits 240 × 160, and growing back when it leaves.
+    dragOver(h, b, [ABOVE]);
+    assert.deepEqual(h.rect(b), rect(590, 130, 640, 400));
+    assert.deepEqual(transformOf(h, b), { scale: 0.375, x: -310, y: -190 });
+    assert.deepEqual(h.tree().node(`w${b}`).props.transitions.transform, {
+        duration: 180,
+        curve: "ease-out-cubic",
+    });
+    // The preview shows the strip it would join.
+    assert.deepEqual(previews()[0].rect, rect(320, 124, 640, 36));
+    assert.equal(previews()[0].opacity, 1);
+
+    dragOver(h, b, [{ x: 400, y: 400 }]);
+    assert.deepEqual(transformOf(h, b), { scale: 1, x: 0, y: 0 });
+    assert.deepEqual(h.rect(b), rect(390, 390, 640, 400));
+    assert.equal(previews()[0].opacity, 0);
+
+    // Dropped as a thumbnail, it joins at its full size.
+    dragOver(h, b, [ABOVE]);
+    dragEnd(h, b);
+    assert.deepEqual(groupOf(h, b).windows, [a, b]);
+    assert.deepEqual(transformOf(h, b), { scale: 1, x: 0, y: 0 });
+    assert.deepEqual(h.rect(b), CENTRED);
+});
+
+test("pressing a tab brings its window to the front, and dragging it pulls it out", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    const ws = h.activeWorkspace().id;
+    h.drag(b, ws, [ABOVE]);
+
+    h.pointer(tabOf(h, "A"), "pointerdown");
+    assert.equal(groupOf(h, a).active, a);
+    assert.equal(h.windows.get(a).visible, true);
+    assert.equal(h.windows.get(b).visible, false);
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: a });
+
+    // Pulled out by its tab as soon as it moves, it's on its own, its top where the strip's was,
+    // and the other shows again.
+    dragOver(h, a, [], { x: 30, y: -18 });
+    assert.equal(groupOf(h, a), null);
+    assert.equal(h.windows.get(b).visible, true);
+    assert.deepEqual(h.rect(b), CENTRED);
+    assert.deepEqual(h.rect(a), rect(320, 124, 640, 400));
+    assert.deepEqual(h.exposedState().groups, []);
+    // Then it's dropped where the pointer takes it.
+    dragOver(h, a, [{ x: 900, y: 650 }]);
+    dragEnd(h, a);
+    assert.equal(groupOf(h, a), null);
+    assert.deepEqual(h.rect(a), rect(870, 632, 640, 400));
+    assert.deepEqual(h.rect(b), CENTRED);
+});
+
+test("a group moves as one, by its strip or its active window's own title bar", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    const ws = h.activeWorkspace().id;
+    h.drag(b, ws, [ABOVE]);
+
+    // By the window's own title bar.
+    h.drag(b, ws, [{ x: 640, y: 400 }]);
+    let group = groupOf(h, b);
+    assert.deepEqual(new Set(group.windows), new Set([a, b]));
+    assert.equal(group.active, b);
+    assert.equal(h.windows.get(a).visible, false);
+    assert.deepEqual(h.rect(a), h.rect(b));
+    assert.notDeepEqual(h.rect(b), CENTRED);
+
+    // By the strip: it moves the active window, and the group follows it, snapping and all.
+    h.pointer(stripOf(h, "A"), "pointerdown");
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: b });
+    h.drag(b, ws, [{ x: 5, y: 360 }], true, ON_STRIP);
+    group = groupOf(h, b);
+    assert.deepEqual(new Set(group.windows), new Set([a, b]));
+    assert.deepEqual(h.rect(b), rect(16, 52, 616, 652));
+    assert.deepEqual(h.rect(a), h.rect(b));
+});
+
+test("a group follows its strip while it's dragged, as a thumbnail too", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    const ws = h.activeWorkspace().id;
+    h.drag(b, ws, [ABOVE]);
+    const c = h.open({ size: SIZE, title: "C" });
+    assert.deepEqual(h.rect(c), rect(352, 192, 640, 400));
+
+    h.pointer(stripOf(h, "A"), "pointerdown");
+    assert.deepEqual(h.takeGrab(), { kind: "move", window: b });
+    dragOver(h, b, [{ x: 700, y: 400 }], ON_STRIP);
+    // The active window under the pointer, the strip right above it, the other tab hidden.
+    assert.deepEqual(h.rect(b), rect(600, 418, 640, 400));
+    assert.deepEqual(h.tree().node(stripOf(h, "A")).props.rect, rect(600, 382, 640, 36));
+    assert.equal(h.tree().node(tabOf(h, "A")).props.rect.y, 386);
+    assert.equal(h.tree().node(textNode(h, "\u2715")).props.rect.y, 391);
+    assert.equal(h.windows.get(a).visible, false);
+    assert.equal(h.stacking().at(-1), b);
+    assert.deepEqual(groupOf(h, b).windows, [a, b]);
+
+    // Over another window's top band, the strip shrinks with the window, staying on top of it.
+    dragOver(h, b, [{ x: 700, y: 170 }]);
+    assert.deepEqual(transformOf(h, b), { scale: 0.375, x: -220, y: -218 });
+    assert.deepEqual(h.tree().node(stripOf(h, "A")).props.transform, {
+        scale: 0.375,
+        x: -220,
+        y: -81.75,
+    });
+    dragOver(h, b, [{ x: 700, y: 400 }]);
+    assert.deepEqual(h.tree().node(stripOf(h, "A")).props.transform, { scale: 1, x: 0, y: 0 });
+
+    // Dropped, the whole group is there.
+    dragEnd(h, b);
+    assert.deepEqual(h.rect(b), rect(600, 418, 640, 400));
+    assert.deepEqual(h.rect(a), h.rect(b));
+    assert.equal(h.windows.get(a).visible, false);
+    assert.deepEqual(groupOf(h, b).windows, [a, b]);
+
+    // Dropped on another window's top band, the whole group joins it.
+    h.pointer(stripOf(h, "A"), "pointerdown");
+    h.drag(b, ws, [{ x: 700, y: 170 }], true, ON_STRIP);
+    assert.deepEqual(new Set(groupOf(h, b).windows), new Set([a, b, c]));
+    assert.equal(groupOf(h, b).active, b);
+    assert.deepEqual(h.rect(b), rect(352, 192, 640, 400));
+    assert.deepEqual(h.exposedState().groups.length, 1);
+});
+
+test("a group's buttons minimize, maximize and ungroup it", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    const ws = h.activeWorkspace().id;
+    h.drag(b, ws, [ABOVE]);
+
+    // Maximized, the strip is at the top of the working area, the windows under it.
+    h.pointer(h.tree().node(textNode(h, "\u25a1")).parent, "click");
+    assert.deepEqual(h.rect(b), rect(0, 36, 1280, 684));
+    assert.deepEqual(h.rect(a), h.rect(b));
+    h.pointer(h.tree().node(textNode(h, "\u2750")).parent, "click");
+    assert.deepEqual(h.rect(b), CENTRED);
+
+    // Close ungroups: each window on its own, the others a step down and to the right.
+    h.pointer(h.tree().node(textNode(h, "\u2715")).parent, "click");
+    assert.equal(groupOf(h, a), null);
+    assert.equal(h.windows.get(a).visible, true);
+    assert.deepEqual(h.rect(b), CENTRED);
+    assert.deepEqual(h.rect(a), rect(352, 192, 640, 400));
+
+    h.drag(b, ws, [{ x: 650, y: 175 }]);
+    assert.notEqual(groupOf(h, b), null);
+    h.pointer(h.tree().node(textNode(h, "\u2013")).parent, "click");
+    assert.equal(h.windows.get(b).visible, false);
+    assert.equal(h.exposedState().groups[0].tabs, false);
+});
+
+test("bento's own group actions show as tabs too", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    h.createGroup(100, [a, b], b);
+    h.flush();
+    h.send({ type: "sync" });
+    assert.equal(h.windows.get(a).visible, false);
+    assert.deepEqual(h.rect(a), h.rect(b));
+    assert.equal(h.exposedState().groups[0].tabs, true);
+});
+
+test("a tab lights up under the pointer, and its window's preview shows after a second", async () => {
+    const h = await load();
+    const a = h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    h.drag(b, h.activeWorkspace().id, [{ x: 400, y: 300 }, ABOVE]);
+    const tab = () => h.tree().node(tabOf(h, "A"));
+    const copies = () => h.tree().order().filter((id) => h.tree().node(id).kind === "copy");
+
+    h.pointer(tabOf(h, "A"), "pointerenter");
+    assert.equal(tab().props.background, "#ffffff12");
+    h.advanceTime(900);
+    assert.deepEqual(copies(), []);
+    h.advanceTime(100);
+    assert.equal(copies().length, 1);
+    assert.equal(h.tree().node(copies()[0]).props.window, a);
+
+    // Leaving takes the preview away and puts the tab back as it was.
+    h.pointer(tabOf(h, "A"), "pointerleave");
+    assert.deepEqual(copies(), []);
+    assert.equal(tab().props.background, null);
+
+    // The active tab is on screen already: it lights up, with no preview.
+    h.pointer(tabOf(h, "B"), "pointerenter");
+    h.advanceTime(1000);
+    assert.deepEqual(copies(), []);
+});
+
+test("a tab's close button asks its window's app to close it", async () => {
+    const h = await load();
+    h.open({ size: SIZE, title: "A" });
+    const b = h.open({ size: SIZE, title: "B" });
+    h.drag(b, h.activeWorkspace().id, [{ x: 400, y: 300 }, ABOVE]);
+    const group = groupOf(h, b);
+    const close = textNode(h, "✕");
+    // The first ✕ is a tab's, before the group's own buttons; find the one inside B's tab.
+    const inTab = h
+        .tree()
+        .order()
+        .filter((id) => h.tree().node(id).props.text === "✕")
+        .map((id) => h.tree().node(id).parent)
+        .find((button) => h.tree().node(button).parent === tabOf(h, "B"));
+    assert.ok(close !== undefined && inTab !== undefined);
+
+    // Pressing it neither picks nor drags the tab.
+    h.pointer(inTab, "pointerdown");
+    assert.equal(h.takeGrab(), null);
+    h.pointer(inTab, "click");
+    assert.deepEqual(h.closeRequests, [b]);
+    assert.deepEqual(groupOf(h, b).windows, group.windows);
 });

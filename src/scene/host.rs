@@ -1,8 +1,10 @@
 //! bento's own shell in bento: loads the shell's script, moves its scene on, draws it per output
 //! with the Vulkan renderer, and hands the result and its glass to bento's compositing.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime};
 
@@ -18,8 +20,9 @@ use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Physical, Rectangle, Scale, Transform};
 
 use super::script::{self, Shell};
+use super::settings::Settings;
 use super::vk::{Renderer, Target};
-use super::{Item, Material, NodeId, Theme, CLICK, HOVER, SCROLL};
+use super::{Band, Item, Material, NodeId, Theme, CLICK};
 use crate::backend::tty::{TtyFrame, TtyRenderer, TtyRendererError};
 use crate::render_helpers::background_effect::BackgroundEffectElement;
 use crate::render_helpers::framebuffer_effect::FramebufferEffect;
@@ -27,6 +30,10 @@ use crate::render_helpers::glass::{self, GlassFrame};
 use crate::render_helpers::primary_gpu_texture::PrimaryGpuTextureRenderElement;
 use crate::render_helpers::renderer::AsGlesFrame as _;
 use crate::render_helpers::texture::{TextureBuffer, TextureRenderElement};
+
+/// bento's unix shell, which runs when the config names no shell, or the one it names fails to
+/// load first.
+pub const UNIX: &str = "bento:shells/unix";
 
 /// What bento's own shell keeps along an output's edges, top, right, bottom and left, that the
 /// output's working area leaves out, as layer surfaces' exclusive zones are.
@@ -53,11 +60,16 @@ pub fn set_reserved_on(output: &smithay::output::Output, edges: [f64; 4]) -> boo
     changed
 }
 
+/// How far a box that scrolls moves for what a wheel's notch or a touchpad says.
+const SCROLL_SPEED: f64 = 3.;
+
 /// How close islands come for their glass to melt together.
 const MELT: f32 = 24.;
 /// Images per output, so the scene never draws into one bento's compositing is still reading.
 const TARGETS: usize = 3;
 
+/// What an output's surfaces in one band show, drawn into their own picture, which goes where the
+/// band is among what else bento draws.
 struct OutputScene {
     targets: Vec<(Target, GlesTexture)>,
     next: usize,
@@ -66,11 +78,12 @@ struct OutputScene {
     /// What it was drawn from, to tell what the next frame changes.
     items: Vec<Item>,
     /// What bento's compositing knows the scene's picture by, from frame to frame, and where it
-    /// changed in each: only there is the screen drawn again.
-    id: Id,
+    /// changed in each: only there is the screen drawn again. Bands under the windows are drawn
+    /// with each workspace, by its own id each.
+    ids: std::cell::RefCell<HashMap<Option<usize>, Id>>,
     damage: DamageBag<i32, Physical>,
     /// The glass under what was last drawn.
-    glass: Vec<([f32; 4], [f32; 4])>,
+    glass: Vec<GlassPiece>,
     effect: FramebufferEffect,
     /// The generation of the scene last looked at, at what scale, and with which of the icons
     /// and images that were loading.
@@ -232,15 +245,28 @@ fn changed(old: &[Item], new: &[Item], scale: f64, loaded: bool) -> Vec<Rectangl
     rects
 }
 
+/// When each of the shell's files last changed.
+type Mtimes = Vec<(std::path::PathBuf, Option<SystemTime>)>;
+
 #[derive(Default)]
 pub struct SceneHost {
     shell: Option<Shell>,
-    /// When the shell's files had last changed when they were loaded, or failed to.
-    loaded_mtimes: Option<Vec<Option<SystemTime>>>,
+    /// The module the shell starts from and when its files had last changed when they were
+    /// loaded, or failed to.
+    loaded_mtimes: Option<(String, Mtimes)>,
+    /// Why the shell the config names failed to load, if it did.
+    load_error: Option<String>,
+    /// The files the shell the config names read as it failed to load, watched with the running
+    /// shell's, so that fixing any of them loads it again.
+    failed_files: Vec<PathBuf>,
+    /// The shell's settings, which outlive a shell loading again.
+    settings: Option<Rc<RefCell<Settings>>>,
+    /// Whether bento's reference copy of the shell is written, for editors.
+    wrote_reference: bool,
     renderer: Option<Renderer>,
     renderer_failed: bool,
-    /// Each output's scene.
-    outputs: HashMap<String, OutputScene>,
+    /// Each output's scene, by band.
+    outputs: HashMap<(String, Band), OutputScene>,
     last_advance: Option<Instant>,
     /// Goes up whenever the scene changed or moved.
     generation: u64,
@@ -248,11 +274,15 @@ pub struct SceneHost {
     sent_workspaces: Option<serde_json::Value>,
     sent_fullscreen: Option<serde_json::Value>,
     sent_minimap: Option<serde_json::Value>,
+    sent_windows: Option<serde_json::Value>,
+    /// The notifications showing, by id, to tell a shell loaded again.
+    notifications: Vec<serde_json::Value>,
     known_outputs: Vec<String>,
-    /// Where the pointer is over the shell: the output and the point on it.
-    pointer: Option<(String, [f32; 2])>,
-    /// The node the pointer is over that hears it come and go.
-    hovered: Option<NodeId>,
+    /// Where the pointer is over the shell: the output, the point on it, and the band of the
+    /// surface it's over.
+    pointer: Option<(String, [f32; 2], Band)>,
+    /// The nodes the pointer is on that hear it come and go: the topmost and what holds it.
+    hovered: Vec<NodeId>,
     /// Where the pointer is on its output, whatever is under it, unless that's above the shell.
     pointer_at: Option<(String, [f32; 2])>,
     /// The nodes the pointer is in the place of that hear it near.
@@ -265,7 +295,7 @@ pub struct SceneHost {
     data_state: HashMap<String, serde_json::Value>,
     /// Presses that haven't ended: by the button, touch or tool, what they pressed, if anything,
     /// and where.
-    presses: HashMap<u32, (Option<NodeId>, String, [f32; 2])>,
+    presses: HashMap<u32, (Option<NodeId>, String, [f32; 2], Band)>,
 }
 
 impl Drop for SceneHost {
@@ -284,32 +314,96 @@ impl std::fmt::Debug for SceneHost {
 }
 
 impl SceneHost {
-    /// Loads the shell, again when its files changed, onto `outputs`, each with its logical size,
-    /// with bento's own shell and widgets read from `dir` if it's given. A shell that fails to
-    /// load leaves the last one.
+    /// Loads the shell that starts from module `entry`, again when its files changed or it's
+    /// another one, onto `outputs`, each with its logical size, with bento's own shell and modules
+    /// read from `dir` if it's given, and its settings and binds from `settings_file`. A shell
+    /// that fails to load leaves the last one, or bento's unix shell when there's none yet.
     pub fn ensure_loaded(
         &mut self,
         outputs: &[(String, (f32, f32))],
         dir: Option<&Path>,
+        entry: &str,
+        settings_file: Option<PathBuf>,
         style: serde_json::Value,
     ) {
-        let mtimes = script::mtimes(dir);
+        if !self.wrote_reference {
+            self.wrote_reference = true;
+            if !cfg!(test) {
+                super::reference::write();
+            }
+        }
+        let mut other_file = false;
+        let settings = match &self.settings {
+            Some(settings) => {
+                other_file = settings.borrow_mut().set_path(settings_file);
+                settings.clone()
+            }
+            None => self
+                .settings
+                .insert(Rc::new(RefCell::new(Settings::load(settings_file))))
+                .clone(),
+        };
+
+        // A shell of one's own is watched by the files it read, not the folder it's in, and by
+        // the ones it read as it failed to load.
+        let mut loaded = self
+            .shell
+            .as_ref()
+            .map(|shell| shell.files())
+            .unwrap_or_default();
+        loaded.extend(self.failed_files.iter().cloned());
+        let mtimes = (String::from(entry), script::mtimes(dir, entry, &loaded));
         if self.loaded_mtimes.as_ref() != Some(&mtimes) {
             self.loaded_mtimes = Some(mtimes);
-            match Shell::load(outputs, dir, style.clone()) {
+            let mut loaded = Shell::load(outputs, dir, entry, style.clone(), settings.clone());
+            self.load_error = loaded.as_ref().err().map(|err| format!("{err:#}"));
+            self.failed_files = match &loaded {
+                Ok(_) => Vec::new(),
+                Err(err) => err.files.clone(),
+            };
+            if let Err(err) = &loaded {
+                warn!("error loading the shell: {err:?}");
+                if self.shell.is_none() && entry != UNIX {
+                    loaded = Shell::load(outputs, dir, UNIX, style.clone(), settings.clone());
+                }
+            }
+            match loaded {
                 Ok(shell) => {
                     for data in self.data_state.values() {
                         shell.send(data);
                     }
+                    for notification in &self.notifications {
+                        shell.send(notification);
+                    }
+                    // What it read is known now: watch those from here on.
+                    let mut files = shell.files();
+                    files.extend(self.failed_files.iter().cloned());
+                    self.loaded_mtimes =
+                        Some((String::from(entry), script::mtimes(dir, entry, &files)));
                     self.shell = Some(shell);
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
                     self.sent_workspaces = None;
                     self.sent_fullscreen = None;
                     self.sent_minimap = None;
+                    self.sent_windows = None;
                     self.generation += 1;
+                    settings.borrow().warn_problems();
                 }
-                Err(err) => warn!("error loading the shell: {err:?}"),
+                Err(err) => {
+                    warn!("error loading the shell: {err:?}");
+                    // What it read is known now too.
+                    let mut files = self.shell.as_ref().map(Shell::files).unwrap_or_default();
+                    files.extend(self.failed_files.iter().cloned());
+                    self.loaded_mtimes =
+                        Some((String::from(entry), script::mtimes(dir, entry, &files)));
+                }
             }
+        } else if settings.borrow_mut().reload_if_changed() || other_file {
+            if let Some(shell) = &self.shell {
+                let values = settings.borrow().all_values();
+                shell.send(&serde_json::json!({ "type": "settings", "settings": values }));
+            }
+            settings.borrow().warn_problems();
         }
 
         let Some(shell) = &self.shell else { return };
@@ -319,7 +413,9 @@ impl SceneHost {
             shell.send(&serde_json::json!({ "type": "style", "style": style }));
         }
         let mut scene = shell.scene.borrow_mut();
+        let mut resized = false;
         for (name, size) in outputs {
+            resized |= scene.output_size(name).is_some_and(|old| old != *size);
             scene.set_output(name, *size);
         }
         let gone: Vec<String> = self
@@ -330,7 +426,7 @@ impl SceneHost {
             .collect();
         for name in &gone {
             scene.remove_output(name);
-            self.outputs.remove(name);
+            self.outputs.retain(|(output, _), _| output != name);
         }
         let added: Vec<String> = outputs
             .iter()
@@ -338,9 +434,34 @@ impl SceneHost {
             .filter(|n| !self.known_outputs.contains(n))
             .collect();
         drop(scene);
-        if !added.is_empty() || !gone.is_empty() {
+        if !added.is_empty() || !gone.is_empty() || resized {
             self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
             shell.send(&serde_json::json!({ "type": "outputs", "outputs": added }));
+        }
+    }
+
+    /// The shell that's drawn and its settings, for bento's settings, with `source` saying where
+    /// it comes from.
+    pub fn ipc_info(&self, source: bento_ipc::ShellSource) -> bento_ipc::Shell {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        let blocks = settings.as_ref().map(|s| s.ipc()).unwrap_or_default();
+        let (unused, _) = settings.as_ref().map(|s| s.problems()).unwrap_or_default();
+        bento_ipc::Shell {
+            source,
+            error: self.load_error.clone(),
+            settings_error: settings.as_ref().and_then(|s| s.error().map(String::from)),
+            settings: blocks
+                .into_iter()
+                .map(|(name, settings)| bento_ipc::ShellSettings { name, settings })
+                .collect(),
+            actions: settings
+                .as_ref()
+                .map(|s| s.owned_actions())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(module, action)| bento_ipc::ShellAction { module, action })
+                .collect(),
+            unused,
         }
     }
 
@@ -376,7 +497,16 @@ impl SceneHost {
             return;
         };
         let kind = data["type"].as_str().unwrap_or_default();
-        if kind != "notification" {
+        if kind == "notification" {
+            // The ones showing are kept, to show in a shell loaded again.
+            let id = data["id"].clone();
+            self.notifications.retain(|n| n["id"] != id);
+            if data["event"] != "closed" {
+                let mut shown = data.clone();
+                shown["event"] = serde_json::json!("shown");
+                self.notifications.push(shown);
+            }
+        } else {
             self.data_state.insert(String::from(kind), data.clone());
         }
         if let Some(shell) = &self.shell {
@@ -412,12 +542,22 @@ impl SceneHost {
             .unwrap_or_default()
     }
 
-    /// Tells the shell that its launcher's shortcut was pressed, with the output that has the
-    /// focus.
-    pub fn toggle_launcher(&self, output: Option<String>) {
-        if let Some(shell) = &self.shell {
-            shell.send(&serde_json::json!({ "type": "launcher", "output": output }));
-        }
+    /// The binds the running shell's actions have by default.
+    pub fn default_binds(&self) -> Vec<niri_config::binds::Bind> {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        settings.map(|s| s.binds()).unwrap_or_default()
+    }
+
+    /// The user's binds for the running shell's actions, from its file.
+    pub fn user_binds(&self) -> Vec<niri_config::binds::Bind> {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        settings.map(|s| s.user_binds()).unwrap_or_default()
+    }
+
+    /// The running shell's actions the user turned off in its file.
+    pub fn unbound(&self) -> Vec<niri_config::Action> {
+        let settings = self.settings.as_ref().map(|s| s.borrow());
+        settings.map(|s| s.unbound()).unwrap_or_default()
     }
 
     /// Whether the pointer is over the shell.
@@ -428,30 +568,30 @@ impl SceneHost {
     /// The pointer moved to `at`, the output and the point on it, if it's over the shell, or off
     /// it. Tells nodes it comes to or leaves that hear it, and says how the pointer looks there,
     /// if it's over the shell.
-    pub fn pointer_moved(&mut self, at: Option<(&str, [f32; 2])>) -> Option<String> {
+    pub fn pointer_moved(&mut self, at: Option<(&str, [f32; 2], Band)>) -> Option<String> {
         let Some(shell) = &self.shell else {
             return None;
         };
-        self.pointer = at.map(|(name, point)| (String::from(name), point));
+        self.pointer = at.map(|(name, point, band)| (String::from(name), point, band));
         let (hovered, cursor) = match at {
-            Some((name, point)) => {
+            Some((name, point, band)) => {
                 let scene = shell.scene.borrow();
                 (
-                    scene.hit(name, point, HOVER),
+                    scene.hovered(name, point, Some(band)),
                     Some(
                         scene
-                            .cursor(name, point)
+                            .cursor(name, point, Some(band))
                             .unwrap_or_else(|| String::from("default")),
                     ),
                 )
             }
-            None => (None, None),
+            None => (Vec::new(), None),
         };
         if hovered != self.hovered {
-            if let Some(id) = self.hovered {
+            for id in self.hovered.iter().filter(|id| !hovered.contains(id)) {
                 shell.send(&serde_json::json!({ "type": "hover", "id": id, "inside": false }));
             }
-            if let Some(id) = hovered {
+            for id in hovered.iter().filter(|id| !self.hovered.contains(id)).rev() {
                 shell.send(&serde_json::json!({ "type": "hover", "id": id, "inside": true }));
             }
             self.hovered = hovered;
@@ -475,7 +615,7 @@ impl SceneHost {
             return false;
         };
         let mut dragged = false;
-        for (pressed, output, _) in self.presses.values() {
+        for (pressed, output, _, _) in self.presses.values() {
             let Some(id) = pressed else { continue };
             if output == name && shell.scene.borrow().takes(*id, super::DRAG) {
                 shell.send(&serde_json::json!({
@@ -514,47 +654,61 @@ impl SceneHost {
     /// the left one, keyed by `key` until it ends, at `at` on the shell, or elsewhere with
     /// `None`. A press elsewhere tells the shell, so it can close what's open. Says whether the
     /// shell took it.
-    pub fn press(&mut self, key: u32, button: u8, at: Option<(&str, [f32; 2])>) -> bool {
+    pub fn press(&mut self, key: u32, button: u8, at: Option<(&str, [f32; 2], Band)>) -> bool {
         let Some(shell) = &self.shell else {
             return false;
         };
-        let Some((name, point)) = at else {
-            shell.send(&serde_json::json!({ "type": "outside", "button": button }));
+        let Some((name, point, band)) = at else {
+            shell.send(&serde_json::json!({ "type": "down", "surface": null, "button": button }));
             return false;
         };
-        let hit = shell.scene.borrow().hit(name, point, CLICK);
+        // Which surface it's on, for the others to hear of a press off them.
+        let surface = shell.scene.borrow().surface_at(name, point, Some(band));
+        shell.send(&serde_json::json!({ "type": "down", "surface": surface, "button": button }));
+        // What's dragged needn't take clicks.
+        let hit = shell
+            .scene
+            .borrow()
+            .hit(name, point, CLICK | super::DRAG, Some(band));
         if let Some(id) = hit {
             shell.send(&serde_json::json!({
                 "type": "press", "id": id, "button": button, "x": point[0], "y": point[1],
+                "output": name,
             }));
         }
-        self.presses.insert(key, (hit, String::from(name), point));
+        self.presses
+            .insert(key, (hit, String::from(name), point, band));
         true
     }
 
     /// The press keyed by `key` ended where it was pressed, as a touch does: a click on what it
     /// pressed. Says whether the press was the shell's.
     pub fn release_where_pressed(&mut self, key: u32, button: u8) -> bool {
-        let Some((_, name, point)) = self.presses.get(&key).cloned() else {
+        let Some((_, name, point, band)) = self.presses.get(&key).cloned() else {
             return false;
         };
-        self.release(key, button, Some((&name, point)))
+        self.release(key, button, Some((&name, point, band)))
     }
 
     /// The press keyed by `key` ended, with what it pressed under `at`, the output and the point,
     /// or not over the shell: a click on what it pressed if it's still there. Says whether the
     /// press was the shell's.
-    pub fn release(&mut self, key: u32, button: u8, at: Option<(&str, [f32; 2])>) -> bool {
-        let Some((pressed, _, _)) = self.presses.remove(&key) else {
+    pub fn release(&mut self, key: u32, button: u8, at: Option<(&str, [f32; 2], Band)>) -> bool {
+        let Some((pressed, _, _, _)) = self.presses.remove(&key) else {
             return false;
         };
         let Some(shell) = &self.shell else {
             return true;
         };
-        if let (Some(id), Some((name, point))) = (pressed, at) {
-            if shell.scene.borrow().hit(name, point, CLICK) == Some(id) {
+        // What was pressed hears it let go, wherever that is.
+        if let Some(id) = pressed {
+            shell.send(&serde_json::json!({ "type": "release", "id": id, "button": button }));
+        }
+        if let (Some(id), Some((name, point, band))) = (pressed, at) {
+            if shell.scene.borrow().hit(name, point, CLICK, Some(band)) == Some(id) {
                 shell.send(&serde_json::json!({
                     "type": "click", "id": id, "button": button, "x": point[0], "y": point[1],
+                    "output": name,
                 }));
             }
         }
@@ -563,14 +717,26 @@ impl SceneHost {
 
     /// Scrolls by `delta` where the pointer is, and says whether the shell took it.
     pub fn scroll(&mut self, delta: [f64; 2]) -> bool {
-        let (Some(shell), Some((name, point))) = (&self.shell, &self.pointer) else {
+        let (Some(shell), Some((name, point, band))) = (&self.shell, &self.pointer) else {
             return false;
         };
-        let hit = shell.scene.borrow().hit(name, *point, SCROLL);
-        if let Some(id) = hit {
-            shell.send(&serde_json::json!({
+        let target = shell
+            .scene
+            .borrow()
+            .scroll_target(name, *point, Some(*band));
+        match target {
+            // What scrolls in its box moves as far as the wheel goes, bento's own way.
+            Some((id, true)) => {
+                shell
+                    .scene
+                    .borrow_mut()
+                    .scroll(id, (delta[1] * SCROLL_SPEED) as f32);
+                self.generation += 1;
+            }
+            Some((id, false)) => shell.send(&serde_json::json!({
                 "type": "scroll", "id": id, "dx": delta[0], "dy": delta[1],
-            }));
+            })),
+            None => (),
         }
         true
     }
@@ -638,12 +804,24 @@ impl SceneHost {
         self.sent_minimap = Some(outputs);
     }
 
-    /// Tells the shell of something bento was asked for that's the shell's to do, like a
-    /// shortcut for one of its panels, with the output that has the focus.
-    pub fn event(&self, kind: &str, output: Option<String>) {
+    /// Runs one of the shell's own actions, as a bind asked, with the output that has the focus.
+    pub fn shell_action(&self, name: &str, args: &[String], output: Option<String>) {
         if let Some(shell) = &self.shell {
-            shell.send(&serde_json::json!({ "type": kind, "output": output }));
+            shell.send(&serde_json::json!({
+                "type": "shell-action", "name": name, "args": args, "output": output,
+            }));
         }
+    }
+
+    /// Tells the shell the windows, when they change.
+    pub fn set_windows(&mut self, windows: serde_json::Value) {
+        if self.sent_windows.as_ref() == Some(&windows) {
+            return;
+        }
+        if let Some(shell) = &self.shell {
+            shell.send(&serde_json::json!({ "type": "windows", "windows": windows }));
+        }
+        self.sent_windows = Some(windows);
     }
 
     /// When the shell next needs to run, for its timers.
@@ -681,20 +859,41 @@ impl SceneHost {
         }
         self.moving = moving;
         let settled = scene.take_settled();
+        let laid_out = scene.take_laid_out();
+        let scrolled = scene.take_scrolled();
         drop(scene);
         for id in settled {
             shell.send(&serde_json::json!({ "type": "settled", "id": id }));
+        }
+        for (id, [x, y, width, height]) in laid_out {
+            shell.send(&serde_json::json!({
+                "type": "layout", "id": id, "x": x, "y": y, "width": width, "height": height,
+            }));
+        }
+        for (id, [top, reach, height]) in scrolled {
+            shell.send(&serde_json::json!({
+                "type": "scrolled", "id": id, "top": top, "reach": reach, "height": height,
+            }));
         }
         // What hears the pointer near may have moved under it, and what it does then is drawn.
         let heard = self.update_near();
         moving || heard
     }
 
-    /// Whether the shell covers `point` on output `output`, so it takes the pointer there.
-    pub fn covers(&self, output: &str, point: [f32; 2]) -> bool {
+    /// Whether the shell's surfaces in `band` cover `point` on output `output`, so they take
+    /// the pointer there.
+    pub fn covers(&self, output: &str, point: [f32; 2], band: Band) -> bool {
         self.shell
             .as_ref()
-            .is_some_and(|shell| shell.scene.borrow().covers(output, point))
+            .is_some_and(|shell| shell.scene.borrow().covers(output, point, Some(band)))
+    }
+
+    /// The bands output `output` has surfaces in, from the back to the front.
+    pub fn bands(&self, output: &str) -> Vec<Band> {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.scene.borrow().bands(output))
+            .unwrap_or_default()
     }
 
     /// Draws output `output`'s scene, `size` physical pixels at `scale`, if it changed.
@@ -733,109 +932,32 @@ impl SceneHost {
         }
 
         let scene = shell.scene.borrow();
-        let items = scene.draw(output);
-        let state = self
-            .outputs
-            .entry(String::from(output))
-            .or_insert_with(|| OutputScene {
-                targets: Vec::new(),
-                next: 0,
-                shown: None,
-                items: Vec::new(),
-                id: Id::new(),
-                damage: DamageBag::default(),
-                glass: Vec::new(),
-                effect: FramebufferEffect::new(),
-                drawn: None,
-            });
-        let now = (self.generation, scale, vk.epoch());
-        if state.drawn == Some(now) {
-            return came;
-        }
-        let rescaled = state.drawn.is_none_or(|(_, before, _)| before != scale);
-        let images = state.drawn.is_some_and(|(_, _, epoch)| epoch != vk.epoch());
-        state.drawn = Some(now);
-        // The scene changed, but not in what this output shows: its picture stays.
-        let same = items.len() == state.items.len()
-            && items.iter().zip(&state.items).all(|(a, b)| a.same(b));
-        if same && !rescaled && !images && (state.shown.is_some() || items.is_empty()) {
-            return came;
-        }
-
-        state.glass = items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Shape {
-                    rect,
-                    radii,
-                    material: Material::Glass | Material::Acrylic | Material::Mica,
-                    opacity,
-                    ..
-                } if *opacity > 0.01 => Some((*rect, *radii)),
-                _ => None,
-            })
-            .collect();
-        // Showing nothing, it takes no images, and nothing is drawn over what's below.
-        if items.is_empty() {
-            state.shown = None;
-            state.items = items;
-            for (target, _) in state.targets.drain(..) {
-                vk.destroy_target(target);
+        // Each band with surfaces is drawn; one whose last surface went is drawn empty once, to
+        // let its pictures go.
+        let mut bands = scene.bands(output);
+        for (name, band) in self.outputs.keys() {
+            if name == output && !bands.contains(band) {
+                bands.push(*band);
             }
-            return came;
         }
-        if state.targets.first().is_some_and(|(t, _)| t.size != size) {
-            for (target, _) in state.targets.drain(..) {
-                vk.destroy_target(target);
-            }
-            state.shown = None;
+        for band in bands {
+            let items = scene.draw(output, band);
+            let state = self
+                .outputs
+                .entry((String::from(output), band))
+                .or_insert_with(|| OutputScene {
+                    targets: Vec::new(),
+                    next: 0,
+                    shown: None,
+                    items: Vec::new(),
+                    ids: Default::default(),
+                    damage: DamageBag::default(),
+                    glass: Vec::new(),
+                    effect: FramebufferEffect::new(),
+                    drawn: None,
+                });
+            draw_band(renderer, vk, state, items, size, scale, self.generation);
         }
-        if state.targets.is_empty() {
-            for _ in 0..TARGETS {
-                let target = match vk.create_target(size) {
-                    Ok(target) => target,
-                    Err(err) => {
-                        warn!("error making the scene's image: {err:?}");
-                        break;
-                    }
-                };
-                match renderer.import_dmabuf(&target.dmabuf, None) {
-                    Ok(texture) => state.targets.push((target, texture)),
-                    Err(err) => {
-                        warn!("error showing the scene's image: {err:?}");
-                        vk.destroy_target(target);
-                        break;
-                    }
-                }
-            }
-            if state.targets.is_empty() {
-                return came;
-            }
-            state.next = 0;
-        }
-
-        let (target, texture) = &state.targets[state.next];
-        if let Err(err) = vk.render(target, &items, scale as f32) {
-            warn!("error drawing the scene: {err:?}");
-            return came;
-        }
-        // All of it is new after nothing showed or at another scale; else, where it changed.
-        if state.shown.is_none() || rescaled {
-            state.damage.reset();
-        } else {
-            state
-                .damage
-                .add(changed(&state.items, &items, scale, images));
-        }
-        state.items = items;
-        state.shown = Some(TextureBuffer::from_texture(
-            renderer,
-            texture.clone(),
-            scale,
-            Transform::Normal,
-            Vec::new(),
-        ));
-        state.next = (state.next + 1) % state.targets.len();
         came
     }
 
@@ -845,14 +967,27 @@ impl SceneHost {
         self.renderer.as_ref().is_some_and(Renderer::loading)
     }
 
-    /// Pushes what output `output`'s scene shows, over its glass.
-    pub fn render_content(&self, output: &str, push: &mut dyn FnMut(SceneElement)) {
-        let Some(state) = self.outputs.get(output) else {
+    /// Pushes what output `output`'s surfaces in `band` show, over their glass. Bands under the
+    /// windows are pushed once with each workspace, `ns` being which.
+    pub fn render_content(
+        &self,
+        output: &str,
+        band: Band,
+        ns: Option<usize>,
+        push: &mut dyn FnMut(SceneElement),
+    ) {
+        let Some(state) = self.outputs.get(&(String::from(output), band)) else {
             return;
         };
         let Some(buffer) = &state.shown else {
             return;
         };
+        let id = state
+            .ids
+            .borrow_mut()
+            .entry(ns)
+            .or_insert_with(Id::new)
+            .clone();
         push(SceneElement {
             texture: PrimaryGpuTextureRenderElement(TextureRenderElement::from_texture_buffer(
                 buffer.clone(),
@@ -862,27 +997,39 @@ impl SceneHost {
                 None,
                 Kind::Unspecified,
             )),
-            id: state.id.clone(),
+            id,
             damage: state.damage.snapshot(),
         });
     }
 
-    /// Pushes the glass under output `output`'s scene.
+    /// The window copies in output `output`'s surfaces in `band`, which bento draws over its
+    /// picture.
+    pub fn copies(&self, output: &str, band: Band) -> Vec<super::CopyItem> {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.scene.borrow().draw_with_copies(output, band).1)
+            .unwrap_or_default()
+    }
+
+    /// Pushes the glass under output `output`'s surfaces in `band`.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_glass(
         &self,
         output: &str,
+        band: Band,
+        ns: Option<usize>,
         scale: f64,
         blur: niri_config::Blur,
         frame: GlassFrame,
         push: &mut dyn FnMut(BackgroundEffectElement),
     ) {
-        let Some(state) = self.outputs.get(output) else {
+        let Some(state) = self.outputs.get(&(String::from(output), band)) else {
             return;
         };
         if !state.glass.is_empty() {
             glass::render_rects(
                 &state.effect,
-                None,
+                ns,
                 &state.glass,
                 MELT,
                 scale,
@@ -892,6 +1039,164 @@ impl SceneHost {
             );
         }
     }
+}
+
+/// A piece of glass under the shell: its rectangle, its corners' radii, and how opaque it is.
+pub type GlassPiece = ([f32; 4], [f32; 4], f32);
+
+/// The glass under `items`, with each piece as opaque as its shape is, so it fades with it.
+/// A shape cut by what clips it is the part of it inside, with its corners, so glass sliding out
+/// from behind an edge shows only past the edge.
+fn glass_of(items: &[Item]) -> Vec<GlassPiece> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Shape {
+                rect,
+                radii,
+                material: Material::Glass | Material::Acrylic | Material::Mica,
+                opacity,
+                clip,
+                ..
+            } if *opacity > 0.01 => {
+                let rect = match clip {
+                    Some(clip) => cut(*rect, clip.rect)?,
+                    None => *rect,
+                };
+                let most = rect[2].min(rect[3]) / 2.;
+                Some((rect, radii.map(|r| r.min(most)), *opacity))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The part of `rect` inside `clip`, if any.
+fn cut(rect: [f32; 4], clip: [f32; 4]) -> Option<[f32; 4]> {
+    let x0 = rect[0].max(clip[0]);
+    let y0 = rect[1].max(clip[1]);
+    let x1 = (rect[0] + rect[2]).min(clip[0] + clip[2]);
+    let y1 = (rect[1] + rect[3]).min(clip[1] + clip[3]);
+    (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
+#[cfg(test)]
+impl SceneHost {
+    /// A point on output `output` where the pointer is over the shell, in the band of the
+    /// frontmost surface there, as bento's input finds it.
+    fn at(output: &str, point: [f32; 2]) -> Option<(&str, [f32; 2], Band)> {
+        Some((output, point, AT_BAND.with(|b| b.get())))
+    }
+
+    /// Whether any of the shell's surfaces cover `point` on output `output`.
+    pub fn covers_any(&self, output: &str, point: [f32; 2]) -> bool {
+        let found = self.shell.as_ref().and_then(|shell| {
+            let scene = shell.scene.borrow();
+            Band::ALL
+                .into_iter()
+                .rev()
+                .find(|band| scene.covers(output, point, Some(*band)))
+        });
+        if let Some(band) = found {
+            AT_BAND.with(|b| b.set(band));
+        }
+        found.is_some()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The band the last point a test looked at is in.
+    static AT_BAND: std::cell::Cell<Band> = const { std::cell::Cell::new(Band::OverlayBelow) };
+}
+
+/// Draws `items`, what an output's surfaces in a band show, into `state`'s pictures, `size`
+/// physical pixels at `scale`, if they changed since generation `generation` was drawn.
+fn draw_band(
+    renderer: &mut GlesRenderer,
+    vk: &mut Renderer,
+    state: &mut OutputScene,
+    items: Vec<Item>,
+    size: (u32, u32),
+    scale: f64,
+    generation: u64,
+) {
+    let now = (generation, scale, vk.epoch());
+    if state.drawn == Some(now) {
+        return;
+    }
+    let rescaled = state.drawn.is_none_or(|(_, before, _)| before != scale);
+    let images = state.drawn.is_some_and(|(_, _, epoch)| epoch != vk.epoch());
+    state.drawn = Some(now);
+    // The scene changed, but not in what this band shows: its picture stays.
+    let same =
+        items.len() == state.items.len() && items.iter().zip(&state.items).all(|(a, b)| a.same(b));
+    if same && !rescaled && !images && (state.shown.is_some() || items.is_empty()) {
+        return;
+    }
+
+    state.glass = glass_of(&items);
+    // Showing nothing, it takes no images, and nothing is drawn over what's below.
+    if items.is_empty() {
+        state.shown = None;
+        state.items = items;
+        for (target, _) in state.targets.drain(..) {
+            vk.destroy_target(target);
+        }
+        return;
+    }
+    if state.targets.first().is_some_and(|(t, _)| t.size != size) {
+        for (target, _) in state.targets.drain(..) {
+            vk.destroy_target(target);
+        }
+        state.shown = None;
+    }
+    if state.targets.is_empty() {
+        for _ in 0..TARGETS {
+            let target = match vk.create_target(size) {
+                Ok(target) => target,
+                Err(err) => {
+                    warn!("error making the scene's image: {err:?}");
+                    break;
+                }
+            };
+            match renderer.import_dmabuf(&target.dmabuf, None) {
+                Ok(texture) => state.targets.push((target, texture)),
+                Err(err) => {
+                    warn!("error showing the scene's image: {err:?}");
+                    vk.destroy_target(target);
+                    break;
+                }
+            }
+        }
+        if state.targets.is_empty() {
+            return;
+        }
+        state.next = 0;
+    }
+
+    let (target, texture) = &state.targets[state.next];
+    if let Err(err) = vk.render(target, &items, scale as f32) {
+        warn!("error drawing the scene: {err:?}");
+        return;
+    }
+    // All of it is new after nothing showed or at another scale; else, where it changed.
+    if state.shown.is_none() || rescaled {
+        state.damage.reset();
+    } else {
+        state
+            .damage
+            .add(changed(&state.items, &items, scale, images));
+    }
+    state.items = items;
+    state.shown = Some(TextureBuffer::from_texture(
+        renderer,
+        texture.clone(),
+        scale,
+        Transform::Normal,
+        Vec::new(),
+    ));
+    state.next = (state.next + 1) % state.targets.len();
 }
 
 #[cfg(test)]
@@ -911,13 +1216,103 @@ mod tests {
     }
 
     #[test]
+    fn a_row_lit_under_the_pointer_goes_back_when_it_leaves_and_shows_a_hand() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        open_control_center(&mut host, &mut now);
+        let power = middle_of(&host, "DP-1", "system-shutdown-symbolic");
+        click(&mut host, "DP-1", power);
+        settle(&mut host, &mut now);
+        // The small shapes filled where the Restart row is: its hover.
+        let restart = middle_of(&host, "DP-1", "Restart");
+        let lit = |host: &SceneHost| {
+            host.shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .draw_all("DP-1")
+                .into_iter()
+                .filter(|item| match item {
+                    Item::Shape {
+                        rect,
+                        material: Material::None,
+                        fill,
+                        ..
+                    } => {
+                        fill[3] > 0.
+                            && super::super::inside_rounded(restart, *rect, [0.; 4])
+                            && rect[2] < 400.
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+        assert_eq!(lit(&host), 0);
+        host.covers_any("DP-1", restart);
+        let cursor = host.pointer_moved(SceneHost::at("DP-1", restart));
+        assert_eq!(
+            cursor.as_deref(),
+            Some("pointer"),
+            "a row that does something shows a hand"
+        );
+        settle(&mut host, &mut now);
+        assert_eq!(lit(&host), 1, "lit under the pointer");
+        host.pointer_moved(None);
+        settle(&mut host, &mut now);
+        assert_eq!(lit(&host), 0, "not once it's left");
+    }
+
+    #[test]
+    fn the_launcher_shows_its_field_every_time_it_opens() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let field = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            scene
+                .seen("DP-1", "Search apps")
+                .first()
+                .map(|(_, opacity, _)| *opacity)
+        };
+        for time in 0..3 {
+            host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+            settle(&mut host, &mut now);
+            let shown = field(&host);
+            assert!(shown.is_some_and(|o| o > 0.99), "opening {time}: {shown:?}");
+            type_keys(&mut host, &["Escape"]);
+            settle(&mut host, &mut now);
+        }
+    }
+
+    #[test]
+    fn an_island_open_on_one_output_stays_open_as_whats_in_it_is_pressed() {
+        let mut host = SceneHost::default();
+        let outputs = [
+            (String::from("DP-1"), (1920., 1080.)),
+            (String::from("DP-2"), (2560., 1440.)),
+        ];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        host.data_line(&DEVICES.replace('\n', " "));
+        open_control_center(&mut host, &mut now);
+        // On its sound page, which it'd leave if it closed or opened again.
+        open_page(&mut host, &mut now, 0);
+        assert!(shows(&host, "DP-1", "Output"));
+        // A press in it that nothing takes.
+        let words = middle_of(&host, "DP-1", "Output");
+        click(&mut host, "DP-1", words);
+        settle(&mut host, &mut now);
+        assert!(host.wants_keyboard(), "a press in it keeps it open");
+        assert!(shows(&host, "DP-1", "Output"), "it stays on its page");
+    }
+
+    #[test]
     fn the_launcher_opens_where_the_focus_is_takes_typing_and_closes_on_escape() {
         let mut host = SceneHost::default();
         let outputs = [
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         // How much the launcher draws on an output: what's below the islands.
@@ -927,7 +1322,7 @@ mod tests {
                 .unwrap()
                 .scene
                 .borrow()
-                .draw(output)
+                .draw_all(output)
                 .into_iter()
                 .filter(|item| match item {
                     Item::Shape { rect, .. } | Item::Image { rect, .. } => rect[1] > 100.,
@@ -936,7 +1331,7 @@ mod tests {
                 .count()
         };
 
-        host.toggle_launcher(Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
         settle(&mut host, &mut now);
         assert!(overlay(&host, "DP-2") > 0, "it opens on the focused output");
         // In the middle of the output at its tallest, 544 high, and only the search bar until
@@ -971,11 +1366,11 @@ mod tests {
         assert!(!host.wants_keyboard());
 
         // Opened again while it shrinks away, it's the same launcher turning around.
-        host.toggle_launcher(Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
         now += std::time::Duration::from_millis(30);
         host.advance(now, Some(1.));
-        host.toggle_launcher(Some(String::from("DP-2")));
-        host.toggle_launcher(Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
         now += std::time::Duration::from_millis(30);
         host.advance(now, Some(1.));
         assert_eq!(glass_below_islands(&host, "DP-2").len(), 1, "one launcher");
@@ -988,7 +1383,7 @@ mod tests {
             .unwrap()
             .scene
             .borrow()
-            .draw(output)
+            .draw_all(output)
             .into_iter()
             .filter_map(|item| match item {
                 Item::Shape {
@@ -1010,14 +1405,14 @@ mod tests {
     fn the_launcher_never_jumps_typing_as_it_opens_and_turns_around_where_it_is() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         // Close to real time, which the script's timers run on.
         let mut now = Instant::now();
         let mut step = |host: &mut SceneHost| {
             now += std::time::Duration::from_millis(16);
             host.advance(now, Some(1.));
         };
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         step(&mut host);
         let mut last = launcher_glass(&host).unwrap();
         let mut speed = [0f32; 4];
@@ -1051,12 +1446,12 @@ mod tests {
         }
 
         // Closed and opened again on the way, it goes on from where it is.
-        host.toggle_launcher(None);
+        host.shell_action("toggle-launcher", &[], None);
         for _ in 0..12 {
             step(&mut host);
         }
         let closing = launcher_glass(&host).unwrap();
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         step(&mut host);
         let turning = launcher_glass(&host).unwrap();
         for i in 0..4 {
@@ -1074,7 +1469,7 @@ mod tests {
             (String::from("DP-1"), (1920., 1080.)),
             (String::from("DP-2"), (2560., 1440.)),
         ];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         let drawn = |host: &SceneHost, output: &str| {
@@ -1083,7 +1478,7 @@ mod tests {
                 .unwrap()
                 .scene
                 .borrow()
-                .draw(output)
+                .draw_all(output)
                 .len()
         };
         assert!(drawn(&host, "DP-1") > 0);
@@ -1092,15 +1487,15 @@ mod tests {
         settle(&mut host, &mut now);
         // Nothing is drawn, so nothing is over the window, and it has the pointer everywhere.
         assert_eq!(drawn(&host, "DP-1"), 0, "they're gone");
-        assert!(!host.covers("DP-1", [960., 26.]));
-        assert!(!host.covers("DP-1", [960., 0.]));
+        assert!(!host.covers_any("DP-1", [960., 26.]));
+        assert!(!host.covers_any("DP-1", [960., 0.]));
         assert!(drawn(&host, "DP-2") > 0, "only where the window is");
 
         // The pointer at the top edge brings them back, and on them it keeps them.
         host.pointer_at(Some(("DP-1", [960., 0.])));
         settle(&mut host, &mut now);
         assert!(drawn(&host, "DP-1") > 0, "they're back");
-        assert!(host.covers("DP-1", [960., 26.]));
+        assert!(host.covers_any("DP-1", [960., 26.]));
         host.pointer_at(Some(("DP-1", [960., 30.])));
         settle(&mut host, &mut now);
         assert!(drawn(&host, "DP-1") > 0, "they stay under the pointer");
@@ -1113,8 +1508,8 @@ mod tests {
         // The calendar, opened, keeps them, and they're back for good without the window.
         host.pointer_at(Some(("DP-1", [960., 0.])));
         settle(&mut host, &mut now);
-        host.press(1, 1, Some(("DP-1", [960., 26.])));
-        host.release(1, 1, Some(("DP-1", [960., 26.])));
+        host.press(1, 1, SceneHost::at("DP-1", [960., 26.]));
+        host.release(1, 1, SceneHost::at("DP-1", [960., 26.]));
         host.pointer_at(Some(("DP-1", [960., 900.])));
         settle(&mut host, &mut now);
         assert!(drawn(&host, "DP-1") > 0, "the calendar keeps them");
@@ -1130,7 +1525,7 @@ mod tests {
         host.set_fullscreen(serde_json::json!({ "DP-1": false, "DP-2": false }));
         settle(&mut host, &mut now);
         assert!(drawn(&host, "DP-1") > 0);
-        assert!(host.covers("DP-1", [960., 26.]));
+        assert!(host.covers_any("DP-1", [960., 26.]));
     }
 
     /// The middle of the first text saying `wanted`, or icon called it, that shows on `output`.
@@ -1154,9 +1549,12 @@ mod tests {
     }
 
     fn click(host: &mut SceneHost, output: &str, point: [f32; 2]) {
-        assert!(host.covers(output, point), "nothing to click at {point:?}");
-        host.press(1, 1, Some((output, point)));
-        host.release(1, 1, Some((output, point)));
+        assert!(
+            host.covers_any(output, point),
+            "nothing to click at {point:?}"
+        );
+        host.press(1, 1, SceneHost::at(output, point));
+        host.release(1, 1, SceneHost::at(output, point));
     }
 
     /// The bento actions the shell asked for since this was last asked, as bento runs them: one
@@ -1198,10 +1596,738 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_shell_follows_its_settings_file_as_it_changes() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        assert_eq!(host.reserved("DP-1"), [0., 0., 48., 0.]);
+
+        let settings = host.settings.clone().unwrap();
+        settings
+            .borrow_mut()
+            .write_file("windows {\n    height 60\n}\n");
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        now += Duration::from_millis(16);
+        host.advance(now, None);
+        assert_eq!(host.reserved("DP-1"), [0., 0., 60., 0.]);
+
+        // The start button and the apps are in the middle, or on the left.
+        let start = middle_of(&host, "DP-1", "ph-squares-four-symbolic");
+        assert!(start[0] > 600., "{start:?}");
+        settings
+            .borrow_mut()
+            .write_file("windows {\n    alignment \"left\"\n}\n");
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        let start = middle_of(&host, "DP-1", "ph-squares-four-symbolic");
+        assert!(start[0] < 60., "{start:?}");
+
+        // What the running shell declares, for bento's settings.
+        let info = host.ipc_info(bento_ipc::ShellSource::BuiltIn {
+            name: String::from("windows"),
+        });
+        let names: Vec<&str> = info
+            .settings
+            .iter()
+            .map(|block| block.name.as_str())
+            .collect();
+        assert!(names.contains(&"windows"), "{names:?}");
+        assert!(names.contains(&"taskbar"), "{names:?}");
+        assert!(info.unused.is_empty());
+        // The start menu's shortcut is the start menu's own action, not bento's, on Mod alone
+        // by default.
+        let actions: Vec<&str> = info
+            .actions
+            .iter()
+            .map(|a| a.action.name.as_str())
+            .collect();
+        assert!(actions.contains(&"toggle-start-menu"), "{actions:?}");
+        assert!(!actions.contains(&"toggle-launcher"), "{actions:?}");
+        let binds = host.default_binds();
+        let start = binds.iter().find(|bind| bind.key == "Mod".parse().unwrap());
+        let start = start.and_then(|bind| bind.release_action());
+        assert_eq!(
+            start,
+            Some(&niri_config::Action::ShellAction(
+                String::from("toggle-start-menu"),
+                Vec::new()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_start_menu_comes_out_of_the_start_button() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let settings = host.settings.clone().unwrap();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        // Where the start menu's left edge is, by its heading, and the start button's middle.
+        let places = |host: &mut SceneHost, now: &mut Instant| {
+            host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+            settle(host, now);
+            let heading = host
+                .shell
+                .as_ref()
+                .unwrap()
+                .scene
+                .borrow()
+                .find("DP-1", "All apps");
+            let button = middle_of(host, "DP-1", "ph-squares-four-symbolic");
+            host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+            settle(host, now);
+            (heading[0][0], button[0])
+        };
+
+        // On a taskbar in the middle, around the button.
+        let (menu, button) = places(&mut host, &mut now);
+        let middle = menu - 24. + 336.;
+        assert!(
+            (middle - button).abs() < 40.,
+            "menu {menu}, button {button}"
+        );
+
+        // On one to the left, from the button's left edge, not in the middle of the output.
+        settings
+            .borrow_mut()
+            .write_file("windows {\n    alignment \"left\"\n}\n");
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        let (menu, button) = places(&mut host, &mut now);
+        assert!(menu < 100., "menu {menu}, button {button}");
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn the_windows_shell_has_a_taskbar_with_its_apps_previews_and_start_menu() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let shell = super::super::script::Shell::load(
+            &[(String::from("DP-1"), (1920., 1080.))],
+            None,
+            UNIX,
+            serde_json::json!({ "gaps": 8 }),
+            Rc::default(),
+        );
+        if let Err(err) = &shell {
+            panic!("{err:#}");
+        }
+        drop(shell);
+        let (mut host, mut now, button) = windows_shell_with_an_app();
+        // Along the bottom, keeping its height from the windows.
+        let reserved = host.reserved("DP-1");
+        assert_eq!(reserved, [0., 0., 48., 0.]);
+        assert!(shows(&host, "DP-1", "ph-squares-four-symbolic"));
+
+        // Two windows of one app are one button, whose previews are live copies of both.
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        let copies: Vec<u64> = Band::ALL
+            .into_iter()
+            .flat_map(|band| host.copies("DP-1", band))
+            .map(|copy| copy.window)
+            .collect();
+        assert_eq!(copies, [1, 2], "a preview of each window");
+        assert!(shows(&host, "DP-1", "Note 2"));
+
+        // A click goes to the next window, as the first has the focus.
+        commands(&host);
+        click(&mut host, "DP-1", button);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "focus-window");
+        assert_eq!(ran[0]["window"], 2);
+
+        // A right click opens the shell's menu over the button, which takes the keys: Down
+        // lights its item, and Return runs it and closes the menu.
+        host.pointer_at(None);
+        settle(&mut host, &mut now);
+        host.press(3, 3, SceneHost::at("DP-1", button));
+        host.release(3, 3, SceneHost::at("DP-1", button));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        let item = middle_of(&host, "DP-1", "Close All Windows");
+        assert!(item[1] < button[1], "the menu is over the button");
+        assert!(host.wants_keyboard());
+        type_keys(&mut host, &["Down", "Return"]);
+        settle(&mut host, &mut now);
+        let ran = host.take_actions();
+        let closed: Vec<&serde_json::Value> = ran.iter().map(|a| &a["window"]).collect();
+        assert_eq!(closed, [1, 2]);
+        assert!(ran.iter().all(|a| a["name"] == "close-window"));
+        assert!(!shows(&host, "DP-1", "Close All Windows"));
+        assert!(!host.wants_keyboard());
+
+        // What can be clicked shows a hand.
+        let start = middle_of(&host, "DP-1", "ph-squares-four-symbolic");
+        host.covers_any("DP-1", start);
+        let cursor = host.pointer_moved(SceneHost::at("DP-1", start));
+        assert_eq!(cursor.as_deref(), Some("pointer"));
+        host.covers_any("DP-1", button);
+        let cursor = host.pointer_moved(SceneHost::at("DP-1", button));
+        assert_eq!(cursor.as_deref(), Some("pointer"));
+        host.pointer_moved(None);
+
+        // The start button opens the start menu, which takes the keys.
+        click(&mut host, "DP-1", start);
+        settle(&mut host, &mut now);
+        assert!(host.wants_keyboard());
+        assert!(shows(&host, "DP-1", "Search for apps"));
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        assert!(!host.wants_keyboard());
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    /// The windows shell, with two windows of one app on its taskbar, and a point on the app's
+    /// button.
+    fn windows_shell_with_an_app() -> (SceneHost, Instant, [f32; 2]) {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let window = |id: u32, focused: bool| {
+            serde_json::json!({
+                "id": id, "appId": "org.example.Editor", "title": format!("Note {id}"),
+                "workspace": 7, "output": "DP-1", "focused": focused, "urgent": false,
+                "floating": false,
+            })
+        };
+        host.set_windows(serde_json::json!([window(1, true), window(2, false)]));
+        settle(&mut host, &mut now);
+        let buttons = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "application-x-executable");
+        assert_eq!(buttons.len(), 1, "one button for the app: {buttons:?}");
+        let button = [buttons[0][0] + 4., buttons[0][1] + 4.];
+        (host, now, button)
+    }
+
+    /// The windows the shell shows live copies of.
+    fn copied(host: &SceneHost) -> Vec<u64> {
+        Band::ALL
+            .into_iter()
+            .flat_map(|band| host.copies("DP-1", band))
+            .map(|copy| copy.window)
+            .collect()
+    }
+
+    /// How far above the taskbar the glass of the panel open over it is, once it's settled.
+    fn above_taskbar(host: &mut SceneHost, now: &mut Instant) -> f32 {
+        settle(host, now);
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let items: Vec<Item> = Band::ALL
+            .into_iter()
+            .flat_map(|band| scene.draw("DP-1", band))
+            .collect();
+        let glass = glass_of(&items);
+        let taskbar = glass.iter().find(|piece| piece.0[2] >= 1920.).unwrap().0;
+        let panel = glass.iter().find(|piece| piece.0[2] < 1920.).unwrap().0;
+        taskbar[1] - (panel[1] + panel[3])
+    }
+
+    #[test]
+    fn the_taskbars_panels_all_melt_into_it_alike() {
+        let (mut host, mut now, _) = windows_shell_with_an_app();
+        let clipboard = middle_of(&host, "DP-1", "edit-paste-symbolic");
+        click(&mut host, "DP-1", clipboard);
+        let from_clipboard = above_taskbar(&mut host, &mut now);
+        click(&mut host, "DP-1", clipboard);
+        settle(&mut host, &mut now);
+
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        let from_start = above_taskbar(&mut host, &mut now);
+        // Close enough to melt into it whole, and as close whatever button it came from.
+        assert!(from_clipboard < 4., "{from_clipboard}");
+        assert_eq!(from_start, from_clipboard);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_panel_opened_and_closed_over_and_over_stays_where_it_comes_out() {
+        let (mut host, mut now, _) = windows_shell_with_an_app();
+        let toggle = |host: &SceneHost| {
+            host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
+        };
+        // Where its glass is, frame by frame, apart from the taskbar's.
+        let mut seen = Vec::new();
+        let mut look = |host: &mut SceneHost, now: &mut Instant| {
+            *now += Duration::from_millis(16);
+            host.advance(*now, Some(1.));
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let items: Vec<Item> = Band::ALL
+                .into_iter()
+                .flat_map(|band| scene.draw("DP-1", band))
+                .collect();
+            seen.extend(glass_of(&items).into_iter().filter(|p| p.0[2] < 1920.));
+        };
+        // Pressed again and again, some presses within a frame, some a frame apart.
+        for i in 0..12 {
+            toggle(&host);
+            if i % 3 == 0 {
+                toggle(&host);
+            }
+            look(&mut host, &mut now);
+        }
+        for _ in 0..60 {
+            look(&mut host, &mut now);
+        }
+        // It comes out over the clipboard's button, at the right of the taskbar.
+        let astray: Vec<_> = seen
+            .iter()
+            .filter(|([x, _, w, _], _, _)| x + w < 1700.)
+            .collect();
+        assert!(astray.is_empty(), "glass away from the button: {astray:?}");
+        // Closed, every one of them goes in the end; open, one is left.
+        settle(&mut host, &mut now);
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let items: Vec<Item> = Band::ALL
+            .into_iter()
+            .flat_map(|band| scene.draw("DP-1", band))
+            .collect();
+        let left: Vec<_> = glass_of(&items)
+            .into_iter()
+            .filter(|p| p.0[2] < 1920.)
+            .collect();
+        assert!(left.len() <= 1, "{left:?}");
+        drop(scene);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn the_start_menu_slides_out_of_the_taskbar_and_back_into_it() {
+        let (mut host, mut now, _) = windows_shell_with_an_app();
+        // The start menu's glass, frame by frame: its rectangle and how opaque it is.
+        let frames = |host: &mut SceneHost, now: &mut Instant| {
+            let mut seen = Vec::new();
+            for _ in 0..90 {
+                *now += Duration::from_millis(16);
+                host.advance(*now, Some(1.));
+                let scene = host.shell.as_ref().unwrap().scene.borrow();
+                let items: Vec<Item> = Band::ALL
+                    .into_iter()
+                    .flat_map(|band| scene.draw("DP-1", band))
+                    .collect();
+                let menu = glass_of(&items)
+                    .into_iter()
+                    .find(|piece| piece.0[2] < 1920.);
+                seen.push(menu);
+            }
+            seen
+        };
+        let grows = |seen: &[Option<GlassPiece>]| {
+            let shown: Vec<GlassPiece> = seen.iter().flatten().copied().collect();
+            // At its whole width and full strength, coming out of the taskbar's edge, 2px over
+            // it, as if from behind it.
+            assert!(
+                shown.iter().all(|(_, _, opacity)| *opacity > 0.99),
+                "{shown:?}"
+            );
+            assert!(
+                shown.iter().all(|([_, _, w, _], _, _)| *w == 672.),
+                "{shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .all(|([_, y, _, h], _, _)| (1032. - (y + h) - 2.).abs() < 0.5),
+                "{shown:?}"
+            );
+            assert!(
+                shown
+                    .iter()
+                    .any(|([_, _, _, h], _, _)| *h > 1. && *h < 300.),
+                "it's there at its size at once: {shown:?}"
+            );
+        };
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        let coming = frames(&mut host, &mut now);
+        grows(&coming);
+        assert!(coming
+            .last()
+            .unwrap()
+            .is_some_and(|([_, _, _, h], _, _)| h > 500.));
+
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        let going = frames(&mut host, &mut now);
+        grows(&going);
+        assert!(going.last().unwrap().is_none(), "{going:?}");
+
+        // What it holds slides up with it, rather than being uncovered where it is.
+        // Where the search field's icon is drawn, moved with what holds it.
+        let heading = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            let items: Vec<Item> = Band::ALL
+                .into_iter()
+                .flat_map(|band| scene.draw("DP-1", band))
+                .collect();
+            items.iter().find_map(|item| match item {
+                Item::Image {
+                    rect,
+                    source: super::super::ImageSource::Icon(name),
+                    ..
+                } if name == "system-search-symbolic" => Some(rect[1]),
+                _ => None,
+            })
+        };
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        for _ in 0..4 {
+            now += Duration::from_millis(16);
+            host.advance(now, Some(1.));
+        }
+        let early = heading(&host).unwrap();
+        settle(&mut host, &mut now);
+        let settled = heading(&host).unwrap();
+        assert!(early > settled + 100., "{early} {settled}");
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_menu_is_over_the_shell_rather_than_in_its_layer() {
+        let (mut host, mut now, button) = windows_shell_with_an_app();
+        assert!(host.covers_any("DP-1", button));
+        host.press(3, 3, SceneHost::at("DP-1", button));
+        host.release(3, 3, SceneHost::at("DP-1", button));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        // The taskbar is in the top layer; the menu is in the overlay layer, below other
+        // programs' overlays, like a screenshot tool's.
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let menu = scene.find_in("DP-1", "Close All Windows", Band::OverlayBelow);
+        assert!(
+            !menu.is_empty(),
+            "the menu isn't in the overlay layer: {:?}",
+            scene.bands("DP-1")
+        );
+        drop(scene);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_taskbar_button_shows_no_previews_while_its_menu_is_open() {
+        let (mut host, mut now, button) = windows_shell_with_an_app();
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        assert_eq!(copied(&host), [1, 2]);
+
+        assert!(host.covers_any("DP-1", button));
+        host.press(3, 3, SceneHost::at("DP-1", button));
+        host.release(3, 3, SceneHost::at("DP-1", button));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        assert_eq!(copied(&host), Vec::<u64>::new());
+
+        // Going to the menu and coming back to the button brings no previews over it.
+        host.pointer_at(None);
+        settle(&mut host, &mut now);
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Close All Windows"));
+        assert_eq!(copied(&host), Vec::<u64>::new());
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_taskbar_button_dragged_past_another_takes_its_place() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let window = |id: u32, app: &str| {
+            serde_json::json!({
+                "id": id, "appId": app, "title": app, "workspace": 7, "output": "DP-1",
+                "focused": false, "urgent": false, "floating": false,
+            })
+        };
+        host.set_windows(serde_json::json!([
+            window(1, "org.example.A"),
+            window(2, "org.example.B")
+        ]));
+        settle(&mut host, &mut now);
+        let buttons = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "application-x-executable");
+        assert_eq!(buttons.len(), 2, "{buttons:?}");
+        let first = [buttons[0][0] + 4., buttons[0][1] + 4.];
+        let second = [buttons[1][0] + 4., buttons[1][1] + 4.];
+        commands(&host);
+        host.take_actions();
+
+        // A's button, dragged onto B's, takes its place, and letting go there isn't a click.
+        assert!(host.covers_any("DP-1", first));
+        host.press(1, 1, SceneHost::at("DP-1", first));
+        host.pointer_at(Some(("DP-1", [first[0] + 12., first[1]])));
+        host.pointer_at(Some(("DP-1", second)));
+        settle(&mut host, &mut now);
+        host.release(1, 1, SceneHost::at("DP-1", second));
+        settle(&mut host, &mut now);
+        assert!(host.take_actions().is_empty(), "the drop was a click");
+
+        // B's is first now.
+        click(&mut host, "DP-1", first);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "focus-window");
+        assert_eq!(ran[0]["window"], 2);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    /// An app's status icon, as the data program tells the shell of it.
+    const TRAY: &str = r#"{"type":"tray","items":[{"id":":1.5/StatusNotifierItem","name":"thing","title":"Thing","icon":"thing-tray-symbolic","menu":false,"attention":false}]}"#;
+
+    #[test]
+    fn a_right_click_on_a_tray_icon_opens_the_apps_menu_in_the_shell() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        // Pinned, so it's on the taskbar.
+        let settings = host.settings.clone().unwrap();
+        settings
+            .borrow_mut()
+            .write_file("tray {\n    pinned \"thing\"\n}\n");
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        host.data_line(TRAY);
+        settle(&mut host, &mut now);
+        let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
+        commands(&host);
+
+        // bento asks the data program for the app's menu, rather than the app to show its own.
+        assert!(host.covers_any("DP-1", icon));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        settle(&mut host, &mut now);
+        let asked = commands(&host);
+        assert!(
+            asked
+                .iter()
+                .any(|c| c["cmd"] == "tray-menu" && c["id"] == ":1.5/StatusNotifierItem"),
+            "{asked:?}"
+        );
+
+        // The menu shows in the shell's menu, with the tray's own items, and a pick tells the app.
+        host.data_line(
+            r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[{"id":7,"label":"Open Thing","enabled":true,"toggle":null,"on":false,"separator":false,"children":[]}]}"#,
+        );
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Open Thing"));
+        assert!(shows(&host, "DP-1", "Unpin from Tray"));
+        let open = middle_of(&host, "DP-1", "Open Thing");
+        click(&mut host, "DP-1", open);
+        settle(&mut host, &mut now);
+        let picked = commands(&host);
+        assert!(
+            picked
+                .iter()
+                .any(|c| c["cmd"] == "tray-menu-click" && c["item"] == 7),
+            "{picked:?}"
+        );
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn tray_icons_not_pinned_are_behind_the_chevron_and_pinning_brings_one_out() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(TRAY);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "thing-tray-symbolic"));
+
+        // The chevron opens the rest of the tray over it, and turns back while it's out.
+        let arrow = middle_of(&host, "DP-1", "pan-up-symbolic");
+        click(&mut host, "DP-1", arrow);
+        settle(&mut host, &mut now);
+        let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
+        assert!(
+            icon[1] < arrow[1],
+            "the rest of the tray is over the chevron"
+        );
+        assert!(shows(&host, "DP-1", "pan-down-symbolic"));
+
+        // Its menu pins it.
+        assert!(host.covers_any("DP-1", icon));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        host.data_line(r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[]}"#);
+        settle(&mut host, &mut now);
+        let pin = middle_of(&host, "DP-1", "Pin to Tray");
+        click(&mut host, "DP-1", pin);
+        settle(&mut host, &mut now);
+        let settings = host.settings.clone().unwrap();
+        let pinned = settings.borrow().values("tray")["pinned"].clone();
+        assert_eq!(pinned, serde_json::json!(["thing"]));
+        // On the taskbar now, and the chevron goes, with nothing behind it.
+        assert!(!shows(&host, "DP-1", "pan-up-symbolic"));
+        assert!(!shows(&host, "DP-1", "pan-down-symbolic"));
+        let on_bar = middle_of(&host, "DP-1", "thing-tray-symbolic");
+        assert!((on_bar[1] - arrow[1]).abs() < 1.);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn the_rest_of_the_tray_stays_out_while_an_icon_in_it_has_its_menu_open() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(TRAY);
+        settle(&mut host, &mut now);
+        let chevron = middle_of(&host, "DP-1", "pan-up-symbolic");
+        click(&mut host, "DP-1", chevron);
+        settle(&mut host, &mut now);
+        let icon = middle_of(&host, "DP-1", "thing-tray-symbolic");
+
+        assert!(host.covers_any("DP-1", icon));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        host.data_line(r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[]}"#);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Pin to Tray"));
+        assert!(
+            shows(&host, "DP-1", "thing-tray-symbolic"),
+            "the rest of the tray went"
+        );
+
+        // Escape closes the menu alone, and a press elsewhere closes the rest too.
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Pin to Tray"));
+        assert!(shows(&host, "DP-1", "thing-tray-symbolic"));
+        host.press(3, 3, SceneHost::at("DP-1", icon));
+        host.release(3, 3, SceneHost::at("DP-1", icon));
+        host.data_line(r#"{"type":"tray-menu","id":":1.5/StatusNotifierItem","menu":[]}"#);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Pin to Tray"));
+        host.press(1, 1, None);
+        host.release(1, 1, None);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Pin to Tray"));
+        assert!(!shows(&host, "DP-1", "thing-tray-symbolic"));
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_scroller_has_a_bar_that_drags_and_pages_what_it_holds() {
+        // A shell of a scroller with ten rows of fifty in a hundred.
+        let dir = std::env::temp_dir().join(format!("bento-scroller-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("scroller.tsx");
+        std::fs::write(
+            &file,
+            r#"
+            import { Surface } from "bento";
+            import { For } from "solid-js";
+            import { Scroller } from "bento:modules/ui";
+            export default () => (
+              <Surface output="DP-1" anchor={["top", "left"]}>
+                <Scroller style={{ width: 200, height: 100 }}>
+                  <For each={[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}>
+                    {(i) => <box style={{ height: 50, flexShrink: 0 }}><text>{`Row ${i}`}</text></box>}
+                  </For>
+                </Scroller>
+              </Surface>
+            );
+            "#,
+        )
+        .unwrap();
+        let entry = file.to_string_lossy().into_owned();
+        super::super::modules::TEST_ENTRY.with(|e| *e.borrow_mut() = Some(entry));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let row = |host: &SceneHost, i: u32| middle_of(host, "DP-1", &format!("Row {i}"))[1];
+        assert_eq!(row(&host, 0), 25.);
+
+        // The thumb is a fifth of the track, on its right, at the top. Dragged down by forty, it
+        // goes forty of the eighty it can, so what it holds goes two hundred of its four.
+        host.pointer_at(Some(("DP-1", [100., 50.])));
+        settle(&mut host, &mut now);
+        let thumb = [196., 10.];
+        assert!(host.covers_any("DP-1", thumb));
+        host.press(1, 1, SceneHost::at("DP-1", thumb));
+        host.pointer_at(Some(("DP-1", [196., 50.])));
+        host.release(1, 1, SceneHost::at("DP-1", [196., 50.]));
+        settle(&mut host, &mut now);
+        assert_eq!(row(&host, 4), 25.);
+
+        // A press in the track under the thumb goes a page down.
+        click(&mut host, "DP-1", [196., 95.]);
+        settle(&mut host, &mut now);
+        assert_eq!(row(&host, 6), 25.);
+        std::fs::remove_dir_all(&dir).unwrap();
+        super::super::modules::TEST_ENTRY.with(|e| *e.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_shell_that_fails_to_load_leaves_the_running_one_its_actions_and_binds() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, _) = loaded(serde_json::json!({ "gaps": 8 }));
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+        let actions = |host: &SceneHost| -> Vec<String> {
+            let info = host.ipc_info(bento_ipc::ShellSource::BuiltIn {
+                name: String::from("windows"),
+            });
+            info.actions.into_iter().map(|a| a.action.name).collect()
+        };
+        let before = (actions(&host), host.default_binds());
+        assert!(before.0.contains(&String::from("toggle-start-menu")));
+
+        // A shell of one's own with a mistake in it.
+        let dir = std::env::temp_dir().join(format!("bento-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("mine.tsx");
+        std::fs::write(&file, "export default () => <box>;\n").unwrap();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = file.to_string_lossy().into_owned();
+        host.ensure_loaded(
+            &outputs,
+            None,
+            &entry,
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(host.load_error.is_some());
+        assert_eq!((actions(&host), host.default_binds()), before);
+    }
+
+    #[test]
+    fn a_shell_that_failed_to_load_loads_once_a_file_it_imports_is_fixed() {
+        let dir = std::env::temp_dir().join(format!("bento-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tsx");
+        std::fs::write(
+            &main,
+            "import Bar from \"./bar\";\nexport default () => <Bar />;\n",
+        )
+        .unwrap();
+        let bar = dir.join("bar.tsx");
+        std::fs::write(&bar, "export default () => <box>;\n").unwrap();
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = main.to_string_lossy().into_owned();
+        let style = serde_json::json!({ "gaps": 8 });
+        host.ensure_loaded(&outputs, None, &entry, None, style.clone());
+        assert!(host.load_error.is_some());
+
+        std::fs::write(&bar, "export default () => <box />;\n").unwrap();
+        let later = SystemTime::now() + std::time::Duration::from_secs(5);
+        let opened = std::fs::File::options().write(true).open(&bar).unwrap();
+        opened.set_modified(later).unwrap();
+        host.ensure_loaded(&outputs, None, &entry, None, style);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(host.load_error, None);
+    }
+
     fn loaded(style: serde_json::Value) -> (SceneHost, Instant) {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, style);
+        host.ensure_loaded(&outputs, None, UNIX, None, style);
         host.set_workspaces(serde_json::json!({
             "DP-1": [
                 { "index": 0, "name": null, "active": true, "focused": true, "id": 7 },
@@ -1218,7 +2344,7 @@ mod tests {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         let shapes = |host: &SceneHost| {
             let scene = host.shell.as_ref().unwrap().scene.borrow();
-            let drawn = scene.draw("DP-1");
+            let drawn = scene.draw_all("DP-1");
             // The minimap's pieces: small shapes in the left island.
             drawn
                 .into_iter()
@@ -1260,7 +2386,7 @@ mod tests {
 
         // Scrolling over it focuses the next tile that way, and a click on a tile its window.
         let over = [last[0] + last[2] / 2., last[1] + last[3] / 2.];
-        host.pointer_moved(Some(("DP-1", over)));
+        host.pointer_moved(SceneHost::at("DP-1", over));
         host.scroll([0., 15.]);
         let actions = runs(&host);
         assert_eq!(actions, vec![Action::FocusWindow(2)]);
@@ -1273,7 +2399,7 @@ mod tests {
     #[test]
     fn the_workspace_editor_renames_as_its_typed_and_takes_the_name_away() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         assert!(host.wants_keyboard());
         assert!(shows(&host, "DP-1", "Workspace 1"));
@@ -1322,7 +2448,7 @@ mod tests {
         host.set_workspaces(serde_json::json!({
             "DP-1": [{ "index": 0, "name": "mail", "active": true, "focused": true, "id": 9 }],
         }));
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         // Opening it changes nothing.
         assert!(host.take_actions().is_empty());
@@ -1342,7 +2468,7 @@ mod tests {
         assert_eq!(actions[0]["args"], serde_json::json!(["mail"]));
 
         // The shortcut again closes it.
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
     }
@@ -1394,10 +2520,10 @@ mod tests {
         let sun = middle_of(&host, "DP-1", "display-brightness-symbolic");
         let track = sun[0] - 14.;
         let halfway = [track + 160., sun[1]];
-        host.press(1, 1, Some(("DP-1", halfway)));
+        host.press(1, 1, SceneHost::at("DP-1", halfway));
         // Dragged, it follows the pointer.
         host.pointer_at(Some(("DP-1", [track + 240., halfway[1]])));
-        host.release(1, 1, Some(("DP-1", halfway)));
+        host.release(1, 1, SceneHost::at("DP-1", halfway));
         let sent = commands(&host);
         assert_eq!(sent[0]["cmd"], "brightness");
         assert_eq!(sent[0]["id"], "DP-1");
@@ -1496,7 +2622,8 @@ mod tests {
         );
 
         // The date travelled to the start of the calendar's date, not to its middle.
-        let long = seen(&host, &at.2)[0].0;
+        // The calendar is made as the island opens into it.
+        let long = seen(&host, &clock_texts(&host).2.unwrap())[0].0;
         let travelled = seen(&host, &at.1)[0].0;
         assert!(
             (travelled[0] - long[0]).abs() < 1.5,
@@ -1515,7 +2642,7 @@ mod tests {
     }
 
     /// The island's time, its date and the calendar's date, as the clock shows them now.
-    fn clock_texts(host: &SceneHost) -> (String, String, String) {
+    fn clock_texts(host: &SceneHost) -> (String, String, Option<String>) {
         let scene = host.shell.as_ref().unwrap().scene.borrow();
         let mut texts = Vec::new();
         fn walk(scene: &super::super::Scene, id: u32, texts: &mut Vec<String>) {
@@ -1539,7 +2666,7 @@ mod tests {
             .find(|t| t.split(' ').count() == 3 && t.len() <= 10)
             .unwrap()
             .clone();
-        let long = texts.iter().find(|t| t.contains(", ")).unwrap().clone();
+        let long = texts.iter().find(|t| t.contains(", ")).cloned();
         (time, short, long)
     }
 
@@ -1554,7 +2681,7 @@ mod tests {
             let icon = middle_of(host, "DP-1", "audio-volume-medium-symbolic");
             let scene = host.shell.as_ref().unwrap().scene.borrow();
             let bars: Vec<[f32; 4]> = scene
-                .draw("DP-1")
+                .draw_all("DP-1")
                 .into_iter()
                 .filter_map(|item| match item {
                     Item::Shape { rect, .. }
@@ -1615,7 +2742,7 @@ mod tests {
         let glass = |host: &SceneHost| {
             let scene = host.shell.as_ref().unwrap().scene.borrow();
             scene
-                .draw("DP-1")
+                .draw_all("DP-1")
                 .into_iter()
                 .filter_map(|item| match item {
                     Item::Shape {
@@ -1801,6 +2928,8 @@ mod tests {
         let restart = middle_of(&host, "DP-1", "Restart");
         click(&mut host, "DP-1", restart);
         assert!(commands(&host).is_empty(), "the first click only asks");
+        // From the next frame, where it's laid out.
+        frame(&mut host, &mut now);
         assert!(shows(&host, "DP-1", "Click again to confirm"));
         let restart = middle_of(&host, "DP-1", "Restart");
         click(&mut host, "DP-1", restart);
@@ -1856,7 +2985,7 @@ mod tests {
     fn panel_height(host: &SceneHost) -> f32 {
         let scene = host.shell.as_ref().unwrap().scene.borrow();
         scene
-            .draw("DP-1")
+            .draw_all("DP-1")
             .into_iter()
             .filter_map(|item| match item {
                 Item::Shape {
@@ -1877,7 +3006,7 @@ mod tests {
         // Without pinned outputs there's no switcher, and its shortcut says what to do.
         assert!(!shows(&host, "DP-1", "audio-speakers-symbolic"));
         commands(&host);
-        host.event("switch-audio-output", None);
+        host.shell_action("switch-audio-output", &[], None);
         let sent = commands(&host);
         assert_eq!(sent[0]["cmd"], "notify");
         assert!(sent[0]["body"]
@@ -1926,19 +3055,20 @@ mod tests {
                     r#""active":true,"volume":0.8"#,
                 ),
         );
-        host.event("switch-audio-output", None);
+        host.shell_action("switch-audio-output", &[], None);
         assert_eq!(commands(&host)[0]["name"], "a");
     }
 
     #[test]
     fn the_screenshot_button_runs_its_command_and_shows_its_notification_after() {
-        let style = serde_json::json!({
-            "gaps": 8,
-            "config": {
-                "screenshot": { "command": "grim", "notification": "Shot", "body": "Saved." },
-            },
-        });
-        let (mut host, mut now) = loaded(style);
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let settings = host.settings.clone().unwrap();
+        settings.borrow_mut().write_file(
+            "control-center {\n    screenshot-command \"grim\"\n    screenshot-notification \"Shot\"\n    \
+             screenshot-notification-body \"Saved.\"\n}\n",
+        );
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         open_control_center(&mut host, &mut now);
         commands(&host);
         let button = middle_of(&host, "DP-1", "camera-photo-symbolic");
@@ -1967,7 +3097,7 @@ mod tests {
         assert_eq!(actions[0]["name"], "spawn");
         assert_eq!(
             actions[0]["args"],
-            serde_json::json!(["bento-settings", "control-center"])
+            serde_json::json!(["bento-settings", "shell"])
         );
     }
 
@@ -2006,7 +3136,7 @@ mod tests {
             serde_json::json!({ "name": "Reykjavik", "latitude": 64.15, "longitude": -21.94 });
         let style = serde_json::json!({ "gaps": 8, "config": { "location": place } });
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, style);
+        host.ensure_loaded(&outputs, None, UNIX, None, style);
         let asked = commands(&host)
             .into_iter()
             .find(|c| c["cmd"] == "weather")
@@ -2079,13 +3209,13 @@ mod tests {
             let frame = scene.seen("DP-1", placeholder)[0].0;
             assert!(frame[3] < size * 2., "{placeholder}: {frame:?}");
         };
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         one_line(&host, "Search apps", 22.);
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
 
-        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         one_line(&host, "Search the clipboard", 15.);
     }
@@ -2171,7 +3301,7 @@ mod tests {
         assert!(!shows(&host, "DP-1", "first copy"));
 
         // The shortcut opens it on the focused output; a click on one copies it.
-        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         let at = middle_of(&host, "DP-1", "second copy with two lines");
         click(&mut host, "DP-1", at);
@@ -2241,7 +3371,7 @@ mod tests {
         let started = Instant::now();
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (2560., 1440.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         host.set_workspaces(serde_json::json!({
             "DP-1": [{ "index": 0, "name": null, "active": true, "focused": true, "id": 7 }],
         }));
@@ -2265,7 +3395,7 @@ mod tests {
             host.advance(now, Some(1.));
             let advance = t.elapsed().as_secs_f64() * 1000.;
             let t = Instant::now();
-            let items = host.shell.as_ref().unwrap().scene.borrow().draw("DP-1");
+            let items = host.shell.as_ref().unwrap().scene.borrow().draw_all("DP-1");
             let draw = t.elapsed().as_secs_f64() * 1000.;
             let before = renderer.kept();
             let t = Instant::now();
@@ -2319,7 +3449,9 @@ mod tests {
         run(&mut host, "idle", 0., 30);
         for round in ["cold", "warm"] {
             println!("--- {round}");
-            let e = timed(&mut || host.toggle_launcher(Some(String::from("DP-1"))));
+            let e = timed(&mut || {
+                host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")))
+            });
             run(&mut host, "launcher opens", e, 40);
             for key in ["f", "i", "r"] {
                 let e = timed(&mut || type_keys(&mut host, &[key]));
@@ -2397,7 +3529,7 @@ mod tests {
         renderer.set_icon_theme("Adwaita");
         let target = renderer.create_target((1920, 1080)).unwrap();
         let mut shot = |host: &SceneHost, name: &str, [x0, y0, w, h]: [u32; 4]| {
-            let items = host.shell.as_ref().unwrap().scene.borrow().draw("DP-1");
+            let items = host.shell.as_ref().unwrap().scene.borrow().draw_all("DP-1");
             renderer.render(&target, &items, 1.).unwrap();
             renderer.wait_for_loads();
             renderer.render(&target, &items, 1.).unwrap();
@@ -2509,7 +3641,7 @@ mod tests {
         }
         settle(&mut host, &mut now);
 
-        host.event("edit-workspace", Some(String::from("DP-1")));
+        host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         type_keys(&mut host, &["d", "e", "v"]);
         settle(&mut host, &mut now);
@@ -2542,7 +3674,7 @@ mod tests {
             ] })
             .to_string(),
         );
-        host.event("toggle-clipboard", Some(String::from("DP-1")));
+        host.shell_action("toggle-clipboard", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         shot(&host, "clipboard", [1460, 0, 460, 420]);
         type_keys(&mut host, &["Escape"]);
@@ -2558,7 +3690,7 @@ mod tests {
         shot(&host, "volume-level", [660, 960, 600, 120]);
         settle(&mut host, &mut now);
 
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         type_keys(&mut host, &["f", "i"]);
         settle(&mut host, &mut now);
@@ -2627,8 +3759,8 @@ mod tests {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
         let style = serde_json::json!({ "gaps": 8, "animations": false, "slowdown": 1 });
-        host.ensure_loaded(&outputs, None, style);
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.ensure_loaded(&outputs, None, UNIX, None, style);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         host.advance(Instant::now(), None);
         let glass = launcher_glass(&host).unwrap();
         assert_eq!(
@@ -2641,11 +3773,11 @@ mod tests {
     fn the_caret_keeps_up_with_typing() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         // The script's timers, like the caret's blink, run on real time, so this one stays close
         // to it and settles the springs without them.
         let mut now = Instant::now();
-        host.toggle_launcher(Some(String::from("DP-1")));
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         host.advance(now, Some(1.));
         // Its content shows once it stretches.
         now += std::time::Duration::from_millis(200);
@@ -2663,7 +3795,7 @@ mod tests {
                 .unwrap()
                 .scene
                 .borrow()
-                .draw("DP-1")
+                .draw_all("DP-1")
                 .into_iter()
                 .find_map(|item| match item {
                     // Below the islands, where the launcher is.
@@ -2716,13 +3848,13 @@ mod tests {
     fn what_the_data_program_says_reaches_the_shell_and_a_reloaded_one() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         host.data_line(r#"{"type":"network","connected":true,"icon":"network-wired-symbolic"}"#);
         let mut now = Instant::now();
         settle(&mut host, &mut now);
         let shows_wired =
             |host: &SceneHost| {
-                host.shell.as_ref().unwrap().scene.borrow().draw("DP-1").iter().any(|item| {
+                host.shell.as_ref().unwrap().scene.borrow().draw_all("DP-1").iter().any(|item| {
                 matches!(item, Item::Image { source: super::super::ImageSource::Icon(name), .. }
                     if name == "network-wired-symbolic")
             })
@@ -2731,7 +3863,7 @@ mod tests {
 
         // Loaded again, the shell hears the last of it straight away.
         host.loaded_mtimes = None;
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         settle(&mut host, &mut now);
         assert!(shows_wired(&host));
     }
@@ -2740,19 +3872,19 @@ mod tests {
     fn a_click_opens_the_calendar_and_escape_or_a_press_elsewhere_closes_it() {
         let mut host = SceneHost::default();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        host.ensure_loaded(&outputs, None, serde_json::json!({ "gaps": 8 }));
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
 
         // The clock's island is a pill: its rounded corner isn't the shell's.
-        assert!(host.covers("DP-1", [960., 26.]));
+        assert!(host.covers_any("DP-1", [960., 26.]));
         let island = host
             .shell
             .as_ref()
             .unwrap()
             .scene
             .borrow()
-            .draw("DP-1")
+            .draw_all("DP-1")
             .into_iter()
             .filter_map(|item| match item {
                 Item::Shape {
@@ -2764,10 +3896,10 @@ mod tests {
             })
             .nth(1)
             .unwrap();
-        assert!(!host.covers("DP-1", [island[0] + 1., island[1] + 1.]));
+        assert!(!host.covers_any("DP-1", [island[0] + 1., island[1] + 1.]));
 
         let click = |host: &mut SceneHost| {
-            let at = Some(("DP-1", [960., 26.]));
+            let at = SceneHost::at("DP-1", [960., 26.]);
             assert!(host.press(272, 1, at));
             assert!(host.release(272, 1, at));
         };

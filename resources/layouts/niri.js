@@ -41,10 +41,16 @@ export const meta = {
     // niri's layout actions, all of which this engine handles like niri does. Each workspace has
     // its own strip, and the actions that cross a strip's edge go to the next monitor or workspace.
     actions: {
-        "focus-column-left": { description: "Focus the column to the left." },
-        "focus-column-right": { description: "Focus the column to the right." },
-        "focus-column-first": { description: "Focus the first column." },
-        "focus-column-last": { description: "Focus the last column." },
+        "focus-column-left": {
+            description: "Focus the column to the left.",
+            bind: ["Mod+Left", "Mod+H", "Mod+WheelScrollLeft", "Mod+Shift+WheelScrollUp"],
+        },
+        "focus-column-right": {
+            description: "Focus the column to the right.",
+            bind: ["Mod+Right", "Mod+L", "Mod+WheelScrollRight", "Mod+Shift+WheelScrollDown"],
+        },
+        "focus-column-first": { description: "Focus the first column.", bind: "Mod+Home" },
+        "focus-column-last": { description: "Focus the last column.", bind: "Mod+End" },
         "focus-column-right-or-first": {
             description: "Focus the column to the right, or the first one from the last one.",
         },
@@ -62,8 +68,14 @@ export const meta = {
             description: "Focus a window in the focused column by its index.",
             args: INDEX,
         },
-        "focus-window-down": { description: "Focus the window below in the column." },
-        "focus-window-up": { description: "Focus the window above in the column." },
+        "focus-window-down": {
+            description: "Focus the window below in the column.",
+            bind: ["Mod+Down", "Mod+J"],
+        },
+        "focus-window-up": {
+            description: "Focus the window above in the column.",
+            bind: ["Mod+Up", "Mod+K"],
+        },
         "focus-window-or-monitor-down": {
             description: "Focus the window below, or the monitor below from the bottom window.",
         },
@@ -96,8 +108,24 @@ export const meta = {
         "focus-window-up-or-bottom": {
             description: "Focus the window above, or the bottom window from the top one.",
         },
-        "move-column-left": { description: "Move the focused column to the left." },
-        "move-column-right": { description: "Move the focused column to the right." },
+        "move-column-left": {
+            description: "Move the focused column to the left.",
+            bind: [
+                "Mod+Ctrl+Left",
+                "Mod+Ctrl+H",
+                "Mod+Ctrl+WheelScrollLeft",
+                "Mod+Ctrl+Shift+WheelScrollUp",
+            ],
+        },
+        "move-column-right": {
+            description: "Move the focused column to the right.",
+            bind: [
+                "Mod+Ctrl+Right",
+                "Mod+Ctrl+L",
+                "Mod+Ctrl+WheelScrollRight",
+                "Mod+Ctrl+Shift+WheelScrollDown",
+            ],
+        },
         "move-column-left-or-to-monitor-left": {
             description: "Move the focused column to the left, or to the monitor to the left from the first place.",
             args: [FOCUS],
@@ -106,8 +134,14 @@ export const meta = {
             description: "Move the focused column to the right, or to the monitor to the right from the last place.",
             args: [FOCUS],
         },
-        "move-column-to-first": { description: "Move the focused column to the start." },
-        "move-column-to-last": { description: "Move the focused column to the end." },
+        "move-column-to-first": {
+            description: "Move the focused column to the start.",
+            bind: "Mod+Ctrl+Home",
+        },
+        "move-column-to-last": {
+            description: "Move the focused column to the end.",
+            bind: "Mod+Ctrl+End",
+        },
         "move-column-to-index": {
             description: "Move the focused column to an index.",
             args: INDEX,
@@ -122,14 +156,27 @@ export const meta = {
                 },
                 FOCUS,
             ],
+            bind: [
+                { key: "Mod+Ctrl+Shift+1", args: [1] },
+                { key: "Mod+Ctrl+Shift+2", args: [2] },
+                { key: "Mod+Ctrl+Shift+3", args: [3] },
+                { key: "Mod+Ctrl+Shift+4", args: [4] },
+                { key: "Mod+Ctrl+Shift+5", args: [5] },
+                { key: "Mod+Ctrl+Shift+6", args: [6] },
+                { key: "Mod+Ctrl+Shift+7", args: [7] },
+                { key: "Mod+Ctrl+Shift+8", args: [8] },
+                { key: "Mod+Ctrl+Shift+9", args: [9] },
+            ],
         },
         "move-column-to-workspace-down": {
             description: "Move the focused column to the workspace below.",
             args: [FOCUS],
+            bind: ["Mod+Ctrl+Shift+Page_Down", "Mod+Ctrl+Shift+U"],
         },
         "move-column-to-workspace-up": {
             description: "Move the focused column to the workspace above.",
             args: [FOCUS],
+            bind: ["Mod+Ctrl+Shift+Page_Up", "Mod+Ctrl+Shift+I"],
         },
         "move-column-to-monitor": {
             description: "Move the focused column to a monitor's active workspace.",
@@ -159,8 +206,14 @@ export const meta = {
             description: "Move the focused column to the next monitor.",
             args: [FOCUS],
         },
-        "move-window-down": { description: "Move the focused window down in its column." },
-        "move-window-up": { description: "Move the focused window up in its column." },
+        "move-window-down": {
+            description: "Move the focused window down in its column.",
+            bind: ["Mod+Ctrl+Down", "Mod+Ctrl+J"],
+        },
+        "move-window-up": {
+            description: "Move the focused window up in its column.",
+            bind: ["Mod+Ctrl+Up", "Mod+Ctrl+K"],
+        },
         "move-window-down-or-to-workspace-down": {
             description: "Move the focused window down in its column, or to the workspace below from the bottom.",
             args: [FOCUS],
@@ -171,15 +224,19 @@ export const meta = {
         },
         "consume-or-expel-window-left": {
             description: "Put the focused window into the column to the left, or take it out of its column to the left.",
+            bind: "Mod+BracketLeft",
         },
         "consume-or-expel-window-right": {
             description: "Put the focused window into the column to the right, or take it out of its column to the right.",
+            bind: "Mod+BracketRight",
         },
         "consume-window-into-column": {
             description: "Put the first window of the column to the right into the focused column.",
+            bind: "Mod+Comma",
         },
         "expel-window-from-column": {
             description: "Take the bottom window of the focused column out into a column of its own.",
+            bind: "Mod+Period",
         },
         "swap-window-left": {
             description: "Swap the focused window with the one in the column to the left.",
@@ -189,21 +246,25 @@ export const meta = {
         },
         "toggle-column-tabbed-display": {
             description: "Switch the focused column between tabs and stacked windows.",
+            bind: "Mod+W",
         },
         "set-column-display": {
             description: "Show the focused column's windows as tabs or stacked.",
             args: [{ name: "display", type: "choice", choices: ["normal", "tabbed"] }],
         },
-        "center-column": { description: "Center the focused column in the view." },
+        "center-column": { description: "Center the focused column in the view.", bind: "Mod+C" },
         "center-window": { description: "Center the window's column, if it's the focused one." },
         "center-visible-columns": {
             description: "Center the columns that are fully in view, together.",
+            bind: "Mod+Ctrl+C",
         },
         "switch-preset-column-width": {
             description: "Switch the focused column to the next preset width.",
+            bind: "Mod+R",
         },
         "switch-preset-column-width-back": {
             description: "Switch the focused column to the previous preset width.",
+            bind: "Mod+Shift+R",
         },
         "switch-preset-window-width": {
             description: "Switch the window's column to the next preset width.",
@@ -213,154 +274,190 @@ export const meta = {
         },
         "switch-preset-window-height": {
             description: "Switch the window to the next preset height.",
+            bind: "Mod+Ctrl+Shift+R",
         },
         "switch-preset-window-height-back": {
             description: "Switch the window to the previous preset height.",
         },
         "maximize-column": {
             description: "Toggle the focused column between the full view width and its own width.",
+            bind: "Mod+F",
         },
         "set-column-width": {
             description: "Set or change the focused column's width.",
             args: SIZE,
+            bind: [{ key: "Mod+Minus", args: ["-10%"] }, { key: "Mod+Equal", args: ["+10%"] }],
         },
         "set-window-width": { description: "Set or change the window's column width.", args: SIZE },
-        "set-window-height": { description: "Set or change the window's height.", args: SIZE },
+        "set-window-height": {
+            description: "Set or change the window's height.", args: SIZE,
+            bind: [
+                { key: "Mod+Shift+Minus", args: ["-10%"] },
+                { key: "Mod+Shift+Equal", args: ["+10%"] },
+            ],
+        },
         "reset-window-height": {
             description: "Give the window back its automatic height in its column.",
+            bind: "Mod+Ctrl+R",
         },
         "expand-column-to-available-width": {
             description: "Widen the focused column into the space other fully visible columns leave.",
+            bind: "Mod+Ctrl+F",
         },
     },
-    options: {
+    settings: {
         "center-focused-column": {
             type: "choice",
+            page: "engine",
             choices: ["never", "always", "on-overflow"],
             default: "never",
             description: "When to center a column that gets focus.",
         },
         "always-center-single-column": {
             type: "boolean",
+            page: "engine",
             default: false,
             description: "Center a column that is alone on its workspace.",
         },
         "default-column-width": {
             type: "size",
+            page: "engine",
             default: "50%",
             description: "The width new columns open with. Left empty, the window picks.",
         },
         "preset-column-widths": {
             type: "size",
+            page: "engine",
             list: true,
             default: ["33.333%", "50%", "66.667%"],
             description: "The widths that switching preset column widths goes through.",
         },
         "preset-window-heights": {
             type: "size",
+            page: "engine",
             list: true,
             default: ["33.333%", "50%", "66.667%"],
             description: "The heights that switching preset window heights goes through.",
         },
         "default-column-display": {
             type: "choice",
+            page: "engine",
             choices: ["normal", "tabbed"],
             default: "normal",
             description: "How a new column shows its windows.",
         },
         "tab-indicator": {
             type: "boolean",
+            page: "engine",
             default: true,
             description: "Draw an indicator along tabbed columns.",
         },
         "tab-indicator-position": {
             type: "choice",
+            page: "engine",
             choices: ["left", "right", "top", "bottom"],
             default: "left",
             description: "The side of the column the tab indicator is on.",
         },
         "tab-indicator-width": {
             type: "number",
+            page: "engine",
             default: 4,
             description: "How thick the tab indicator is.",
         },
         "tab-indicator-gap": {
             type: "number",
+            page: "engine",
             default: 5,
             description: "The space between the tab indicator and the column; negative to overlap.",
         },
         "tab-indicator-length": {
             type: "number",
+            page: "engine",
             default: 0.5,
             description: "How much of the column's side the tab indicator takes, as a proportion.",
         },
         "tab-indicator-corner-radius": {
             type: "number",
+            page: "engine",
             default: 0,
             description: "The corner radius of each tab of the indicator.",
         },
         "tab-indicator-place-within-column": {
             type: "boolean",
+            page: "engine",
             default: false,
             description: "Draw the tab indicator inside the column, which leaves room for it.",
         },
         "tab-indicator-hide-when-single-tab": {
             type: "boolean",
+            page: "engine",
             default: false,
             description: "Leave out the tab indicator while a column has one tab.",
         },
         "tab-indicator-gaps-between-tabs": {
             type: "number",
+            page: "engine",
             default: 0,
             description: "The space between the tabs of the indicator.",
         },
         "tab-indicator-active-color": {
             type: "color",
+            page: "engine",
             default: "#7fc8ff",
             description: "The color of the active tab.",
         },
         "tab-indicator-inactive-color": {
             type: "color",
+            page: "engine",
             default: "#505050",
             description: "The color of the other tabs.",
         },
         "tab-indicator-urgent-color": {
             type: "color",
+            page: "engine",
             default: "#9b0000",
             description: "The color of a tab whose window is urgent.",
         },
         "tab-indicator-active-gradient": {
             type: "gradient",
+            page: "engine",
             default: null,
             description: "A gradient for the active tab, which wins over its color.",
         },
         "tab-indicator-inactive-gradient": {
             type: "gradient",
+            page: "engine",
             default: null,
             description: "A gradient for the other tabs, which wins over their color.",
         },
         "tab-indicator-urgent-gradient": {
             type: "gradient",
+            page: "engine",
             default: null,
             description: "A gradient for a tab whose window is urgent, which wins over its color.",
         },
         "insert-hint": {
             type: "boolean",
+            page: "engine",
             default: true,
             description: "Show where a dragged window would land.",
         },
         "insert-hint-color": {
             type: "color",
+            page: "engine",
             default: "#7fc8ff80",
             description: "The color of the insert hint.",
         },
         "insert-hint-gradient": {
             type: "gradient",
+            page: "engine",
             default: null,
             description: "A gradient for the insert hint, which wins over its color.",
         },
         "focus-follows-mouse": {
             type: "choice",
+            page: "engine",
             choices: ["never", "in-view", "always"],
             default: "never",
             description:
@@ -418,6 +515,18 @@ export const meta = {
 
 /** Corner radius of the insert hint. */
 const HINT_CORNER_RADIUS = 8;
+/** How far the pointer goes before a dragged tiled window comes loose, niri's. */
+const DRAG_THRESHOLD = 256;
+/** Opacity of a dragged window that came loose, niri's. */
+const DRAG_OPACITY = 0.75;
+// Scrolling the view while a dragged window is near its left or right edge, niri's
+// `dnd-edge-view-scroll` defaults: how close to the edge, in px, how long the pointer rests there
+// before it starts, in ms, and its top speed, in px/s.
+const EDGE_SCROLL_WIDTH = 30;
+const EDGE_SCROLL_DELAY = 100;
+const EDGE_SCROLL_MAX_SPEED = 1500;
+/** How often the view scrolls near the edge, in ms: about once a frame. */
+const EDGE_SCROLL_TICK = 16;
 /** How much of its speed a touchpad swipe keeps each millisecond, niri's `DECELERATION_TOUCHPAD`. */
 const SWIPE_DECELERATION = 0.997;
 
@@ -426,6 +535,17 @@ const MAX_PX = 100000;
 const MAX_F = 10000;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+/**
+ * How far a dragged window that holds its place follows the pointer moved by `delta`: niri's
+ * rubber band, which goes from none of the way up to half of it.
+ */
+function dragPull(delta) {
+    const x = (delta.x ** 2 + delta.y ** 2) / DRAG_THRESHOLD ** 2;
+    // niri's `RubberBand { stiffness: 1, limit: 0.5 }`.
+    const factor = (1 - 1 / (2 * x + 1)) * 0.5;
+    return { x: delta.x * factor, y: delta.y * factor };
+}
 
 /** Applies a window's min and max size, where 0 means no limit. */
 function applyLimits(value, min, max) {
@@ -512,9 +632,7 @@ function createStrip(bento, ws) {
     let viewOffsetToRestore = null;
     /** An ongoing pointer resize: `{ win, edges, originalWindowSize }`. */
     let interactiveResize = null;
-    /** The column width of the window being dragged, to give back when it's dropped. */
-    let dragged = null;
-    let lastOptions = ws.options;
+    let lastSettings = ws.settings;
     /** What `ws.focused` was at the end of the last call. */
     let lastFocused = null;
     let nextColumnId = 1;
@@ -536,8 +654,8 @@ function createStrip(bento, ws) {
 
     // Geometry.
 
-    // The workspace's options: the engine's, with what its monitor and its name set on top.
-    const options = (name) => ws.options[name];
+    // The workspace's settings: the engine's, with what its monitor and its name set on top.
+    const setting = (name) => ws.settings[name];
     const gaps = () => ws.config.gaps;
     const viewSize = () => ws.monitor.size;
     const round = (value) => ws.monitor.round(value);
@@ -554,16 +672,16 @@ function createStrip(bento, ws) {
     const windowWidthForTileWidth = (tile, w) => w - tile.win.borders.w;
     const windowHeightForTileHeight = (tile, h) => h - tile.win.borders.h;
 
-    // Window rules. A rule that no rule sets is left out of `rules`, so the option of the same name
+    // Window rules. A rule that no rule sets is left out of `rules`, so the setting of the same name
     // is the default, if there is one. `null` is a size left to the window.
 
     const rulesWidth = (rules) =>
         rules["default-column-width"] !== undefined
             ? rules["default-column-width"]
-            : options("default-column-width");
+            : setting("default-column-width");
     const rulesHeight = (rules) => rules["default-window-height"] ?? null;
     const rulesDisplay = (rules) =>
-        rules["default-column-display"] ?? options("default-column-display");
+        rules["default-column-display"] ?? setting("default-column-display");
 
     /** Smallest tile size, at least 1 px of window. */
     function minSize(tile) {
@@ -600,17 +718,17 @@ function createStrip(bento, ws) {
     function tabIndicatorSpace(count) {
         const none = { x: 0, y: 0, w: 0, h: 0 };
         if (
-            !options("tab-indicator") ||
-            !options("tab-indicator-place-within-column") ||
-            (options("tab-indicator-hide-when-single-tab") && count === 1)
+            !setting("tab-indicator") ||
+            !setting("tab-indicator-place-within-column") ||
+            (setting("tab-indicator-hide-when-single-tab") && count === 1)
         ) {
             return none;
         }
         const size = Math.max(
             0,
-            round(options("tab-indicator-width")) + round(options("tab-indicator-gap")),
+            round(setting("tab-indicator-width")) + round(setting("tab-indicator-gap")),
         );
-        switch (options("tab-indicator-position")) {
+        switch (setting("tab-indicator-position")) {
             case "left":
                 return { x: size, y: 0, w: size, h: 0 };
             case "right":
@@ -631,7 +749,7 @@ function createStrip(bento, ws) {
 
     /** Extra size for a new column with one window. */
     function newColumnExtraSize() {
-        return options("default-column-display") === "tabbed"
+        return setting("default-column-display") === "tabbed"
             ? tabIndicatorSpace(1)
             : { x: 0, y: 0, w: 0, h: 0 };
     }
@@ -679,7 +797,7 @@ function createStrip(bento, ws) {
      * to go back to.
      */
     function makeColumn(width, isFullWidth) {
-        const presetWidthIdx = options("preset-column-widths").findIndex((preset) =>
+        const presetWidthIdx = setting("preset-column-widths").findIndex((preset) =>
             sameWidth(columnWidthFromPreset(preset), width),
         );
         return {
@@ -695,7 +813,7 @@ function createStrip(bento, ws) {
             pendingFullscreen: false,
             // Can be set together with fullscreen: leaving fullscreen goes back to maximized.
             pendingMaximized: false,
-            display: options("default-column-display"),
+            display: setting("default-column-display"),
             // Sizing mode at the end of the last call, see `commit()`.
             committedMode: null,
         };
@@ -815,7 +933,7 @@ function createStrip(bento, ws) {
                     Math.round(windowHeightForTileHeight(tile, maxTileHeight));
                 windowHeight = Math.min(windowHeight, max);
             } else {
-                const preset = options("preset-window-heights")[height.idx];
+                const preset = setting("preset-window-heights")[height.idx];
                 const resolved = resolvePresetSize(preset, area.h, extra.h);
                 windowHeight =
                     resolved.tile !== undefined
@@ -961,7 +1079,7 @@ function createStrip(bento, ws) {
 
     /** Offsets of the tiles from the column's x, and one past the last tile. */
     function tileOffsets(col) {
-        const center = options("center-focused-column") === "always";
+        const center = setting("center-focused-column") === "always";
         const isTabbed = col.display === "tabbed";
         const width = tilesWidth(col);
         const origin = tilesOrigin(col);
@@ -979,8 +1097,8 @@ function createStrip(bento, ws) {
 
     function isCenteringFocusedColumn() {
         return (
-            options("center-focused-column") === "always" ||
-            (options("always-center-single-column") && columns.length <= 1)
+            setting("center-focused-column") === "always" ||
+            (setting("always-center-single-column") && columns.length <= 1)
         );
     }
 
@@ -1027,7 +1145,7 @@ function createStrip(bento, ws) {
             return computeNewViewOffsetForColumnCentered(targetX, idx);
         }
         if (
-            options("center-focused-column") !== "on-overflow" ||
+            setting("center-focused-column") !== "on-overflow" ||
             prevIdx === null ||
             prevIdx === idx
         ) {
@@ -1190,13 +1308,17 @@ function createStrip(bento, ws) {
         return col;
     }
 
-    /** Width for a column that a window arrives in, from the window rules. */
+    /** Width for a column that a window arrives in, from the window rules. WezTerm picks its own
+     * width unless a rule says otherwise, since it sizes its window before it's configured. */
     function defaultWidth(win) {
-        const preset = rulesWidth(win.rules);
+        const wezterm =
+            win.rules["default-column-width"] === undefined &&
+            win.appId === "org.wezfurlong.wezterm";
+        const preset = wezterm ? null : rulesWidth(win.rules);
         if (preset === null) {
             // Let the window pick, so use the size it has, unless it doesn't have one yet.
             if (win.size.w > 0) return { fixed: win.size.w };
-            return columnWidthFromPreset(options("default-column-width") ?? { proportion: 0.5 });
+            return columnWidthFromPreset(setting("default-column-width") ?? { proportion: 0.5 });
         }
         if ("proportion" in preset) return { proportion: preset.proportion };
         // niri's column widths include borders, fixed presets don't.
@@ -1211,7 +1333,7 @@ function createStrip(bento, ws) {
     function widthForSize(w, win) {
         if (w <= 0) return defaultWidth(win);
         const area = workingArea();
-        const presets = [...options("preset-column-widths"), { proportion: 1 }];
+        const presets = [...setting("preset-column-widths"), { proportion: 1 }];
         const extra = newColumnExtraSize().w;
         for (const preset of presets) {
             const resolved = resolvePresetSize(preset, area.w, extra);
@@ -1224,27 +1346,6 @@ function createStrip(bento, ws) {
     function addWindow(win, how) {
         const tile = makeTile(win);
         switch (how.reason) {
-            case "drop": {
-                // niri takes windows out of fullscreen and maximized when a drag starts, so they
-                // land as normal windows.
-                const position = how.pointer ? insertPosition(how.pointer) : { newColumn: null };
-                const kept = dragged?.id === win.id ? dragged : null;
-                dragged = null;
-                if ("inColumn" in position) {
-                    addTileToColumn(position.inColumn, position.tile, tile, how.activate);
-                } else {
-                    const width = kept?.width ?? widthForSize(win.size.w, win);
-                    addTile(
-                        position.newColumn,
-                        tile,
-                        how.activate,
-                        width,
-                        kept?.isFullWidth ?? false,
-                        "normal",
-                    );
-                }
-                return;
-            }
             case "open": {
                 const nextTo = how.nextTo === null ? null : find(how.nextTo);
                 const colIdx = nextTo === null ? null : nextTo[0] + 1;
@@ -1272,15 +1373,10 @@ function createStrip(bento, ws) {
         }
     }
 
-    function removeWindow(win, reason) {
+    function removeWindow(win) {
         const found = find(win);
         if (found === null) return;
-        const [colIdx, tileIdx] = found;
-        const col = columns[colIdx];
-        if (reason === "drag") {
-            dragged = { id: win.id, width: col.width, isFullWidth: col.isFullWidth };
-        }
-        removeTile(colIdx, tileIdx);
+        removeTile(found[0], found[1]);
     }
 
     // Focus.
@@ -1620,7 +1716,7 @@ function createStrip(bento, ws) {
 
     /** `switch-preset-column-width` and `switch-preset-window-width`. */
     function toggleWidth(col, tileIdx, forwards) {
-        const presets = options("preset-column-widths");
+        const presets = setting("preset-column-widths");
         if (presets.length === 0) return;
         const tile = col.tiles[tileIdx ?? col.activeTileIdx];
         const len = presets.length;
@@ -1725,7 +1821,7 @@ function createStrip(bento, ws) {
 
     /** `switch-preset-window-height`. */
     function toggleWindowHeight(col, tileIdx, forwards) {
-        const presets = options("preset-window-heights");
+        const presets = setting("preset-window-heights");
         if (presets.length === 0) return;
         tileIdx ??= col.activeTileIdx;
         // Like in `setWindowHeight`, only one window can have a non-auto height.
@@ -1913,7 +2009,7 @@ function createStrip(bento, ws) {
                 snaps.push({ viewPos, colIdx });
             });
         } else {
-            const centerOnOverflow = options("center-focused-column") === "on-overflow";
+            const centerOnOverflow = setting("center-focused-column") === "on-overflow";
             const snapPoints = (colIdx) => {
                 const col = columns[colIdx];
                 const colX = columnX(colIdx);
@@ -2003,7 +2099,92 @@ function createStrip(bento, ws) {
         fitView();
     }
 
-    // Dragging windows.
+    // Dragging windows. The engine follows the drag, and the strip takes the window out, puts it
+    // back or drops it, see `watchDrag`.
+
+    /**
+     * Takes a dragged window out of its column, which closes up as if the window were gone, for
+     * it to follow the pointer. Returns what `putBack` needs, or null if it isn't here.
+     */
+    function loosen(win) {
+        const found = find(win);
+        if (found === null) return null;
+        const [colIdx, tileIdx] = found;
+        const col = columns[colIdx];
+        const active = activeWindow() === win;
+        const activeTile = col.activeTileIdx === tileIdx;
+        // niri takes a dragged window out of fullscreen and maximized, to its size in the column.
+        if (col.pendingFullscreen || col.pendingMaximized) {
+            cancelResizeForColumn(col);
+            col.pendingFullscreen = false;
+            col.pendingMaximized = false;
+            updateTileSizes(col);
+            win.setMode("normal");
+        }
+        // It leaves its tabs, and joins them again if the drag is cancelled.
+        col.group?.remove(win);
+        return { ...removeTile(colIdx, tileIdx), column: col, colIdx, tileIdx, active, activeTile };
+    }
+
+    /** Puts a dragged window back where `loosen` took it from. */
+    function putBack(taken) {
+        const { tile, column } = taken;
+        const colIdx = columns.indexOf(column);
+        if (colIdx === -1) {
+            const idx = Math.min(taken.colIdx, columns.length);
+            addTile(idx, tile, taken.active, taken.width, taken.isFullWidth, taken.mode);
+            return;
+        }
+        const tileIdx = Math.min(taken.tileIdx, column.tiles.length);
+        addTileToColumn(colIdx, tileIdx, tile, taken.active);
+        if (taken.activeTile) column.activeTileIdx = tileIdx;
+    }
+
+    /**
+     * Drops a dragged window where the insert hint for `pointer` shows. niri takes windows out of
+     * fullscreen and maximized when they're dragged, so a new column for it is a normal one, as
+     * wide as the one it came from.
+     */
+    function dropWindow(win, taken, pointer) {
+        const tile = makeTile(win);
+        const position = insertPosition(pointer);
+        if ("inColumn" in position) {
+            addTileToColumn(position.inColumn, position.tile, tile, true);
+        } else {
+            addTile(position.newColumn, tile, true, taken.width, taken.isFullWidth, "normal");
+        }
+    }
+
+    /**
+     * How fast to scroll the view for a dragged window's pointer at `pointer`, niri's
+     * `dnd_scroll_gesture_scroll`: from -1 at the left edge of the parent area to 1 at its right
+     * edge, growing towards them, and 0 away from them.
+     */
+    function edgeScrollSpeed(pointer) {
+        const area = parentArea();
+        const x = clamp((pointer.x - ws.camera.x) * ws.camera.zoom - area.x, 0, area.w);
+        const trigger = Math.min(EDGE_SCROLL_WIDTH, area.w / 2);
+        if (trigger < 0.01) return 0;
+        if (x < trigger) return -(trigger - x) / trigger;
+        if (area.w - x < trigger) return (trigger - (area.w - x)) / trigger;
+        return 0;
+    }
+
+    /**
+     * Moves the camera `dx` px of the view to the right, as far as some of the columns stay in
+     * view, like niri's `dnd_scroll_gesture_scroll`. Returns how far it moved on the canvas.
+     */
+    function scrollBy(dx) {
+        if (columns.length === 0) return 0;
+        const area = workingArea();
+        const last = columns.length - 1;
+        const min = -area.w;
+        const max = Math.max(columnX(last) + columnWidth(columns[last]) - area.x, min);
+        const x = clamp(ws.camera.x + dx / ws.camera.zoom, min, max);
+        const moved = x - ws.camera.x;
+        if (moved !== 0) ws.camera.move({ x }, { animate: false });
+        return moved;
+    }
 
     /**
      * Where a window dropped with the pointer at `pointer` goes: `{ newColumn: idx }` or
@@ -2145,7 +2326,7 @@ function createStrip(bento, ws) {
 
     function validHeight(height) {
         if (height?.kind === "preset") {
-            return height.idx < options("preset-window-heights").length
+            return height.idx < setting("preset-window-heights").length
                 ? height
                 : { kind: "auto", weight: 1 };
         }
@@ -2166,7 +2347,7 @@ function createStrip(bento, ws) {
         col.activeTileIdx = clamp(saved.activeTileIdx ?? 0, 0, tiles.length - 1);
         const presetIdx = saved.presetWidthIdx;
         col.presetWidthIdx =
-            Number.isInteger(presetIdx) && presetIdx < options("preset-column-widths").length
+            Number.isInteger(presetIdx) && presetIdx < setting("preset-column-widths").length
                 ? presetIdx
                 : null;
         col.pendingFullscreen =
@@ -2346,24 +2527,24 @@ function createStrip(bento, ws) {
     /** Whether a tabbed column in normal mode shows its tab indicator. */
     function showsIndicator(col) {
         return (
-            options("tab-indicator") &&
+            setting("tab-indicator") &&
             col.display === "tabbed" &&
             sizingMode(col) === "normal" &&
-            !(options("tab-indicator-hide-when-single-tab") && col.tiles.length === 1)
+            !(setting("tab-indicator-hide-when-single-tab") && col.tiles.length === 1)
         );
     }
 
     /** Rects of the tabs of an indicator along `area`, in order, on the canvas. */
     function tabRects(area, count) {
-        const position = options("tab-indicator-position");
-        const width = options("tab-indicator-width");
-        const gap = options("tab-indicator-gap");
-        const between = Math.max(0, round(options("tab-indicator-gaps-between-tabs")));
+        const position = setting("tab-indicator-position");
+        const width = setting("tab-indicator-width");
+        const gap = setting("tab-indicator-gap");
+        const between = Math.max(0, round(setting("tab-indicator-gaps-between-tabs")));
         const horizontal = position === "top" || position === "bottom";
         // The indicator spans a proportion of the side it's on, centered, with the tabs and the
         // space between them filling it.
         const side = horizontal ? area.w : area.h;
-        const total = side * clamp(options("tab-indicator-length"), 0, 1);
+        const total = side * clamp(setting("tab-indicator-length"), 0, 1);
         const start = (horizontal ? area.x : area.y) + (side - total) / 2;
         const step = (total + between) / count;
         const length = Math.max(0, step - between);
@@ -2383,15 +2564,15 @@ function createStrip(bento, ws) {
 
     /**
      * What a tab is painted with, for `state` "active", "inactive" or "urgent", like niri: the
-     * window's rules first, then the options, and in each a gradient wins over the color.
+     * window's rules first, then the settings, and in each a gradient wins over the color.
      */
     function tabPaint(win, state) {
         const rules = win.rules;
         return (
             rules[`tab-indicator-${state}-gradient`] ??
             rules[`tab-indicator-${state}-color`] ??
-            options(`tab-indicator-${state}-gradient`) ??
-            options(`tab-indicator-${state}-color`)
+            setting(`tab-indicator-${state}-gradient`) ??
+            setting(`tab-indicator-${state}-color`)
         );
     }
 
@@ -2424,7 +2605,7 @@ function createStrip(bento, ws) {
                 nodes[idx].set({
                     rect: rects[idx],
                     background: tabPaint(tile.win, state),
-                    cornerRadius: options("tab-indicator-corner-radius"),
+                    cornerRadius: setting("tab-indicator-corner-radius"),
                 });
             });
         }
@@ -2543,14 +2724,14 @@ function createStrip(bento, ws) {
     // The insert hint.
 
     function showHint(pointer) {
-        if (!options("insert-hint")) return;
+        if (!setting("insert-hint")) return;
         hintNode ??= bento.createNode("box", {
             cornerRadius: HINT_CORNER_RADIUS,
             transitions: { rect: "window-movement" },
         });
         hintNode.set({
             rect: insertHintArea(insertPosition(pointer)),
-            background: options("insert-hint-gradient") ?? options("insert-hint-color"),
+            background: setting("insert-hint-gradient") ?? setting("insert-hint-color"),
         });
         // Last, so it's above the windows.
         ws.tree.append(hintNode);
@@ -2871,13 +3052,12 @@ function createStrip(bento, ws) {
         exposed,
 
         windowAdded(win, how) {
-            hideHint();
             mutate(() => addWindow(win, how), { focus: how.activate ? "always" : "follow" });
         },
 
-        windowRemoved(win, reason) {
+        windowRemoved(win) {
             const hadFocus = ws.focused !== null || lastFocused?.id === win.id;
-            mutate(() => removeWindow(win, reason), { hadFocus });
+            mutate(() => removeWindow(win), { hadFocus });
         },
 
         /** Takes over the windows that were here when the engine started, `{ win, rect }`. */
@@ -2982,14 +3162,14 @@ function createStrip(bento, ws) {
 
         configChanged() {
             mutate(() => {
-                const now = ws.options;
-                if (!samePresets(now["preset-column-widths"], lastOptions["preset-column-widths"])) {
+                const now = ws.settings;
+                if (!samePresets(now["preset-column-widths"], lastSettings["preset-column-widths"])) {
                     for (const col of columns) col.presetWidthIdx = null;
                 }
-                if (!samePresets(now["preset-window-heights"], lastOptions["preset-window-heights"])) {
+                if (!samePresets(now["preset-window-heights"], lastSettings["preset-window-heights"])) {
                     for (const col of columns) convertHeightsToAuto(col);
                 }
-                lastOptions = now;
+                lastSettings = now;
                 updateAllTileSizes();
                 // Apply always-center and such right away.
                 if (columns.length > 0) fitView();
@@ -3081,10 +3261,33 @@ function createStrip(bento, ws) {
             }
         },
 
-        // Dragging windows over the workspace.
+        // Dragging windows with the pointer.
+
+        /** Takes a dragged window out of its column, see `loosen`. */
+        dragLoosen(win) {
+            return mutate(() => loosen(win));
+        },
+
+        /** Puts a dragged window back where it was taken from, see `putBack`. */
+        dragReturn(taken) {
+            mutate(() => putBack(taken), { focus: taken.active ? "always" : "follow" });
+        },
+
+        /** Drops a dragged window where the insert hint for `pointer` shows. */
+        dragDrop(win, taken, pointer) {
+            hideHint();
+            mutate(() => dropWindow(win, taken, pointer), { focus: "always" });
+        },
+
+        /** Places the windows where they belong, like a dragged one that held its place. */
+        dragSettle() {
+            mutate(() => {});
+        },
 
         dragOver: showHint,
         dragLeave: hideHint,
+        edgeScrollSpeed,
+        scrollBy,
 
         newWindowSize,
 
@@ -3153,10 +3356,10 @@ function createStrip(bento, ws) {
 // The engine: one strip for each workspace, and what crosses from one to another.
 
 export default function create(bento) {
-    // Focus follows the pointer as the options say; bento does the focusing. "in-view" is only
+    // Focus follows the pointer as the settings say; bento does the focusing. "in-view" is only
     // windows that focusing doesn't scroll the view to.
     const followMouse = () => {
-        const mode = bento.options["focus-follows-mouse"];
+        const mode = bento.settings["focus-follows-mouse"];
         bento.setFocusFollowsMouse(mode !== "never", { maxScroll: mode === "in-view" ? 0 : null });
     };
     followMouse();
@@ -3209,9 +3412,6 @@ export default function create(bento) {
         ws.addEventListener("swipebegin", () => strip.swipeBegin());
         ws.addEventListener("swipeupdate", (e) => strip.swipeUpdate(e.delta));
         ws.addEventListener("swipeend", (e) => strip.swipeEnd(e.velocity));
-        ws.addEventListener("dragenter", (e) => strip.dragOver(e.pointer));
-        ws.addEventListener("dragmove", (e) => strip.dragOver(e.pointer));
-        ws.addEventListener("dragleave", () => strip.dragLeave());
     }
 
     function watchMonitor(monitor) {
@@ -3236,17 +3436,16 @@ export default function create(bento) {
     function watchWindow(win) {
         if (followed.has(win)) return;
         followed.add(win);
-        win.addEventListener("remove", (e) => stripWith(win)?.windowRemoved(win, e.reason));
+        win.addEventListener("remove", () => stripWith(win)?.windowRemoved(win));
         win.addEventListener("move", (e) => {
             // bento moved the window with one of its own actions.
             const from = strips.get(e.from.id);
             if (from?.has(win)) {
-                from.windowRemoved(win, "move");
+                from.windowRemoved(win);
                 stripOf(e.to).windowAdded(win, {
                     reason: "move",
                     activate: e.activate,
                     rect: null,
-                    pointer: null,
                     nextTo: null,
                 });
             }
@@ -3268,6 +3467,148 @@ export default function create(bento) {
         win.addEventListener("resizeupdate", (e) => stripWith(win)?.resizeUpdate(win, e));
         win.addEventListener("resizeend", () => stripWith(win)?.resizeEnd(win));
         win.addEventListener("edgedoubleclick", (e) => stripWith(win)?.edgeDoubleClick(win, e.edges));
+        watchDrag(win);
+    }
+
+    /**
+     * Follows the drags of a window with the pointer. A tiled window holds its place, pulled
+     * along a little, until the pointer is far enough from where it started or over another
+     * workspace. Then it comes out of its column and follows the pointer across workspaces,
+     * raised and see-through, with the insert hint of the workspace under the pointer, whose view
+     * scrolls while the pointer rests near its left or right edge. Letting go drops it where the
+     * hint shows; a cancelled drag, or one let go where there's no workspace, puts it back.
+     */
+    function watchDrag(win) {
+        /**
+         * The drag going on: the strip and workspace it started from, where the pointer started
+         * and where it holds the window, and the window's rect then. Once the window comes
+         * loose, `taken` puts it back, `workspace` and `pointer` are where the pointer is, `over`
+         * the strip showing the hint, and `timer` scrolls the view near its edge.
+         */
+        let drag = null;
+
+        function stopScrolling() {
+            if (drag.timer !== null) bento.clearTimeout(drag.timer);
+            drag.timer = null;
+        }
+
+        /** Takes away the hint and stops scrolling. Returns the drag, which is over. */
+        function finish() {
+            stopScrolling();
+            drag.over?.dragLeave();
+            const ended = drag;
+            drag = null;
+            return ended;
+        }
+
+        /** Draws the loose window under the pointer, on the workspace under it if there's one. */
+        function follow(ws, pointer) {
+            const strip = ws === null ? null : stripOf(ws);
+            if (strip !== drag.over) drag.over?.dragLeave();
+            Object.assign(drag, { over: strip, workspace: ws, pointer });
+            if (strip === null) {
+                stopScrolling();
+                return;
+            }
+            if (win.workspace !== ws) win.moveTo(ws);
+            const round = (value) => ws.monitor.round(value);
+            const { w, h } = drag.rect;
+            const x = round(pointer.x - drag.offset.x);
+            const y = round(pointer.y - drag.offset.y);
+            win.place({ x, y, w, h }, { animate: false });
+            strip.dragOver(pointer);
+            win.raise();
+            if (strip.edgeScrollSpeed(pointer) === 0) stopScrolling();
+            else if (drag.timer === null) drag.timer = bento.setTimeout(scroll, EDGE_SCROLL_DELAY);
+        }
+
+        /** Scrolls the view a step while the pointer rests near its edge, as far as it goes. */
+        function scroll() {
+            drag.timer = null;
+            const speed = drag.over.edgeScrollSpeed(drag.pointer) * EDGE_SCROLL_MAX_SPEED;
+            const moved = drag.over.scrollBy((speed * EDGE_SCROLL_TICK) / 1000);
+            if (moved === 0) return;
+            drag.timer = bento.setTimeout(scroll, EDGE_SCROLL_TICK);
+            // The pointer stays where it is on screen, which is further along the canvas.
+            follow(drag.workspace, { x: drag.pointer.x + moved, y: drag.pointer.y });
+        }
+
+        win.addEventListener("dragstart", (e) => {
+            const strip = stripWith(win);
+            if (strip === undefined || win.rect === null) return;
+            drag = {
+                strip,
+                from: win.workspace,
+                start: { ...e.pointer },
+                offset: { ...e.offset },
+                rect: { ...win.rect },
+                taken: null,
+                workspace: null,
+                pointer: null,
+                over: null,
+                timer: null,
+            };
+        });
+
+        win.addEventListener("dragmove", (e) => {
+            if (drag === null) return;
+            if (drag.taken === null) {
+                if (e.workspace === null) return;
+                const delta = { x: e.pointer.x - drag.start.x, y: e.pointer.y - drag.start.y };
+                if (e.workspace === drag.from && Math.hypot(delta.x, delta.y) < DRAG_THRESHOLD) {
+                    const pull = dragPull(delta);
+                    const round = (value) => drag.from.monitor.round(value);
+                    const { x, y, w, h } = drag.rect;
+                    win.place({ x: round(x + pull.x), y: round(y + pull.y), w, h }, { animate: false });
+                    return;
+                }
+                drag.taken = drag.strip.dragLoosen(win);
+                if (drag.taken === null) {
+                    drag = null;
+                    return;
+                }
+                // Out of fullscreen or maximized, it's smaller, and held at the same spot in
+                // proportion.
+                const { w, h } = drag.taken.tile.size;
+                if (w !== drag.rect.w || h !== drag.rect.h) {
+                    drag.offset = { x: (drag.offset.x * w) / drag.rect.w, y: (drag.offset.y * h) / drag.rect.h };
+                    drag.rect = { ...drag.rect, w, h };
+                }
+                win.node.set({ opacity: DRAG_OPACITY, transitions: { opacity: "window-movement" } });
+            }
+            follow(e.workspace, e.pointer);
+        });
+
+        win.addEventListener("dragend", (e) => {
+            if (drag === null) return;
+            const { strip, from, taken, workspace, pointer } = finish();
+            if (taken === null) {
+                // It held its place, maybe pulled along a little.
+                stripWith(win)?.dragSettle();
+                return;
+            }
+            win.node.set({ opacity: 1 });
+            const target = workspace === null ? undefined : strips.get(workspace.id);
+            if (e.dropped && target !== undefined) {
+                target.dragDrop(win, taken, pointer);
+            } else if (strips.get(from.id) === strip) {
+                if (win.workspace !== from) win.moveTo(from);
+                strip.dragReturn(taken);
+            } else {
+                // The workspace it came from is gone: it gets a column where it is.
+                stripOf(win.workspace).windowAdded(win, {
+                    reason: "move",
+                    activate: true,
+                    rect: null,
+                    nextTo: null,
+                });
+            }
+        });
+
+        // A window closed or floating mid-drag takes the drag with it.
+        win.addEventListener("remove", () => {
+            if (drag !== null) finish();
+        });
     }
 
     // Across strips.
@@ -3407,7 +3748,6 @@ export default function create(bento) {
             reason: e.reason,
             activate: e.activate,
             rect: e.rect,
-            pointer: e.pointer,
             nextTo: e.nextTo,
         });
     });

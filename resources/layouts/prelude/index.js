@@ -7,29 +7,22 @@
 // cancelable one was prevented, or the answer to a query. The node test harness in `test/host.js`
 // uses it the same way, so engines behave the same in tests and in bento.
 //
-// See `bento-layout.d.ts` for the API that engines see, and `v1.js` for API 1 engines.
+// See `bento-layout.d.ts` for the API that engines see.
 
 import { BentoEvent, QueryEvent, UnloadEvent, dispatch, listenerCount, response, setErrorSink } from "./events.js";
 import { setGroupIdSource } from "./groups.js";
 import { dispatchPointer } from "./nodes.js";
 import { Session, heldModifiers } from "./objects.js";
-import { V1Adapter } from "./v1.js";
+import { ARG_TYPES, VALUE_TYPES, checkActions, checkSettings } from "./declare.js";
 
 export { setGroupIdSource };
 
-const API_VERSIONS = [1, 2];
+/** The version of the API that bento runs engines for. */
+const API_VERSION = 2;
 
 let layoutModule = null;
 let meta = null;
 let session = null;
-let adapter = null;
-
-// Colours and gradients are for options and window rules: binds write an action's arguments as
-// plain values.
-const ARG_VALUE_TYPES = ["boolean", "number", "string", "choice", "size"];
-const VALUE_TYPES = [...ARG_VALUE_TYPES, "color", "gradient"];
-const V1_VALUE_TYPES = ["boolean", "number", "string"];
-const ARG_TYPES = [...ARG_VALUE_TYPES, "workspace", "monitor"];
 
 /** Sets the engine's module, with its `meta` and default export. Returns the engine's metadata. */
 export function load(module) {
@@ -37,9 +30,10 @@ export function load(module) {
     if (given === null || typeof given !== "object") {
         throw new Error("the layout engine must export `meta`");
     }
-    if (!API_VERSIONS.includes(given.api)) {
+    if (given.api !== API_VERSION) {
         throw new Error(
-            `the layout engine is for API version ${given.api}, bento has versions ${API_VERSIONS.join(" and ")}`,
+            `the layout engine is for API version ${given.api}, and bento runs engines for version ` +
+                `${API_VERSION} only: see bento-layout.d.ts to port it`,
         );
     }
     if (typeof given.name !== "string") {
@@ -48,18 +42,12 @@ export function load(module) {
     if (typeof module.default !== "function") {
         throw new Error("the layout engine must export a default function that creates the engine");
     }
-    const api = given.api;
-    const valueTypes = api === 1 ? V1_VALUE_TYPES : VALUE_TYPES;
-    const argTypes = api === 1 ? ARG_VALUE_TYPES : ARG_TYPES;
-
-    const actions = given.actions ?? {};
-    const options = given.options ?? {};
-    const windowRules = api === 1 ? {} : (given.windowRules ?? {});
-    const actionArgs = new Map(
-        Object.entries(actions).map(([name, spec]) => [name, checkArgs(name, spec?.args, argTypes)]),
-    );
-    checkSpecs("option", options, valueTypes);
-    checkSpecs("window rule", windowRules, valueTypes);
+    if (given.options !== undefined) {
+        throw new Error("`meta.options` is `meta.settings`, as a shell's are");
+    }
+    const actions = checkActions(given.actions, ARG_TYPES);
+    const settings = checkSettings("setting", given.settings, VALUE_TYPES);
+    const windowRules = checkSettings("window rule", given.windowRules, VALUE_TYPES);
     if (given.floating !== undefined && typeof given.floating !== "boolean") {
         throw new Error("`meta.floating` must be a boolean");
     }
@@ -71,124 +59,20 @@ export function load(module) {
     }
 
     layoutModule = module;
-    meta = { ...given, actions, options, windowRules };
+    // Action arguments by name, as declared, for the actions as they come.
+    meta = { ...given, actions: Object.fromEntries(actions.map((action) => [action.name, action])) };
     session = null;
-    adapter = null;
 
-    // Descriptions are only documentation, so a malformed one is dropped instead of failing the
-    // load. Lists keep the order the engine declares things in, for settings screens.
-    const text = (value) => (typeof value === "string" ? value : null);
-    const specJson = ([name, spec]) => ({
-        name,
-        type: spec.type,
-        list: spec.list === true,
-        default: spec.default ?? null,
-        choices: spec.type === "choice" ? spec.choices : [],
-        description: text(spec.description),
-    });
     return JSON.stringify({
         name: given.name,
-        api,
-        description: text(given.description),
-        actions: Object.entries(actions).map(([name, spec]) => ({
-            name,
-            description: text(spec?.description),
-            args: actionArgs.get(name),
-        })),
-        options: Object.entries(options).map(specJson),
-        windowRules: Object.entries(windowRules).map(specJson),
+        api: API_VERSION,
+        description: typeof given.description === "string" ? given.description : null,
+        actions,
+        settings,
+        windowRules,
         floating: given.floating !== false,
         minimize: given.minimize === true,
         freeDrag: given.freeDrag === true,
-    });
-}
-
-/** Checks the declarations of options or window rules, which have the same shape. */
-function checkSpecs(what, specs, types) {
-    for (const [name, spec] of Object.entries(specs)) {
-        if (spec === null || typeof spec !== "object" || !types.includes(spec.type)) {
-            throw new Error(`${what} ${name} has an unknown type: ${spec?.type}`);
-        }
-        if (spec.type === "choice") {
-            const choices = spec.choices;
-            if (!Array.isArray(choices) || choices.length === 0 || !choices.every((c) => typeof c === "string")) {
-                throw new Error(`${what} ${name} is a choice, so it needs a list of choices`);
-            }
-        }
-        if (spec.list !== undefined && typeof spec.list !== "boolean") {
-            throw new Error(`\`list\` of ${what} ${name} must be a boolean`);
-        }
-        if (spec.type === "gradient" && spec.list === true) {
-            // A gradient is written with the properties of its node, so a node holds one.
-            throw new Error(`${what} ${name} is a gradient, which can't be a list`);
-        }
-    }
-}
-
-
-/**
- * Checks the arguments that action `name` declares, and returns them as bento reads them. An
- * action that declares none takes none. A plain string, the older way to declare an argument, is
- * an argument of any type that may be left out.
- */
-function checkArgs(name, args, types) {
-    if (args === undefined) {
-        return [];
-    }
-    if (!Array.isArray(args)) {
-        throw new Error(`the arguments of action ${name} must be an array`);
-    }
-    let optional = false;
-    return args.map((arg, i) => {
-        if (typeof arg === "string") {
-            arg = { name: arg };
-        }
-        const label = `argument ${i + 1} of action ${name}`;
-        if (arg === null || typeof arg !== "object" || typeof arg.name !== "string") {
-            throw new Error(`${label} must have a name`);
-        }
-        const type = arg.type ?? null;
-        if (type !== null && !types.includes(type)) {
-            throw new Error(`${label} has an unknown type: ${type}`);
-        }
-        const choices = arg.choices ?? [];
-        if (type === "choice") {
-            if (!Array.isArray(choices) || choices.length === 0) {
-                throw new Error(`${label} is a choice, so it needs a list of choices`);
-            }
-            if (!choices.every((choice) => typeof choice === "string")) {
-                throw new Error(`the choices of ${label} must be strings`);
-            }
-        }
-        const value = arg.default ?? null;
-        if (type === null) {
-            // Untyped arguments aren't checked, so they never have to be given.
-        } else if (value !== null) {
-            const valid = {
-                boolean: typeof value === "boolean",
-                number: typeof value === "number",
-                string: typeof value === "string",
-                choice: choices.includes(value),
-                size: typeof value === "string",
-                workspace: typeof value === "number" || typeof value === "string",
-                monitor: typeof value === "string",
-            }[type];
-            if (!valid) {
-                throw new Error(`the default of ${label} doesn't fit its type`);
-            }
-            optional = true;
-        } else if (optional) {
-            // Arguments are given in order, so one that must be given can't follow one that can
-            // be left out.
-            throw new Error(`${label} has no default, but an argument before it has one`);
-        }
-        return {
-            name: arg.name,
-            type,
-            default: value,
-            choices: type === "choice" ? choices : [],
-            description: typeof arg.description === "string" ? arg.description : null,
-        };
     });
 }
 
@@ -266,29 +150,15 @@ export function handle(callJson) {
 /** Creates the engine for the session, and adds the windows that are already there. */
 function create(call) {
     const event = call.event;
-    session = new Session(meta, event.options, event.savedState);
+    session = new Session(meta, event.settings, event.savedState);
     session.setModifiers(event.modifiers);
-    adapter = null;
     // The engine learns about what's there when it looks, not from events. Groups need the windows.
     const { groups, ...sync } = call.sync;
     session.applySync(sync);
 
-    const windows = event.windows.map((info) => {
-        const d = session.addWindow(info);
-        if (meta.api === 1) {
-            d.rect = info.rect ? Object.freeze({ ...info.rect }) : null;
-        }
-        return { d, info };
-    });
+    const windows = event.windows.map((info) => ({ d: session.addWindow(info), info }));
 
     session.groups.apply(groups ?? []);
-
-    if (meta.api === 1) {
-        adapter = new V1Adapter(session, layoutModule);
-        adapter.start();
-        adapter.adopt(windows.map(({ d }) => d.facade));
-        return;
-    }
 
     layoutModule.default(session.bento);
     const focus = session.focusKey();
@@ -396,7 +266,6 @@ function deliver(event) {
                     reason: how.reason,
                     activate: how.activate,
                     rect: how.rect ?? null,
-                    pointer: how.pointer ?? null,
                     nextTo: how.nextTo === null || how.nextTo === undefined ? null : (bento.window(how.nextTo) ?? null),
                 }),
             );
@@ -487,23 +356,26 @@ function deliver(event) {
             dispatch(ws, new BentoEvent("camerachange", ws));
             return null;
         }
-        case "dragenter":
-        case "dragmove":
-        case "dragleave": {
-            const ws = mustWorkspace(event.workspace);
-            const type = event.type;
-            if (type === "dragleave") {
-                dispatch(ws, new BentoEvent(type, ws));
-            } else {
-                dispatch(
-                    ws,
-                    new BentoEvent(type, ws, {
-                        window: session.detachedWindow(event.window),
-                        pointer: { ...event.pointer },
-                        rect: { ...event.rect },
-                    }),
-                );
-            }
+        case "dragstart": {
+            const win = mustWindow(event.id);
+            dispatch(win, new BentoEvent("dragstart", win, { offset: { ...event.offset }, pointer: { ...event.pointer } }));
+            return null;
+        }
+        case "dragmove": {
+            const win = mustWindow(event.id);
+            const over = event.workspace === null ? null : mustWorkspace(event.workspace);
+            dispatch(
+                win,
+                new BentoEvent("dragmove", win, {
+                    workspace: over,
+                    pointer: event.pointer === null ? null : { ...event.pointer },
+                }),
+            );
+            return null;
+        }
+        case "dragend": {
+            const win = mustWindow(event.id);
+            dispatch(win, new BentoEvent("dragend", win, { dropped: event.dropped }));
             return null;
         }
         case "swipebegin":

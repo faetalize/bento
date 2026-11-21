@@ -12,7 +12,7 @@ use tracing::warn;
 
 use crate::input::ModKey;
 use crate::recent_windows::{MruDirection, MruFilter, MruScope};
-use crate::tiling::{EngineFile, TilingOption};
+use crate::tiling::{EngineFile, ShellFile, TilingOption};
 use crate::utils::{expect_only_children, MergeWith};
 
 #[derive(Debug, Default, PartialEq)]
@@ -366,10 +366,11 @@ pub enum Action {
     ),
     SwitchLayout(#[knuffel(argument, str)] LayoutSwitchTarget),
     ShowHotkeyOverlay,
-    ToggleLauncher,
-    EditWorkspace,
-    ToggleClipboard,
-    SwitchAudioOutput,
+    /// One of the shell's own actions, by the name its module gives it, with its arguments.
+    ShellAction(
+        #[knuffel(argument)] String,
+        #[knuffel(arguments)] Vec<String>,
+    ),
     MoveWorkspaceToMonitorLeft,
     MoveWorkspaceToMonitorRight,
     MoveWorkspaceToMonitorDown,
@@ -585,10 +586,7 @@ impl From<niri_ipc::Action> for Action {
             ),
             niri_ipc::Action::SwitchLayout { layout } => Self::SwitchLayout(layout),
             niri_ipc::Action::ShowHotkeyOverlay {} => Self::ShowHotkeyOverlay,
-            niri_ipc::Action::ToggleLauncher {} => Self::ToggleLauncher,
-            niri_ipc::Action::EditWorkspace {} => Self::EditWorkspace,
-            niri_ipc::Action::ToggleClipboard {} => Self::ToggleClipboard,
-            niri_ipc::Action::SwitchAudioOutput {} => Self::SwitchAudioOutput,
+            niri_ipc::Action::ShellAction { name, args } => Self::ShellAction(name, args),
             niri_ipc::Action::MoveWorkspaceToMonitorLeft {} => Self::MoveWorkspaceToMonitorLeft,
             niri_ipc::Action::MoveWorkspaceToMonitorRight {} => Self::MoveWorkspaceToMonitorRight,
             niri_ipc::Action::MoveWorkspaceToMonitorDown {} => Self::MoveWorkspaceToMonitorDown,
@@ -759,7 +757,8 @@ where
         let mut nodes: Vec<&knuffel::ast::SpannedNode<S>> = Vec::new();
         let mut binds: Vec<Bind> = Vec::new();
 
-        for child in node.children() {
+        // `unbind` turns a shortcut off; `decode_unbinds` reads those.
+        for child in node.children().filter(|c| &**c.node_name != UNBIND) {
             match Bind::decode_node(child, ctx) {
                 Err(e) => {
                     ctx.emit_error(e);
@@ -904,40 +903,7 @@ where
         let mut press_action: Option<Action> = None;
         let mut release_action: Option<Action> = None;
 
-        let engine_file = ctx.get::<EngineFile>().is_some();
-        let decode_action = |ctx: &mut knuffel::decode::Context<S>,
-                             child: &knuffel::ast::SpannedNode<S>| {
-            match Action::decode_node(child, ctx) {
-                // `layout-action` is for the command line. In a config, the engine's actions are
-                // bound by name in its own file, so the main config's binds work under every
-                // engine.
-                Ok(Action::LayoutAction(..)) => {
-                    ctx.emit_error(DecodeError::unexpected(
-                        &child.node_name,
-                        "action",
-                        if engine_file {
-                            "write the engine's action by its name, like `split-h;`"
-                        } else {
-                            "engine actions are bound by name in the engine's own file, like \
-                             `engines/bento.kdl` next to this config"
-                        },
-                    ));
-                    None
-                }
-                Ok(action) => Some(action),
-                // In the engine's file, a name that isn't one of bento's actions is the engine's.
-                // Whether the engine has it is checked when the engine runs.
-                Err(DecodeError::Conversion { span, .. })
-                    if engine_file && is_span(&span, child.node_name.span()) =>
-                {
-                    engine_action(child, ctx)
-                }
-                Err(e) => {
-                    ctx.emit_error(e);
-                    None
-                }
-            }
-        };
+        let decode_action = decode_bound_action::<S>;
 
         for child in node.children() {
             let child_name = &*child.node_name;
@@ -1091,6 +1057,133 @@ where
     }
 }
 
+/// The action a bind or an `unbind` names, in the main config, in an engine's file, where a name
+/// that isn't one of bento's actions is the engine's, or in the shell's file, where every action
+/// is the shell's.
+fn decode_bound_action<S: knuffel::traits::ErrorSpan>(
+    ctx: &mut knuffel::decode::Context<S>,
+    child: &knuffel::ast::SpannedNode<S>,
+) -> Option<Action> {
+    let engine_file = ctx.get::<EngineFile>().is_some();
+    let shell_file = ctx.get::<ShellFile>().is_some();
+    match <Action as knuffel::Decode<S>>::decode_node(child, ctx) {
+        // In the shell's file, binds are the shell's actions', by name. bento's own are bound
+        // in the main config.
+        Ok(_) if shell_file => {
+            ctx.emit_error(DecodeError::unexpected(
+                &child.node_name,
+                "action",
+                "the shell's file binds the shell's actions, by name, like \
+                 `toggle-start-menu;`; bento's own actions are bound in the main config",
+            ));
+            None
+        }
+        // `layout-action` is for the command line. In a config, the engine's actions are
+        // bound by name in its own file, so the main config's binds work under every
+        // engine.
+        Ok(Action::LayoutAction(..)) => {
+            ctx.emit_error(DecodeError::unexpected(
+                &child.node_name,
+                "action",
+                if engine_file {
+                    "write the engine's action by its name, like `split-h;`"
+                } else {
+                    "engine actions are bound by name in the engine's own file, like \
+                         `engines/bento.kdl` next to this config"
+                },
+            ));
+            None
+        }
+        Ok(action) => Some(action),
+        // In the engine's file, a name that isn't one of bento's actions is the engine's.
+        // Whether the engine has it is checked when the engine runs.
+        Err(DecodeError::Conversion { span, .. })
+            if engine_file && is_span(&span, child.node_name.span()) =>
+        {
+            engine_action(child, ctx)
+        }
+        // In the shell's file, every action is the shell's. Whether the shell has it is checked
+        // when the shell runs.
+        Err(DecodeError::Conversion { span, .. })
+            if shell_file && is_span(&span, child.node_name.span()) =>
+        {
+            shell_action(child, ctx)
+        }
+        Err(e) => {
+            ctx.emit_error(e);
+            None
+        }
+    }
+}
+
+/// The shortcuts a `binds` section turns off with `unbind`, each named the way a bind writes its
+/// action: `unbind { focus-workspace 1; }`.
+pub fn decode_unbinds<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    for child in node.children().filter(|c| &**c.node_name == UNBIND) {
+        let mut inner = child.children();
+        let Some(action) = inner.next() else {
+            ctx.emit_error(DecodeError::missing(
+                child,
+                "expected the action to turn off, like `unbind { focus-workspace 1; }`",
+            ));
+            continue;
+        };
+        for extra in inner {
+            ctx.emit_error(DecodeError::unexpected(
+                extra,
+                "node",
+                "only one action is turned off per unbind",
+            ));
+        }
+        actions.extend(decode_bound_action(ctx, action));
+    }
+    actions
+}
+
+/// The file a bind is written in, which says how it names its action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindFile {
+    /// The main config: bento's actions, and `shell-action` for a shell outside bento.
+    Main,
+    /// An engine's file, where the engine's actions are written by bare name.
+    Engine,
+    /// The shell's file, where only the shell's actions are written, by bare name.
+    Shell,
+}
+
+/// The action written as `text`, the way a bind in `file` writes it, like `spawn "foot"` or
+/// `move-window-to-workspace 2 focus=false`. `None` if it isn't one.
+pub fn parse_action(text: &str, file: BindFile) -> Option<Action> {
+    struct One(Option<Action>);
+    impl<S: knuffel::traits::ErrorSpan> knuffel::DecodeChildren<S> for One {
+        fn decode_children(
+            nodes: &[knuffel::ast::SpannedNode<S>],
+            ctx: &mut knuffel::decode::Context<S>,
+        ) -> Result<Self, DecodeError<S>> {
+            match nodes {
+                [node] => Ok(One(decode_bound_action(ctx, node))),
+                _ => Ok(One(None)),
+            }
+        }
+    }
+    let parsed =
+        knuffel::parse_with_context::<One, knuffel::span::Span, _>("action.kdl", text, |ctx| {
+            match file {
+                BindFile::Main => (),
+                BindFile::Engine => ctx.set(EngineFile),
+                BindFile::Shell => ctx.set(ShellFile),
+            }
+        });
+    parsed.ok().and_then(|one| one.0)
+}
+
+/// The node that turns a shortcut off in a `binds` section.
+pub const UNBIND: &str = "unbind";
+
 fn is_span<S: knuffel::traits::ErrorSpan>(a: &S, b: &S) -> bool {
     let a: miette::SourceSpan = a.clone().into();
     let b: miette::SourceSpan = b.clone().into();
@@ -1098,6 +1191,38 @@ fn is_span<S: knuffel::traits::ErrorSpan>(a: &S, b: &S) -> bool {
 }
 
 /// Reads an engine action written by bare name, like `resize 2 "right"`.
+/// A shell action written by its name, with its arguments written as text.
+fn shell_action<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Option<Action> {
+    for name in node.properties.keys() {
+        ctx.emit_error(DecodeError::unexpected(
+            name,
+            "property",
+            format!("unexpected property `{}`", name.escape_default()),
+        ));
+    }
+    if let Some(child) = node.children().next() {
+        ctx.emit_error(DecodeError::unexpected(
+            child,
+            "node",
+            "shell actions take arguments, not children",
+        ));
+    }
+    let mut args = Vec::new();
+    for value in &node.arguments {
+        match knuffel::traits::DecodeScalar::decode(value, ctx) {
+            Ok(TilingOption::String(text)) => args.push(text),
+            Ok(TilingOption::Number(n)) => args.push(n.to_string()),
+            Ok(TilingOption::Bool(b)) => args.push(b.to_string()),
+            Ok(TilingOption::Gradient(_)) => (),
+            Err(err) => ctx.emit_error(err),
+        }
+    }
+    Some(Action::ShellAction(String::from(&**node.node_name), args))
+}
+
 fn engine_action<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
@@ -1267,6 +1392,32 @@ impl FromStr for Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_action_is_parsed_as_a_bind_writes_it() {
+        assert_eq!(
+            parse_action("spawn \"foot\";", BindFile::Main),
+            Some(Action::Spawn(vec![String::from("foot")]))
+        );
+        assert_eq!(
+            parse_action("shell-action \"toggle-start-menu\";", BindFile::Main),
+            Some(Action::ShellAction(
+                String::from("toggle-start-menu"),
+                Vec::new()
+            ))
+        );
+        // An engine's action by bare name, only as in the engine's file.
+        assert_eq!(
+            parse_action("move-to-workspace 1;", BindFile::Engine),
+            Some(Action::LayoutAction(
+                String::from("move-to-workspace"),
+                vec![crate::TilingOption::Number(1.)],
+                None
+            ))
+        );
+        assert_eq!(parse_action("move-to-workspace 1;", BindFile::Main), None);
+        assert_eq!(parse_action("nonsense {", BindFile::Main), None);
+    }
 
     #[test]
     fn parse_xf86_screensaver() {

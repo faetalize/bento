@@ -895,20 +895,19 @@ impl ViewPos {
 
 impl WindowMruUi {
     pub fn new(config: Rc<RefCell<Config>>) -> Self {
-        let mut rv = Self {
+        Self {
             state: UiState::Closed {
                 previous_scope: MruScope::default(),
             },
             preset_opened_binds: make_preset_opened_binds(),
             dynamic_opened_binds: Vec::new(),
             config,
-        };
-        rv.update_binds();
-        rv
+        }
     }
 
-    pub fn update_binds(&mut self) {
-        self.dynamic_opened_binds = make_dynamic_opened_binds(&self.config.borrow());
+    /// Takes the keys that close a window and take a screenshot from `binds`, the binds in use.
+    pub fn update_binds(&mut self, binds: &[Bind]) {
+        self.dynamic_opened_binds = make_dynamic_opened_binds(binds);
     }
 
     pub fn update_config(&mut self) {
@@ -1879,10 +1878,10 @@ fn make_preset_opened_binds() -> Vec<Bind> {
 /// Returns dynamic key bindings available when the MRU UI is open.
 ///
 /// These ones are generated based on the normal bindings.
-fn make_dynamic_opened_binds(config: &Config) -> Vec<Bind> {
+fn make_dynamic_opened_binds(in_use: &[Bind]) -> Vec<Bind> {
     let mut binds: HashMap<Trigger, Vec<Bind>> = HashMap::new();
 
-    for bind in &config.binds.0 {
+    for bind in in_use {
         let Some(press_action) = bind.press_action() else {
             continue;
         };
