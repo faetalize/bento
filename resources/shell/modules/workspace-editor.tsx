@@ -28,7 +28,7 @@ function taken(name: string, id: number) {
     .find((ws) => ws.id !== id && (ws.name ?? "").toLowerCase() === wanted);
 }
 
-/** The editor, opened by its shortcut for the focused workspace. */
+/** The editor, opened by its bind for the focused workspace. */
 export function WorkspaceEditor() {
   // The workspace it edits, as it was when it opened.
   const [editing, setEditing] = createSignal<{ output: string; id: number; index: number; original: string } | null>(null);

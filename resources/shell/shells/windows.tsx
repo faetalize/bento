@@ -98,7 +98,7 @@ function Taskbar(props: { output: string }) {
   const start = `start:${output}`;
   const quick = `quick:${output}`;
   const calendar = `calendar:${output}`;
-  // The clipboard's shortcut opens this too, by its name.
+  // The clipboard's bind opens this too, by its name.
   const clipboard = `clipboard:${output}`;
   const [bar, setBar] = createSignal<any>(null);
   const [startButton, setStartButton] = createSignal<any>(null);

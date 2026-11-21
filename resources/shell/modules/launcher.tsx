@@ -1,6 +1,6 @@
 // The launcher: a glass search field in the middle of the focused output that finds apps as
 // they're typed, its results opening below it. It grows out of a point, and shrinks back into
-// one. Its shortcut opens it, and Escape or a press elsewhere closes it.
+// one. Its bind opens it, and Escape or a press elsewhere closes it.
 
 import { Surface, focusedOutput, onAction, outputs, useModule, type Meta } from "bento";
 import { createEffect, createSignal, For, Show } from "solid-js";

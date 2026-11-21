@@ -416,7 +416,7 @@ export const meta = {
 
 const { settings } = useModule(import.meta, meta);
 
-// The clipboard's shortcut opens the history in the focused output's status island.
+// The clipboard's bind opens the history in the focused output's status island.
 onAction("toggle-clipboard", ({ output }) => {
   popup.toggle(`clipboard:${output ?? focusedOutput() ?? outputs()[0]}`);
 });

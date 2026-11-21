@@ -604,8 +604,8 @@ declare module "bento" {
   //       pinned "firefox" "org.gnome.Nautilus"
   //   }
   //
-  // An action is something a shortcut does, which a bind runs with `shell-action "name"`, and
-  // which bento's settings list with bento's own:
+  // An action is something a bind runs, by its name in its block of the shell's file, and which
+  // bento's settings list with bento's own:
   //
   //   export const meta = {
   //     settings: {

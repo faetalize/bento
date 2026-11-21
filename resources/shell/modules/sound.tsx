@@ -67,7 +67,7 @@ export const meta = {
       list: true,
       default: [] as string[],
       description:
-        "The sound outputs that the output switcher and the Switch Sound Output shortcut go " +
+        "The sound outputs that the output switcher and the Switch Sound Output bind go " +
         "through, by their name in the sound server.",
     },
   },
