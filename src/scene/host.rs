@@ -273,7 +273,7 @@ pub struct SceneHost {
     moving: bool,
     sent_workspaces: Option<serde_json::Value>,
     sent_fullscreen: Option<serde_json::Value>,
-    sent_minimap: Option<serde_json::Value>,
+    sent_overview: Option<bool>,
     sent_windows: Option<serde_json::Value>,
     /// The notifications showing, by id, to tell a shell loaded again.
     notifications: Vec<serde_json::Value>,
@@ -384,7 +384,7 @@ impl SceneHost {
                     self.known_outputs = outputs.iter().map(|(n, _)| n.clone()).collect();
                     self.sent_workspaces = None;
                     self.sent_fullscreen = None;
-                    self.sent_minimap = None;
+                    self.sent_overview = None;
                     self.sent_windows = None;
                     self.generation += 1;
                     settings.borrow().warn_problems();
@@ -792,16 +792,15 @@ impl SceneHost {
         self.sent_fullscreen = Some(outputs);
     }
 
-    /// Tells the shell where the tiles of each output's workspace sit around its view, by the
-    /// output's name, when that changes.
-    pub fn set_minimap(&mut self, outputs: serde_json::Value) {
-        if self.sent_minimap.as_ref() == Some(&outputs) {
+    /// Tells the shell whether the overview is open, when that changes.
+    pub fn set_overview(&mut self, open: bool) {
+        if self.sent_overview == Some(open) {
             return;
         }
         if let Some(shell) = &self.shell {
-            shell.send(&serde_json::json!({ "type": "minimap", "outputs": outputs }));
+            shell.send(&serde_json::json!({ "type": "overview", "open": open }));
         }
-        self.sent_minimap = Some(outputs);
+        self.sent_overview = Some(open);
     }
 
     /// Runs one of the shell's own actions, as a bind asked, with the output that has the focus.
@@ -1823,7 +1822,10 @@ mod tests {
             .into_iter()
             .flat_map(|band| scene.draw("DP-1", band))
             .filter_map(|item| match item {
-                Item::Shape { rect, .. } if rect[1] > 1032. && rect[3] == 3. => Some(rect),
+                // The overview's button has pips as wide as they're tall.
+                Item::Shape { rect, .. } if rect[1] > 1032. && rect[3] == 3. && rect[2] > 3. => {
+                    Some(rect)
+                }
                 _ => None,
             })
             .collect();
@@ -1891,6 +1893,264 @@ mod tests {
         host.pointer_at(Some(("DP-1", button)));
         settle(&mut host, &mut now);
         assert_eq!(copied(&host), [1, 2, 3]);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    /// The windows shell on an output with the workspaces `names`, the one at `active` current.
+    fn windows_shell_with_workspaces(
+        names: &[Option<&str>],
+        active: usize,
+    ) -> (SceneHost, Instant) {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        show_workspaces(&mut host, &mut now, names, active);
+        commands(&host);
+        host.take_actions();
+        (host, now)
+    }
+
+    fn show_workspaces(
+        host: &mut SceneHost,
+        now: &mut Instant,
+        names: &[Option<&str>],
+        active: usize,
+    ) {
+        let list: Vec<serde_json::Value> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                serde_json::json!({
+                    "index": index, "name": name, "active": index == active,
+                    "focused": index == active, "id": 10 + index,
+                })
+            })
+            .collect();
+        host.set_workspaces(serde_json::json!({ "DP-1": list }));
+        settle(host, now);
+    }
+
+    /// The pips on the overview's button, from the top: how tall each is drawn, and how opaque.
+    fn pips(host: &SceneHost) -> Vec<(f32, f32)> {
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let mut pips: Vec<([f32; 4], f32)> = Band::ALL
+            .into_iter()
+            .flat_map(|band| scene.draw("DP-1", band))
+            .filter_map(|item| match item {
+                Item::Shape { rect, opacity, .. }
+                    if rect[1] > 1032. && rect[2] <= 3. && rect[3] <= 10. && opacity > 0. =>
+                {
+                    Some((rect, opacity))
+                }
+                _ => None,
+            })
+            .collect();
+        pips.sort_by(|a, b| a.0[1].total_cmp(&b.0[1]));
+        pips.into_iter().map(|(rect, o)| (rect[3], o)).collect()
+    }
+
+    #[test]
+    fn the_overviews_button_says_which_workspace_is_current() {
+        let names = [None, Some("web"), None];
+        let (mut host, mut now) = windows_shell_with_workspaces(&names, 0);
+        assert!(shows(&host, "DP-1", "Workspace 1"));
+        let heights = |host: &SceneHost| -> Vec<f32> {
+            pips(host).into_iter().map(|(height, _)| height).collect()
+        };
+        assert_eq!(heights(&host), [10., 3., 3.]);
+
+        show_workspaces(&mut host, &mut now, &names, 1);
+        assert!(shows(&host, "DP-1", "web"));
+        assert!(!shows(&host, "DP-1", "Workspace 1"));
+        assert_eq!(heights(&host), [3., 10., 3.]);
+
+        // Of many, five show around the current one, smaller at an end with more past it.
+        let many = [None; 12];
+        show_workspaces(&mut host, &mut now, &many, 5);
+        let shown = pips(&host);
+        assert_eq!(shown.len(), 5, "{shown:?}");
+        assert_eq!(shown[2].0, 10., "{shown:?}");
+        assert!(shown[0].0 < 3. && shown[4].0 < 3., "{shown:?}");
+        show_workspaces(&mut host, &mut now, &many, 11);
+        let shown = pips(&host);
+        assert_eq!(shown.len(), 5, "{shown:?}");
+        assert_eq!(shown[4].0, 10., "{shown:?}");
+        assert!(shown[0].0 < 3., "{shown:?}");
+
+        // The icon is filled while the overview is open.
+        assert!(!shows(&host, "DP-1", "ph-cards-three-fill-symbolic"));
+        host.set_overview(true);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "ph-cards-three-fill-symbolic"));
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn the_overviews_button_shows_what_its_settings_say() {
+        let names = [None, Some("web"), None];
+        let (mut host, mut now) = windows_shell_with_workspaces(&names, 1);
+        let settings = host.settings.clone().unwrap();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let mut set = |host: &mut SceneHost, text: &str| {
+            settings.borrow_mut().write_file(text);
+            host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+            settle(host, &mut now);
+        };
+        assert!(!shows(&host, "DP-1", "2"), "no number in the icon");
+        set(&mut host, "overview {\n    workspace-number true\n}\n");
+        assert!(shows(&host, "DP-1", "2"));
+
+        // With all of it off, it's an icon that opens the overview and no more.
+        set(
+            &mut host,
+            "overview {\n    workspace-names false\n    workspace-pips false\n    \
+             hover-previews false\n    scroll-to-switch false\n}\n",
+        );
+        assert!(!shows(&host, "DP-1", "web"));
+        assert!(pips(&host).is_empty());
+        let button = middle_of(&host, "DP-1", "ph-cards-three-symbolic");
+        assert!(host.covers_any("DP-1", button));
+        host.pointer_moved(SceneHost::at("DP-1", button));
+        host.pointer_at(Some(("DP-1", button)));
+        host.scroll([0., 15.]);
+        set(&mut host, "overview {\n    workspace-names false\n    hover-previews false\n    scroll-to-switch false\n}\n");
+        assert!(host.take_actions().is_empty());
+        assert!(!shows(&host, "DP-1", "Workspace 3"), "no previews");
+        click(&mut host, "DP-1", button);
+        assert_eq!(host.take_actions()[0]["name"], "toggle-overview");
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    /// Shells that use it keep working.
+    #[test]
+    fn minimap_says_where_the_active_workspaces_windows_are() {
+        let dir = std::env::temp_dir().join(format!("bento-minimap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tsx");
+        std::fs::write(
+            &main,
+            "import { Surface, minimap } from \"bento\";\n\
+             export default () => (\n\
+             <Surface output=\"DP-1\" anchor={[\"top\", \"left\"]}>\n\
+             <text>{JSON.stringify(minimap(\"DP-1\"))}</text>\n\
+             </Surface>\n);\n",
+        )
+        .unwrap();
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = main.to_string_lossy().into_owned();
+        host.ensure_loaded(
+            &outputs,
+            None,
+            &entry,
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(host.load_error, None);
+        let mut now = Instant::now();
+        show_workspaces(&mut host, &mut now, &[None, None], 0);
+        let window = |id: u64, workspace: u64, rect: serde_json::Value| {
+            serde_json::json!({
+                "id": id, "workspace": workspace, "output": "DP-1", "active": id == 1,
+                "focused": false, "floating": false, "rect": rect,
+            })
+        };
+        let rect = serde_json::json!({ "x": -8, "y": 4, "width": 960, "height": 540 });
+        host.set_windows(serde_json::json!([
+            window(1, 10, rect.clone()),
+            window(2, 10, serde_json::Value::Null),
+            window(3, 11, rect),
+        ]));
+        settle(&mut host, &mut now);
+        let wanted =
+            "{\"view\":[1920,1080],\"tiles\":[{\"id\":1,\"x\":-8,\"y\":4,\"w\":960,\"h\":540,\
+                      \"active\":true,\"floating\":false}]}";
+        assert!(shows(&host, "DP-1", wanted));
+    }
+
+    #[test]
+    fn scrolling_over_the_overviews_button_switches_and_holds_its_previews_back() {
+        let names = [None, Some("web"), None];
+        let (mut host, mut now) = windows_shell_with_workspaces(&names, 0);
+        let window = |id: u64, workspace: u64, rect: serde_json::Value| {
+            serde_json::json!({
+                "id": id, "workspace": workspace, "output": "DP-1", "active": true,
+                "floating": false, "rect": rect,
+            })
+        };
+        let full = serde_json::json!({ "x": 0, "y": 0, "width": 960, "height": 540 });
+        // From the front to the back, and one that isn't anywhere.
+        host.set_windows(serde_json::json!([
+            window(1, 10, full.clone()),
+            window(2, 10, full.clone()),
+            window(3, 11, full),
+            window(4, 11, serde_json::Value::Null),
+        ]));
+        settle(&mut host, &mut now);
+        // The end of its name, which is off a button that fits a shorter one.
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let name = scene.find("DP-1", "Workspace 1")[0];
+        drop(scene);
+        let button = [name[0] + name[2] - 2., name[1] + name[3] / 2.];
+        assert!(host.covers_any("DP-1", button));
+        host.pointer_moved(SceneHost::at("DP-1", button));
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        // Every workspace's windows, the one in front over the others.
+        assert_eq!(copied(&host), [2, 1, 3]);
+        let scale = 180. / 1920.;
+        let copies: Vec<_> = Band::ALL
+            .into_iter()
+            .flat_map(|band| host.copies("DP-1", band))
+            .collect();
+        assert!((copies[0].rect[2] - 960. * scale).abs() < 0.5);
+
+        // A notch goes one on.
+        host.scroll([0., 15.]);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "focus-workspace");
+        assert_eq!(ran[0]["workspace"], 11);
+        // It's still under the pointer, though its name is shorter.
+        show_workspaces(&mut host, &mut now, &names, 1);
+        let held = middle_of(&host, "DP-1", "web");
+        host.scroll([0., 15.]);
+        let ran = host.take_actions();
+        assert!(!ran.is_empty(), "the button went from under the pointer");
+        assert_eq!(ran[0]["workspace"], 12);
+        // Past the last there's nowhere to go, and it still holds them back.
+        show_workspaces(&mut host, &mut now, &names, 2);
+        for _ in 0..12 {
+            host.scroll([0., 15.]);
+            now += Duration::from_millis(100);
+            host.advance(now, Some(1.));
+        }
+        assert!(host.take_actions().is_empty());
+        assert_eq!(copied(&host), Vec::<u64>::new(), "still scrolling");
+        settle(&mut host, &mut now);
+        assert_eq!(copied(&host), [2, 1, 3]);
+        host.scroll([0., 15.]);
+
+        // Leaving while they're held back brings none, and the button fits its name again.
+        host.pointer_moved(None);
+        host.pointer_at(None);
+        show_workspaces(&mut host, &mut now, &names, 1);
+        assert_eq!(copied(&host), Vec::<u64>::new());
+        assert!(middle_of(&host, "DP-1", "web")[0] > held[0] + 5.);
+
+        // A click on a preview goes to its workspace.
+        let button = middle_of(&host, "DP-1", "web");
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let label = scene.find("DP-1", "web").into_iter().find(|f| f[1] < 1032.);
+        let label = label.expect("no preview of the workspace");
+        drop(scene);
+        let web = [label[0] + 4., label[1] + 4.];
+        click(&mut host, "DP-1", web);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "focus-workspace");
+        assert_eq!(ran[0]["workspace"], 11);
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
@@ -2438,18 +2698,24 @@ mod tests {
             shapes(&host)
         );
 
-        let tile = |id: u64, x: f64, active: bool| {
+        let window = |id: u64, x: f64, active: bool| {
             serde_json::json!({
-                "id": id, "x": x, "y": 0, "w": 960, "h": 1080, "active": active,
-                "floating": false,
+                "id": id, "workspace": 7, "output": "DP-1", "active": active, "floating": false,
+                "rect": { "x": x, "y": 0, "width": 960, "height": 1080 },
             })
         };
-        host.set_minimap(serde_json::json!({
-            "DP-1": {
-                "view": [1920, 1080],
-                "tiles": [tile(1, 0., true), tile(2, 960., false), tile(3, 1920., false)],
-            },
-        }));
+        // One on another workspace, and one that isn't anywhere, don't show.
+        let mut elsewhere = window(4, 0., true);
+        elsewhere["workspace"] = 8.into();
+        let mut hidden = window(5, 0., false);
+        hidden["rect"] = serde_json::Value::Null;
+        host.set_windows(serde_json::json!([
+            window(1, 0., true),
+            window(2, 960., false),
+            window(3, 1920., false),
+            elsewhere,
+            hidden,
+        ]));
         settle(&mut host, &mut now);
         // The track isn't drawn itself: the view and the three tiles are.
         let pieces = shapes(&host);
@@ -3581,14 +3847,18 @@ mod tests {
         let place = serde_json::json!({ "name": "Reykjavik, Iceland", "latitude": 64.15, "longitude": -21.94 });
         let style = serde_json::json!({ "gaps": 8, "config": { "location": place } });
         let (mut host, mut now) = loaded(style);
-        host.set_minimap(serde_json::json!({
-            "DP-1": { "view": [1920, 1080], "tiles": [
-                { "id": 1, "x": -960, "y": 0, "w": 960, "h": 1080, "active": false, "floating": false },
-                { "id": 2, "x": 0, "y": 0, "w": 960, "h": 1080, "active": true, "floating": false },
-                { "id": 3, "x": 960, "y": 0, "w": 960, "h": 540, "active": false, "floating": false },
-                { "id": 4, "x": 960, "y": 540, "w": 960, "h": 540, "active": false, "floating": false },
-            ] },
-        }));
+        let window = |id: u64, rect: [u32; 4], active: bool| {
+            serde_json::json!({
+                "id": id, "workspace": 7, "output": "DP-1", "active": active, "floating": false,
+                "rect": { "x": f64::from(rect[0]) - 960., "y": rect[1], "width": rect[2], "height": rect[3] },
+            })
+        };
+        host.set_windows(serde_json::json!([
+            window(1, [0, 0, 960, 1080], false),
+            window(2, [960, 0, 960, 1080], true),
+            window(3, [1920, 0, 960, 540], false),
+            window(4, [1920, 540, 960, 540], false),
+        ]));
         host.data_line(&DEVICES.replace('\n', " "));
         host.data_line(
             r#"{"type":"brightness","displays":[{"id":"DP-1","label":"Monitor One","value":0.35},{"id":"DP-2","label":"Monitor Two","value":0.8}]}"#,

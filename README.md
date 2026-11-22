@@ -272,6 +272,19 @@ shell {
 
 bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one, saved wherever you like, to start a shell of your own from; bento's own aren't edited in place. Picking a shell of your own there asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/shells/`, and Use a Backup… takes one you have, wherever it is. Either way the config names it next to the shell, and what you set under that shell stays in its file. A shell's default export is its root component. It uses bento's modules with `bento:modules/<name>`, like `bento:modules/clock`, which are always bento's own; a module of your own is a file of your own, imported by its path, like `import Clock from "./my-clock"`, and yours to keep up. bento loads the shell again whenever one of its files changes.
 
+On the windows shell's taskbar, an app's button has a mark under it for each of its windows, the long one for the window with the focus; past three windows, the last mark stands for the rest. The overview's button has a pip for each workspace of its monitor and the current one's name, "Workspace 2" when it has none. Scrolling over it goes through the workspaces, and resting on it shows previews of them, to click. While the overview is open its icon is filled. Each of these has a setting on the Shell page of bento Settings, under Overview Button, with the workspace's number in the icon as another, which is off by default:
+
+```kdl
+// ~/.config/bento/shell.kdl
+overview {
+    workspace-names false
+    workspace-pips false
+    hover-previews false
+    scroll-to-switch false
+    workspace-number true
+}
+```
+
 Modules and shells declare their settings and actions in their `meta`, the way engines do, with their defaults. What you change is kept in the shell's file: `~/.config/bento/shell.kdl` for bento's own shells, shared by them, or the one the config names for a shell of your own. It has a block for each module and shell by its name, with its settings, and its binds in a `binds {}` that names its actions directly. Settings show in bento Settings only when they name its page, like the taskbar's height on the Shell page; pins are changed where they are.
 
 Actions come with binds, like the start menu's `toggle-start-menu` on Mod alone and the clipboard's `toggle-clipboard` on Mod+V. Settings → Binds lists the running shell's in its Shell tab, by module, and binds of your own replace an action's:

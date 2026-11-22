@@ -5243,6 +5243,43 @@ impl Niri {
         }
     }
 
+    /// The windows as the shell hears of them: what each is, and where. A workspace's come from
+    /// the front to the back.
+    pub(crate) fn shell_windows(&self) -> Vec<serde_json::Value> {
+        let active: HashSet<u64> = self
+            .layout
+            .workspaces()
+            .filter_map(|(_, _, ws)| Some(ws.active_window()?.id().get()))
+            .collect();
+        let mut windows = Vec::new();
+        self.layout
+            .with_windows(|mapped, output, workspace, layout| {
+                let (title, app_id) = crate::utils::with_toplevel_role(mapped.toplevel(), |role| {
+                    (role.title.clone(), role.app_id.clone())
+                });
+                let id = mapped.id().get();
+                // Where it's headed, so that a move tells the shell once and the shell moves there
+                // itself.
+                let (w, h) = layout.tile_size;
+                let rect = layout
+                    .tile_pos_in_workspace_view
+                    .map(|(x, y)| serde_json::json!({ "x": x, "y": y, "width": w, "height": h }));
+                windows.push(serde_json::json!({
+                    "id": id,
+                    "appId": app_id,
+                    "title": title,
+                    "workspace": workspace.map(|id| id.get()),
+                    "output": output.map(|o| o.name()),
+                    "rect": rect,
+                    "active": active.contains(&id),
+                    "focused": mapped.is_focused(),
+                    "urgent": mapped.is_urgent(),
+                    "floating": mapped.is_floating(),
+                }));
+            });
+        windows
+    }
+
     /// Moves bento's own shell on and draws `output`'s part of it, and says whether it's still
     /// moving.
     fn update_scene(&mut self, backend: &mut Backend, output: &Output) -> bool {
@@ -5257,7 +5294,6 @@ impl Niri {
         let mut workspaces = serde_json::Map::new();
         // Which outputs show a fullscreen window. The overview shows the desktop around it.
         let mut fullscreen = serde_json::Map::new();
-        let mut minimap = serde_json::Map::new();
         let overview = self.layout.is_overview_open();
         let focused_output = self.layout.active_output().map(|o| o.name());
         for (mon, index, ws) in self.layout.workspaces() {
@@ -5266,27 +5302,6 @@ impl Niri {
                 fullscreen.insert(
                     mon.output_name().clone(),
                     serde_json::Value::Bool(!overview && ws.shows_fullscreen()),
-                );
-                // Where its tiles sit around the view, for a minimap: where they're headed, so
-                // that a move tells the shell once and the shell moves there itself.
-                let active = ws.active_window().map(|win| win.id().get());
-                let tiles: Vec<serde_json::Value> = ws
-                    .tiles_with_ipc_layouts()
-                    .filter_map(|(tile, layout)| {
-                        let (x, y) = layout.tile_pos_in_workspace_view?;
-                        let (w, h) = layout.tile_size;
-                        let id = tile.window().id().get();
-                        Some(serde_json::json!({
-                            "id": id, "x": x, "y": y, "w": w, "h": h,
-                            "active": Some(id) == active,
-                            "floating": ws.is_floating(&tile.window().window),
-                        }))
-                    })
-                    .collect();
-                let view = ws.view_size();
-                minimap.insert(
-                    mon.output_name().clone(),
-                    serde_json::json!({ "view": [view.w, view.h], "tiles": tiles }),
                 );
             }
             let list = workspaces
@@ -5350,31 +5365,14 @@ impl Niri {
             "dark": crate::render_helpers::glass::style().0,
             "config": settings,
         });
-        // The windows, for a taskbar: what each is, and where.
-        let mut windows = Vec::new();
-        self.layout
-            .with_windows(|mapped, output, workspace, _layout| {
-                let (title, app_id) = crate::utils::with_toplevel_role(mapped.toplevel(), |role| {
-                    (role.title.clone(), role.app_id.clone())
-                });
-                windows.push(serde_json::json!({
-                    "id": mapped.id().get(),
-                    "appId": app_id,
-                    "title": title,
-                    "workspace": workspace.map(|id| id.get()),
-                    "output": output.map(|o| o.name()),
-                    "focused": mapped.is_focused(),
-                    "urgent": mapped.is_urgent(),
-                    "floating": mapped.is_floating(),
-                }));
-            });
+        let windows = self.shell_windows();
         let settings_file = self.shell_settings_file();
         let scene = self.scene.get_or_insert_with(Default::default);
         scene.ensure_loaded(&outputs, dir.as_deref(), &entry, settings_file, style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         scene.set_windows(serde_json::Value::Array(windows));
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));
-        scene.set_minimap(serde_json::Value::Object(minimap));
+        scene.set_overview(overview);
         let moving = scene.advance_with(Instant::now(), slowdown, response);
         let activation = &mut self.activation_state;
         scene.send_commands(|| activation.create_external_token(None).0.to_string());
@@ -5616,8 +5614,9 @@ impl Niri {
         macro_rules! push_shell {
             ($band:expr) => {{
                 if let Some(scene) = &self.scene {
-                    // Its window copies, over what it draws.
-                    for copy in scene.copies(&output_name, $band) {
+                    // Its window copies, over what it draws. They're listed from the back, and
+                    // what's pushed first is in front.
+                    for copy in scene.copies(&output_name, $band).into_iter().rev() {
                         let Some((_, win)) = self
                             .layout
                             .windows()
