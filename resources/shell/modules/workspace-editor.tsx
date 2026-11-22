@@ -3,10 +3,11 @@
 // had when the editor opened.
 
 import {
-  Surface, action, focusedOutput, onAction, outputs, useModule, workspaces, type Meta,
+  Surface, action, focusedOutput, onAction, outputs, useModule, workspaces, type Meta, type Workspace,
 } from "bento";
 import { createSignal, Show } from "solid-js";
 import { Button, grows, growsWith, popup } from "bento:modules/ui";
+import { provideWorkspaceEditor } from "bento:modules/workspaces";
 
 export const meta = {
   actions: {
@@ -28,7 +29,8 @@ function taken(name: string, id: number) {
     .find((ws) => ws.id !== id && (ws.name ?? "").toLowerCase() === wanted);
 }
 
-/** The editor, opened by its bind for the focused workspace. */
+/** The editor, for a shell to place once. Its bind opens it for the current workspace, and
+ * `openWorkspaceEditor` of `bento:modules/workspaces` for any. */
 export function WorkspaceEditor() {
   // The workspace it edits, as it was when it opened.
   const [editing, setEditing] = createSignal<{ output: string; id: number; index: number; original: string } | null>(null);
@@ -39,10 +41,16 @@ export function WorkspaceEditor() {
     }
     const where = output ?? focusedOutput() ?? outputs()[0];
     const ws = workspaces(where).find((one) => one.active);
-    if (!ws) return;
-    setEditing({ output: where, id: ws.id, index: ws.index, original: ws.name ?? "" });
-    popup.open("workspace-editor");
+    if (ws) edit(ws);
   });
+  // On the output the workspace is on.
+  const edit = (ws: Workspace) => {
+    const output = outputs().find((one) => workspaces(one).some((other) => other.id === ws.id));
+    if (!output) return;
+    setEditing({ output, id: ws.id, index: ws.index, original: ws.name ?? "" });
+    popup.open("workspace-editor");
+  };
+  provideWorkspaceEditor(edit);
   return (
     <Show when={popup.is("workspace-editor") && editing()} keyed>
       {(edit) => <Editor edit={edit} />}

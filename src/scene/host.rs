@@ -2092,6 +2092,69 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_on_the_overviews_button_renames_the_workspace() {
+        let (mut host, mut now) = windows_shell_with_workspaces(&[None, Some("web")], 1);
+        let button = middle_of(&host, "DP-1", "web");
+        assert!(host.covers_any("DP-1", button));
+        host.press(3, 3, SceneHost::at("DP-1", button));
+        host.release(3, 3, SceneHost::at("DP-1", button));
+        settle(&mut host, &mut now);
+        let item = middle_of(&host, "DP-1", "Rename Workspace");
+        assert!(item[1] < button[1], "the menu is over the button");
+        click(&mut host, "DP-1", item);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Rename Workspace"));
+        assert!(host.wants_keyboard());
+        assert!(shows(&host, "DP-1", "Workspace 2"));
+        type_keys(&mut host, &["s"]);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "set-workspace-name");
+        assert_eq!(ran[0]["args"], serde_json::json!(["webs"]));
+        assert_eq!(ran[0]["workspace"], 11);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    /// A shell that shows workspaces without placing the editor has neither its menu nor its
+    /// action, and can have an action of that name.
+    #[test]
+    fn workspaces_offer_no_renaming_without_an_editor() {
+        let dir = std::env::temp_dir().join(format!("bento-no-editor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tsx");
+        std::fs::write(
+            &main,
+            "import { Surface, useModule } from \"bento\";\n\
+             import { Workspaces } from \"bento:modules/workspaces\";\n\
+             export const meta = { actions: { \"edit-workspace\": {} } };\n\
+             useModule(import.meta, meta);\n\
+             export default () => (\n\
+             <Surface output=\"DP-1\" anchor={[\"top\", \"left\"]}><Workspaces /></Surface>\n);\n",
+        )
+        .unwrap();
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = main.to_string_lossy().into_owned();
+        host.ensure_loaded(
+            &outputs,
+            None,
+            &entry,
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(host.load_error, None);
+        let mut now = Instant::now();
+        show_workspaces(&mut host, &mut now, &[None, Some("web")], 0);
+        let web = middle_of(&host, "DP-1", "web");
+        assert!(host.covers_any("DP-1", web));
+        host.press(3, 3, SceneHost::at("DP-1", web));
+        host.release(3, 3, SceneHost::at("DP-1", web));
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Rename Workspace"));
+        assert!(!host.wants_keyboard());
+    }
+
+    #[test]
     fn scrolling_over_the_overviews_button_switches_and_holds_its_previews_back() {
         let names = [None, Some("web"), None];
         let (mut host, mut now) = windows_shell_with_workspaces(&names, 0);

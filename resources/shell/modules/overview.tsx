@@ -1,14 +1,15 @@
 // The overview's button for a taskbar: an icon, filled while the overview is open, with a pip for
 // each workspace of its output and the current one's name. A click opens the overview, scrolling
-// over it goes through the workspaces, and resting on it shows previews of them all.
+// over it goes through the workspaces, resting on it shows previews of them all, and a right click
+// opens the current one's menu.
 
 import {
   action, after, outputSize, overviewOpen, useModule, windows, workspaces, type Meta, type Workspace,
 } from "bento";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { Flyout } from "bento:modules/ui";
-import { menuOpen } from "bento:modules/menu";
-import { workspaceName } from "bento:modules/workspaces";
+import { menuOpen, openMenu } from "bento:modules/menu";
+import { workspaceMenu, workspaceName } from "bento:modules/workspaces";
 
 export const meta = {
   settings: {
@@ -135,6 +136,13 @@ export function OverviewButton(props: {
         onClick={() => {
           close();
           action("toggle-overview");
+        }}
+        onRightClick={() => {
+          const ws = current();
+          const items = ws ? workspaceMenu(ws) : [];
+          if (items.length === 0) return;
+          close();
+          openMenu({ output: props.output, node: button(), side: "top" }, items);
         }}
         onScroll={({ dx, dy }) => scroll(dy || dx)}
         onNear={({ inside }) => {
