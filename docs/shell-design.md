@@ -300,7 +300,8 @@ Then a sliver shows the desktop.
 The overview's button says where one is: its icon has a pip beside it for each workspace, stacked
 as workspaces are, and the current one's name, or "Workspace 2" for one without. The name takes
 the room it needs, and is cut off as that changes rather than shortened. A click opens the
-overview, and the icon is filled while it's open, and a right click renames the workspace. Scrolling over the button goes through the
+overview, and the icon is filled while it's open, and a right click renames the workspace or
+takes its name away. Scrolling over the button goes through the
 workspaces, and resting on it shows previews of all of them, with their names. Scrolling keeps the
 previews away for a moment and no more: once it's stopped, resting shows them again. The names, the
 pips, the previews and the scrolling can each be turned off, and the workspace's number can be shown

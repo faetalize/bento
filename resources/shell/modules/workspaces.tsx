@@ -2,37 +2,29 @@
 // minimap of the one on screen.
 
 import { action, outputSize, useOutput, windows, workspaces, type Workspace } from "bento";
-import { createMemo, For, onCleanup, Show } from "solid-js";
+import { createMemo, For, Show } from "solid-js";
 import { openMenu, type MenuItem } from "bento:modules/menu";
 import { ACTIVE } from "bento:modules/ui";
+import { canEditWorkspaces, openWorkspaceEditor } from "bento:modules/workspace-editor";
 
 /** What a workspace is called: its name, or which it is on its output. */
 export const workspaceName = (ws: Workspace) => ws.name ?? `Workspace ${ws.index + 1}`;
 
-// The editor the shell placed, if it did. It's handed over here, rather than imported, so that
-// showing workspaces doesn't bring an editor and its action into a shell that has none, or its own.
-let editor: ((ws: Workspace) => void) | null = null;
-
-/** Has `edit` open the shell's workspace editor, while the component running now is placed. */
-export function provideWorkspaceEditor(edit: (ws: Workspace) => void) {
-  editor = edit;
-  onCleanup(() => {
-    if (editor === edit) editor = null;
-  });
-}
-
-/** Whether the shell placed a workspace editor. */
-export const canEditWorkspaces = () => editor !== null;
-
-/** Opens the shell's workspace editor for `ws`, if it placed one. */
-export const openWorkspaceEditor = (ws: Workspace) => editor?.(ws);
-
-/** What a right click on a workspace offers: renaming it, where the shell has an editor. */
+/** What a right click on a workspace offers: renaming it, where the shell placed the editor, and
+ * taking its name away. An empty workspace goes away with its name. */
 export function workspaceMenu(ws: Workspace): MenuItem[] {
-  if (!canEditWorkspaces()) return [];
-  return [
-    { label: "Rename Workspace", icon: "document-edit-symbolic", run: () => openWorkspaceEditor(ws) },
-  ];
+  const items: MenuItem[] = [];
+  if (canEditWorkspaces()) {
+    items.push({ label: "Rename", icon: "document-edit-symbolic", run: () => openWorkspaceEditor(ws) });
+  }
+  if (ws.name !== null) {
+    items.push({
+      label: "Unname",
+      icon: "user-trash-symbolic",
+      run: () => action("unset-workspace-name", [], { workspace: ws.id }),
+    });
+  }
+  return items;
 }
 
 /** The output's workspaces, a click going to one and a right click opening its menu. */

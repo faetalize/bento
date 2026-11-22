@@ -2092,18 +2092,18 @@ mod tests {
     }
 
     #[test]
-    fn a_right_click_on_the_overviews_button_renames_the_workspace() {
+    fn a_right_click_on_the_overviews_button_renames_and_unnames_the_workspace() {
         let (mut host, mut now) = windows_shell_with_workspaces(&[None, Some("web")], 1);
         let button = middle_of(&host, "DP-1", "web");
         assert!(host.covers_any("DP-1", button));
         host.press(3, 3, SceneHost::at("DP-1", button));
         host.release(3, 3, SceneHost::at("DP-1", button));
         settle(&mut host, &mut now);
-        let item = middle_of(&host, "DP-1", "Rename Workspace");
+        let item = middle_of(&host, "DP-1", "Rename");
         assert!(item[1] < button[1], "the menu is over the button");
         click(&mut host, "DP-1", item);
         settle(&mut host, &mut now);
-        assert!(!shows(&host, "DP-1", "Rename Workspace"));
+        assert!(!shows(&host, "DP-1", "Rename"));
         assert!(host.wants_keyboard());
         assert!(shows(&host, "DP-1", "Workspace 2"));
         type_keys(&mut host, &["s"]);
@@ -2111,11 +2111,33 @@ mod tests {
         assert_eq!(ran[0]["name"], "set-workspace-name");
         assert_eq!(ran[0]["args"], serde_json::json!(["webs"]));
         assert_eq!(ran[0]["workspace"], 11);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+
+        let right_click = |host: &mut SceneHost, now: &mut Instant| {
+            host.press(3, 3, SceneHost::at("DP-1", button));
+            host.release(3, 3, SceneHost::at("DP-1", button));
+            settle(host, now);
+        };
+        assert!(host.covers_any("DP-1", button));
+        right_click(&mut host, &mut now);
+        let item = middle_of(&host, "DP-1", "Unname");
+        host.take_actions();
+        click(&mut host, "DP-1", item);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "unset-workspace-name");
+        assert_eq!(ran[0]["workspace"], 11);
+        settle(&mut host, &mut now);
+
+        // One without a name has none to take away.
+        show_workspaces(&mut host, &mut now, &[None, None], 1);
+        assert!(host.covers_any("DP-1", button));
+        right_click(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Rename"));
+        assert!(!shows(&host, "DP-1", "Unname"));
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
-    /// A shell that shows workspaces without placing the editor has neither its menu nor its
-    /// action, and can have an action of that name.
     #[test]
     fn workspaces_offer_no_renaming_without_an_editor() {
         let dir = std::env::temp_dir().join(format!("bento-no-editor-{}", std::process::id()));
@@ -2123,10 +2145,8 @@ mod tests {
         let main = dir.join("main.tsx");
         std::fs::write(
             &main,
-            "import { Surface, useModule } from \"bento\";\n\
+            "import { Surface } from \"bento\";\n\
              import { Workspaces } from \"bento:modules/workspaces\";\n\
-             export const meta = { actions: { \"edit-workspace\": {} } };\n\
-             useModule(import.meta, meta);\n\
              export default () => (\n\
              <Surface output=\"DP-1\" anchor={[\"top\", \"left\"]}><Workspaces /></Surface>\n);\n",
         )
@@ -2145,13 +2165,15 @@ mod tests {
         assert_eq!(host.load_error, None);
         let mut now = Instant::now();
         show_workspaces(&mut host, &mut now, &[None, Some("web")], 0);
-        let web = middle_of(&host, "DP-1", "web");
-        assert!(host.covers_any("DP-1", web));
-        host.press(3, 3, SceneHost::at("DP-1", web));
-        host.release(3, 3, SceneHost::at("DP-1", web));
-        settle(&mut host, &mut now);
-        assert!(!shows(&host, "DP-1", "Rename Workspace"));
-        assert!(!host.wants_keyboard());
+        for (label, unname) in [("1", false), ("web", true)] {
+            let at = middle_of(&host, "DP-1", label);
+            assert!(host.covers_any("DP-1", at));
+            host.press(3, 3, SceneHost::at("DP-1", at));
+            host.release(3, 3, SceneHost::at("DP-1", at));
+            settle(&mut host, &mut now);
+            assert!(!shows(&host, "DP-1", "Rename"));
+            assert_eq!(shows(&host, "DP-1", "Unname"), unname);
+        }
     }
 
     #[test]

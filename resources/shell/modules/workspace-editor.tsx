@@ -5,9 +5,8 @@
 import {
   Surface, action, focusedOutput, onAction, outputs, useModule, workspaces, type Meta, type Workspace,
 } from "bento";
-import { createSignal, Show } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import { Button, grows, growsWith, popup } from "bento:modules/ui";
-import { provideWorkspaceEditor } from "bento:modules/workspaces";
 
 export const meta = {
   actions: {
@@ -29,11 +28,27 @@ function taken(name: string, id: number) {
     .find((ws) => ws.id !== id && (ws.name ?? "").toLowerCase() === wanted);
 }
 
+// The workspace it edits, as it was when it opened.
+const [editing, setEditing] = createSignal<{ output: string; id: number; index: number; original: string } | null>(null);
+// How many of it are placed.
+let placed = 0;
+
+/** Whether the shell placed the editor. */
+export const canEditWorkspaces = () => placed > 0;
+
+/** Opens the editor for `ws`, on the output it's on. */
+export function openWorkspaceEditor(ws: Workspace) {
+  const output = outputs().find((one) => workspaces(one).some((other) => other.id === ws.id));
+  if (!output) return;
+  setEditing({ output, id: ws.id, index: ws.index, original: ws.name ?? "" });
+  popup.open("workspace-editor");
+}
+
 /** The editor, for a shell to place once. Its bind opens it for the current workspace, and
- * `openWorkspaceEditor` of `bento:modules/workspaces` for any. */
+ * `openWorkspaceEditor` for any. */
 export function WorkspaceEditor() {
-  // The workspace it edits, as it was when it opened.
-  const [editing, setEditing] = createSignal<{ output: string; id: number; index: number; original: string } | null>(null);
+  placed++;
+  onCleanup(() => placed--);
   onAction("edit-workspace", ({ output }) => {
     if (popup.is("workspace-editor")) {
       popup.close("workspace-editor");
@@ -41,16 +56,8 @@ export function WorkspaceEditor() {
     }
     const where = output ?? focusedOutput() ?? outputs()[0];
     const ws = workspaces(where).find((one) => one.active);
-    if (ws) edit(ws);
+    if (ws) openWorkspaceEditor(ws);
   });
-  // On the output the workspace is on.
-  const edit = (ws: Workspace) => {
-    const output = outputs().find((one) => workspaces(one).some((other) => other.id === ws.id));
-    if (!output) return;
-    setEditing({ output, id: ws.id, index: ws.index, original: ws.name ?? "" });
-    popup.open("workspace-editor");
-  };
-  provideWorkspaceEditor(edit);
   return (
     <Show when={popup.is("workspace-editor") && editing()} keyed>
       {(edit) => <Editor edit={edit} />}
