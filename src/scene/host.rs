@@ -2261,6 +2261,38 @@ mod tests {
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
+    #[test]
+    fn previews_go_back_into_the_taskbar_and_not_past_it() {
+        let (mut host, mut now) = windows_shell_with_workspaces(&[None, None], 0);
+        host.set_windows(serde_json::json!([{
+            "id": 1, "workspace": 10, "output": "DP-1", "active": true, "floating": false,
+            "appId": "org.example.Editor", "title": "Note",
+            "rect": { "x": 0, "y": 0, "width": 1920, "height": 1032 },
+        }]));
+        settle(&mut host, &mut now);
+        for icon in ["ph-cards-three-symbolic", "application-x-executable"] {
+            let button = middle_of(&host, "DP-1", icon);
+            host.pointer_at(Some(("DP-1", button)));
+            settle(&mut host, &mut now);
+            assert_eq!(copied(&host), [1]);
+            host.pointer_at(None);
+            let mut seen = 0;
+            for _ in 0..120 {
+                now += Duration::from_millis(16);
+                host.advance(now, Some(1.));
+                for copy in Band::ALL.into_iter().flat_map(|b| host.copies("DP-1", b)) {
+                    seen += 1;
+                    let clip = copy.clip.expect("it's cut to its panel");
+                    let drawn = (clip.rect[1] + clip.rect[3]).min(copy.rect[1] + copy.rect[3]);
+                    assert!(drawn <= 1030.5, "over the taskbar: {copy:?}");
+                }
+            }
+            assert!(seen > 0);
+            assert_eq!(copied(&host), Vec::<u64>::new());
+        }
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
     /// How far above the taskbar the glass of the panel open over it is, once it's settled.
     fn above_taskbar(host: &mut SceneHost, now: &mut Instant) -> f32 {
         settle(host, now);

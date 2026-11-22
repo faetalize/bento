@@ -621,6 +621,45 @@ pub struct Clip {
     pub radii: [f32; 4],
 }
 
+impl Clip {
+    /// This and `outer` both, or nothing if they don't meet. A corner is rounded as the one it's
+    /// the corner of is, and square where one of them cuts across the other.
+    fn within(self, outer: Option<Self>) -> Option<Self> {
+        let Some(outer) = outer else {
+            return Some(self);
+        };
+        // Left, top, right and bottom.
+        let sides = |rect: [f32; 4]| [rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]];
+        let (own, other) = (sides(self.rect), sides(outer.rect));
+        let both = [
+            own[0].max(other[0]),
+            own[1].max(other[1]),
+            own[2].min(other[2]),
+            own[3].min(other[3]),
+        ];
+        if both[2] <= both[0] || both[3] <= both[1] {
+            return None;
+        }
+        // The sides each corner is between, from the top left on.
+        let corners = [[0, 1], [2, 1], [2, 3], [0, 3]];
+        let radii = std::array::from_fn(|i| {
+            let radius = |sides: [f32; 4], radii: [f32; 4]| {
+                let is_its = corners[i].iter().all(|side| sides[*side] == both[*side]);
+                if is_its {
+                    radii[i]
+                } else {
+                    0.
+                }
+            };
+            f32::max(radius(own, self.radii), radius(other, outer.radii))
+        });
+        Some(Self {
+            rect: [both[0], both[1], both[2] - both[0], both[3] - both[1]],
+            radii,
+        })
+    }
+}
+
 struct Root {
     output: String,
     node: NodeId,
@@ -1880,7 +1919,10 @@ impl Scene {
         }
 
         let clip = if node.look.clip {
-            Some(Clip { rect, radii })
+            let Some(clip) = (Clip { rect, radii }).within(clip) else {
+                return;
+            };
+            Some(clip)
         } else {
             clip
         };
@@ -1932,7 +1974,10 @@ impl Scene {
             found.push(id);
         }
         let clip = if node.look.clip {
-            Some(Clip { rect, radii })
+            let Some(clip) = (Clip { rect, radii }).within(clip) else {
+                return;
+            };
+            Some(clip)
         } else {
             clip
         };
@@ -3344,6 +3389,68 @@ mod tests {
             scene.surface_at("DP-1", [960., 540.], Some(Band::BackgroundBelow)),
             Some(wallpaper)
         );
+    }
+
+    #[test]
+    fn what_is_cut_to_a_box_in_another_is_cut_to_both() {
+        let mut scene = Scene::new();
+        let (_, outer) = surface(
+            &mut scene,
+            serde_json::json!({}),
+            serde_json::json!({ "height": 100, "width": 100, "overflow": "hidden", "borderRadius": 20 }),
+        );
+        // Reaching 50 past the outer one, and what it holds 100 past that.
+        let inner = scene.create(
+            "box",
+            &serde_json::json!({
+                "position": "absolute", "left": 10, "top": 50, "width": 80, "height": 100,
+                "overflow": "hidden", "borderRadius": 6,
+            }),
+        );
+        scene.append(outer, inner, None);
+        let held = scene.create(
+            "box",
+            &serde_json::json!({ "width": 80, "height": 200, "flexShrink": 0, "background": "fg" }),
+        );
+        scene.append(inner, held, None);
+        let shown = scene.create(
+            "copy",
+            &serde_json::json!({ "position": "absolute", "left": 0, "top": 60, "width": 80, "height": 30, "window": 4 }),
+        );
+        scene.append(inner, shown, None);
+        scene.lay_out();
+        settle(&mut scene);
+        let [x, y, ..] = scene.frame(outer).unwrap();
+        let (items, copies) = Band::ALL
+            .into_iter()
+            .map(|band| scene.draw_with_copies("DP-1", band))
+            .fold((Vec::new(), Vec::new()), |mut all, (items, copies)| {
+                all.0.extend(items);
+                all.1.extend(copies);
+                all
+            });
+        let clips: Vec<Clip> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Shape { clip, .. } => *clip,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(clips.len(), 1, "{items:?}");
+        assert_eq!(clips[0].rect, [x + 10., y + 50., 80., 50.]);
+        // Its own corners at the top, and none where the outer one cuts it across.
+        assert_eq!(clips[0].radii, [6., 6., 0., 0.]);
+        // What's wholly past the outer one shows nothing.
+        assert!(
+            copies
+                .iter()
+                .all(|copy| copy.rect[1] + copy.rect[3] <= y + 100.
+                    || copy.clip.unwrap().rect[1] + copy.clip.unwrap().rect[3] <= y + 100.),
+            "{copies:?}"
+        );
+        // Nor does it take the pointer there.
+        assert!(scene.covers("DP-1", [x + 40., y + 80.], None));
+        assert!(!scene.covers("DP-1", [x + 40., y + 120.], None));
     }
 
     #[test]
