@@ -654,7 +654,10 @@ impl<W: LayoutElement> Workspace<W> {
         anim: Option<niri_config::Animation>,
     ) {
         self.enter_output_for_window(tile.window());
-        tile.restore_to_floating = is_floating;
+        // A window that floated and went fullscreen or maximized floats again when it's restored,
+        // wherever it was moved meanwhile.
+        tile.restore_to_floating = is_floating
+            || (tile.restore_to_floating && !tile.window().pending_sizing_mode().is_normal());
 
         match target {
             WorkspaceAddWindowTarget::Auto => {

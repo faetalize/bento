@@ -3057,3 +3057,74 @@ fn a_window_dropped_between_workspaces_in_the_overview_gets_a_new_one() {
     assert_eq!(windows_by_workspace[0], [2], "{windows_by_workspace:?}");
     assert_eq!(windows_by_workspace[1], [1], "{windows_by_workspace:?}");
 }
+
+#[test]
+fn a_fullscreen_window_that_floated_floats_again_on_another_workspace_or_monitor() {
+    let leave = [
+        Op::MoveWindowToWorkspaceDown(true),
+        Op::MoveWindowToOutput {
+            window_id: None,
+            output_id: 2,
+            target_ws_idx: None,
+        },
+    ];
+    for leave in leave {
+        for maximize in [false, true] {
+            let toggle = |on| {
+                if maximize {
+                    Op::MaximizeWindowToEdges { id: Some(3) }
+                } else {
+                    Op::SetFullscreenWindow {
+                        window: 3,
+                        is_fullscreen: on,
+                    }
+                }
+            };
+            let mut params = TestWindowParams::new(3);
+            params.is_floating = true;
+            let layout = check_ops([
+                Op::AddOutput(1),
+                Op::AddOutput(2),
+                Op::AddWindow { params },
+                toggle(true),
+                leave.clone(),
+                toggle(false),
+            ]);
+            let floats = layout.workspaces().any(|(_, _, ws)| ws.is_floating(&3));
+            assert!(floats, "{leave:?}, maximized: {maximize}");
+        }
+    }
+}
+
+#[test]
+fn a_window_that_went_fullscreen_and_moved_as_it_was_grabbed_is_dragged_restored() {
+    let mut params = TestWindowParams::new(3);
+    params.is_floating = true;
+    let layout = check_ops([
+        Op::AddOutput(1),
+        Op::AddWindow { params },
+        add_window(1),
+        Op::InteractiveMoveBegin {
+            window: 3,
+            output_idx: 1,
+            px: 0.,
+            py: 0.,
+        },
+        Op::SetFullscreenWindow {
+            window: 3,
+            is_fullscreen: true,
+        },
+        Op::FocusWindow(3),
+        Op::MoveWindowToWorkspaceDown(false),
+        Op::InteractiveMoveUpdate {
+            window: 3,
+            output_idx: 1,
+            px: 0.,
+            py: 0.,
+        },
+    ]);
+    let Some(InteractiveMoveState::Moving(move_)) = &layout.interactive_move else {
+        panic!("the window isn't dragged");
+    };
+    assert!(move_.tile.window().pending_sizing_mode().is_normal());
+}
