@@ -32,6 +32,7 @@ pub struct Shell {
     actions: Rc<RefCell<Vec<serde_json::Value>>>,
     /// Commands for the data program, like `{ "cmd": "volume", "value": 0.5 }`.
     commands: Rc<RefCell<Vec<serde_json::Value>>>,
+    apps: Rc<RefCell<super::apps::Apps>>,
     timers: Rc<RefCell<Vec<(Instant, u32)>>>,
     /// The time the host last moved the shell on to, which timers count from when it's ahead of
     /// the clock on the wall, as in tests.
@@ -467,6 +468,7 @@ impl Shell {
             scene,
             actions,
             commands,
+            apps,
             timers,
             clock,
             deadline,
@@ -508,6 +510,11 @@ impl Shell {
     /// The bento actions the shell asked to run since this was last asked.
     pub fn take_actions(&self) -> Vec<serde_json::Value> {
         std::mem::take(&mut self.actions.borrow_mut())
+    }
+
+    /// The commands of the apps the shell asked to start since this was last asked.
+    pub fn take_launches(&self) -> Vec<Vec<String>> {
+        self.apps.borrow_mut().take_launches()
     }
 
     /// The commands for the data program since this was last asked.

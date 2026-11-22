@@ -332,17 +332,17 @@ pub fn native_actions() -> Vec<Declaration> {
         ),
         action(
             "move-workspace-down",
-            "Move the focused workspace down.",
+            "Move the current workspace down.",
             vec![],
         ),
         action(
             "move-workspace-up",
-            "Move the focused workspace up.",
+            "Move the current workspace up.",
             vec![],
         ),
         action(
             "move-workspace-to-index",
-            "Move the focused workspace to a place on its monitor.",
+            "Move the current workspace to a place on its monitor.",
             vec![required(
                 "index",
                 Type::Number,
@@ -351,12 +351,12 @@ pub fn native_actions() -> Vec<Declaration> {
         ),
         action(
             "set-workspace-name",
-            "Name the focused workspace.",
+            "Name the current workspace.",
             vec![required("name", Type::String, "The name.")],
         ),
         action(
             "unset-workspace-name",
-            "Remove the focused workspace's name.",
+            "Remove the current workspace's name.",
             vec![],
         ),
         // Monitors.
@@ -416,37 +416,37 @@ pub fn native_actions() -> Vec<Declaration> {
         ),
         action(
             "move-workspace-to-monitor-left",
-            "Move the focused workspace to the monitor to the left.",
+            "Move the current workspace to the monitor to the left.",
             vec![],
         ),
         action(
             "move-workspace-to-monitor-right",
-            "Move the focused workspace to the monitor to the right.",
+            "Move the current workspace to the monitor to the right.",
             vec![],
         ),
         action(
             "move-workspace-to-monitor-up",
-            "Move the focused workspace to the monitor above.",
+            "Move the current workspace to the monitor above.",
             vec![],
         ),
         action(
             "move-workspace-to-monitor-down",
-            "Move the focused workspace to the monitor below.",
+            "Move the current workspace to the monitor below.",
             vec![],
         ),
         action(
             "move-workspace-to-monitor-previous",
-            "Move the focused workspace to the previous monitor.",
+            "Move the current workspace to the previous monitor.",
             vec![],
         ),
         action(
             "move-workspace-to-monitor-next",
-            "Move the focused workspace to the next monitor.",
+            "Move the current workspace to the next monitor.",
             vec![],
         ),
         action(
             "move-workspace-to-monitor",
-            "Move the focused workspace to a monitor.",
+            "Move the current workspace to a monitor.",
             vec![monitor()],
         ),
         // The overview.

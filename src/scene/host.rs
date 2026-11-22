@@ -275,6 +275,7 @@ pub struct SceneHost {
     sent_fullscreen: Option<serde_json::Value>,
     sent_overview: Option<bool>,
     sent_windows: Option<serde_json::Value>,
+    sent_current_output: Option<serde_json::Value>,
     /// The notifications showing, by id, to tell a shell loaded again.
     notifications: Vec<serde_json::Value>,
     known_outputs: Vec<String>,
@@ -386,6 +387,7 @@ impl SceneHost {
                     self.sent_fullscreen = None;
                     self.sent_overview = None;
                     self.sent_windows = None;
+                    self.sent_current_output = None;
                     self.generation += 1;
                     settings.borrow().warn_problems();
                 }
@@ -532,6 +534,14 @@ impl SceneHost {
                 break;
             }
         }
+    }
+
+    /// The commands of the apps the shell asked to start since this was last asked.
+    pub fn take_launches(&self) -> Vec<Vec<String>> {
+        self.shell
+            .as_ref()
+            .map(|shell| shell.take_launches())
+            .unwrap_or_default()
     }
 
     /// The bento actions the shell asked to run since this was last asked.
@@ -803,13 +813,25 @@ impl SceneHost {
         self.sent_overview = Some(open);
     }
 
-    /// Runs one of the shell's own actions, as a bind asked, with the output that has the focus.
+    /// Runs one of the shell's own actions, as a bind asked, with the current output.
     pub fn shell_action(&self, name: &str, args: &[String], output: Option<String>) {
         if let Some(shell) = &self.shell {
             shell.send(&serde_json::json!({
                 "type": "shell-action", "name": name, "args": args, "output": output,
             }));
         }
+    }
+
+    /// Tells the shell which output is current, by its name, when that changes.
+    pub fn set_current_output(&mut self, output: Option<String>) {
+        let output = serde_json::json!(output);
+        if self.sent_current_output.as_ref() == Some(&output) {
+            return;
+        }
+        if let Some(shell) = &self.shell {
+            shell.send(&serde_json::json!({ "type": "current-output", "output": output }));
+        }
+        self.sent_current_output = Some(output);
     }
 
     /// Tells the shell the windows, when they change.
@@ -2815,6 +2837,40 @@ mod tests {
         host.shell_action("edit-workspace", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
+    }
+
+    #[test]
+    fn the_shell_hears_which_output_is_current() {
+        let dir = std::env::temp_dir().join(format!("bento-current-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tsx");
+        std::fs::write(
+            &main,
+            "import { Surface, currentOutput } from \"bento\";\n\
+             export default () => (\n\
+             <Surface output=\"DP-1\" anchor={[\"top\", \"left\"]}>\n\
+             <text>{`on ${currentOutput()}`}</text>\n\
+             </Surface>\n);\n",
+        )
+        .unwrap();
+        let mut host = SceneHost::default();
+        let outputs = ["DP-1", "DP-2"].map(|name| (String::from(name), (1920., 1080.)));
+        let entry = main.to_string_lossy().into_owned();
+        host.ensure_loaded(
+            &outputs,
+            None,
+            &entry,
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(host.load_error, None);
+        let mut now = Instant::now();
+        for name in ["DP-1", "DP-2"] {
+            host.set_current_output(Some(String::from(name)));
+            settle(&mut host, &mut now);
+            assert!(shows(&host, "DP-1", &format!("on {name}")));
+        }
     }
 
     const DEVICES: &str = r#"{"type":"audio-devices","outputs":[

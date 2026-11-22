@@ -118,7 +118,7 @@ use smithay::wayland::text_input::TextInputManagerState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::virtual_pointer::VirtualPointerManagerState;
-use smithay::wayland::xdg_activation::XdgActivationState;
+use smithay::wayland::xdg_activation::{XdgActivationState, XdgActivationToken};
 use smithay::wayland::xdg_foreign::XdgForeignState;
 use wayland_server::protocol::wl_output::WlOutput;
 
@@ -127,6 +127,7 @@ use crate::a11y::A11y;
 use crate::animation::Clock;
 use crate::backend::tty::SurfaceDmabufFeedback;
 use crate::backend::{Backend, Headless, RenderResult, Tty, Winit};
+use crate::current_monitor::{CurrentMonitor, LaunchedOn};
 use crate::cursor::{CursorManager, CursorTextureCache, RenderCursor, XCursor};
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_locale1::Locale1ToNiri;
@@ -225,6 +226,9 @@ pub struct SavedKeyboardState {
 
 pub struct Niri {
     pub config: Rc<RefCell<Config>>,
+
+    /// The monitor that workspace actions and the shell's are about. `current_output()` reads it.
+    pub current_monitor: CurrentMonitor,
 
     /// Output config from the config file.
     ///
@@ -974,6 +978,7 @@ impl State {
 
         // Needs to be called after updating the keyboard focus.
         self.niri.refresh_layout();
+        self.niri.refresh_current_monitor();
 
         self.niri.cursor_manager.check_cursor_image_surface_alive();
         self.niri.refresh_pointer_outputs();
@@ -1105,6 +1110,8 @@ impl State {
     }
 
     pub fn move_cursor(&mut self, location: Point<f64, Logical>) {
+        self.niri.pointer_is_at(location, false);
+
         let mut under = match self.niri.pointer_visibility {
             PointerVisibility::Disabled => PointContents::default(),
             _ => self.niri.contents_under(location),
@@ -1238,9 +1245,12 @@ impl State {
         self.niri.layout.activate_window(window);
 
         let new_active = self.niri.layout.active_output().cloned();
+        if let Some(output) = &new_active {
+            self.niri.make_current(output);
+        }
         if new_active != active_output {
             if !self.maybe_warp_cursor_to_focus_centered() {
-                self.move_cursor_to_output(&new_active.unwrap());
+                self.bring_cursor_to_output(&new_active.unwrap());
             }
         } else {
             self.maybe_warp_cursor_to_focus();
@@ -1375,6 +1385,23 @@ impl State {
     pub fn move_cursor_to_output(&mut self, output: &Output) {
         let geo = self.niri.global_space.output_geometry(output).unwrap();
         self.move_cursor(center(geo).to_f64());
+    }
+
+    /// Moves the pointer to `output` as the focus goes there, unless the config keeps it where it
+    /// is.
+    pub fn bring_cursor_to_output(&mut self, output: &Output) {
+        let warp = self
+            .niri
+            .config
+            .borrow()
+            .input
+            .warp_mouse_to_focused_monitor;
+        if warp {
+            self.move_cursor_to_output(output);
+        } else {
+            // FIXME: granular
+            self.niri.queue_redraw_all();
+        }
     }
 
     pub fn refresh_popup_grab(&mut self) {
@@ -2676,8 +2703,13 @@ impl State {
 }
 
 impl State {
-    /// Runs the bento actions that bento's own shell asked for.
+    /// Runs the bento actions that bento's own shell asked for, and starts the apps it did.
     fn run_scene_actions(&mut self) {
+        let launches = self.niri.scene.as_ref().map(|scene| scene.take_launches());
+        for command in launches.unwrap_or_default() {
+            let token = self.niri.launch_token();
+            crate::utils::spawning::spawn(command, Some(token));
+        }
         let Some(scene) = &self.niri.scene else {
             return;
         };
@@ -3095,6 +3127,7 @@ impl Niri {
             presentation_state,
             security_context_state,
             gamma_control_manager_state,
+            current_monitor: CurrentMonitor::default(),
             activation_state,
             mutter_x11_interop_state,
             bento_shell_state,
@@ -3471,6 +3504,7 @@ impl Niri {
         }
 
         self.layout.remove_output(output);
+        self.current_monitor.remove(output);
         self.global_space.unmap_output(output);
         self.reposition_outputs(None);
         self.gamma_control_manager_state.output_removed(output);
@@ -4505,6 +4539,66 @@ impl Niri {
             .cloned()
     }
 
+    /// The current monitor: the one that workspace actions and the shell's are about, and that new
+    /// windows open on.
+    pub fn current_output(&self) -> Option<&Output> {
+        let focused = self.layout.active_output();
+        self.current_monitor.get(focused)
+    }
+
+    /// Makes `output` the current monitor, as the user did something there.
+    pub fn make_current(&mut self, output: &Output) {
+        self.refresh_current_monitor();
+        self.current_monitor.make(output);
+    }
+
+    /// The pointer moved to `pos`, or was used there: a button or a scroll.
+    pub fn pointer_is_at(&mut self, pos: Point<f64, Logical>, used: bool) {
+        let Some((output, _)) = self.output_under(pos) else {
+            return;
+        };
+        let output = output.clone();
+        self.refresh_current_monitor();
+        self.current_monitor.pointer_is_on(&output);
+        if used {
+            self.current_monitor.make(&output);
+        }
+    }
+
+    /// Makes the monitor with the focus current if the focus moved there since this was last
+    /// called.
+    pub fn refresh_current_monitor(&mut self) {
+        let focused = self.layout.active_output();
+        self.current_monitor.focus_is_on(focused);
+    }
+
+    /// `reference` on the current monitor, for a workspace by its number or the one that's shown.
+    pub fn workspace_on_current(
+        &self,
+        reference: Option<WorkspaceReference>,
+    ) -> Option<WorkspaceReference> {
+        let monitor = || self.layout.monitor_for_output(self.current_output()?);
+        let workspace = match reference {
+            None => monitor()?.active_workspace_ref(),
+            Some(WorkspaceReference::Index(index)) => {
+                monitor()?.workspace_at(usize::from(index.max(1)) - 1)?
+            }
+            Some(reference) => return Some(reference),
+        };
+        Some(WorkspaceReference::Id(workspace.id().get()))
+    }
+
+    /// An activation token for a program bento starts, which remembers the current monitor so that
+    /// its window opens there, however long it takes.
+    pub fn launch_token(&mut self) -> XdgActivationToken {
+        let output = self.current_output().cloned();
+        let (token, data) = self.activation_state.create_external_token(None);
+        if let Some(output) = output {
+            data.user_data.insert_if_missing(|| LaunchedOn(output));
+        }
+        token.clone()
+    }
+
     pub fn output_left(&self) -> Option<Output> {
         let active = self.layout.active_output()?;
         self.output_left_of(active)
@@ -5367,12 +5461,14 @@ impl Niri {
         });
         let windows = self.shell_windows();
         let settings_file = self.shell_settings_file();
+        let current_output = self.current_output().map(|o| o.name());
         let scene = self.scene.get_or_insert_with(Default::default);
         scene.ensure_loaded(&outputs, dir.as_deref(), &entry, settings_file, style);
         scene.set_workspaces(serde_json::Value::Object(workspaces));
         scene.set_windows(serde_json::Value::Array(windows));
         scene.set_fullscreen(serde_json::Value::Object(fullscreen));
         scene.set_overview(overview);
+        scene.set_current_output(current_output);
         let moving = scene.advance_with(Instant::now(), slowdown, response);
         let activation = &mut self.activation_state;
         scene.send_commands(|| activation.create_external_token(None).0.to_string());

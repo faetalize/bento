@@ -6,6 +6,7 @@ mod server;
 mod test_input_backend;
 
 mod binds;
+mod current_monitor;
 mod floating;
 mod fullscreen;
 mod layer_shell;

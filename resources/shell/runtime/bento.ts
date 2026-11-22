@@ -180,6 +180,9 @@ export const focusedOutput = createRoot(() =>
   }),
 );
 
+const [currentValue, setCurrentValue] = createSignal<string | null>(null);
+export const currentOutput = currentValue;
+
 export function workspaces(output: string) {
   return workspaceMap[output] ?? [];
 }
@@ -1363,6 +1366,9 @@ function handle(event: any) {
       return;
     case "workspaces":
       setWorkspaceMap(event.outputs ?? {});
+      return;
+    case "current-output":
+      setCurrentValue(event.output ?? null);
       return;
     case "fullscreen":
       setFullscreenMap(event.outputs ?? {});
