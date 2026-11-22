@@ -25,6 +25,7 @@ pub struct Input {
     pub touch: Touch,
     pub disable_power_key_handling: bool,
     pub warp_mouse_to_focus: Option<WarpMouseToFocus>,
+    pub keep_mouse_on_monitor: bool,
     pub workspace_auto_back_and_forth: bool,
     pub mod_key: Option<ModKey>,
     pub mod_key_nested: Option<ModKey>,
@@ -51,6 +52,8 @@ pub struct InputPart {
     #[knuffel(child)]
     pub warp_mouse_to_focus: Option<WarpMouseToFocus>,
     #[knuffel(child)]
+    pub keep_mouse_on_monitor: Option<Flag>,
+    #[knuffel(child)]
     pub workspace_auto_back_and_forth: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
     pub mod_key: Option<ModKey>,
@@ -64,6 +67,7 @@ impl MergeWith<InputPart> for Input {
             (self, part),
             keyboard,
             disable_power_key_handling,
+            keep_mouse_on_monitor,
             workspace_auto_back_and_forth,
         );
 

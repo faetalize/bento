@@ -1,4 +1,4 @@
-use niri_config::{Action, WorkspaceReference};
+use niri_config::{Action, Config, WorkspaceReference};
 use smithay::output::Output;
 use smithay::utils::{Logical, Point};
 use wayland_client::protocol::wl_surface::WlSurface;
@@ -27,7 +27,11 @@ fn map(f: &mut Fixture, id: ClientId, surface: &WlSurface) {
 /// Two monitors side by side, each with a window, the first one's with the focus and the pointer
 /// on it.
 fn set_up() -> (Fixture, ClientId) {
-    let mut f = Fixture::new();
+    set_up_with_config(Config::default())
+}
+
+fn set_up_with_config(config: Config) -> (Fixture, ClientId) {
+    let mut f = Fixture::with_config(config);
     f.add_output(1, (1920, 1080));
     f.add_output(2, (1280, 720));
     let id = f.add_client();
@@ -235,4 +239,38 @@ fn moving_a_workspace_to_another_monitor_takes_the_focus_along() {
     assert_eq!(active(&mut f), f.niri_output(1));
     assert!(pointer(&mut f).x < 1920.);
     assert_eq!(f.niri().current_output().cloned(), Some(f.niri_output(1)));
+}
+
+#[test]
+fn the_pointer_comes_along_with_the_focus_unless_its_kept() {
+    let (mut f, id) = set_up();
+    act(&mut f, id, Action::FocusMonitorRight);
+    assert!(pointer(&mut f).x > 1920.);
+
+    let mut config = Config::default();
+    config.input.keep_mouse_on_monitor = true;
+    let (mut f, id) = set_up_with_config(config);
+    let at = pointer(&mut f);
+    act(&mut f, id, Action::FocusMonitorRight);
+    assert_eq!(active(&mut f), f.niri_output(2));
+    assert_eq!(pointer(&mut f), at);
+    // The monitor that got the focus is current, and stays so as the mouse is nudged where it is.
+    assert_eq!(f.niri().current_output().cloned(), Some(f.niri_output(2)));
+    point_at(&mut f, id, 1);
+    assert_eq!(f.niri().current_output().cloned(), Some(f.niri_output(2)));
+    act(&mut f, id, Action::FocusWorkspaceDown);
+    assert_eq!(shown(&mut f), [0, 1]);
+
+    // Going to a window or a workspace there leaves it too.
+    act(&mut f, id, Action::FocusMonitorLeft);
+    let output = f.niri_output(2);
+    let mon = f.niri().layout.monitor_for_output(&output).unwrap();
+    let ws = mon.active_workspace_ref().id().get();
+    act(
+        &mut f,
+        id,
+        Action::FocusWorkspace(WorkspaceReference::Id(ws)),
+    );
+    assert_eq!(active(&mut f), f.niri_output(2));
+    assert!(pointer(&mut f).x < 1920.);
 }

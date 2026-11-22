@@ -146,7 +146,17 @@ pub fn mouse() -> Category {
                     "Hide While Typing",
                     "cursor.hide-when-typing",
                     |c| c.cursor.hide_when_typing,
-                )),
+                ))
+                .setting(
+                    Setting::switch(
+                        "Follow Focus to Other Monitors",
+                        "input.keep-mouse-on-monitor",
+                        |c| c.input.keep_mouse_on_monitor,
+                    )
+                    .inverted()
+                    .style(BoolStyle::Presence)
+                    .keywords(&["warp", "teleport", "keep mouse on monitor"]),
+                ),
         )
 }
 

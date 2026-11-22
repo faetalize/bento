@@ -64,6 +64,9 @@ input {
 
     // Uncomment this to make the mouse warp to the center of newly focused windows.
     // warp-mouse-to-focus
+
+    // Uncomment this to leave the mouse where it is when the focus goes to another monitor.
+    // keep-mouse-on-monitor
 }
 
 // You can configure outputs by their name, which you can find

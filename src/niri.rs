@@ -1250,7 +1250,7 @@ impl State {
         }
         if new_active != active_output {
             if !self.maybe_warp_cursor_to_focus_centered() {
-                self.move_cursor_to_output(&new_active.unwrap());
+                self.bring_cursor_to_output(&new_active.unwrap());
             }
         } else {
             self.maybe_warp_cursor_to_focus();
@@ -1385,6 +1385,17 @@ impl State {
     pub fn move_cursor_to_output(&mut self, output: &Output) {
         let geo = self.niri.global_space.output_geometry(output).unwrap();
         self.move_cursor(center(geo).to_f64());
+    }
+
+    /// Moves the pointer to `output` as the focus goes there, unless the config keeps it where it
+    /// is.
+    pub fn bring_cursor_to_output(&mut self, output: &Output) {
+        if self.niri.config.borrow().input.keep_mouse_on_monitor {
+            // FIXME: granular
+            self.niri.queue_redraw_all();
+        } else {
+            self.move_cursor_to_output(output);
+        }
     }
 
     pub fn refresh_popup_grab(&mut self) {
