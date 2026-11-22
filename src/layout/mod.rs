@@ -2023,6 +2023,14 @@ impl<W: LayoutElement> Layout<W> {
         monitor.move_to_workspace(window, idx, activate);
     }
 
+    /// Does `f` with the monitor of `output`, if there's one.
+    pub fn with_monitor(&mut self, output: &Output, f: impl FnOnce(&mut Monitor<W>)) {
+        if let Some(monitor) = self.monitor_for_output_mut(output) {
+            f(monitor);
+        }
+        self.flush_engine();
+    }
+
     pub fn switch_workspace_up(&mut self) {
         self.switch_workspace_up_inner();
         self.flush_engine();

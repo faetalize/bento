@@ -13,7 +13,7 @@ import { PowerPage } from "bento:modules/power";
 export const meta = {
   actions: {
     "toggle-start-menu": {
-      description: "Show or hide the start menu on the focused output.",
+      description: "Show or hide the start menu on the current monitor.",
       bind: "Mod",
     },
   },

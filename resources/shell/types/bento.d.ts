@@ -443,8 +443,13 @@ declare module "bento" {
   /** How big an output is, in logical pixels. */
   export function outputSize(output: OutputName): { width: number; height: number } | null;
 
-  /** The output with the focused workspace. */
+  /** The output with the focused workspace, which has the window with the keyboard. */
   export const focusedOutput: Accessor<OutputName | null>;
+
+  /** The output that workspace actions and the shell's are about and that new windows open on:
+   * the one the pointer last came onto or was used on, or that last got the focus, whichever was
+   * later. */
+  export const currentOutput: Accessor<OutputName | null>;
 
   export interface Workspace {
     id: number;
@@ -539,7 +544,7 @@ declare module "bento" {
   ): void;
 
   /** Listens to an action a module declares in its `meta`, which a bind runs as
-   * `shell-action "name" args…`, with the focused output. Listening inside a component, it stops
+   * `shell-action "name" args…`, with the current output. Listening inside a component, it stops
    * when the component goes. */
   export function onAction(
     name: string,

@@ -358,6 +358,10 @@ pub struct Monitor {
     pub active_workspace: Option<u64>,
     /// Whether it has keyboard focus.
     pub focused: bool,
+    /// Whether it's the current one, which workspace actions and the shell's are about and new
+    /// windows open on: the one the pointer last came onto or that last got the focus.
+    #[serde(default)]
+    pub current: bool,
 }
 
 /// A monitor's mode.

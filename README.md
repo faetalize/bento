@@ -191,6 +191,15 @@ The engine's binds are changed in its own file the same way, see [Layout engines
 A chord binds of different owners claim goes to the shell's, then the engine's, then bento's, since those are only there while they run; `bento validate` and Settings say which chords are taken.
 Settings → Binds does all of this, and resets an action to its defaults.
 
+### The current monitor
+
+Actions on workspaces, the shell's actions, and new windows go to the current monitor: the one the pointer last came onto or was used on, or the one that last got the focus, whichever was later.
+So with the pointer on another monitor, scrolling through workspaces goes through that monitor's, the start menu opens there, and so do apps. An app bento starts opens on the monitor it was started on, when it supports activation tokens.
+
+The pointer doesn't take the focus with it: the keyboard stays in its window, and actions on windows, the engine's actions and `focus-monitor-left` and the like go by that.
+Other programs' panels that don't name a monitor, like `fuzzel`, open on the focused one, where they can get the keyboard.
+`bento msg monitors` says which one is current.
+
 ### Wallpaper
 
 bento can draw a wallpaper itself, without a separate tool like swaybg:

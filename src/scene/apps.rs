@@ -33,6 +33,8 @@ pub struct Apps {
     apps: Vec<App>,
     /// When each folder last changed, when the apps were read.
     read: Vec<(PathBuf, Option<SystemTime>)>,
+    /// The commands of the apps to start.
+    launches: Vec<Vec<String>>,
 }
 
 /// The folders desktop entries are in, the user's first.
@@ -69,6 +71,12 @@ impl Apps {
         &self.apps
     }
 
+    /// The commands of the apps to start since this was last asked. bento starts them, with a
+    /// token that says where they were asked for.
+    pub fn take_launches(&mut self) -> Vec<Vec<String>> {
+        std::mem::take(&mut self.launches)
+    }
+
     /// Starts app `id`, and says whether there's one.
     pub fn launch(&mut self, id: &str) -> bool {
         let Some(app) = self.list().iter().find(|app| app.id == id).cloned() else {
@@ -83,7 +91,7 @@ impl Apps {
             // gives.
             command.insert(0, String::from("xdg-terminal-exec"));
         }
-        crate::utils::spawning::spawn(command, None);
+        self.launches.push(command);
         true
     }
 }

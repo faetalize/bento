@@ -328,6 +328,11 @@ impl<W: LayoutElement> Monitor<W> {
         self.active_workspace_idx
     }
 
+    /// The workspace at `idx` from the top, if there's one.
+    pub fn workspace_at(&self, idx: usize) -> Option<&Workspace<W>> {
+        self.workspaces.get(idx)
+    }
+
     pub fn active_workspace_ref(&self) -> &Workspace<W> {
         &self.workspaces[self.active_workspace_idx]
     }

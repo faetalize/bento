@@ -35,6 +35,7 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
 use tracing::field::Empty;
 
+use crate::current_monitor::LaunchedOn;
 use crate::input::move_grab::MoveGrab;
 use crate::input::resize_grab::ResizeGrab;
 use crate::input::{AnyStartData, DOUBLE_CLICK_TIME};
@@ -1037,6 +1038,7 @@ impl State {
     pub fn send_initial_configure(&mut self, toplevel: &ToplevelSurface) {
         let _span = tracy_client::span!("State::send_initial_configure");
 
+        let current_output = self.niri.current_output().cloned();
         let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) else {
             error!("window must be present in unmapped_windows in send_initial_configure()");
             return;
@@ -1049,6 +1051,15 @@ impl State {
             WindowRef::Unmapped(unmapped),
             self.niri.is_at_startup,
         );
+
+        // The monitor that was current when bento started the program, or is now.
+        let launched_on = unmapped
+            .activation_token_data
+            .as_ref()
+            .and_then(|token| token.user_data.get::<LaunchedOn>())
+            .map(|launched| launched.0.clone())
+            .filter(|output| self.niri.layout.monitor_for_output(output).is_some());
+        let current_output = launched_on.or(current_output);
 
         let Unmapped { window, state, .. } = unmapped;
 
@@ -1100,11 +1111,11 @@ impl State {
                 .map(|mon| (mon, true))
         });
 
-        // If not, use the active monitor.
+        // If not, use the current monitor.
         let mon = mon.or_else(|| {
-            self.niri
-                .layout
-                .active_monitor_ref()
+            current_output
+                .as_ref()
+                .and_then(|output| self.niri.layout.monitor_for_output(output))
                 .map(|mon| (mon, false))
         });
 

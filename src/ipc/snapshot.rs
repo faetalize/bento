@@ -265,6 +265,7 @@ mod tests {
             workspaces: vec![1],
             active_workspace: Some(1),
             focused: true,
+            current: true,
         }
     }
 
