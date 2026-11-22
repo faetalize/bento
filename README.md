@@ -197,7 +197,7 @@ Actions on workspaces, the shell's actions, and new windows go to the current mo
 So with the pointer on another monitor, scrolling through workspaces goes through that monitor's, the start menu opens there, and so do apps. An app bento starts opens on the monitor it was started on, when it supports activation tokens.
 
 The pointer doesn't take the focus with it: the keyboard stays in its window, and actions on windows, the engine's actions and `focus-monitor-left` and the like go by that.
-When the focus goes to another monitor by a key, the pointer comes along to its middle. `input { keep-mouse-on-monitor }` leaves it where it is, and the monitor is current all the same; `warp-mouse-to-focus` still moves it to the focused window.
+When the focus goes to another monitor by a key, the pointer comes along to its middle. `input { warp-mouse-to-focused-monitor false }` leaves it where it is, and the monitor is current all the same; `warp-mouse-to-focus` still moves it to the focused window.
 Other programs' panels that don't name a monitor, like `fuzzel`, open on the focused one, where they can get the keyboard.
 `bento msg monitors` says which one is current.
 

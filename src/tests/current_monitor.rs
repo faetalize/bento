@@ -248,7 +248,7 @@ fn the_pointer_comes_along_with_the_focus_unless_its_kept() {
     assert!(pointer(&mut f).x > 1920.);
 
     let mut config = Config::default();
-    config.input.keep_mouse_on_monitor = true;
+    config.input.warp_mouse_to_focused_monitor = false;
     let (mut f, id) = set_up_with_config(config);
     let at = pointer(&mut f);
     act(&mut f, id, Action::FocusMonitorRight);

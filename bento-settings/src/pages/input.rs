@@ -149,13 +149,11 @@ pub fn mouse() -> Category {
                 ))
                 .setting(
                     Setting::switch(
-                        "Follow Focus to Other Monitors",
-                        "input.keep-mouse-on-monitor",
-                        |c| c.input.keep_mouse_on_monitor,
+                        "Move to Focused Monitor",
+                        "input.warp-mouse-to-focused-monitor",
+                        |c| c.input.warp_mouse_to_focused_monitor,
                     )
-                    .inverted()
-                    .style(BoolStyle::Presence)
-                    .keywords(&["warp", "teleport", "keep mouse on monitor"]),
+                    .keywords(&["warp", "teleport", "pointer", "mouse"]),
                 ),
         )
 }

@@ -1390,11 +1390,17 @@ impl State {
     /// Moves the pointer to `output` as the focus goes there, unless the config keeps it where it
     /// is.
     pub fn bring_cursor_to_output(&mut self, output: &Output) {
-        if self.niri.config.borrow().input.keep_mouse_on_monitor {
+        let warp = self
+            .niri
+            .config
+            .borrow()
+            .input
+            .warp_mouse_to_focused_monitor;
+        if warp {
+            self.move_cursor_to_output(output);
+        } else {
             // FIXME: granular
             self.niri.queue_redraw_all();
-        } else {
-            self.move_cursor_to_output(output);
         }
     }
 
