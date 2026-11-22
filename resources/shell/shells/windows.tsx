@@ -141,7 +141,7 @@ function Taskbar(props: { output: string }) {
               gap={over(40)}
               align={settings.alignment === "left" ? "start" : "center"}
             />
-            <TaskbarApps output={output} size={40} />
+            <TaskbarApps output={output} size={40} gap={over(40)} />
           </box>
           <box
             style={{

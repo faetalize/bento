@@ -96,8 +96,9 @@ const GAP = 4;
 // How many marks a button, 40 wide, has room for.
 const MARKS = 3;
 
-/** The apps pinned and the apps with windows on `output`, as buttons `size` big. */
-export function TaskbarApps(props: { output: string; size?: number }) {
+/** The apps pinned and the apps with windows on `output`, as buttons `size` big, their previews
+ * `gap` away from them. */
+export function TaskbarApps(props: { output: string; size?: number; gap?: number }) {
   const groups = createMemo(() => appGroups(props.output));
   // The group whose previews show, and the button they come out of.
   const [shown, setShown] = createSignal<{ group: string; node: any } | null>(null);
@@ -237,6 +238,7 @@ export function TaskbarApps(props: { output: string; size?: number }) {
           open={open()}
           from={shown()!.node}
           side="top"
+          gap={props.gap}
           padding={8}
           light={false}
         >

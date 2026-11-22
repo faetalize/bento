@@ -2277,7 +2277,7 @@ mod tests {
 
     #[test]
     fn the_taskbars_panels_all_melt_into_it_alike() {
-        let (mut host, mut now, _) = windows_shell_with_an_app();
+        let (mut host, mut now, app) = windows_shell_with_an_app();
         let clipboard = middle_of(&host, "DP-1", "edit-paste-symbolic");
         click(&mut host, "DP-1", clipboard);
         let from_clipboard = above_taskbar(&mut host, &mut now);
@@ -2289,6 +2289,19 @@ mod tests {
         // Close enough to melt into it whole, and as close whatever button it came from.
         assert!(from_clipboard < 4., "{from_clipboard}");
         assert_eq!(from_start, from_clipboard);
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+
+        // The previews, of an app's windows and of the workspaces, too.
+        let workspaces = middle_of(&host, "DP-1", "ph-cards-three-symbolic");
+        let from_hover = [workspaces, app].map(|button| {
+            host.pointer_at(Some(("DP-1", button)));
+            let away = above_taskbar(&mut host, &mut now);
+            host.pointer_at(None);
+            settle(&mut host, &mut now);
+            away
+        });
+        assert_eq!(from_hover, [from_clipboard; 2]);
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
