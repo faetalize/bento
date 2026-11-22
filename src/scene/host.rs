@@ -1816,6 +1816,84 @@ mod tests {
             .collect()
     }
 
+    /// The marks under the apps' buttons on the taskbar, from the left: how wide each is.
+    fn marks(host: &SceneHost) -> Vec<f32> {
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let mut marks: Vec<[f32; 4]> = Band::ALL
+            .into_iter()
+            .flat_map(|band| scene.draw("DP-1", band))
+            .filter_map(|item| match item {
+                Item::Shape { rect, .. } if rect[1] > 1032. && rect[3] == 3. => Some(rect),
+                _ => None,
+            })
+            .collect();
+        marks.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        marks.into_iter().map(|rect| rect[2]).collect()
+    }
+
+    #[test]
+    fn a_taskbar_button_has_a_mark_for_each_window() {
+        let (mut host, mut now, _) = windows_shell_with_an_app();
+        // The first has the focus.
+        assert_eq!(marks(&host), [16., 6.]);
+
+        let mut show = |ids: std::ops::RangeInclusive<u32>, focused: u32| {
+            let windows: Vec<serde_json::Value> = ids
+                .map(|id| {
+                    serde_json::json!({
+                        "id": id, "appId": "org.example.Editor", "title": format!("Note {id}"),
+                        "workspace": 7, "output": "DP-1", "focused": id == focused,
+                        "urgent": false, "floating": false,
+                    })
+                })
+                .collect();
+            host.set_windows(windows.into());
+            settle(&mut host, &mut now);
+            marks(&host)
+        };
+        assert_eq!(show(1..=2, 2), [6., 16.], "the long one follows the focus");
+        assert_eq!(show(1..=2, 0), [6., 6.]);
+        assert_eq!(show(1..=1, 1), [16.]);
+        assert_eq!(show(1..=3, 1), [16., 6., 6.]);
+        // A button has room for three: the last stands for the rest.
+        assert_eq!(show(1..=5, 1), [16., 6., 6.]);
+        assert_eq!(show(1..=5, 5), [6., 6., 16.]);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
+    #[test]
+    fn a_taskbar_button_keeps_its_windows_order_as_one_is_raised() {
+        let (mut host, mut now, button) = windows_shell_with_an_app();
+        // A floating window with the focus comes first, as it's raised over the others.
+        let window = |id: u32, focused: bool| {
+            serde_json::json!({
+                "id": id, "appId": "org.example.Editor", "title": format!("Note {id}"),
+                "workspace": 7, "output": "DP-1", "focused": focused, "urgent": false,
+                "floating": true,
+            })
+        };
+        host.set_windows(serde_json::json!([
+            window(2, true),
+            window(1, false),
+            window(3, false)
+        ]));
+        settle(&mut host, &mut now);
+        assert_eq!(marks(&host), [6., 16., 6.]);
+
+        // A click goes on to the third, rather than back to the first.
+        commands(&host);
+        host.take_actions();
+        click(&mut host, "DP-1", button);
+        let ran = host.take_actions();
+        assert_eq!(ran[0]["name"], "focus-window");
+        assert_eq!(ran[0]["window"], 3);
+
+        host.pointer_at(Some(("DP-1", button)));
+        settle(&mut host, &mut now);
+        assert_eq!(copied(&host), [1, 2, 3]);
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+    }
+
     /// How far above the taskbar the glass of the panel open over it is, once it's settled.
     fn above_taskbar(host: &mut SceneHost, now: &mut Instant) -> f32 {
         settle(host, now);
