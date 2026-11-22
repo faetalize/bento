@@ -11,7 +11,7 @@ import { Button, grows, growsWith, popup } from "bento:modules/ui";
 export const meta = {
   actions: {
     "edit-workspace": {
-      description: "Show or hide the editor for the focused workspace, to name it or take its name away.",
+      description: "Rename the focused workspace.",
     },
   },
 } satisfies Meta;
