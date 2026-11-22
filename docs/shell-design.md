@@ -108,6 +108,13 @@ how, when it makes a copy of a shell. Importing completes bento's modules, and
 each module's props and every primitive are documented where they're used. The types are the one
 place that says what there is; nothing else lists it.
 
+A shell knows about every workspace, on screen or not: its windows, where each is on it, and which
+are in front, and whether the overview is open. It shows what it likes of that and asks bento for
+actions; placing windows is the engine's.
+
+What the API has keeps working. What something newer does better is deprecated, and its type says
+what to use in its place.
+
 How anything moves is the scripts' too: bento moves what scripts set with springs, at the speeds
 they ask for, and says when a motion settles; how things come and go, grow out of a point, turn
 into each other and fade is built from that in the scripts. bento holds no choreography of its
@@ -282,13 +289,23 @@ indicators. It's keyboard first: typing finds apps.
 Along the bottom of each output runs a taskbar, in the top layer, so fullscreen windows cover it.
 In its middle, or on its left as its settings say, are the start button, a button for the
 overview, and a button for each app pinned to it and each app with open windows, lit while one
-of them has the focus. Resting on an app's button shows live previews of its windows over it,
-and a click goes to them. A right click opens the app's menu, which pins it and closes its
+of them has the focus, with a mark for each of its windows. Resting on an app's button shows live
+previews of its windows over it, and a click goes to them. A right click opens the app's menu, which pins it and closes its
 windows, and a button dragged among the others stays where it's left; the pinned keep their
 order. At its end, in three parts with a faint line
 between each, are the tray; quick things, like the sound output switcher and the clipboard's
 button; and quick settings, with the clock that opens the notification center and the month.
 Then a sliver shows the desktop.
+
+The overview's button says where one is: its icon has a pip beside it for each workspace, stacked
+as workspaces are, and the current one's name, or "Workspace 2" for one without. The name takes
+the room it needs, and is cut off as that changes rather than shortened. A click opens the
+overview, and the icon is filled while it's open, and a right click renames the workspace or
+takes its name away. Scrolling over the button goes through the
+workspaces, and resting on it shows previews of all of them, with their names. Scrolling keeps the
+previews away for a moment and no more: once it's stopped, resting shows them again. The names, the
+pips, the previews and the scrolling can each be turned off, and the workspace's number can be shown
+in the icon, which it isn't by default.
 
 The start menu comes out of the start button: around it on a taskbar in the middle, and from its
 left edge on one to the left. It finds apps the way the launcher does, shows all of them

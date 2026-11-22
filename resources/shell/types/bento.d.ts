@@ -472,13 +472,25 @@ declare module "bento" {
     title: string | null;
     workspace: number | null;
     output: OutputName | null;
+    /** Where it's headed on its workspace, with its border, whether that workspace is on screen or
+     * not: from the top left of the workspace's view, the part an output shows, which is as big
+     * as the output (`outputSize()`). A scrolling workspace's windows reach past it. `null` for
+     * one that isn't anywhere, like a minimized one. */
+    rect: Rect | null;
+    /** Whether it's its workspace's active window, which has the focus when the workspace does. */
+    active: boolean;
     focused: boolean;
     urgent: boolean;
     floating: boolean;
   }
 
-  /** The windows, for a taskbar. `action("focus-window", [], { window: id })` raises one. */
+  /** The windows, of every workspace, for a taskbar or previews. Those of a workspace come from
+   * the front to the back, so they change places as they're raised; ids go up in the order windows
+   * opened. `action("focus-window", [], { window: id })` raises one. */
   export function windows(): Window[];
+
+  /** Whether the overview is open. `action("toggle-overview")` opens and closes it. */
+  export const overviewOpen: Accessor<boolean>;
 
   /** Whether `output` shows a fullscreen window. */
   export function fullscreen(output: OutputName): boolean;
@@ -500,7 +512,9 @@ declare module "bento" {
     }[];
   }
 
-  /** Where the windows of `output`'s active workspace sit, for a minimap. */
+  /** Where the windows of `output`'s active workspace sit, for a minimap.
+   * @deprecated `windows()` says where every window is, as its `rect`, and `outputSize()` how big
+   * the view is, for any workspace. */
   export function minimap(output: OutputName): Minimap | null;
 
   /** bento's own style, to line up with. */

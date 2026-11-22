@@ -1,11 +1,33 @@
 // The workspaces of an output: their buttons, as numbers or names, the current one lit, and the
 // minimap of the one on screen.
 
-import { action, minimap, useOutput, workspaces } from "bento";
+import { action, outputSize, useOutput, windows, workspaces, type Workspace } from "bento";
 import { createMemo, For, Show } from "solid-js";
+import { openMenu, type MenuItem } from "bento:modules/menu";
 import { ACTIVE } from "bento:modules/ui";
+import { canEditWorkspaces, openWorkspaceEditor } from "bento:modules/workspace-editor";
 
-/** The output's workspaces, a click going to one. */
+/** What a workspace is called: its name, or which it is on its output. */
+export const workspaceName = (ws: Workspace) => ws.name ?? `Workspace ${ws.index + 1}`;
+
+/** What a right click on a workspace offers: renaming it, where the shell placed the editor, and
+ * taking its name away. An empty workspace goes away with its name. */
+export function workspaceMenu(ws: Workspace): MenuItem[] {
+  const items: MenuItem[] = [];
+  if (canEditWorkspaces()) {
+    items.push({ label: "Rename", icon: "document-edit-symbolic", run: () => openWorkspaceEditor(ws) });
+  }
+  if (ws.name !== null) {
+    items.push({
+      label: "Unname",
+      icon: "user-trash-symbolic",
+      run: () => action("unset-workspace-name", [], { workspace: ws.id }),
+    });
+  }
+  return items;
+}
+
+/** The output's workspaces, a click going to one and a right click opening its menu. */
 export function Workspaces() {
   const output = useOutput();
   return (
@@ -20,6 +42,10 @@ export function Workspaces() {
               ":hover": ws.active ? undefined : { background: "fg/0.12" },
             }}
             onClick={() => action("focus-workspace", [], { workspace: ws.id })}
+            onRightClick={(event) => {
+              const items = workspaceMenu(ws);
+              if (items.length > 0) openMenu(event, items);
+            }}
           >
             <text
               style={{
@@ -62,15 +88,22 @@ function beside(tiles: any[], side: number) {
  * click on a tile focuses its window. Without tiles it takes no room. */
 export function Minimap() {
   const output = useOutput();
-  const map = () => minimap(output);
-  const tiles = createMemo(() =>
-    (map()?.tiles ?? []).filter((tile: any) => !tile.floating && tile.w > 0 && tile.h > 0));
+  const tiles = createMemo(() => {
+    const shown = workspaces(output).find((ws) => ws.active);
+    return windows()
+      .filter((win) => win.workspace === shown?.id && win.rect && !win.floating)
+      .map((win) => ({
+        id: win.id, active: win.active,
+        x: win.rect!.x, y: win.rect!.y, w: win.rect!.width, h: win.rect!.height,
+      }))
+      .filter((tile) => tile.w > 0 && tile.h > 0);
+  });
   const shape = createMemo(() => {
-    const m = map();
+    const view = outputSize(output);
     const list = tiles();
-    if (!m || list.length === 0 || !(m.view[0] > 0) || !(m.view[1] > 0)) return null;
+    if (!view || list.length === 0 || !(view.width > 0) || !(view.height > 0)) return null;
     // The canvas spans the tiles and the view, which starts at zero.
-    const [viewWidth, viewHeight] = m.view;
+    const { width: viewWidth, height: viewHeight } = view;
     const start = Math.min(0, ...list.map((tile: any) => tile.x));
     const end = Math.max(viewWidth, ...list.map((tile: any) => tile.x + tile.w));
     const tall = MAP_HEIGHT / viewHeight;

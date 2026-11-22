@@ -17,6 +17,7 @@ import { NotificationCenter, QuickSettings } from "bento:modules/control-center"
 import { networkIcon } from "bento:modules/network";
 import { activeDevice, OutputSwitcher, VolumeIndicator, volumeIcon } from "bento:modules/sound";
 import { battery } from "bento:modules/power";
+import { OverviewButton } from "bento:modules/overview";
 import { TaskbarApps } from "bento:modules/taskbar";
 import { StartMenu } from "bento:modules/start-menu";
 import { Tray } from "bento:modules/tray";
@@ -135,10 +136,12 @@ function Taskbar(props: { output: string }) {
               <image icon="ph-squares-four-symbolic" size={20} />
             </BarButton>
             {/* The overview, of every workspace. */}
-            <BarButton onClick={() => action("toggle-overview")}>
-              <image icon="ph-cards-three-symbolic" size={20} />
-            </BarButton>
-            <TaskbarApps output={output} size={40} />
+            <OverviewButton
+              output={output}
+              gap={over(40)}
+              align={settings.alignment === "left" ? "start" : "center"}
+            />
+            <TaskbarApps output={output} size={40} gap={over(40)} />
           </box>
           <box
             style={{

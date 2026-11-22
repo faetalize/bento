@@ -46,7 +46,7 @@ export interface AppGroup {
 }
 
 /** The apps pinned, in order, then the windows on `output` by app, in the order their apps first
- * came, each with its windows. */
+ * came, each with its windows in the order they opened. */
 export function appGroups(output?: string) {
   const groups = new Map<string, AppGroup>();
   for (const id of settings.pinned) {
@@ -55,7 +55,9 @@ export function appGroups(output?: string) {
       groups.set(app.id, { key: app.id, app, windows: [], pinned: true });
     }
   }
-  for (const win of windows()) {
+  // By id, which is the order they opened in: bento lists a floating window first once it's raised,
+  // and a button's windows don't change places as they're gone through.
+  for (const win of [...windows()].sort((a, b) => a.id - b.id)) {
     if (output && win.output !== output) continue;
     const app = appOf(win);
     const key = app?.id ?? win.appId ?? `window-${win.id}`;
@@ -91,9 +93,12 @@ const PREVIEW = { width: 220, height: 130 };
 // How far a press moves before it drags its button, and the room between buttons.
 const SLOP = 8;
 const GAP = 4;
+// How many marks a button, 40 wide, has room for.
+const MARKS = 3;
 
-/** The apps pinned and the apps with windows on `output`, as buttons `size` big. */
-export function TaskbarApps(props: { output: string; size?: number }) {
+/** The apps pinned and the apps with windows on `output`, as buttons `size` big, their previews
+ * `gap` away from them. */
+export function TaskbarApps(props: { output: string; size?: number; gap?: number }) {
   const groups = createMemo(() => appGroups(props.output));
   // The group whose previews show, and the button they come out of.
   const [shown, setShown] = createSignal<{ group: string; node: any } | null>(null);
@@ -188,7 +193,6 @@ export function TaskbarApps(props: { output: string; size?: number }) {
           };
           let node: any;
           const lit = () => group.windows.some((win) => win.focused);
-          const urgent = () => group.windows.some((win) => win.urgent);
           const running = () => group.windows.length > 0;
           return (
             <box
@@ -223,18 +227,7 @@ export function TaskbarApps(props: { output: string; size?: number }) {
                 inside && running() && !dragged() ? show(group.key, node) : hide()}
             >
               <image icon={appIcon(group.app)} size={Math.round(size() * 0.6)} />
-              {/* Under it, a line: wide and lit while it has the focus, short while it's open. */}
-              <Show when={running()}>
-                <box
-                  style={{
-                    position: "absolute", bottom: 2, height: 3, borderRadius: 2,
-                    width: lit() ? 16 : 6, left: (size() - (lit() ? 16 : 6)) / 2,
-                    background: urgent() ? "#e5a50a" : lit() ? "accent" : "fg/0.5",
-                  }}
-                  enter={{ opacity: 0 }}
-                  exit={{ opacity: 0 }}
-                />
-              </Show>
+              <Marks windows={group.windows} width={size()} />
             </box>
           );
         }}
@@ -245,6 +238,7 @@ export function TaskbarApps(props: { output: string; size?: number }) {
           open={open()}
           from={shown()!.node}
           side="top"
+          gap={props.gap}
           padding={8}
           light={false}
         >
@@ -277,6 +271,41 @@ export function TaskbarApps(props: { output: string; size?: number }) {
           </box>
         </Flyout>
       </Show>
+    </box>
+  );
+}
+
+/** The marks under an app's button, `width` wide: one for each of its windows, long and lit for the
+ * one with the focus. The last stands for every window there's no room for. */
+function Marks(props: { windows: Window[]; width: number }) {
+  const marks = createMemo(() => {
+    const shown = props.windows.slice(0, MARKS).map((win) => [win]);
+    shown[MARKS - 1]?.push(...props.windows.slice(MARKS));
+    return shown.map((list) => ({
+      focused: list.some((win) => win.focused),
+      urgent: list.some((win) => win.urgent),
+    }));
+  });
+  return (
+    <box
+      style={{
+        position: "absolute", bottom: 2, left: 0, width: props.width, flexDirection: "row",
+        justifyContent: "center", gap: 3,
+      }}
+    >
+      {/* By place, so that marks stay and change length as the focus moves. */}
+      <For each={marks()} keyed={false}>
+        {(mark) => (
+          <box
+            style={{
+              height: 3, borderRadius: 2, width: mark().focused ? 16 : 6,
+              background: mark().urgent ? "#e5a50a" : mark().focused ? "accent" : "fg/0.5",
+            }}
+            enter={{ opacity: 0 }}
+            exit={{ opacity: 0 }}
+          />
+        )}
+      </For>
     </box>
   );
 }

@@ -464,10 +464,13 @@ impl<W: LayoutElement> TilingSpace<W> {
         // Use the target camera position, to not spam IPC clients during animations.
         let camera = self.camera.target();
         zip(&self.tiles, &self.data).map(move |(tile, data)| {
-            let pos = data.rect.unwrap_or_default().loc - camera;
-            let pos = pos.to_physical_precise_round(scale).to_logical(scale);
+            // One the engine hides, like a minimized window, or hasn't placed isn't anywhere.
+            let pos = data.rect.filter(|_| data.visible).map(|rect| {
+                let pos = rect.loc - camera;
+                pos.to_physical_precise_round(scale).to_logical(scale)
+            });
             let layout = WindowLayout {
-                tile_pos_in_workspace_view: Some(pos.into()),
+                tile_pos_in_workspace_view: pos.map(Into::into),
                 ..tile.ipc_layout_template()
             };
             (tile, layout)

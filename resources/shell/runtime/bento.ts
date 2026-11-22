@@ -162,12 +162,13 @@ function keyed<T extends object>(initial: T) {
 
 const [workspaceMap, setWorkspaceMap] = keyed<Record<string, any[]>>({});
 const [fullscreenMap, setFullscreenMap] = keyed<Record<string, boolean>>({});
-const [minimapMap, setMinimapMap] = keyed<Record<string, any>>({});
 const [windowList, setWindowList] = keyed<{ list: any[] }>({ list: [] });
 
 export function windows() {
   return windowList.list;
 }
+const [overviewValue, setOverviewValue] = createSignal(false);
+export const overviewOpen = overviewValue;
 const [styleValue, setStyleValue] = createSignal<any>(read(native.style(), {}));
 
 export const focusedOutput = createRoot(() =>
@@ -191,7 +192,15 @@ export function fullscreen(output: string) {
 }
 
 export function minimap(output: string) {
-  return minimapMap[output] ?? null;
+  outputs();
+  const size = outputSize(output);
+  const shown = workspaces(output).find((ws: any) => ws.active);
+  if (!size || !shown) return null;
+  const tiles = windows()
+    .filter((win) => win.workspace === shown.id && win.rect)
+    .map(({ id, rect, active, floating }) =>
+      ({ id, x: rect.x, y: rect.y, w: rect.width, h: rect.height, active, floating }));
+  return { view: [size.width, size.height], tiles };
 }
 
 export function outputSize(output: string) {
@@ -1364,8 +1373,8 @@ function handle(event: any) {
     case "fullscreen":
       setFullscreenMap(event.outputs ?? {});
       return;
-    case "minimap":
-      setMinimapMap(event.outputs ?? {});
+    case "overview":
+      setOverviewValue(Boolean(event.open));
       return;
     case "windows":
       setWindowList({ list: event.windows ?? [] });

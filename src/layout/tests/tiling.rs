@@ -156,6 +156,25 @@ fn windows11_layout_runs_in_the_engine() {
     ");
 }
 
+#[test]
+fn a_window_the_engine_hides_has_no_place_in_the_view() {
+    let mut ops = vec![
+        Op::AddOutput(1),
+        add_window(1),
+        add_window(2),
+        Op::FocusWindow(2),
+        Op::LayoutAction("minimize", vec![], None),
+    ];
+    ops.extend(settle());
+    let layout = check_ops_with_options(options_for("windows11"), ops);
+    let mut placed = Vec::new();
+    layout.with_windows(|win, _, _, place| {
+        placed.push((*win.id(), place.tile_pos_in_workspace_view.is_some()));
+    });
+    placed.sort();
+    assert_eq!(placed, [(1, true), (2, false)]);
+}
+
 /// Starts dragging window 3 of a windows11 workspace by a point inside it, and moves the pointer
 /// `dx` to the right.
 fn drag_windows11(dx: f64) -> Layout<TestWindow> {
