@@ -176,6 +176,15 @@ monitor or within its stack, rename one, and move windows onto one. Because one 
 sees every workspace, moving a window between workspaces is just the engine changing where the
 window is, with no handing over.
 
+### The current monitor is apart from the focus
+
+There are two: the window with the keyboard, and the current monitor, which actions on workspaces
+and the shell's actions are about and where new windows open. A monitor always shows a workspace,
+so a focused workspace isn't a third. The current monitor is the one the pointer last came onto or
+was used on, or the one that last got the focus, whichever was later. The pointer never takes the
+keyboard from a window by that. It's not a setting. Whether windows get focus from the pointer is
+the engine's, and engines' actions go by the focus.
+
 ### bento owns floating
 
 Floating is the exception to tiling: a place for popups, dialogs and anything short-lived that

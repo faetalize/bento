@@ -146,7 +146,15 @@ pub fn mouse() -> Category {
                     "Hide While Typing",
                     "cursor.hide-when-typing",
                     |c| c.cursor.hide_when_typing,
-                )),
+                ))
+                .setting(
+                    Setting::switch(
+                        "Move to Focused Monitor",
+                        "input.warp-mouse-to-focused-monitor",
+                        |c| c.input.warp_mouse_to_focused_monitor,
+                    )
+                    .keywords(&["warp", "teleport", "pointer", "mouse"]),
+                ),
         )
 }
 

@@ -550,11 +550,13 @@ fn print_monitor(monitor: Monitor) {
         workspaces,
         active_workspace,
         focused,
+        current,
     } = monitor;
 
     let serial = serial.as_deref().unwrap_or("Unknown");
     let focused = if focused { " (focused)" } else { "" };
-    println!(r#"Monitor "{make} {model} {serial}" ({name}){focused}"#);
+    let current = if current { " (current)" } else { "" };
+    println!(r#"Monitor "{make} {model} {serial}" ({name}){focused}{current}"#);
 
     let print_qualifier = |is_preferred: bool, is_current: bool, is_custom_mode: bool| {
         let mut qualifier = Vec::new();

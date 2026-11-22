@@ -53,6 +53,7 @@ pub fn workspaces(state: &State) -> BTreeMap<u64, Workspace> {
 pub fn monitors(state: &State, workspaces: &BTreeMap<u64, Workspace>) -> BTreeMap<String, Monitor> {
     let layout = &state.niri.layout;
     let active_output = layout.active_output().map(|output| output.name());
+    let current_output = state.niri.current_output().map(|output| output.name());
     let outputs = state.backend.ipc_outputs().lock().unwrap().clone();
 
     outputs
@@ -81,6 +82,7 @@ pub fn monitors(state: &State, workspaces: &BTreeMap<u64, Workspace>) -> BTreeMa
             let logical = output.logical;
             let monitor = Monitor {
                 focused: active_output.as_ref() == Some(&output.name),
+                current: current_output.as_ref() == Some(&output.name),
                 make: output.make,
                 model: output.model,
                 serial: output.serial,

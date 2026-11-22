@@ -188,6 +188,20 @@ impl CompositorHandler for State {
                         .add_window(mapped, target, is_floating, activate);
                     let output = output.cloned();
 
+                    // One that opened on the current monitor and would have the focus there takes
+                    // it, as it's where the user is. A dialog is its parent's.
+                    if let Some(output) = &output {
+                        let mon = self.niri.layout.monitor_for_output(output);
+                        let front = mon.and_then(|mon| mon.active_workspace_ref().active_window());
+                        if parent.is_none()
+                            && !matches!(activate, ActivateWindow::No)
+                            && self.niri.current_output() == Some(output)
+                            && front.is_some_and(|front| front.window == window)
+                        {
+                            self.niri.layout.focus_output(output);
+                        }
+                    }
+
                     // The window state cannot contain Fullscreen and Maximized at once. Therefore,
                     // if the window ended up fullscreen, then we only know that it is also
                     // maximized from the is_pending_maximized variable. Tell the layout about it

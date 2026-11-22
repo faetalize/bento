@@ -1414,6 +1414,7 @@ mod tests {
                 disable-power-key-handling
 
                 warp-mouse-to-focus
+                warp-mouse-to-focused-monitor false
                 workspace-auto-back-and-forth
 
                 mod-key "Mod5"
@@ -1791,6 +1792,7 @@ mod tests {
                         mode: None,
                     },
                 ),
+                warp_mouse_to_focused_monitor: false,
                 workspace_auto_back_and_forth: true,
                 mod_key: Some(
                     IsoLevel3Shift,

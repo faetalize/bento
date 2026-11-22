@@ -1,4 +1,4 @@
-// The launcher: a glass search field in the middle of the focused output that finds apps as
+// The launcher: a glass search field in the middle of the current output that finds apps as
 // they're typed, its results opening below it. It grows out of a point, and shrinks back into
 // one. Its bind opens it, and Escape or a press elsewhere closes it.
 
@@ -10,7 +10,7 @@ import { AppRow, appSearch, preloadIcons, start } from "bento:modules/apps";
 export const meta = {
   actions: {
     "toggle-launcher": {
-      description: "Show or hide the launcher on the focused output.",
+      description: "Show or hide the launcher on the current monitor.",
       bind: "Mod+D",
     },
   },

@@ -14,7 +14,7 @@ use crate::binds::Modifiers;
 use crate::utils::{expand_home_path, Flag, MergeWith};
 use crate::{FloatOrInt, Includes};
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Input {
     pub keyboard: Keyboard,
     pub touchpad: Touchpad,
@@ -25,9 +25,30 @@ pub struct Input {
     pub touch: Touch,
     pub disable_power_key_handling: bool,
     pub warp_mouse_to_focus: Option<WarpMouseToFocus>,
+    pub warp_mouse_to_focused_monitor: bool,
     pub workspace_auto_back_and_forth: bool,
     pub mod_key: Option<ModKey>,
     pub mod_key_nested: Option<ModKey>,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Self {
+            keyboard: Default::default(),
+            touchpad: Default::default(),
+            mouse: Default::default(),
+            trackpoint: Default::default(),
+            trackball: Default::default(),
+            tablet: Default::default(),
+            touch: Default::default(),
+            disable_power_key_handling: false,
+            warp_mouse_to_focus: None,
+            warp_mouse_to_focused_monitor: true,
+            workspace_auto_back_and_forth: false,
+            mod_key: None,
+            mod_key_nested: None,
+        }
+    }
 }
 
 #[derive(knuffel::Decode, Debug, Default, PartialEq)]
@@ -51,6 +72,8 @@ pub struct InputPart {
     #[knuffel(child)]
     pub warp_mouse_to_focus: Option<WarpMouseToFocus>,
     #[knuffel(child)]
+    pub warp_mouse_to_focused_monitor: Option<Flag>,
+    #[knuffel(child)]
     pub workspace_auto_back_and_forth: Option<Flag>,
     #[knuffel(child, unwrap(argument, str))]
     pub mod_key: Option<ModKey>,
@@ -64,6 +87,7 @@ impl MergeWith<InputPart> for Input {
             (self, part),
             keyboard,
             disable_power_key_handling,
+            warp_mouse_to_focused_monitor,
             workspace_auto_back_and_forth,
         );
 
