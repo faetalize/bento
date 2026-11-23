@@ -958,8 +958,7 @@ declare module "bento" {
     "clipboard-clear": {};
     /** Finds the files in the home folder with all of the words of `query` in their names, but for
      * those hidden or ignored by git, which come as the `files` event with the same `id`. One
-     * search runs at a time: another takes its place. `bento:modules/files` does this as it's
-     * typed. */
+     * search runs at a time: another takes its place. `bento:modules/files` does this. */
     "files-search": { id: number; query: string };
     "files-stop": { id: number };
     /** Opens a file with its app, and a folder in the file manager; with `token`, bento hands the

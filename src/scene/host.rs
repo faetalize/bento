@@ -3393,7 +3393,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_search_looks_once_for_what_was_typed_and_opens_what_it_found() {
+    fn a_file_search_gives_what_the_last_search_found_and_opens_it() {
         let dir = std::env::temp_dir().join(format!("bento-files-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.tsx");
@@ -3408,7 +3408,7 @@ mod tests {
               createEffect(() => true, () => field.focus());
               return (
                 <Surface output="DP-1" keyboard="exclusive" style={{ flexDirection: "column" }}>
-                  <box style={{ width: 200 }}><input ref={field} onInput={search.type} /></box>
+                  <box style={{ width: 200 }}><input ref={field} onInput={search.search} /></box>
                   <Show when={search.searching()}><text>Searching</text></Show>
                   <Show when={!search.available()}><text>Unavailable</text></Show>
                   <For each={search.files()}>
@@ -3445,33 +3445,22 @@ mod tests {
             host.data_line(&said.to_string());
         };
 
-        // One letter isn't looked for, and what's typed on is, once typing pauses.
-        type_keys(&mut host, &["a"]);
-        settle(&mut host, &mut now);
-        assert!(!shows(&host, "DP-1", "Searching"));
-        assert!(commands(&host).is_empty());
-        type_keys(&mut host, &["b", "c"]);
+        // Each search is asked for right away, and one in its place is another.
+        type_keys(&mut host, &["a", "b"]);
         settle(&mut host, &mut now);
         assert!(shows(&host, "DP-1", "Searching"));
         let asked = commands(&host);
-        assert_eq!(asked.len(), 1, "{asked:?}");
-        let first = asked[0]["id"].clone();
+        let (first, second) = (asked[0]["id"].clone(), asked[1]["id"].clone());
+        assert_ne!(first, second);
         assert_eq!(
-            asked[0],
-            serde_json::json!({ "cmd": "files-search", "id": first, "query": "abc" })
+            asked,
+            [
+                serde_json::json!({ "cmd": "files-search", "id": first, "query": "a" }),
+                serde_json::json!({ "cmd": "files-search", "id": second, "query": "ab" }),
+            ]
         );
 
-        // Typing on ends that search, and what it finds comes too late.
-        type_keys(&mut host, &["d"]);
-        settle(&mut host, &mut now);
-        let asked = commands(&host);
-        assert_eq!(
-            asked[0],
-            serde_json::json!({ "cmd": "files-stop", "id": first })
-        );
-        assert_eq!(asked[1]["query"], "abcd");
-        let second = asked[1]["id"].clone();
-        assert_ne!(first, second);
+        // What the first one finds comes too late.
         found(&mut host, &first, &["late"]);
         settle(&mut host, &mut now);
         assert!(!shows(&host, "DP-1", "late") && shows(&host, "DP-1", "Searching"));
@@ -3482,23 +3471,29 @@ mod tests {
             .unwrap()
             .send(&serde_json::json!({ "type": "data-ready" }));
         let asked = commands(&host);
-        assert_eq!(asked[0]["query"], "abcd");
-        found(&mut host, &asked[0]["id"], &["abcd.txt", "abcde.txt"]);
+        assert_eq!(asked[0]["query"], "ab");
+        found(&mut host, &asked[0]["id"], &["ab.txt", "abc.txt"]);
         settle(&mut host, &mut now);
         assert!(!shows(&host, "DP-1", "Searching"));
-        assert!(shows(&host, "DP-1", "abcd.txt") && !shows(&host, "DP-1", "abcde.txt"));
-        let file = middle_of(&host, "DP-1", "abcd.txt");
+        assert!(shows(&host, "DP-1", "ab.txt") && !shows(&host, "DP-1", "abc.txt"));
+        let file = middle_of(&host, "DP-1", "ab.txt");
         click(&mut host, "DP-1", file);
         assert_eq!(
             commands(&host),
-            [serde_json::json!({ "cmd": "files-open", "path": "/h/abcd.txt", "token": true })]
+            [serde_json::json!({ "cmd": "files-open", "path": "/h/ab.txt", "token": true })]
         );
 
-        // What was found goes with what was typed, and there's nothing to stop.
-        type_keys(&mut host, &["BackSpace", "BackSpace", "BackSpace"]);
+        // Looking for nothing ends the search that's on its way, and what was found goes.
+        type_keys(&mut host, &["BackSpace"]);
+        let asked = commands(&host);
+        assert_eq!(asked[0]["query"], "a");
+        type_keys(&mut host, &["BackSpace"]);
         settle(&mut host, &mut now);
-        assert!(!shows(&host, "DP-1", "abcd.txt"));
-        assert!(commands(&host).is_empty());
+        assert!(!shows(&host, "DP-1", "ab.txt") && !shows(&host, "DP-1", "Searching"));
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "files-stop", "id": asked[0]["id"] })]
+        );
     }
 
     #[test]
