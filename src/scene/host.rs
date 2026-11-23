@@ -1423,6 +1423,49 @@ mod tests {
     }
 
     #[test]
+    fn the_search_settings_say_where_files_are_found_and_whether_with_apps() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let settings = host.settings.clone().unwrap();
+        settings.borrow_mut().write_file(
+            "search {\n    files-with-apps false\n    folders \"~\" \"/data\"\n    \
+             excluded-folders \"~/Games\"\n}\n",
+        );
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        // They show on the Shell page.
+        let info = host.ipc_info(bento_ipc::ShellSource::BuiltIn {
+            name: String::from("unix"),
+        });
+        let search = info
+            .settings
+            .iter()
+            .find(|block| block.name == "search")
+            .unwrap();
+        let names: Vec<&str> = search.settings.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["files-with-apps", "folders", "excluded-folders"]);
+        assert!(search
+            .settings
+            .iter()
+            .all(|s| s.page.as_deref() == Some("shell")));
+
+        host.data_line(r#"{"type":"file-search","available":true}"#);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        commands(&host);
+        // Apps alone, as files aren't found with them; the pill still finds them, where the
+        // settings say.
+        type_keys(&mut host, &["q"]);
+        assert!(commands(&host).is_empty());
+        type_keys(&mut host, &["/"]);
+        let asked = commands(&host);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0]["query"], "q");
+        assert_eq!(asked[0]["folders"], serde_json::json!(["~", "/data"]));
+        assert_eq!(asked[0]["excluded"], serde_json::json!(["~/Games"]));
+    }
+
+    #[test]
     fn an_island_open_on_one_output_stays_open_as_whats_in_it_is_pressed() {
         let mut host = SceneHost::default();
         let outputs = [

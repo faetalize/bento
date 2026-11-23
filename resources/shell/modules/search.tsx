@@ -3,9 +3,12 @@
 // come a moment later, so files only ever add rows under the apps, and the row that's selected
 // stays put as they come. When no app's name matches, only what it's for, files go first, and
 // nothing shows until they're there. A Files pill searches files and folders alone, and `/`,
-// typed anywhere, switches it, since no name has one.
+// typed anywhere, switches it, since no name has one. Its settings say whether apps are searched
+// with files, and which folders files are searched in.
 
-import { apps, type App, type FoundFile, type InputNode, type KeyEvent, type Style } from "bento";
+import {
+  apps, useModule, type App, type FoundFile, type InputNode, type KeyEvent, type Meta, type Style,
+} from "bento";
 import { createMemo, createSignal, Show } from "solid-js";
 import { ACTIVE } from "bento:modules/ui";
 import { appIcon, score, start } from "bento:modules/apps";
@@ -26,6 +29,39 @@ export interface Heights {
 }
 
 const TITLES = { apps: "Apps", files: "Files" } as const;
+
+export const meta = {
+  settings: {
+    "files-with-apps": {
+      type: "boolean",
+      default: true,
+      description:
+        "Find files and folders along with apps. Without it, the Files pill and / still search "
+        + "them alone.",
+      page: "shell",
+      group: "Search",
+    },
+    folders: {
+      type: "folder",
+      list: true,
+      default: ["~"],
+      description: "Where files and folders are found, with the folders in them.",
+      page: "shell",
+      group: "Search",
+    },
+    "excluded-folders": {
+      type: "folder",
+      list: true,
+      default: [],
+      description:
+        "Folders whose files are never found, unless a folder in them is one to search.",
+      page: "shell",
+      group: "Search",
+    },
+  },
+} satisfies Meta;
+
+const { settings } = useModule(import.meta, meta);
 
 /** A search through apps and files. `each` is how many of a kind show before "Show All", and a
  * kind that's alone shows `alone`. `headers` says which kinds have a header: `"all"`, or only the
@@ -79,14 +115,16 @@ export function everythingSearch(options: {
       const named = scored.some(([fit]) => fit < 3);
       // Apps take the room of both only once there are surely no files: rows only ever come under
       // them.
-      const noFiles = !filesAvailable() || (!files.searching() && found.length === 0);
+      const withFiles = filesAvailable() && settings["files-with-apps"];
+      const noFiles = !withFiles || (!files.searching() && found.length === 0);
       const apps = { of: "apps" as const, items: appLines, most: noFiles ? alone : each };
       const fileSection = {
         of: "files" as const,
         items: fileLines,
         most: appLines.length ? each : alone,
       };
-      if (named || !appLines.length) sections.push(apps, fileSection);
+      if (!withFiles) sections.push(apps);
+      else if (named || !appLines.length) sections.push(apps, fileSection);
       // Files go first, and nothing shows until they're here, as rows come only under others.
       else if (!files.searching() || found.length) sections.push(fileSection, apps);
     }
@@ -110,17 +148,29 @@ export function everythingSearch(options: {
   const choices = createMemo(() => lines().filter((line) => line.kind !== "head"));
   const current = () => choices().find((line) => line.key === picked()) ?? choices()[0];
 
+  // Files are looked for along with apps only as the settings say, and alone with the pill.
+  const lookFor = (text: string, alone: boolean) => {
+    const wanted = alone || settings["files-with-apps"];
+    files.search(wanted ? text : "", {
+      folders: [...settings.folders],
+      excluded: [...settings["excluded-folders"]],
+    });
+  };
   const type = (text: string) => {
     setQuery(text);
     setWhole([]);
     setPicked(null);
     setMoved(null);
-    files.search(text);
+    lookFor(text, only());
   };
   const setFilesOnly = (on: boolean) => {
-    setOnly(on && filesAvailable());
+    const alone = on && filesAvailable();
+    // With files found along with apps, they're already looked for.
+    const before = only() || settings["files-with-apps"];
+    setOnly(alone);
     setPicked(null);
     setMoved(null);
+    if (before !== (alone || settings["files-with-apps"])) lookFor(query(), alone);
   };
   const move = (key: string | undefined) => {
     if (key === undefined) return;

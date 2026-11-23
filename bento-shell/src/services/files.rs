@@ -1,8 +1,12 @@
 //! Finding files by their names, with `fd`, and opening them.
 //!
-//! `fd` reads the names in the home folder anew for each search, so there's no index to keep, and
-//! leaves out what's hidden or ignored by git. It says which names match, but not how well: what
-//! it finds is ranked here, and only the best of it is kept.
+//! `fd` reads the names in the folders searched anew for each search, the home folder unless it
+//! says, so there's no index to keep, and leaves out what's hidden or ignored by git. It says which
+//! names match, but not how well: what it finds is ranked here, and only the best of it is kept.
+//!
+//! `fd` reads a folder given twice twice, and one inside another given too again, and leaves out
+//! folders by patterns rather than by their paths, so which folders it reads is settled here: see
+//! [`plan`].
 
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
@@ -41,13 +45,16 @@ type Say = fn(&Value);
 struct Running {
     id: Value,
     ended: Arc<AtomicBool>,
-    fd: Arc<Mutex<Child>>,
+    /// The `fd` reading a folder now.
+    fd: Arc<Mutex<Option<Child>>>,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
         self.ended.store(true, Ordering::Relaxed);
-        let _ = self.fd.lock().unwrap().kill();
+        if let Some(fd) = self.fd.lock().unwrap().as_mut() {
+            let _ = fd.kill();
+        }
     }
 }
 
@@ -73,9 +80,10 @@ impl FileSearch {
         fd
     }
 
-    /// Finds the files that `text` names, and says them as `{ "type": "files", "id": id, … }`. It
-    /// takes the place of a search on its way, which then says nothing.
-    pub fn search(&self, id: Value, text: &str) {
+    /// Finds the files that `text` names in `folders`, the home folder when there are none, but
+    /// for those in `excluded`, and says them as `{ "type": "files", "id": id, … }`. It takes the
+    /// place of a search on its way, which then says nothing.
+    pub fn search(&self, id: Value, text: &str, folders: &[String], excluded: &[String]) {
         self.running.take();
         let asked = id.clone();
         let found = move |files: Vec<Value>| json!({ "type": "files", "id": id, "files": files });
@@ -83,47 +91,69 @@ impl FileSearch {
             (self.say)(&found(Vec::new()));
             return;
         };
-        let home = glib::home_dir();
-        // It reads the disk on every core, so it gives way to whatever draws.
-        let spawned = Command::new("nice")
-            .args(["-n", "19"])
-            .arg(fd)
-            .args(["--fixed-strings", "--ignore-case", "--print0"])
-            .args(["--color", "never", "--"])
-            .arg(query.pattern())
-            .arg(&home)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .spawn();
-        let mut fd = match spawned {
-            Ok(fd) => fd,
-            Err(err) => {
-                eprintln!("bento-shell --data: couldn't run fd: {err}");
-                (self.say)(&found(Vec::new()));
-                return;
-            }
+        let folders: Vec<PathBuf> = if folders.is_empty() {
+            vec![glib::home_dir()]
+        } else {
+            folders.iter().map(|folder| resolve(folder)).collect()
         };
-        let names = BufReader::new(fd.stdout.take().expect("its stdout is a pipe"));
+        let excluded: Vec<PathBuf> = excluded.iter().map(|folder| resolve(folder)).collect();
+        let walks = plan(&folders, &excluded);
+
         let running = Running {
             id: asked,
             ended: Arc::default(),
-            fd: Arc::new(Mutex::new(fd)),
+            fd: Arc::default(),
         };
-        let (ended, fd) = (running.ended.clone(), running.fd.clone());
+        let (ended, current) = (running.ended.clone(), running.fd.clone());
         self.running.replace(Some(running));
-
         let say = self.say;
         std::thread::spawn(move || {
             let recent = std::fs::read_to_string(glib::user_data_dir().join("recently-used.xbel"));
             let recent = recent.map(|xbel| read_recent(&xbel)).unwrap_or_default();
-            let best = best(names, &query, &recent, MOST);
-            let status = fd.lock().unwrap().wait();
-            if ended.load(Ordering::Relaxed) {
-                return;
+            let mut best = BinaryHeap::with_capacity(MOST + 1);
+            // One folder after another, as each reads on every core.
+            for (folder, left_out) in walks {
+                // It reads the disk on every core, so it gives way to whatever draws.
+                let mut command = Command::new("nice");
+                command
+                    .args(["-n", "19"])
+                    .arg(&fd)
+                    .args(["--fixed-strings", "--ignore-case", "--print0"])
+                    .args(["--color", "never"]);
+                for inside in &left_out {
+                    command.arg("--exclude").arg(exclude_pattern(inside));
+                }
+                command
+                    .arg("--")
+                    .arg(query.pattern())
+                    .arg(&folder)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped());
+                let mut child = match command.spawn() {
+                    Ok(child) => child,
+                    Err(err) => {
+                        eprintln!("bento-shell --data: couldn't run fd: {err}");
+                        break;
+                    }
+                };
+                let names = BufReader::new(child.stdout.take().expect("its stdout is a pipe"));
+                *current.lock().unwrap() = Some(child);
+                // Ended as it started: what ends it may have missed it.
+                if ended.load(Ordering::Relaxed) {
+                    if let Some(child) = current.lock().unwrap().as_mut() {
+                        let _ = child.kill();
+                    }
+                }
+                keep_best(&mut best, names, &query, &recent, MOST);
+                let status = current.lock().unwrap().take().map(|mut child| child.wait());
+                if ended.load(Ordering::Relaxed) {
+                    return;
+                }
+                if !matches!(status, Some(Ok(status)) if status.success()) {
+                    eprintln!("bento-shell --data: fd failed in {folder:?}: {status:?}");
+                }
             }
-            if !status.as_ref().is_ok_and(|status| status.success()) {
-                eprintln!("bento-shell --data: fd failed: {status:?}");
-            }
+            let best = best.into_sorted_vec();
             say(&found(best.iter().map(File::json).collect()));
         });
     }
@@ -276,14 +306,27 @@ impl File {
 
 /// The `most` files that fit `query` best among `paths`, which each end with a zero byte, a
 /// folder's after a slash, the best first.
+#[cfg(test)]
 fn best(
     paths: impl BufRead,
     query: &Query,
     recent: &HashMap<PathBuf, String>,
     most: usize,
 ) -> Vec<File> {
-    // The worst of them is on top.
     let mut best = BinaryHeap::with_capacity(most + 1);
+    keep_best(&mut best, paths, query, recent, most);
+    best.into_sorted_vec()
+}
+
+/// Keeps in `best` the `most` files that fit `query` best among what's there and `paths`, which
+/// each end with a zero byte, a folder's after a slash. The worst of them is on top.
+fn keep_best(
+    best: &mut BinaryHeap<File>,
+    paths: impl BufRead,
+    query: &Query,
+    recent: &HashMap<PathBuf, String>,
+    most: usize,
+) {
     for path in paths.split(0) {
         let Ok(path) = path else { break };
         // A path that isn't text can't be said to the shell.
@@ -312,7 +355,66 @@ fn best(
             best.pop();
         }
     }
-    best.into_sorted_vec()
+}
+
+/// A folder as a setting writes it, with `~` at its start for the home folder, as a path: with
+/// its links followed, so that a folder written two ways is one.
+fn resolve(folder: &str) -> PathBuf {
+    let home = glib::home_dir();
+    let path = match folder.strip_prefix('~') {
+        Some("") => home,
+        Some(inside) if inside.starts_with('/') => home.join(inside.trim_start_matches('/')),
+        _ => home.join(folder),
+    };
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// The folders to read, each with the folders in it to leave out, as paths from it, from the
+/// folders asked for and those left out. A folder in one that's read is read with it, unless
+/// one left out is between them: it's read on its own then. The most specific wins, so a folder
+/// both asked for and left out is left out, and one left out that's in none read changes
+/// nothing. Each is read once, and a folder that isn't there isn't read.
+fn plan(folders: &[PathBuf], excluded: &[PathBuf]) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut asked: Vec<&PathBuf> = folders.iter().filter(|f| !excluded.contains(f)).collect();
+    asked.sort();
+    asked.dedup();
+    // Whether `outer`'s reading reaches `inner`, in it, with none left out between them.
+    let reaches = |outer: &PathBuf, inner: &PathBuf| {
+        outer != inner
+            && inner.starts_with(outer)
+            && !excluded
+                .iter()
+                .any(|e| e != outer && e.starts_with(outer) && inner.starts_with(e))
+    };
+    asked
+        .iter()
+        .filter(|folder| !asked.iter().any(|outer| reaches(outer, folder)))
+        .filter(|folder| folder.is_dir())
+        .map(|folder| {
+            let mut left_out: Vec<PathBuf> = excluded
+                .iter()
+                .filter(|e| *e != *folder)
+                .filter_map(|e| e.strip_prefix(folder).ok())
+                .map(Path::to_path_buf)
+                .collect();
+            left_out.sort();
+            left_out.dedup();
+            ((*folder).clone(), left_out)
+        })
+        .collect()
+}
+
+/// `fd`'s pattern for the folder at `inside` from the one it reads, which only that matches: from
+/// its start, with what patterns mean escaped.
+fn exclude_pattern(inside: &Path) -> String {
+    let mut pattern = String::from("/");
+    for c in inside.to_string_lossy().chars() {
+        if matches!(c, '\\' | '*' | '?' | '[' | ']' | '{' | '}' | '!') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern
 }
 
 /// The files apps said they opened, and when, in UTC as ISO 8601, which sorts as it reads. It's
@@ -493,6 +595,54 @@ mod tests {
         for text in ["", "  ", "a/b", "a\0b"] {
             assert!(Query::new(text).is_none());
         }
+    }
+
+    #[test]
+    fn each_folder_is_read_once_and_the_most_specific_rule_wins() {
+        let dir = std::env::temp_dir().join(format!("bento-plan-{}", std::process::id()));
+        for folder in ["h/a/b", "h/games/saves", "h/x/y/z", "other"] {
+            std::fs::create_dir_all(dir.join(folder)).unwrap();
+        }
+        let at = |path: &str| dir.join(path);
+        let rel = |path: &str| PathBuf::from(path);
+        let plan_of = |folders: &[&str], excluded: &[&str]| {
+            let folders: Vec<_> = folders.iter().map(|f| at(f)).collect();
+            let excluded: Vec<_> = excluded.iter().map(|f| at(f)).collect();
+            plan(&folders, &excluded)
+        };
+        // A folder in another, or the same twice, is read with it.
+        assert_eq!(plan_of(&["h"], &[]), [(at("h"), vec![])]);
+        assert_eq!(plan_of(&["h/a", "h", "h"], &[]), [(at("h"), vec![])]);
+        assert_eq!(
+            plan_of(&["h/a", "other"], &[]),
+            [(at("h/a"), vec![]), (at("other"), vec![])]
+        );
+        // One left out isn't read, but one asked for in it is, on its own.
+        assert_eq!(
+            plan_of(&["h", "h/games/saves"], &["h/games"]),
+            [(at("h"), vec![rel("games")]), (at("h/games/saves"), vec![])]
+        );
+        // Asked for and left out, it's left out, even in a folder that's read.
+        assert_eq!(plan_of(&["h/a"], &["h/a"]), []);
+        assert_eq!(
+            plan_of(&["h", "h/a"], &["h/a"]),
+            [(at("h"), vec![rel("a")])]
+        );
+        // What's left out of nothing read changes nothing, and what isn't there isn't read.
+        assert_eq!(plan_of(&["h"], &["other"]), [(at("h"), vec![])]);
+        assert_eq!(plan_of(&["h", "gone"], &[]), [(at("h"), vec![])]);
+        // Deeper ones left out are left out of each folder they're in.
+        assert_eq!(
+            plan_of(&["h", "h/x/y"], &["h/x", "h/x/y/z"]),
+            [
+                (at("h"), vec![rel("x"), rel("x/y/z")]),
+                (at("h/x/y"), vec![rel("z")])
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        // A pattern matches only that folder, from the one read.
+        assert_eq!(exclude_pattern(Path::new("games")), "/games");
+        assert_eq!(exclude_pattern(Path::new("a [b]/*")), r"/a \[b\]/\*");
     }
 
     #[test]

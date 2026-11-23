@@ -12,6 +12,13 @@ let last = Date.now();
  * until the data program says, and follows `fd` being installed or removed from the next search. */
 export const filesAvailable = () => data("file-search")?.available ?? false;
 
+/** Where files are looked for: folders written as settings write them, with `~` for the home
+ * folder. */
+export interface Where {
+  folders?: string[];
+  excluded?: string[];
+}
+
 /** A search for files: what's looked for, and the best `most` that match it, 50 at most. One
  * search runs at a time, so only one of these looks for something at once. */
 export function fileSearch(most = 8) {
@@ -25,23 +32,24 @@ export function fileSearch(most = 8) {
   });
   const [searching, setSearching] = createSignal(false);
   // The search that's on its way.
-  let running: { id: number; query: string } | null = null;
+  let running: { id: number; query: string; folders?: string[]; excluded?: string[] } | null =
+    null;
 
-  const ask = (text: string) => {
-    running = { id: ++last, query: text };
+  const ask = (text: string, where: Where) => {
+    running = { id: ++last, query: text, ...where };
     command("files-search", running);
   };
   const stop = () => {
     if (running) command("files-stop", { id: running.id });
     running = null;
   };
-  const search = (text: string) => {
+  const search = (text: string, where: Where = {}) => {
     const wanted = text.trim();
     setQuery(text);
     setSearching(wanted !== "");
     // What was found stays until there's something in its place, so that it doesn't blink, and
     // asking for another search ends the one on its way.
-    if (wanted) ask(wanted);
+    if (wanted) ask(wanted, where);
     else {
       stop();
       setFound([]);
@@ -55,7 +63,7 @@ export function fileSearch(most = 8) {
     setFound(event.files.slice(0, most));
   });
   // The data program started again, and knows nothing of the search it was on.
-  onData("ready", () => running && ask(running.query));
+  onData("ready", () => running && ask(running.query, running));
   if (getOwner()) onCleanup(stop);
 
   return {
@@ -65,7 +73,8 @@ export function fileSearch(most = 8) {
     files,
     /** Whether the query is still being looked for. */
     searching,
-    /** Looks for `text` right away. */
+    /** Looks for `text` right away, in `where`'s folders, the home folder unless it says, but
+     * for those it leaves out. */
     search,
     /** Forgets what's looked for and found, as when what searches opens or closes. */
     clear: () => search(""),

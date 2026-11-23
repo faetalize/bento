@@ -346,6 +346,12 @@ switches it, since no name has one; Backspace in an empty field turns it off. Th
 "Search apps, or / for files and folders", and "Search files and folders" while the pill is lit.
 Each search starts with it off. Without `fd` there's no pill, and the field says "Search apps".
 
+Search has settings on the Shell page: whether files are found along with apps, which the pill and
+`/` still do when it's off; the folders searched, the home folder unless it says; and the folders
+left out. Folders are picked with the folder chooser, and a folder already listed isn't listed
+again. Each folder is read once: one in another that's searched is read with it, unless one left
+out is between them. The most specific wins, so a folder both searched and left out is left out.
+
 ## bento starts the shell's data program
 
 bento starts the shell's data program, and hands it a private connection: only it feeds the

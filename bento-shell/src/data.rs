@@ -405,7 +405,14 @@ pub fn run() -> glib::ExitCode {
                     command["key"].as_str().unwrap_or("default"),
                     command["token"].as_str(),
                 ),
-                "files-search" => file_search.search(command["id"].clone(), &text("query")),
+                "files-search" => {
+                    let paths = |key: &str| -> Vec<String> {
+                        let list = command[key].as_array().into_iter().flatten();
+                        list.filter_map(Value::as_str).map(String::from).collect()
+                    };
+                    let (folders, excluded) = (paths("folders"), paths("excluded"));
+                    file_search.search(command["id"].clone(), &text("query"), &folders, &excluded);
+                }
                 "files-stop" => file_search.stop(&command["id"]),
                 cmd @ ("files-open" | "files-show") => {
                     let (path, show) = (PathBuf::from(text("path")), cmd == "files-show");
