@@ -272,6 +272,7 @@ pub enum ValueType {
     Size,
     Color,
     Gradient,
+    Folder,
 }
 
 impl ValueType {
@@ -284,6 +285,7 @@ impl ValueType {
             Self::Size => LayoutEngineOptionType::Size,
             Self::Color => LayoutEngineOptionType::Color,
             Self::Gradient => LayoutEngineOptionType::Gradient,
+            Self::Folder => LayoutEngineOptionType::Folder,
         }
     }
 }
@@ -338,6 +340,9 @@ impl SettingMeta {
             (ValueType::Color, TilingOption::String(value)) => Color::from_hex(value)
                 .map(|_| json!(value))
                 .map_err(|_| String::from(r##"must be a colour, like "#rrggbb" or "#rrggbbaa""##)),
+            (ValueType::Folder, TilingOption::String(value)) if !value.is_empty() => {
+                Ok(json!(value))
+            }
             (ValueType::Gradient, TilingOption::Gradient(gradient)) => resolve_gradient(gradient)
                 .map(|_| json!(gradient))
                 .map_err(|err| format!("has an invalid gradient, {err}")),
@@ -351,6 +356,7 @@ impl SettingMeta {
             (ValueType::Gradient, _) => Err(String::from(
                 r##"must be a gradient, like `from="#000" to="#fff"`"##,
             )),
+            (ValueType::Folder, _) => Err(String::from(r#"must be a folder, like "~/Documents""#)),
         }
     }
 

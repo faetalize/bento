@@ -396,7 +396,14 @@ const THUMB_LINGER = 1000;
  * thin bar along its right side that shows where it is and how much there is, as libadwaita's
  * overlay scrollbars do: it shows while the pointer is near or it scrolls, widens under the
  * pointer, drags, and a press in its track goes a page up or down. */
-export function Scroller(props: { style?: any; inner?: any; children?: JSX.Element }) {
+export function Scroller(props: {
+  style?: any;
+  inner?: any;
+  /** A span of what it holds, its top and bottom from the top of it, that it scrolls into view
+   * whenever it's another, as for what's picked with the keys. */
+  reveal?: [number, number] | null;
+  children?: JSX.Element;
+}) {
   const [scroll, setScroll] = createSignal({ top: 0, reach: 0, height: 0 });
   const [near, setNear] = createSignal(false);
   const [moving, setMoving] = createSignal(false);
@@ -414,6 +421,15 @@ export function Scroller(props: { style?: any; inner?: any; children?: JSX.Eleme
   };
   const shown = () => near() || moving() || over() || held();
   const wide = () => over() || held();
+  createEffect(
+    () => props.reveal,
+    (span) => {
+      if (!span) return;
+      const { top, height } = scroll();
+      if (span[0] < top) box?.scrollTo(span[0]);
+      else if (span[1] > top + height) box?.scrollTo(span[1] - height);
+    },
+  );
   return (
     <box style={[{ flexDirection: "column" }, props.style]} onNear={({ inside }) => setNear(inside)}>
       <box

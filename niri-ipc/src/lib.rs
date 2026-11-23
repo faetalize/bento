@@ -1137,6 +1137,8 @@ pub enum LayoutEngineOptionType {
     /// A linear gradient, written with properties like `from="#80c8ff" to="#c7ff7f" angle=45`. An
     /// option of this type has no value when it's left out.
     Gradient,
+    /// A folder, written as its path, with `~` at its start for the home folder.
+    Folder,
 }
 
 /// Value of a layout engine option.

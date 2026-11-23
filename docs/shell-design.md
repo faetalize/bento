@@ -321,6 +321,37 @@ a flyout that opens on the tray's side. A click activates an icon, and a right c
 app's menu, in bento's own menu, with a way to pin the icon or take it off. Which icons are
 pinned is kept, as pinned apps are, and isn't listed in bento's settings.
 
+## Files are found by their names
+
+`bento:modules/files` finds files, and shows nothing itself: the launcher, start menu or whatever
+else imports it decides when to search, what to do with the files and how they look. The data
+program looks for them with `fd` rather than keeping an index, so it finds them by name, not by
+what's in them.
+
+What fits best is first: a name that is what's typed, then one that starts with it, then one with
+a word that does, then one with it anywhere. Those that fit alike go by when they were last opened,
+then by how few folders deep they are, then by the shortest name.
+
+The launcher and the start menu search apps and files together, in one list: apps, then files,
+each up to four, with "Show All" to see the rest of one in place. A kind that's alone takes the
+room of both. Files come after apps have shown, so they only ever add rows underneath, and the
+first row is selected, never moving as they come. When no app's name matches, only its
+description, files go first, and nothing shows until they're there. In the launcher only the
+second kind has a header; the start menu has one for each. Up and Down go through the list, Tab
+goes to the next kind, Enter opens, and Ctrl+Enter shows a file in its folder, as the selected
+file's button does.
+
+A Files pill at the end of the field searches files and folders alone, and `/`, typed anywhere,
+switches it, since no name has one; Backspace in an empty field turns it off. The field says so:
+"Search apps, or / for files and folders", and "Search files and folders" while the pill is lit.
+Each search starts with it off. Without `fd` there's no pill, and the field says "Search apps".
+
+Search has settings on the Shell page: whether files are found along with apps, which the pill and
+`/` still do when it's off; the folders searched, the home folder unless it says, and with none,
+files aren't found at all; and the folders left out. Folders are picked with the folder chooser, and a folder already listed isn't listed
+again. Each folder is read once: one in another that's searched is read with it, unless one left
+out is between them. The most specific wins, so a folder both searched and left out is left out.
+
 ## bento starts the shell's data program
 
 bento starts the shell's data program, and hands it a private connection: only it feeds the

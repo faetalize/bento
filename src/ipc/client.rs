@@ -970,6 +970,7 @@ fn fmt_option_type(r#type: LayoutEngineOptionType) -> &'static str {
         LayoutEngineOptionType::Size => "size",
         LayoutEngineOptionType::Color => "color",
         LayoutEngineOptionType::Gradient => "gradient",
+        LayoutEngineOptionType::Folder => "folder",
     }
 }
 

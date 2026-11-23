@@ -328,7 +328,9 @@ export function onAction(
 }
 
 // The data program's state, as a store each, and its events.
-const DATA_EVENTS = new Set(["notification", "wifi-error", "bluetooth-error", "ready", "tray-menu"]);
+const DATA_EVENTS = new Set([
+  "notification", "wifi-error", "bluetooth-error", "ready", "tray-menu", "files",
+]);
 const dataStores = new Map<string, readonly [any, (value: any) => void, () => boolean]>();
 const dataListeners = new Map<string, Set<(event: any) => void>>();
 
@@ -1116,6 +1118,7 @@ function makeInput(node: Node) {
   let onInput: ((text: string) => void) | undefined;
   let onSubmit: ((text: string) => void) | undefined;
   let onKey: ((event: any) => boolean | void) | undefined;
+  let onBeforeKey: ((event: any) => boolean | void) | undefined;
   let blink: number | undefined;
   let lastTyped = 0;
 
@@ -1181,6 +1184,7 @@ function makeInput(node: Node) {
       } else if (name === "onInput") onInput = value;
       else if (name === "onSubmit") onSubmit = value;
       else if (name === "onKey") onKey = value;
+      else if (name === "onBeforeKey") onBeforeKey = value;
       else if (name === "autofocus") {
         if (value) queueMicrotask(() => focusInput(node));
       } else if (name === "placeholderStyle") {
@@ -1199,6 +1203,7 @@ function makeInput(node: Node) {
     },
     key(event) {
       if (!event.pressed) return false;
+      if (onBeforeKey?.(event) === true) return true;
       if (event.key === "Return" || event.key === "KP_Enter") {
         onSubmit?.(input.current);
         return true;

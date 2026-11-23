@@ -1,5 +1,6 @@
-// Apps: finding them by what's typed, a row to show one, and the app a window is of. The
-// launcher and a start menu both search with it.
+// Apps: finding them by what's typed, a row to show one, and the app a window is of. bento's
+// launcher and start menu search apps through `bento:modules/search`, which scores them with
+// `score`; `appSearch` and `AppRow` are for shells that search apps alone.
 
 import { apps, launch, preload, type App, type Window } from "bento";
 import { createMemo, createSignal, Show } from "solid-js";

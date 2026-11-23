@@ -89,6 +89,31 @@ The portal drop-in keeps xdg-desktop-portal from starting between sessions, when
 
 `bento.service` and the dinit service start `bento` by name rather than by full path, so put it in `/usr/local/bin/` or `/usr/bin/` where they'll find it.
 
+### What bento uses
+
+Besides what it's built with, bento needs these to run:
+
+- A Vulkan driver, which the built-in shell draws with.
+- GTK 4.18 and libadwaita 1.7, for the shell's data program and the settings app.
+- xdg-desktop-portal, with its GNOME and GTK portals, for screencasting and file pickers.
+- systemd or dinit, and logind.
+
+The rest are optional: without one, what it's for is left out.
+
+| What | For |
+| ---- | --- |
+| [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) | X11 apps |
+| PipeWire's PulseAudio server, or PulseAudio | The volume, the sound devices and the volume indicator |
+| NetworkManager | The network's status and Wi-Fi |
+| BlueZ | Bluetooth |
+| UPower | The battery |
+| power-profiles-daemon | The power mode |
+| `ddcutil` | Monitors' brightness, over DDC/CI |
+| [`fd`](https://github.com/sharkdp/fd) | Finding files in the launcher and the start menu |
+| A file manager with `org.freedesktop.FileManager1`, like Files | Showing a file in its folder |
+| AccountsService | The account's name and picture in the settings app |
+| gnome-keyring or oo7-portal | The secrets portal |
+
 Tools made for niri run the `niri` command, so link it to bento.
 This also keeps them working if you have niri installed, since an older `niri` client can't read newer events:
 
@@ -281,6 +306,8 @@ shell {
 ```
 
 bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one, saved wherever you like, to start a shell of your own from; bento's own aren't edited in place. Picking a shell of your own there asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/shells/`, and Use a Backup… takes one you have, wherever it is. Either way the config names it next to the shell, and what you set under that shell stays in its file. A shell's default export is its root component. It uses bento's modules with `bento:modules/<name>`, like `bento:modules/clock`, which are always bento's own; a module of your own is a file of your own, imported by its path, like `import Clock from "./my-clock"`, and yours to keep up. bento loads the shell again whenever one of its files changes.
+
+The unix shell's launcher and the windows shell's start menu find apps and files as you type, apps first, then files and folders in your home folder by their names, leaving out hidden ones and what git ignores. Finding files needs [`fd`](https://github.com/sharkdp/fd); without it they find apps alone. Type `/` anywhere, or press the Files pill, to search files and folders alone. Up and Down go through what's found, Tab goes to the next kind, Enter opens, Ctrl+Enter shows a file in its folder, and Escape empties the field before it closes. Settings → Shell → Search says whether files are found along with apps, which folders are searched, the home folder unless you change it, with none meaning files aren't found, and which are left out; a folder in one left out is still searched when it's listed itself.
 
 On the windows shell's taskbar, an app's button has a mark under it for each of its windows, the long one for the window with the focus; past three windows, the last mark stands for the rest. The overview's button has a pip for each workspace of its monitor and the current one's name, "Workspace 2" when it has none. Scrolling over it goes through the workspaces, and resting on it shows previews of them, to click. A right click on it renames the current workspace or takes its name away. While the overview is open its icon is filled. The pips, the name, the previews and the scrolling each have a setting on the Shell page of bento Settings, under Overview Button, and so does showing the workspace's number in the icon, which is off by default:
 

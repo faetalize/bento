@@ -27,7 +27,7 @@ mod theme;
 mod title_buttons;
 mod wallpaper;
 
-pub use declared::placed;
+pub use declared::{placed, search_index};
 
 use crate::model::{Content, Section};
 

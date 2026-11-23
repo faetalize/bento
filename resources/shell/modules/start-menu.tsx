@@ -1,13 +1,15 @@
-// A start menu: the apps, found by typing as the launcher finds them, or all of them in a grid,
-// and the power menu. It comes out of the start button, or up from the bottom of the output, in its
+// A start menu: apps and files, found by typing as the launcher finds them, or all the apps in a
+// grid, and the power menu. It comes out of the start button, or up from the bottom of the output, in its
 // middle.
 
 import {
-  apps, focusedOutput, onAction, outputs, useModule, type App, type Meta, type SceneNode,
+  apps, focusedOutput, onAction, outputSize, outputs, useModule, type App, type Meta,
+  type SceneNode,
 } from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
-import { AppRow, appIcon, appSearch, preloadIcons, start } from "bento:modules/apps";
+import { appIcon, preloadIcons, start } from "bento:modules/apps";
+import { FilesPill, SearchLine, everythingSearch } from "bento:modules/search";
 import { PowerPage } from "bento:modules/power";
 
 export const meta = {
@@ -27,9 +29,16 @@ onAction("toggle-start-menu", ({ output }) => {
 
 const WIDTH = 640;
 const COLUMNS = 6;
-// How tall the list of apps is, which scrolls.
+// How tall the list of apps is, which scrolls, at most: on an output too short for the menu, it's
+// what's left of the room above where the menu comes out, but for `EDGE` at the top.
 const LIST = 420;
+const EDGE = 24;
+// How much of the menu isn't its list: its padding, its field, the power button and the gaps.
+const AROUND = 16 * 2 + 42 + 14 + 14 + 36;
+// The title over the list of all apps, with the room around it.
+const TITLE = 30;
 const ICON = 32;
+const HEIGHTS = { head: 28, row: 48, more: 40 };
 
 /** One app in the grid: its icon over its name. */
 function AppTile(props: { app: App; onClick: () => void }) {
@@ -60,6 +69,16 @@ export function StartMenu(props: {
 }) {
   preloadIcons(ICON);
   const key = `start:${props.output}`;
+  // How tall its list can be, from where it comes out: above the start button, or `bottom` up
+  // from the output's bottom.
+  const list = () => {
+    const height = outputSize(props.output)?.height;
+    if (height === undefined) return LIST + TITLE;
+    // Where it comes out, from the output's top.
+    const from = props.from?.layout();
+    const bottom = from ? from.y - (props.gap ?? 0) : height - (props.bottom ?? 0);
+    return Math.max(TITLE, Math.min(LIST + TITLE, bottom - EDGE - AROUND));
+  };
   return (
     <Flyout
       output={props.output}
@@ -73,14 +92,17 @@ export function StartMenu(props: {
       padding={16}
       radius={14}
     >
-      <Menu onClose={() => popup.close(key)} />
+      <Menu onClose={() => popup.close(key)} list={list()} />
     </Flyout>
   );
 }
 
-function Menu(props: { onClose: () => void }) {
-  const search = appSearch(8);
+/** The menu, whose list of all apps, or of what's found, is `list` tall with its title. */
+function Menu(props: { onClose: () => void; list: number }) {
+  const search = everythingSearch({ headers: "all", heights: HEIGHTS, done: props.onClose });
+  search.reset();
   const all = apps();
+  let field: any;
   const [power, setPower] = createSignal(false);
   const pick = (app: App) => {
     start(app);
@@ -90,18 +112,21 @@ function Menu(props: { onClose: () => void }) {
     <box style={{ flexDirection: "column", gap: 14, width: WIDTH }}>
       <box
         style={{
-          flexDirection: "row", alignItems: "center", gap: 10, padding: [9, 14], borderRadius: 20,
-          background: "fg/0.08", fontSize: 15,
+          flexDirection: "row", alignItems: "center", gap: 10, height: 42, padding: [0, 6, 0, 14],
+          borderRadius: 21, background: "fg/0.08", fontSize: 15,
         }}
       >
         <image icon="system-search-symbolic" style={{ color: "fg/0.6" }} />
         <input
+          ref={field}
           autofocus
-          placeholder="Search for apps"
+          placeholder={search.placeholder()}
           onInput={search.type}
-          onSubmit={() => search.current() && pick(search.current()!)}
-          onKey={search.key}
+          onSubmit={search.submit}
+          onBeforeKey={search.beforeKey}
+          onKey={(event) => search.key(event, field)}
         />
+        <FilesPill search={search} />
       </box>
       <Show
         when={search.query().trim()}
@@ -110,29 +135,52 @@ function Menu(props: { onClose: () => void }) {
             when={!power()}
             fallback={<PowerPage onDone={props.onClose} />}
           >
+            <Show
+              when={!search.filesOnly()}
+              fallback={
+                <box
+                  style={{
+                    height: props.list, padding: [22, 14], alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <text style={{ color: "fg/0.6" }}>Type to find files and folders by name</text>
+                </box>
+              }
+            >
             <text style={{ fontWeight: 700, paddingLeft: 8 }}>All apps</text>
             <Scroller
-              style={{ height: LIST }}
+              style={{ height: props.list - TITLE }}
               inner={{ flexDirection: "row", flexWrap: "wrap", alignContent: "start" }}
             >
               <For each={all}>{(app) => <AppTile app={app} onClick={() => pick(app)} />}</For>
             </Scroller>
+            </Show>
           </Show>
         }
       >
-        <box style={{ flexDirection: "column", gap: 2, minHeight: LIST + 30 }}>
-          <For each={search.matches()}>
-            {(app, index) => (
-              <AppRow
-                app={app}
+        <Scroller
+          style={{ height: props.list }}
+          inner={{ flexDirection: "column" }}
+          reveal={search.reveal()}
+        >
+          <For each={search.lines()}>
+            {(line) => (
+              <SearchLine
+                line={line}
+                search={search}
+                heights={HEIGHTS}
                 iconSize={ICON}
-                selected={index() === search.selected()}
-                onClick={() => pick(app)}
-                onHover={() => search.select(index())}
+                fontSize={14}
               />
             )}
           </For>
-        </box>
+          <Show when={search.nothing()}>
+            <box style={{ padding: [22, 14], justifyContent: "center" }}>
+              <text style={{ color: "fg/0.6" }}>No Results</text>
+            </box>
+          </Show>
+        </Scroller>
       </Show>
       <box style={{ flexDirection: "row", justifyContent: "end" }}>
         <Button
