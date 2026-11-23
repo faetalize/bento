@@ -106,7 +106,7 @@ impl Rigs {
     fn stop(&self, id: &str) {
         if let Some(mut running) = self.running.borrow_mut().remove(id) {
             let _ = running.child.kill();
-            let _ = running.child.wait();
+            // glib's child watch reaps it; waiting here too makes glib warn.
         }
         let _ = std::fs::remove_file(self.path(id));
     }
@@ -160,9 +160,8 @@ impl Rigs {
             if !ended {
                 return;
             }
-            if let Some(mut running) = this.running.borrow_mut().remove(&id) {
-                let _ = running.child.wait();
-            }
+            // glib has reaped it already.
+            this.running.borrow_mut().remove(&id);
             eprintln!("bento-shell --data: pipewire for {id} ended; starting it again");
             let weak = Rc::downgrade(&this);
             let (id, config) = (id.clone(), config.clone());
