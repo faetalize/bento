@@ -122,7 +122,7 @@ fn tiling_option(value: &LayoutEngineOptionValue) -> Option<TilingOption> {
         LayoutEngineOptionValue::Number(n) => Some(TilingOption::Number(*n)),
         LayoutEngineOptionValue::String(s) => Some(TilingOption::String(s.clone())),
         LayoutEngineOptionValue::Gradient(g) => Some(TilingOption::Gradient(g.clone())),
-        LayoutEngineOptionValue::List(_) => None,
+        LayoutEngineOptionValue::List(_) | LayoutEngineOptionValue::Group(_) => None,
     }
 }
 

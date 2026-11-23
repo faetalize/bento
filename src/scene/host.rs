@@ -1991,7 +1991,8 @@ mod tests {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         let settings = host.settings.clone().unwrap();
         let outputs = [(String::from("DP-1"), (1920., 1080.))];
-        // Where the start menu's left edge is, by its heading, and the start button's middle.
+        // Where the start menu's left edge is, by its first heading, and the start button's
+        // middle.
         let places = |host: &mut SceneHost, now: &mut Instant| {
             host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
             settle(host, now);
@@ -2001,7 +2002,7 @@ mod tests {
                 .unwrap()
                 .scene
                 .borrow()
-                .find("DP-1", "All apps");
+                .find("DP-1", "Pinned");
             let button = middle_of(host, "DP-1", "ph-squares-four-symbolic");
             host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
             settle(host, now);
@@ -4709,6 +4710,86 @@ mod tests {
         windows.data_line(r#"{"type":"theme","dark":false}"#);
         windows.data_line(r#"{"type":"file-search","available":true}"#);
         windows.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        settle(&mut windows, &mut now);
+        // Its main page, with apps pinned, a group, the files opened lately and the bottom bar,
+        // with what this computer has of those apps.
+        windows.settings.clone().unwrap().borrow_mut().write_file(
+            "start-menu {\n    pinned {\n        app \"firefox\"\n        app \"org.gnome.Nautilus\"\n        \
+             app \"org.gnome.TextEditor\"\n        group \"Games\" {\n            app \"steam\"\n            \
+             app \"discord\"\n        }\n        app \"obsidian\"\n        app \"code\"\n        \
+             app \"org.gnome.Calculator\"\n        app \"vlc\"\n    }\n}\n",
+        );
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        windows.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        windows.data_line(r#"{"type":"theme","dark":false}"#);
+        windows.data_line(r#"{"type":"user","name":"Ada Lovelace","picture":null}"#);
+        // `hours` ago, in UTC as ISO 8601, as GTK's list says.
+        let iso = |hours: u64| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let at = now - hours * 3600;
+            let (days, secs) = ((at / 86400) as i64, at % 86400);
+            // Days to a date, as in Howard Hinnant's `civil_from_days`.
+            let z = days + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let day = doy - (153 * mp + 2) / 5 + 1;
+            let month = if mp < 10 { mp + 3 } else { mp - 9 };
+            let year = yoe + era * 400 + i64::from(month <= 2);
+            let (h, m, sec) = (secs / 3600, secs % 3600 / 60, secs % 60);
+            format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{sec:02}Z")
+        };
+        let opened = |name: &str, hours: u64| {
+            serde_json::json!({
+                "path": format!("/h/{name}"), "name": name, "location": "~/Documents",
+                "folder": false, "icon": "text-x-generic", "opened": iso(hours),
+            })
+        };
+        let recent = serde_json::json!({ "type": "recent", "files": [
+            opened("shell-design.md", 0), opened("budget.ods", 3), opened("notes.txt", 26),
+            opened("report.pdf", 80), opened("wallpaper.png", 200),
+        ]});
+        windows.data_line(&recent.to_string());
+        let folder = |name: &str, icon: &str| serde_json::json!({ "written": name, "path": format!("/h/{name}"), "name": name, "icon": icon });
+        let folders = serde_json::json!({ "type": "folders", "folders": [
+            folder("Documents", "folder-documents-symbolic"),
+            folder("Downloads", "folder-download-symbolic"),
+            folder("Pictures", "folder-pictures-symbolic"),
+        ]});
+        windows.data_line(&folders.to_string());
+        settle(&mut windows, &mut now);
+        if !shows(&windows, "DP-1", "Pinned") {
+            windows.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+            settle(&mut windows, &mut now);
+        }
+        shot(&windows, "start-menu-main", [520, 260, 780, 820]);
+        if windows
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "Games")
+            .len()
+            > 0
+        {
+            let games = middle_of(&windows, "DP-1", "Games");
+            click(&mut windows, "DP-1", games);
+            settle(&mut windows, &mut now);
+            shot(&windows, "start-menu-group", [520, 260, 780, 820]);
+            type_keys(&mut windows, &["Escape"]);
+            settle(&mut windows, &mut now);
+        }
+        let all = middle_of(&windows, "DP-1", "All apps");
+        click(&mut windows, "DP-1", all);
+        settle(&mut windows, &mut now);
+        shot(&windows, "start-menu-all", [520, 260, 780, 820]);
+        type_keys(&mut windows, &["Escape"]);
         settle(&mut windows, &mut now);
         commands(&windows);
         type_keys(&mut windows, &["f", "i"]);

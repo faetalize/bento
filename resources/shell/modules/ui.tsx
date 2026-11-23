@@ -402,6 +402,8 @@ export function Scroller(props: {
   /** A span of what it holds, its top and bottom from the top of it, that it scrolls into view
    * whenever it's another, as for what's picked with the keys. */
   reveal?: [number, number] | null;
+  /** Hears what scrolls it to a place, its distance from the top, as for a jump to a letter. */
+  scroller?: (scrollTo: (top: number) => void) => void;
   children?: JSX.Element;
 }) {
   const [scroll, setScroll] = createSignal({ top: 0, reach: 0, height: 0 });
@@ -433,7 +435,10 @@ export function Scroller(props: {
   return (
     <box style={[{ flexDirection: "column" }, props.style]} onNear={({ inside }) => setNear(inside)}>
       <box
-        ref={box}
+        ref={(node: any) => {
+          box = node;
+          props.scroller?.((top) => node.scrollTo(top));
+        }}
         style={[{ overflow: "scroll", flexGrow: 1, flexBasis: 0, minHeight: 0 }, props.inner]}
         onScrolled={(event) => {
           setScroll(event);

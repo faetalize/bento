@@ -308,8 +308,17 @@ pips, the previews and the scrolling can each be turned off, and the workspace's
 in the icon, which it isn't by default.
 
 The start menu comes out of the start button: around it on a taskbar in the middle, and from its
-left edge on one to the left. It finds apps the way the launcher does, shows all of them
-otherwise, and has the power menu. Quick settings and the notification center are the control center's parts, each
+left edge on one to the left. It finds apps the way the launcher does. Otherwise it shows the apps
+pinned to it, some in groups of apps, and under them the files opened lately, which a setting
+turns off, with all the apps from A to Z a step away. Along its bottom are the user, with their
+name and picture, buttons for folders, bento's settings and the power menu. The folders are a
+setting, the user's standard folders by default, and one that isn't there has no button; the
+standard folders have their own icons, known by where they are, not by their names.
+
+A folder setting is a path, or one of the user's standard folders by the name `user-dirs.dirs`
+gives it, like `$XDG_DOCUMENTS_DIR`, so that a default names the right folder in every language.
+The start menu's pins are a setting of a type of their own, written as children:
+`pinned { app "firefox"; group "Games" { app "steam"; }; }`. Quick settings and the notification center are the control center's parts, each
 coming out of its button. Every panel over the taskbar comes out the same distance from its edge,
 close enough to melt into it as one piece, never so far that it half melts. Each slides out of
 the taskbar's edge as if from behind it, and back in, its glass flowing out of the taskbar's. Notifications come up over the taskbar's end.

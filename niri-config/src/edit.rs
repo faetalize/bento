@@ -86,6 +86,42 @@ pub struct Document {
     text: String,
 }
 
+/// A node to write as a child, with its own children.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Child {
+    pub name: String,
+    pub args: Vec<Value>,
+    pub children: Vec<Child>,
+}
+
+impl Child {
+    /// The child as lines at `indent`, its children a step further in.
+    fn text(&self, indent: &str) -> String {
+        let values = Values {
+            args: &self.args,
+            properties: &[],
+        };
+        let mut out = format!("{indent}{}", head_text(&self.name, values));
+        if !self.children.is_empty() {
+            out.push_str(&children_text(&self.children, indent));
+        }
+        out
+    }
+}
+
+/// `children` as a block after a node at `indent`: ` {`, a line for each, and `}`.
+fn children_text(children: &[Child], indent: &str) -> String {
+    let inner = format!("{indent}    ");
+    let mut out = String::from(" {\n");
+    for child in children {
+        out.push_str(&child.text(&inner));
+        out.push('\n');
+    }
+    out.push_str(indent);
+    out.push('}');
+    out
+}
+
 impl Document {
     /// Checks the text parses, so later edits can rely on it.
     pub fn parse(text: String) -> Result<Self, knuffel::Error> {
@@ -169,6 +205,27 @@ impl Document {
         }
         self.text.push_str(&block(path, values, ""));
         self.text.push('\n');
+    }
+
+    /// Sets the arguments of the node at `path`, adding it if it's missing, and puts `children`
+    /// in place of its children: none leaves it without a block.
+    pub fn set_with_children(&mut self, path: &[&str], args: Vec<Value>, children: &[Child]) {
+        self.set_node(path, args, Vec::new());
+        let nodes = self.nodes();
+        let node = find(&nodes, path, "")
+            .last()
+            .map(|node| (*node).clone())
+            .expect("the node was just set");
+        let end = match node.braces {
+            Some((_, close)) => close + 1,
+            None => node.head_end,
+        };
+        let text = if children.is_empty() {
+            String::new()
+        } else {
+            children_text(children, indent_at(&self.text, node.start))
+        };
+        self.text.replace_range(node.head_end..end, &text);
     }
 
     /// Removes every node at `path` that bento would use. Returns whether there was one.
@@ -873,8 +930,37 @@ pub fn option_value(value: &niri_ipc::LayoutEngineOptionValue) -> Option<Value> 
         OptionValue::Number(x) if x.fract() == 0. => Value::Int(*x as i64),
         OptionValue::Number(x) => Value::Float(*x),
         OptionValue::String(x) => Value::Str(x.clone()),
-        OptionValue::Gradient(_) | OptionValue::List(_) => return None,
+        OptionValue::Gradient(_) | OptionValue::List(_) | OptionValue::Group(_) => return None,
     })
+}
+
+/// The children a `Pins` option is written with: `app "firefox"` for an app, and
+/// `group "Games" { app "steam"; }` for a group.
+pub fn pin_children(value: &Option<niri_ipc::LayoutEngineOptionValue>) -> Vec<Child> {
+    use niri_ipc::LayoutEngineOptionValue as OptionValue;
+
+    let app = |id: &String| Child {
+        name: String::from("app"),
+        args: vec![Value::Str(id.clone())],
+        children: Vec::new(),
+    };
+    let items = match value {
+        Some(OptionValue::List(items)) => items.as_slice(),
+        Some(item) => std::slice::from_ref(item),
+        None => &[],
+    };
+    items
+        .iter()
+        .filter_map(|item| match item {
+            OptionValue::String(id) => Some(app(id)),
+            OptionValue::Group(group) => Some(Child {
+                name: String::from("group"),
+                args: vec![Value::Str(group.group.clone())],
+                children: group.apps.iter().map(app).collect(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The values an option is written with: one for a plain option, one each for a list, none for a

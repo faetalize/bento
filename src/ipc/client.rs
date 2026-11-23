@@ -951,6 +951,10 @@ fn fmt_option_value(value: &Option<LayoutEngineOptionValue>) -> String {
             }
             text
         }
+        Some(LayoutEngineOptionValue::Group(group)) => {
+            let apps: Vec<_> = group.apps.iter().map(|app| format!("{app:?}")).collect();
+            format!("group {:?} {{ {} }}", group.group, apps.join(" "))
+        }
         Some(LayoutEngineOptionValue::List(values)) => {
             let values: Vec<_> = values
                 .iter()
@@ -971,6 +975,8 @@ fn fmt_option_type(r#type: LayoutEngineOptionType) -> &'static str {
         LayoutEngineOptionType::Color => "color",
         LayoutEngineOptionType::Gradient => "gradient",
         LayoutEngineOptionType::Folder => "folder",
+        LayoutEngineOptionType::Pins => "pins",
+        LayoutEngineOptionType::Unknown => "unknown",
     }
 }
 

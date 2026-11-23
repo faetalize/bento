@@ -501,6 +501,15 @@ impl Field<'_> {
             }
             Type::Gradient => gradient_row(title, subtitle, notify),
             Type::Folder => folder_row(title, subtitle, !item, notify),
+            // Never shown: see `Item::page`.
+            Type::Pins | Type::Unknown => {
+                let row = adw::ActionRow::builder()
+                    .use_markup(false)
+                    .title(title)
+                    .subtitle(subtitle)
+                    .build();
+                (row.upcast(), Box::new(|_: &Option<OptionValue>| ()))
+            }
         }
     }
 }
@@ -659,7 +668,9 @@ fn folder_row(
     let shown = row.clone();
     let show = move |value: &Option<OptionValue>| match value {
         _ if !path_under => (),
-        Some(OptionValue::String(path)) if !path.is_empty() => shown.set_subtitle(path),
+        Some(OptionValue::String(path)) if !path.is_empty() => {
+            shown.set_subtitle(&shown_folder(path))
+        }
         _ => shown.set_subtitle("None"),
     };
     (row.upcast(), Box::new(show))
@@ -682,6 +693,28 @@ fn choose_folder(from: &gtk::Widget, picked: impl Fn(String) + 'static) {
             }
         },
     );
+}
+
+/// A folder as a setting writes it, as it's shown: one of the user's standard folders, like
+/// `$XDG_DOCUMENTS_DIR`, as where it is.
+fn shown_folder(written: &str) -> String {
+    use glib::UserDirectory as Dir;
+
+    let dir = match written {
+        "$XDG_DESKTOP_DIR" => Dir::Desktop,
+        "$XDG_DOCUMENTS_DIR" => Dir::Documents,
+        "$XDG_DOWNLOAD_DIR" => Dir::Downloads,
+        "$XDG_MUSIC_DIR" => Dir::Music,
+        "$XDG_PICTURES_DIR" => Dir::Pictures,
+        "$XDG_PUBLICSHARE_DIR" => Dir::PublicShare,
+        "$XDG_TEMPLATES_DIR" => Dir::Templates,
+        "$XDG_VIDEOS_DIR" => Dir::Videos,
+        _ => return String::from(written),
+    };
+    match glib::user_special_dir(dir) {
+        Some(path) => written_folder(&path),
+        None => format!("{written} (not set)"),
+    }
 }
 
 /// A folder's path as a setting writes it, with `~` for the home folder.
@@ -835,7 +868,7 @@ impl ListRow {
             };
             // A folder is its own title.
             let title = match (self.r#type, item) {
-                (Type::Folder, OptionValue::String(path)) => path.clone(),
+                (Type::Folder, OptionValue::String(path)) => shown_folder(path),
                 _ => format!("Item {}", i + 1),
             };
             let field = Field {
@@ -913,7 +946,15 @@ impl ListRow {
 
     /// What it holds, under its title, while it's closed: open, its items show it.
     fn show_summary(&self) {
-        let summary: Vec<String> = self.items.borrow().iter().map(summarize).collect();
+        let summary: Vec<String> = self
+            .items
+            .borrow()
+            .iter()
+            .map(|item| match (self.r#type, item) {
+                (Type::Folder, OptionValue::String(path)) => shown_folder(path),
+                _ => summarize(item),
+            })
+            .collect();
         self.row.set_subtitle(&if self.row.is_expanded() {
             String::new()
         } else if summary.is_empty() {
@@ -933,6 +974,7 @@ impl ListRow {
             Type::Size => OptionValue::String(String::from("50%")),
             Type::Color => OptionValue::String(String::from("#ffffff")),
             Type::Folder => OptionValue::String(String::from("~")),
+            Type::Pins | Type::Unknown => OptionValue::String(String::new()),
             // A gradient can't be a list: it's written with the properties of its one node.
             Type::Gradient => OptionValue::Gradient(LayoutEngineGradient {
                 from: String::from("#000000"),
@@ -961,6 +1003,7 @@ fn summarize(value: &OptionValue) -> String {
         OptionValue::Number(x) => x.to_string(),
         OptionValue::String(x) => x.clone(),
         OptionValue::Gradient(x) => format!("{} to {}", x.from, x.to),
+        OptionValue::Group(x) => x.group.clone(),
         OptionValue::List(items) => items.iter().map(summarize).collect::<Vec<_>>().join(", "),
     }
 }

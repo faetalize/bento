@@ -236,7 +236,7 @@ pub fn size_arg(value: &TilingOption) -> Option<SizeChange> {
         TilingOption::String(value) => value.parse().ok(),
         // Numbers come from configs and the command line, like `800` or `-100`.
         TilingOption::Number(value) => value.to_string().parse().ok(),
-        TilingOption::Bool(_) | TilingOption::Gradient(_) => None,
+        TilingOption::Bool(_) | TilingOption::Gradient(_) | TilingOption::Group(_) => None,
     }
 }
 
@@ -273,6 +273,7 @@ pub enum ValueType {
     Color,
     Gradient,
     Folder,
+    Pins,
 }
 
 impl ValueType {
@@ -286,6 +287,7 @@ impl ValueType {
             Self::Color => LayoutEngineOptionType::Color,
             Self::Gradient => LayoutEngineOptionType::Gradient,
             Self::Folder => LayoutEngineOptionType::Folder,
+            Self::Pins => LayoutEngineOptionType::Pins,
         }
     }
 }
@@ -308,7 +310,7 @@ impl SettingMeta {
     /// A list setting gets a list, and a size or a gradient with no value is `null`: the window
     /// decides, or there is none.
     pub fn convert(&self, values: &[TilingOption]) -> Result<serde_json::Value, String> {
-        if self.list {
+        if self.is_list() {
             let values: Result<Vec<_>, _> = values.iter().map(|v| self.convert_one(v)).collect();
             return values.map(serde_json::Value::Array);
         }
@@ -356,14 +358,24 @@ impl SettingMeta {
             (ValueType::Gradient, _) => Err(String::from(
                 r##"must be a gradient, like `from="#000" to="#fff"`"##,
             )),
+            (ValueType::Pins, TilingOption::String(app)) if !app.is_empty() => Ok(json!(app)),
+            (ValueType::Pins, TilingOption::Group(group)) => Ok(json!(group)),
             (ValueType::Folder, _) => Err(String::from(r#"must be a folder, like "~/Documents""#)),
+            (ValueType::Pins, _) => Err(String::from(
+                r#"must be pinned apps, like `app "firefox"` or `group "Games" { app "steam"; }`"#,
+            )),
         }
+    }
+
+    /// Whether its value is a list: one declared so, and pins, which always are.
+    pub fn is_list(&self) -> bool {
+        self.list || self.r#type == ValueType::Pins
     }
 
     /// The values written for it in `values`, as bento shows them to clients.
     fn ipc_value(&self, values: &[TilingOption]) -> Option<LayoutEngineOptionValue> {
         let mut values = values.iter().filter_map(ipc_scalar);
-        if self.list {
+        if self.is_list() {
             Some(LayoutEngineOptionValue::List(values.collect()))
         } else {
             values.next_back()
@@ -377,6 +389,7 @@ fn scalar_option(value: &LayoutEngineOptionValue) -> Option<TilingOption> {
         LayoutEngineOptionValue::Number(value) => Some(TilingOption::Number(*value)),
         LayoutEngineOptionValue::String(value) => Some(TilingOption::String(value.clone())),
         LayoutEngineOptionValue::Gradient(value) => Some(TilingOption::Gradient(value.clone())),
+        LayoutEngineOptionValue::Group(value) => Some(TilingOption::Group(value.clone())),
         LayoutEngineOptionValue::List(_) => None,
     }
 }
@@ -387,6 +400,7 @@ fn ipc_scalar(value: &TilingOption) -> Option<LayoutEngineOptionValue> {
         TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
         TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
         TilingOption::Gradient(value) => LayoutEngineOptionValue::Gradient(value.clone()),
+        TilingOption::Group(value) => LayoutEngineOptionValue::Group(value.clone()),
     })
 }
 
@@ -883,7 +897,7 @@ pub fn ipc_settings(settings: &[SettingMeta], values: &EngineSettings) -> Vec<La
         LayoutEngineOption {
             name: option.name.clone(),
             r#type: option.r#type.ipc(),
-            list: option.list,
+            list: option.is_list(),
             choices: option.choices.clone(),
             default,
             description: option.description.clone(),
