@@ -45,7 +45,8 @@ export const meta = {
       type: "folder",
       list: true,
       default: ["~"],
-      description: "Where files and folders are found, with the folders in them.",
+      description:
+        "Where files and folders are found, with the folders in them. With none, they aren't found.",
       page: "shell",
       group: "Search",
     },
@@ -62,6 +63,9 @@ export const meta = {
 } satisfies Meta;
 
 const { settings } = useModule(import.meta, meta);
+
+/** Whether files can be found: with `fd`, and in some folder. */
+const findable = () => filesAvailable() && settings.folders.length > 0;
 
 /** A search through apps and files. `each` is how many of a kind show before "Show All", and a
  * kind that's alone shows `alone`. `headers` says which kinds have a header: `"all"`, or only the
@@ -115,7 +119,7 @@ export function everythingSearch(options: {
       const named = scored.some(([fit]) => fit < 3);
       // Apps take the room of both only once there are surely no files: rows only ever come under
       // them.
-      const withFiles = filesAvailable() && settings["files-with-apps"];
+      const withFiles = findable() && settings["files-with-apps"];
       const noFiles = !withFiles || (!files.searching() && found.length === 0);
       const apps = { of: "apps" as const, items: appLines, most: noFiles ? alone : each };
       const fileSection = {
@@ -150,7 +154,7 @@ export function everythingSearch(options: {
 
   // Files are looked for along with apps only as the settings say, and alone with the pill.
   const lookFor = (text: string, alone: boolean) => {
-    const wanted = alone || settings["files-with-apps"];
+    const wanted = findable() && (alone || settings["files-with-apps"]);
     files.search(wanted ? text : "", {
       folders: [...settings.folders],
       excluded: [...settings["excluded-folders"]],
@@ -164,7 +168,7 @@ export function everythingSearch(options: {
     lookFor(text, only());
   };
   const setFilesOnly = (on: boolean) => {
-    const alone = on && filesAvailable();
+    const alone = on && findable();
     // With files found along with apps, they're already looked for.
     const before = only() || settings["files-with-apps"];
     setOnly(alone);
@@ -238,12 +242,12 @@ export function everythingSearch(options: {
       ),
     filesOnly: only,
     setFilesOnly,
-    /** Whether files can be searched, which takes `fd`. */
-    canFindFiles: filesAvailable,
+    /** Whether files can be searched, which takes `fd` and a folder to search. */
+    canFindFiles: findable,
     /** Whether nothing matched what's typed. */
     nothing: () => query().trim() !== "" && !files.searching() && lines().length === 0,
     placeholder: () =>
-      !filesAvailable() ? "Search apps"
+      !findable() ? "Search apps"
         : only() ? "Search files and folders" : "Search apps, or / for files and folders",
     type,
     activate,
@@ -258,7 +262,7 @@ export function everythingSearch(options: {
     /** For the field's `onBeforeKey`: `/` switches the Files pill, and Ctrl+Enter shows the
      * selected file in its folder. */
     beforeKey(event: KeyEvent) {
-      if (event.text === "/" && filesAvailable()) {
+      if (event.text === "/" && findable()) {
         setFilesOnly(!only());
         return true;
       }

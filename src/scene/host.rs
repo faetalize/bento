@@ -1466,6 +1466,27 @@ mod tests {
     }
 
     #[test]
+    fn with_no_folders_to_search_no_files_are_searched() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let settings = host.settings.clone().unwrap();
+        settings
+            .borrow_mut()
+            .write_file("search {\n    folders\n}\n");
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        host.data_line(r#"{"type":"file-search","available":true}"#);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        commands(&host);
+        // Nothing says files are found, and nothing looks for them.
+        assert!(shows(&host, "DP-1", "Search apps"));
+        assert!(!shows(&host, "DP-1", "for files and folders"));
+        type_keys(&mut host, &["q", "/"]);
+        assert!(commands(&host).is_empty());
+    }
+
+    #[test]
     fn an_island_open_on_one_output_stays_open_as_whats_in_it_is_pressed() {
         let mut host = SceneHost::default();
         let outputs = [
