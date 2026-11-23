@@ -186,7 +186,8 @@ function Fitted(props: {
   );
 }
 
-/** The player's app, by its icon and name, which brings its window to the front. */
+/** The player's app, by its icon and name, with an arrow out, which brings its window to the
+ * front. */
 function Owner(props: { player: Player; onClick: () => void }) {
   const app = () => (props.player.icon ? appById(props.player.icon) : undefined);
   return (
@@ -203,6 +204,11 @@ function Owner(props: { player: Player; onClick: () => void }) {
       <text style={{ fontSize: 11, color: "fg/0.65", lineClamp: 1, flexShrink: 1 }}>
         {app()?.name ?? props.player.name}
       </text>
+      <image
+        icon="ph-arrow-square-out-symbolic"
+        size={11}
+        style={{ color: "fg/0.65", flexShrink: 0 }}
+      />
     </box>
   );
 }
