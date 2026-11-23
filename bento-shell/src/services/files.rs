@@ -322,10 +322,15 @@ impl File {
     }
 }
 
+/// The name of the file or folder at `path`: its last part.
+fn name_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or_default()
+}
+
 /// A file or folder as the shell shows it: its path, its name, the folder it's in, with `~` for
 /// the home folder, whether it's a folder, and its kind's icon.
 pub fn describe(path: &str, folder: bool) -> Value {
-    let name = path.rsplit('/').next().unwrap_or_default();
+    let name = name_of(path);
     let location = {
         let inside = Path::new(path).parent().unwrap_or(Path::new("/"));
         let home = glib::home_dir();
@@ -811,7 +816,7 @@ mod tests {
         let found: Vec<(String, bool, Fit)> = best
             .into_sorted_vec()
             .into_iter()
-            .map(|file| (file.name().to_owned(), file.folder, file.fit))
+            .map(|file| (name_of(&file.path).to_owned(), file.folder, file.fit))
             .collect();
         // A folder's name has no extension, so "v1.2" isn't "v1".
         assert_eq!(
