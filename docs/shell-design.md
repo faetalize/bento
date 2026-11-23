@@ -332,6 +332,20 @@ What fits best is first: a name that is what's typed, then one that starts with 
 a word that does, then one with it anywhere. Those that fit alike go by when they were last opened,
 then by how few folders deep they are, then by the shortest name.
 
+The launcher and the start menu search apps and files together, in one list: apps, then files,
+each up to four, with "Show All" to see the rest of one in place. A kind that's alone takes the
+room of both. Files come after apps have shown, so they only ever add rows underneath, and the
+first row is selected, never moving as they come. When no app's name matches, only its
+description, files go first, and nothing shows until they're there. In the launcher only the
+second kind has a header; the start menu has one for each. Up and Down go through the list, Tab
+goes to the next kind, Enter opens, and Ctrl+Enter shows a file in its folder, as the selected
+file's button does.
+
+A Files pill at the end of the field searches files and folders alone, and `/`, typed anywhere,
+switches it, since no name has one; Backspace in an empty field turns it off. The field says so:
+"Search apps, or / for files and folders", and "Search files and folders" while the pill is lit.
+Each search starts with it off. Without `fd` there's no pill, and the field says "Search apps".
+
 ## bento starts the shell's data program
 
 bento starts the shell's data program, and hands it a private connection: only it feeds the
