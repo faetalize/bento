@@ -3,7 +3,8 @@
 // middle.
 
 import {
-  apps, focusedOutput, onAction, outputs, useModule, type App, type Meta, type SceneNode,
+  apps, focusedOutput, onAction, outputSize, outputs, useModule, type App, type Meta,
+  type SceneNode,
 } from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
@@ -28,8 +29,14 @@ onAction("toggle-start-menu", ({ output }) => {
 
 const WIDTH = 640;
 const COLUMNS = 6;
-// How tall the list of apps is, which scrolls.
+// How tall the list of apps is, which scrolls, at most: on an output too short for the menu, it's
+// what's left of the room above where the menu comes out, but for `EDGE` at the top.
 const LIST = 420;
+const EDGE = 24;
+// How much of the menu isn't its list: its padding, its field, the power button and the gaps.
+const AROUND = 16 * 2 + 42 + 14 + 14 + 36;
+// The title over the list of all apps, with the room around it.
+const TITLE = 30;
 const ICON = 32;
 const HEIGHTS = { head: 28, row: 48, more: 40 };
 
@@ -62,6 +69,16 @@ export function StartMenu(props: {
 }) {
   preloadIcons(ICON);
   const key = `start:${props.output}`;
+  // How tall its list can be, from where it comes out: above the start button, or `bottom` up
+  // from the output's bottom.
+  const list = () => {
+    const height = outputSize(props.output)?.height;
+    if (height === undefined) return LIST + TITLE;
+    // Where it comes out, from the output's top.
+    const from = props.from?.layout();
+    const bottom = from ? from.y - (props.gap ?? 0) : height - (props.bottom ?? 0);
+    return Math.max(TITLE, Math.min(LIST + TITLE, bottom - EDGE - AROUND));
+  };
   return (
     <Flyout
       output={props.output}
@@ -75,12 +92,13 @@ export function StartMenu(props: {
       padding={16}
       radius={14}
     >
-      <Menu onClose={() => popup.close(key)} />
+      <Menu onClose={() => popup.close(key)} list={list()} />
     </Flyout>
   );
 }
 
-function Menu(props: { onClose: () => void }) {
+/** The menu, whose list of all apps, or of what's found, is `list` tall with its title. */
+function Menu(props: { onClose: () => void; list: number }) {
   const search = everythingSearch({ headers: "all", heights: HEIGHTS, done: props.onClose });
   search.reset();
   const all = apps();
@@ -122,7 +140,7 @@ function Menu(props: { onClose: () => void }) {
               fallback={
                 <box
                   style={{
-                    height: LIST + 30, padding: [22, 14], alignItems: "center",
+                    height: props.list, padding: [22, 14], alignItems: "center",
                     justifyContent: "center",
                   }}
                 >
@@ -132,7 +150,7 @@ function Menu(props: { onClose: () => void }) {
             >
             <text style={{ fontWeight: 700, paddingLeft: 8 }}>All apps</text>
             <Scroller
-              style={{ height: LIST }}
+              style={{ height: props.list - TITLE }}
               inner={{ flexDirection: "row", flexWrap: "wrap", alignContent: "start" }}
             >
               <For each={all}>{(app) => <AppTile app={app} onClick={() => pick(app)} />}</For>
@@ -142,7 +160,7 @@ function Menu(props: { onClose: () => void }) {
         }
       >
         <Scroller
-          style={{ height: LIST + 30 }}
+          style={{ height: props.list }}
           inner={{ flexDirection: "column" }}
           reveal={search.reveal()}
         >

@@ -1529,6 +1529,62 @@ mod tests {
     }
 
     #[test]
+    fn the_start_menu_fits_a_short_output() {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (960., 540.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        let menu = |host: &SceneHost| {
+            let scene = host.shell.as_ref().unwrap().scene.borrow();
+            // Its glass, which is wider than the start button and taller than the taskbar.
+            scene
+                .draw_all("DP-1")
+                .into_iter()
+                .find_map(|item| match item {
+                    Item::Shape {
+                        rect,
+                        material: Material::Glass,
+                        ..
+                    } if rect[2] > 600. && rect[3] > 100. => Some(rect),
+                    _ => None,
+                })
+        };
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        // With all the apps, and with what's found, it's all on the output.
+        let all = menu(&host).unwrap();
+        assert!(all[1] > 0. && all[1] + all[3] < 540., "{all:?}");
+        let power = middle_of(&host, "DP-1", "system-shutdown-symbolic");
+        assert!(power[1] < all[1] + all[3], "{power:?} {all:?}");
+        host.data_line(r#"{"type":"file-search","available":true}"#);
+        settle(&mut host, &mut now);
+        commands(&host);
+        type_keys(&mut host, &["/", "q", "z", "x"]);
+        let asked = commands(&host);
+        let files: Vec<_> = (0..20)
+            .map(|i| {
+                serde_json::json!({
+                    "path": format!("/h/qzx-{i}"), "name": format!("qzx-{i}"),
+                    "location": "~", "folder": false, "icon": "text-x-generic",
+                })
+            })
+            .collect();
+        let id = &asked.last().unwrap()["id"];
+        let said = serde_json::json!({ "type": "files", "id": id, "files": files });
+        host.data_line(&said.to_string());
+        settle(&mut host, &mut now);
+        let found = menu(&host).unwrap();
+        assert!(found[1] > 0. && found[1] + found[3] < 540., "{found:?}");
+        // What's in it fits it too, down to the power button at its bottom.
+        let power = middle_of(&host, "DP-1", "system-shutdown-symbolic");
+        assert!(power[1] < found[1] + found[3], "{power:?} {found:?}");
+    }
+
+    #[test]
     fn with_no_folders_to_search_no_files_are_searched() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         let settings = host.settings.clone().unwrap();
