@@ -238,6 +238,9 @@ settings: an easy way into bento's settings, quick actions, toggles for what mat
 playing, and the notification center. Not everything is laid out at once: what has more to it
 than a switch, like the networks or the sound devices, opens behind it, in the panel.
 
+What's playing can go to a place in it, set the player's own volume, and bring the player's
+window to the front, each only where the player can.
+
 The control center's screenshot and screen recording buttons each run any command the settings
 give them, alone or with a notification of the user's wording once it's done, for tools that show
 none of their own.

@@ -400,6 +400,9 @@ pub fn run() -> glib::ExitCode {
                 "bluetooth-forget" => bluetooth.forget(text("path")),
                 "power-profile" => profiles.set(text("name")),
                 "media" => media.control(&text("player"), &text("action")),
+                "media-position" => media.seek(&text("player"), command["position"].as_f64()),
+                "media-volume" => media.volume(&text("player"), command["value"].as_f64()),
+                "media-raise" => media.raise(&text("player")),
                 "dismiss" => notifications.dismiss(id()),
                 "expire" => notifications.expire(id()),
                 "invoke" => notifications.invoke(

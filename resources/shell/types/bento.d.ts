@@ -846,6 +846,21 @@ declare module "bento" {
         canNext: boolean;
         canPrevious: boolean;
         canPlay: boolean;
+        /** Whether it can go to a place in what it plays, which then has a `length`. */
+        canSeek: boolean;
+        /** How far into what it plays it was at `at`, in seconds. Players don't say as it
+         * moves: while playing, it's on by `rate` times the time since. */
+        position: number;
+        /** How long what it plays is, in seconds, if it says. */
+        length: number | null;
+        rate: number;
+        /** When `position` was read, in milliseconds as `Date.now()` has it. */
+        at: number;
+        /** Its own volume, from 0, 1 being full; `null` when it can't be set. Some players,
+         * Firefox among them, don't say when it's changed in the app itself. */
+        volume: number | null;
+        /** Whether it can bring its window to the front. */
+        canRaise: boolean;
       }[];
     };
     clipboard: {
@@ -995,6 +1010,12 @@ declare module "bento" {
     "bluetooth-forget": { path: string };
     "power-profile": { name: string };
     media: { player: string; action: "PlayPause" | "Next" | "Previous" };
+    /** Takes a player to `position` seconds into what it plays. */
+    "media-position": { player: string; position: number };
+    /** Sets a player's own volume. */
+    "media-volume": { player: string; value: number };
+    /** Asks a player to bring its window to the front. */
+    "media-raise": { player: string };
     /** Copies a clipboard entry again. */
     "clipboard-copy": { id: number };
     "clipboard-delete": { id: number };
