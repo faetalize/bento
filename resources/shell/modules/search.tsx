@@ -141,9 +141,10 @@ export function everythingSearch(options: {
       out.push(...(cut ? section.items.slice(0, section.most) : section.items));
       if (cut) {
         const title = `Show All ${section.items.length} ${TITLES[section.of]}`;
-        // What it shows first, which is picked as it does.
+        // What it shows first, which is picked as it does, and which is the line's own: it's
+        // another line when it shows from another.
         const next = section.items[section.most].key;
-        const key = `more:${section.of}:${section.items.length}`;
+        const key = `more:${section.of}:${section.items.length}:${next}`;
         out.push(line({ kind: "more", key, of: section.of, title, next }));
       }
     }
@@ -253,6 +254,8 @@ export function everythingSearch(options: {
     activate,
     /** Opens the selected line. */
     submit: () => activate(current()),
+    /** Ends the file search on its way, keeping what shows, as when what searches closes. */
+    stop: () => files.stop(),
     /** Starts again, empty, with the apps as they are now, as when what searches opens. */
     reset() {
       all = apps();

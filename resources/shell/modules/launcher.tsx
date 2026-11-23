@@ -2,7 +2,7 @@
 // files as they're typed, its results opening below it. It grows out of a point, and shrinks back
 // into one. Its bind opens it, and Escape or a press elsewhere closes it.
 
-import { Surface, focusedOutput, onAction, outputs, useModule, type Meta } from "bento";
+import { Surface, focusedOutput, onAction, outputSize, outputs, useModule, type Meta } from "bento";
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { Scroller, grows, growsWith, popup } from "bento:modules/ui";
 import { preloadIcons } from "bento:modules/apps";
@@ -22,12 +22,14 @@ useModule(import.meta, meta);
 // How big an icon is in a row.
 const ICON = 40;
 const HEIGHTS = { head: 30, row: 56, more: 40 };
-// How tall the launcher is with all its results: it's held at the top of that room, in the
-// middle of the output, so its search stays put as the results come and go.
+// How tall the launcher is with all its results, at most: it's held at the top of that room, in
+// the middle of the output, so its search stays put as the results come and go. On an output too
+// short for it, the room is the output's, but for `EDGE` above and below.
 const HEIGHT = 640;
+const EDGE = 24;
 const RADIUS = 26;
-// How tall its list gets, the rest of that room, past which it scrolls.
-const LIST = HEIGHT - 24 - 48 - 8;
+// How much of the room isn't its list: its padding, its field, and the gap under it.
+const AROUND = 24 + 48 + 8;
 
 export function Launcher() {
   preloadIcons(ICON);
@@ -52,12 +54,18 @@ export function Launcher() {
 function Palette(props: { output: string; open: boolean }) {
   const close = () => popup.close("launcher");
   const search = everythingSearch({ headers: "second", heights: HEIGHTS, done: close });
+  const room = () =>
+    Math.min(HEIGHT, (outputSize(props.output)?.height ?? HEIGHT) - 2 * EDGE);
   let field: any;
-  // Opened, it starts empty, with the apps as they are now, and the keys.
+  // Opened, it starts empty, with the apps as they are now, and the keys; closed, it stops
+  // looking, and keeps what shows as it shrinks away.
   createEffect(
     () => props.open,
     (open) => {
-      if (!open) return;
+      if (!open) {
+        search.stop();
+        return;
+      }
       search.reset();
       field?.setText("");
       field?.focus();
@@ -72,7 +80,7 @@ function Palette(props: { output: string; open: boolean }) {
       keyboard={props.open ? "exclusive" : "none"}
       onEscape={close}
       onOutside={() => props.open && close()}
-      style={{ height: HEIGHT, flexDirection: "column", alignItems: "center" }}
+      style={{ height: room(), flexDirection: "column", alignItems: "center" }}
     >
       <box
         style={{
@@ -101,7 +109,7 @@ function Palette(props: { output: string; open: boolean }) {
           </box>
           <Show when={search.lines().length > 0}>
             <Scroller
-              style={{ height: Math.min(LIST, search.height()) }}
+              style={{ height: Math.min(room() - AROUND, search.height()) }}
               inner={{ flexDirection: "column" }}
               reveal={search.reveal()}
             >

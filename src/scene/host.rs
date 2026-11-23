@@ -1466,6 +1466,69 @@ mod tests {
     }
 
     #[test]
+    fn closing_the_launcher_ends_its_search() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(r#"{"type":"file-search","available":true}"#);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        commands(&host);
+        type_keys(&mut host, &["q"]);
+        let asked = commands(&host);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "files-stop", "id": asked[0]["id"] })]
+        );
+    }
+
+    #[test]
+    fn the_launcher_fits_a_short_output() {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (960., 540.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        let mut now = Instant::now();
+        host.data_line(r#"{"type":"file-search","available":true}"#);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        commands(&host);
+        type_keys(&mut host, &["/", "q", "z", "x"]);
+        let asked = commands(&host);
+        let files: Vec<_> = (0..20)
+            .map(|i| {
+                serde_json::json!({
+                    "path": format!("/h/qzx-{i}"), "name": format!("qzx-{i}"),
+                    "location": "~", "folder": false, "icon": "text-x-generic",
+                })
+            })
+            .collect();
+        let id = &asked.last().unwrap()["id"];
+        let said = serde_json::json!({ "type": "files", "id": id, "files": files });
+        host.data_line(&said.to_string());
+        settle(&mut host, &mut now);
+        // All of it is on the output, with what's found, which scrolls: its glass is wider than
+        // any island's.
+        let glass = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .draw_all("DP-1")
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Shape {
+                    rect,
+                    material: Material::Glass,
+                    ..
+                } if rect[2] > 600. => Some(rect),
+                _ => None,
+            })
+            .unwrap();
+        assert!(glass[1] > 0. && glass[1] + glass[3] < 540., "{glass:?}");
+    }
+
+    #[test]
     fn with_no_folders_to_search_no_files_are_searched() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         let settings = host.settings.clone().unwrap();
@@ -3673,6 +3736,8 @@ mod tests {
             .send(&serde_json::json!({ "type": "data-ready" }));
         let asked = commands(&host);
         assert_eq!(asked[0]["query"], "ab");
+        // Asked again as a search of its own.
+        assert_ne!(asked[0]["id"], second);
         found(&mut host, &asked[0]["id"], &["ab.txt", "abc.txt"]);
         settle(&mut host, &mut now);
         assert!(!shows(&host, "DP-1", "Searching"));

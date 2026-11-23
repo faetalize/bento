@@ -63,7 +63,9 @@ export function fileSearch(most = 8) {
     setFound(event.files.slice(0, most));
   });
   // The data program started again, and knows nothing of the search it was on.
-  onData("ready", () => running && ask(running.query, running));
+  onData("ready", () => {
+    if (running) ask(running.query, { folders: running.folders, excluded: running.excluded });
+  });
   if (getOwner()) onCleanup(stop);
 
   return {
@@ -76,6 +78,8 @@ export function fileSearch(most = 8) {
     /** Looks for `text` right away, in `where`'s folders, the home folder unless it says, but
      * for those it leaves out. */
     search,
+    /** Ends the search on its way, keeping what was found, as when what searches closes. */
+    stop,
     /** Forgets what's looked for and found, as when what searches opens or closes. */
     clear: () => search(""),
   };
