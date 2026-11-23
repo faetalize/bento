@@ -1,5 +1,5 @@
 //! Combinations of outputs: one output that plays on several, as PipeWire's combine-stream module
-//! makes it, each of its outputs with a role, its level and its delay. They're kept in
+//! makes it, each of its outputs with a role and its delay. They're kept in
 //! `$XDG_STATE_HOME/bento/combinations.json`, and each runs as a rig of its own.
 //!
 //! Their own streams can't be moved, so an app that moves every stream to its own sink, like
@@ -7,7 +7,7 @@
 //!
 //! A role picks what an output plays: the same as the rest, the front or the back of four
 //! channels, or the lows or the highs, split by a crossover. With PipeWire's filter-chain, each
-//! output plays through a filter made for it, with its level and its delay, which change as it
+//! output plays through a filter made for it, with its delay, which changes as it
 //! plays; a change of roles, or of keeping in sync, starts the combination again.
 
 use std::cell::RefCell;
@@ -63,13 +63,8 @@ pub struct Member {
     /// The output's name in the sound server.
     pub device: String,
     pub role: Role,
-    /// Its share of the combination's sound, from 0 to 1: the balance between the outputs.
-    pub level: f64,
     /// In milliseconds, when it isn't kept in sync by itself.
     pub delay: f64,
-    /// The output's own volume before the combination set it to full, to put back when it's
-    /// removed.
-    pub restore: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,8 +94,6 @@ impl Combination {
                         .filter(|d| !d.is_empty())?
                         .to_owned(),
                     role: Role::parse(member["role"].as_str().unwrap_or_default()),
-                    level: member["level"].as_f64().unwrap_or(1.).clamp(0., 1.),
-                    restore: member["restore"].as_f64(),
                     delay: member["delay"].as_f64().unwrap_or(0.).clamp(0., MAX_DELAY),
                 })
             })
@@ -125,8 +118,6 @@ impl Combination {
             "members": self.members.iter().map(|member| json!({
                 "device": member.device,
                 "role": member.role.name(),
-                "level": member.level,
-                "restore": member.restore,
                 "delay": member.delay,
             })).collect::<Vec<_>>(),
         })
@@ -136,7 +127,7 @@ impl Combination {
 /// The config of the rig that makes `combination`. `compensates` says whether PipeWire's
 /// combine-stream keeps outputs in sync by itself; without, delays are what keep them. With
 /// `filters`, each output plays through a filter of its own; without, there are no crossovers,
-/// levels or delays.
+/// delays.
 pub fn config(combination: &Combination, compensates: bool, filters: bool) -> String {
     let id = &combination.id;
     let auto = combination.auto && compensates;
@@ -170,16 +161,12 @@ pub fn config(combination: &Combination, compensates: bool, filters: bool) -> St
             }
             _ => (),
         }
-        // Always there, so a level or a delay is set as it plays.
+        // Always there, so a delay is set as it plays.
         if filters {
             nodes.push(format!(
                 "{{ type = builtin name = delay label = delay config = {{ \"max-delay\" = {:.3} }} control = {{ \"Delay (s)\" = {:.4} }} }}",
                 MAX_DELAY / 1000.,
                 delay / 1000.
-            ));
-            nodes.push(format!(
-                "{{ type = builtin name = level label = linear control = {{ \"Mult\" = {:.3} \"Add\" = 0.0 }} }}",
-                member.level
             ));
         }
         let target = if nodes.is_empty() {
@@ -286,7 +273,7 @@ pub struct CombineService {
     available: bool,
     /// Whether it keeps outputs in sync by itself.
     compensates: bool,
-    /// Whether filter-chain is there, for crossovers, levels and delays.
+    /// Whether filter-chain is there, for crossovers and delays.
     filters: bool,
     on_change: Box<dyn Fn(&Value)>,
     /// Hears the name of a combined output that starts again, so apps kept on it go back.
@@ -317,7 +304,7 @@ impl CombineService {
         *self.on_restart.borrow_mut() = Some(Box::new(heard));
     }
 
-    /// Makes or changes a combination, by its id. A change of levels or delays alone is made
+    /// Makes or changes a combination, by its id. A change of delays alone is made
     /// as it plays; any other starts it again.
     pub fn set(&self, value: &Value) {
         let Some(combination) = Combination::from_value(value) else {
@@ -355,15 +342,12 @@ impl CombineService {
         }
     }
 
-    /// Sets the levels and delays that changed from `old` to `new` on their filters as they
+    /// Sets the delays that changed from `old` to `new` on their filters as they
     /// play.
     fn tune(&self, old: &Combination, new: &Combination) {
         let auto = new.auto && self.compensates;
         for (i, (was, is)) in old.members.iter().zip(&new.members).enumerate() {
             let mut params = Vec::new();
-            if was.level != is.level {
-                params.push(format!("\"level:Mult\" {:.3}", is.level));
-            }
             if was.delay != is.delay && !auto {
                 params.push(format!("\"delay:Delay (s)\" {:.4}", is.delay / 1000.));
             }
@@ -379,28 +363,6 @@ impl CombineService {
                 process.wait_async(gio::Cancellable::NONE, |_| ());
             }
         }
-    }
-
-    /// The outputs of combinations that don't know their volume from before they were combined,
-    /// as the ones made before it was kept: by the combination's id, the output's place in it,
-    /// and its name.
-    pub fn without_restore(&self) -> Vec<(String, usize, String)> {
-        without_restore(&self.combinations.borrow())
-    }
-
-    /// Keeps `volume` as what output `index` of combination `id` had before.
-    pub fn set_restore(&self, id: &str, index: usize, volume: f64) {
-        {
-            let mut combinations = self.combinations.borrow_mut();
-            let member = combinations
-                .iter_mut()
-                .find(|c| c.id == id)
-                .and_then(|c| c.members.get_mut(index));
-            let Some(member) = member else { return };
-            member.restore = Some(volume);
-        }
-        save(&self.combinations.borrow());
-        self.publish();
     }
 
     /// The combination `id`, if there's one.
@@ -452,7 +414,6 @@ impl CombineService {
                             if matches!(member.role, Role::Lows | Role::Highs) {
                                 member.role = Role::Same;
                             }
-                            member.level = 1.;
                             member.delay = 0.;
                         }
                     }
@@ -465,19 +426,7 @@ impl CombineService {
     }
 }
 
-fn without_restore(combinations: &[Combination]) -> Vec<(String, usize, String)> {
-    let mut missing = Vec::new();
-    for combination in combinations {
-        for (i, member) in combination.members.iter().enumerate() {
-            if member.restore.is_none() {
-                missing.push((combination.id.clone(), i, member.device.clone()));
-            }
-        }
-    }
-    missing
-}
-
-/// What a change of starts a combination again: all but its outputs' levels and delays.
+/// What a change of starts a combination again: all but its outputs' delays.
 fn shape(combination: &Combination) -> (String, bool, Vec<(String, Role)>) {
     let members = combination.members.iter();
     (
@@ -535,16 +484,12 @@ mod tests {
                 Member {
                     device: "alsa_output.a".into(),
                     role: roles[0],
-                    level: 1.,
                     delay: 0.,
-                    restore: None,
                 },
                 Member {
                     device: "alsa_output.b".into(),
                     role: roles[1],
-                    level: 1.,
                     delay: 40.,
-                    restore: Some(0.3),
                 },
             ],
         }
@@ -574,8 +519,7 @@ mod tests {
 
     #[test]
     fn lows_and_highs_and_delays_play_through_filters_made_for_them() {
-        let mut combination = pair([Role::Lows, Role::Highs], false);
-        combination.members[0].level = 0.5;
+        let combination = pair([Role::Lows, Role::Highs], false);
         let config = config(&combination, true, true);
         assert!(
             !config.contains("latency-compensate"),
@@ -584,11 +528,9 @@ mod tests {
         assert_eq!(config.matches("libpipewire-module-filter-chain").count(), 2);
         assert_eq!(config.matches("label = bq_lowpass").count(), 2);
         assert_eq!(config.matches("label = bq_highpass").count(), 2);
-        assert!(config.contains("\"Mult\" = 0.500"));
         assert!(config.contains("\"Delay (s)\" = 0.0400"));
         assert!(config.contains("{ output = \"cross0:Out\" input = \"cross1:In\" }"));
         assert!(config.contains("{ output = \"cross1:Out\" input = \"delay:In\" }"));
-        assert!(config.contains("{ output = \"delay:Out\" input = \"level:In\" }"));
         // The combination's streams go to the filters, which play on the outputs.
         assert!(config.contains("node.name = \"bento.chain.c1.0\""));
         assert!(config.contains("target.object = \"alsa_output.a\""));
@@ -605,28 +547,17 @@ mod tests {
     }
 
     #[test]
-    fn levels_and_delays_change_as_it_plays_and_roles_start_it_again() {
+    fn delays_change_as_it_plays_and_roles_start_it_again() {
         let old = pair([Role::Same, Role::Same], false);
-        let mut louder = old.clone();
-        louder.members[1].level = 0.4;
-        louder.members[0].delay = 25.;
-        assert_eq!(shape(&old), shape(&louder));
+        let mut later = old.clone();
+        later.members[0].delay = 25.;
+        assert_eq!(shape(&old), shape(&later));
         let mut back = old.clone();
         back.members[1].role = Role::Back;
         assert_ne!(shape(&old), shape(&back));
         let mut synced = old.clone();
         synced.auto = true;
         assert_ne!(shape(&old), shape(&synced));
-    }
-
-    #[test]
-    fn outputs_combined_before_their_volume_was_kept_are_found() {
-        // The first output of the pair has no volume kept, the second has.
-        let pair = pair([Role::Same, Role::Same], true);
-        assert_eq!(
-            without_restore(&[pair]),
-            [("c1".to_owned(), 0, "alsa_output.a".to_owned())]
-        );
     }
 
     #[test]

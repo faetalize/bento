@@ -250,20 +250,27 @@ pub fn run() -> glib::ExitCode {
         }));
     });
     let combine = CombineService::start(say);
-    // Outputs combined before their volume was kept go to full volume as new ones do, once
-    // they're there to read, keeping what they had.
+    // A new combination's own volume, for once its output is there: what its loudest output
+    // had, as that output goes to full, so what each plays stays the same.
+    let pending: Rc<RefCell<Vec<(String, f64)>>> = Rc::default();
     {
-        let (weak_devices, weak_combine) = (Rc::downgrade(&devices), Rc::downgrade(&combine));
+        let (weak, pending) = (Rc::downgrade(&devices), pending.clone());
         devices.listen(move || {
-            let (Some(devices), Some(combine)) = (weak_devices.upgrade(), weak_combine.upgrade())
-            else {
+            let Some(devices) = weak.upgrade() else {
                 return;
             };
-            for (id, index, device) in combine.without_restore() {
-                if let Some(volume) = devices.volume(Kind::Output, &device) {
-                    combine.set_restore(&id, index, volume);
-                    devices.set_volume(Kind::Output, &device, 1.);
-                }
+            let ready: Vec<(String, f64)> = pending
+                .borrow()
+                .iter()
+                .filter(|(name, _)| devices.volume(Kind::Output, name).is_some())
+                .cloned()
+                .collect();
+            if ready.is_empty() {
+                return;
+            }
+            pending.borrow_mut().retain(|item| !ready.contains(item));
+            for (name, volume) in ready {
+                devices.set_volume(Kind::Output, &name, volume);
             }
         });
     }
@@ -436,33 +443,33 @@ pub fn run() -> glib::ExitCode {
                 "stream-follow" => devices.follow_default(kind(), id()),
                 "stream-keep" => devices.keep_here(kind(), id()),
                 "combine-set" => {
-                    let mut combination = command["combination"].clone();
-                    // A new combination's outputs go to their full volume, so that its own
-                    // volume and their balance are all there is to what they play; what they
-                    // were set to comes back when it's removed.
+                    let combination = &command["combination"];
+                    // How loud each output of a combination plays is the combination's volume
+                    // times the output's own, and the ratio between them is their volumes, with
+                    // the loudest at full. A new one starts there, the combination's volume
+                    // where the loudest was, so nothing sounds different.
                     let id = combination["id"].as_str().unwrap_or_default().to_owned();
                     if combine.get(&id).is_none() {
-                        for member in combination["members"].as_array_mut().into_iter().flatten() {
-                            let device = member["device"].as_str().unwrap_or_default().to_owned();
-                            if let Some(volume) = devices.volume(Kind::Output, &device) {
-                                member["restore"] = volume.into();
-                                devices.set_volume(Kind::Output, &device, 1.);
+                        let members = combination["members"].as_array().into_iter().flatten();
+                        let volumes: Vec<(String, f64)> = members
+                            .filter_map(|member| {
+                                let device = member["device"].as_str()?.to_owned();
+                                let volume = devices.volume(Kind::Output, &device)?;
+                                Some((device, volume))
+                            })
+                            .collect();
+                        let loudest = volumes.iter().map(|(_, v)| *v).fold(0., f64::max);
+                        if loudest > 0. {
+                            for (device, volume) in &volumes {
+                                devices.set_volume(Kind::Output, device, volume / loudest);
                             }
+                            let output = format!("{}{id}", crate::services::combine::PREFIX);
+                            pending.borrow_mut().push((output, loudest));
                         }
                     }
-                    combine.set(&combination);
+                    combine.set(combination);
                 }
-                "combine-remove" => {
-                    let id = text("id");
-                    if let Some(combination) = combine.get(&id) {
-                        for member in &combination.members {
-                            if let Some(volume) = member.restore {
-                                devices.set_volume(Kind::Output, &member.device, volume);
-                            }
-                        }
-                    }
-                    combine.remove(&id);
-                }
+                "combine-remove" => combine.remove(&text("id")),
                 "eq-set" => equalizers.set(&text("device"), &command),
                 "brightness" => {
                     brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))

@@ -3811,6 +3811,37 @@ mod tests {
         assert_eq!(sent[0]["cmd"], "combine-set");
         assert_eq!(sent[0]["combination"]["members"][1]["role"], "back");
 
+        // The ratio is the outputs' own volumes, both at a half here: 50% each, and what each
+        // plays is the combination's volume, a half too, times its own.
+        let halves = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "50%");
+        assert_eq!(halves.len(), 2, "a segment each");
+        assert!(shows(&host, "DP-1", "Effective volume: 25%"));
+        // Dragging the nub between them to a quarter of the bar sets the volumes, the bigger
+        // share at full.
+        let middle = |r: &[f32; 4]| [r[0] + r[2] / 2., r[1] + r[3] / 2.];
+        let (left, right) = (middle(&halves[0]), middle(&halves[1]));
+        // Each segment's percent is centred with its icon before it, 14 wide and 6 apart, so the
+        // line between them is half that before the middle of the two.
+        let nub = [(left[0] + right[0]) / 2. - 10., left[1]];
+        drag_to(&mut host, &mut now, nub, [left[0] - 10., left[1]]);
+        let sent = commands(&host);
+        let last = |name: &str| {
+            sent.iter()
+                .rev()
+                .find(|c| c["cmd"] == "device-volume" && c["name"] == name)
+                .unwrap_or_else(|| panic!("{name} in {sent:?}"))["value"]
+                .as_f64()
+                .unwrap()
+        };
+        assert!((last("a") - 25. / 75.).abs() < 0.03, "{sent:?}");
+        assert_eq!(last("b"), 1.);
+
         // Done goes back to the devices, where it's a chip of its own.
         let done = middle_of(&host, "DP-1", "Done");
         click(&mut host, "DP-1", done);

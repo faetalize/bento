@@ -293,7 +293,7 @@ export interface Combination {
   /** The combined output's name in the sound server. */
   device: string;
   auto: boolean;
-  members: { device: string; role: Role; level: number; delay: number; restore?: number | null }[];
+  members: { device: string; role: Role; delay: number }[];
 }
 
 const combining = () => data("combinations");
@@ -768,7 +768,7 @@ function NewCombination(props: { width: number }) {
       id,
       name: chosen.map(titleOf).join(" + "),
       auto: true,
-      members: chosen.map((device) => ({ device: device.name, role: "same", level: 1, delay: 0 })),
+      members: chosen.map((device) => ({ device: device.name, role: "same", delay: 0 })),
     });
     setSub({ page: "combination", id, fresh: true });
   };
@@ -817,17 +817,163 @@ function NewCombination(props: { width: number }) {
   );
 }
 
-/** A combination's settings: its volume, whether it keeps in sync by itself, and each output's
- * role, its share of the sound, the balance between them, and its delay. Its outputs are at their
- * full volume while it's there, so its own volume and the balance are all there is to it. One just made ends with Done; one opened later can be removed. */
+// Each output's colour in a combination, its segment of the ratio and its mark in the rows.
+const COLOURS = ["#4a7cc4", "#c47a3a", "#3fa27a", "#a35ec4", "#c4b23a", "#c44a6a"];
+
+/** The ratio between a combination's outputs, as one bar split into a segment for each, their
+ * shares in whole percents adding up to 100, with a nub between each two to drag, or to turn the
+ * wheel over for a percent at a time; and under it, how loud each plays. The ratio is the
+ * outputs' own volumes, the one with the biggest share at full: what each plays is the
+ * combination's volume times its own, which is all there is to it. */
+function Ratio(props: { outputs: string[]; volume: number }) {
+  const all = () => devices().outputs;
+  const present = () => props.outputs.filter((name) => all().some((d) => d.name === name));
+  const volumeOf = (name: string) => Math.min(all().find((d) => d.name === name)?.volume ?? 0, 1);
+  // The shares, in whole percents, as the volumes say them, or as they're dragged.
+  const [held, setHeld] = createSignal<number[] | null>(null);
+  const shares = () => {
+    if (held()) return held()!;
+    const volumes = present().map(volumeOf);
+    const total = volumes.reduce((a, b) => a + b, 0);
+    if (total <= 0) return volumes.map(() => Math.round(100 / Math.max(volumes.length, 1)));
+    const rounded = volumes.map((v) => Math.round((v / total) * 100));
+    // Whole percents that add up to 100: what rounding leaves over goes to the biggest.
+    const biggest = rounded.indexOf(Math.max(...rounded));
+    rounded[biggest]! += 100 - rounded.reduce((a, b) => a + b, 0);
+    return rounded;
+  };
+  let sentAt = 0;
+  const send = (next: number[], now: boolean) => {
+    if (!now && Date.now() - sentAt < 100) return;
+    sentAt = Date.now();
+    const top = Math.max(...next, 1);
+    quiet();
+    present().forEach((name, i) =>
+      command("device-volume", { kind: "output", name, value: next[i]! / top }),
+    );
+  };
+  let bar: SceneNode | undefined;
+  // Moves the line between output `k` and the next to `x` across the bar, from 0 to 1.
+  const moveTo = (k: number, x: number) => {
+    const next = [...shares()];
+    const before = next.slice(0, k).reduce((a, b) => a + b, 0);
+    const pair = next[k]! + next[k + 1]!;
+    const left = Math.min(Math.max(Math.round(x * 100) - before, 0), pair);
+    next[k] = left;
+    next[k + 1] = pair - left;
+    setHeld(next);
+    send(next, false);
+  };
+  const nudge = (k: number, by: number) => {
+    const next = [...shares()];
+    if (next[k]! + by < 0 || next[k + 1]! - by < 0) return;
+    next[k]! += by;
+    next[k + 1]! -= by;
+    send(next, true);
+  };
+  const HEIGHT = 36;
+  return (
+    <box style={{ flexDirection: "column", gap: 10 }}>
+      <box
+        ref={bar}
+        style={{ flexDirection: "row", height: HEIGHT, borderRadius: 12 }}
+      >
+        <For each={present()}>
+          {(name, i) => {
+            const share = () => shares()[i()] ?? 0;
+            const icon = () => all().find((d) => d.name === name)?.icon ?? "audio-speakers-symbolic";
+            return (
+              <box
+                style={{
+                  width: `${share()}%`, height: HEIGHT, flexDirection: "row", alignItems: "center",
+                  justifyContent: "center", gap: 6, overflow: "hidden",
+                  background: COLOURS[props.outputs.indexOf(name) % COLOURS.length] as any,
+                  borderRadius: [
+                    i() === 0 ? 12 : 0, i() === present().length - 1 ? 12 : 0,
+                    i() === present().length - 1 ? 12 : 0, i() === 0 ? 12 : 0,
+                  ] as any,
+                }}
+              >
+                <Show when={share() > 14}>
+                  <image icon={icon()} size={14} style={{ color: "#ffffff" }} />
+                </Show>
+                <Show when={share() > 5}>
+                  <text style={{ fontSize: 12, fontWeight: 700, color: "#ffffff", fontVariantNumeric: "tabular-nums" }}>
+                    {`${share()}%`}
+                  </text>
+                </Show>
+              </box>
+            );
+          }}
+        </For>
+        <For each={present().slice(0, -1).map((_, k) => k)}>
+          {(k) => {
+            const at = () => shares().slice(0, k + 1).reduce((a, b) => a + b, 0);
+            // Wider than it looks, so it's easy to take.
+            return (
+              <box
+                style={{
+                  position: "absolute", top: -4, left: `${at()}%`, marginLeft: -10, width: 20,
+                  height: HEIGHT + 8, alignItems: "center", cursor: "pointer",
+                }}
+                onPress={() => setHeld([...shares()])}
+                onDrag={(event) => {
+                  const rect = bar?.layout();
+                  if (rect && rect.width > 0) moveTo(k, (event.x - rect.x) / rect.width);
+                }}
+                onRelease={() => {
+                  const next = held();
+                  if (next) send(next, true);
+                  setHeld(null);
+                }}
+                onScroll={({ dx, dy }) => nudge(k, (dy || dx) < 0 ? 1 : -1)}
+              >
+                <box style={{ width: 8, height: HEIGHT + 8, borderRadius: 4, background: "#ffffff" }} />
+              </box>
+            );
+          }}
+        </For>
+      </box>
+      <box style={{ flexDirection: "column", gap: 4 }}>
+        <For each={props.outputs}>
+          {(name) => {
+            const output = () => all().find((d) => d.name === name);
+            return (
+              <box style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: [0, 2] }}>
+                <box
+                  style={{
+                    width: 10, height: 10, borderRadius: 5, flexShrink: 0,
+                    background: COLOURS[props.outputs.indexOf(name) % COLOURS.length] as any,
+                  }}
+                />
+                <text style={{ fontSize: 13, flexGrow: 1, flexShrink: 1, lineClamp: 1 }}>
+                  {output() ? titleOf(output()!) : "Not Connected"}
+                </text>
+                <Show when={output()}>
+                  <text style={{ fontSize: 12, color: "fg/0.7", fontVariantNumeric: "tabular-nums" }}>
+                    {`Effective volume: ${Math.round(props.volume * volumeOf(name) * 100)}%`}
+                  </text>
+                </Show>
+              </box>
+            );
+          }}
+        </For>
+      </box>
+    </box>
+  );
+}
+
+/** A combination's settings: its volume, whether it keeps in sync by itself, the ratio between
+ * its outputs, and each output's role and delay. One just made ends with Done; one opened later
+ * can be removed. */
 function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
   const combination = () => combinations().find((c) => c.id === props.id);
   const device = () => devices().outputs.find((d) => d.name === combination()?.device);
   const autoSync = () => Boolean(combining()?.autoSync);
   const filters = () => Boolean(combining()?.filters);
   const synced = () => autoSync() && Boolean(combination()?.auto);
-  // Levels and delays as they're dragged, sent as they go but not more than every 100 ms.
-  const [moving, setMoving] = createSignal<{ i: number; level?: number; delay?: number } | null>(null);
+  // Delays as they're dragged, sent as they go but not more than every 100 ms.
+  const [moving, setMoving] = createSignal<{ i: number; delay?: number } | null>(null);
   let sentAt = 0;
   const change = (update: (c: Combination) => Combination, now = true) => {
     const c = combination();
@@ -836,7 +982,7 @@ function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
     const { device: _, ...next } = update(JSON.parse(JSON.stringify(c)));
     setCombination(next);
   };
-  const setMember = (i: number, values: { level?: number; delay?: number }, now: boolean) =>
+  const setMember = (i: number, values: { delay?: number }, now: boolean) =>
     change((c) => {
       Object.assign(c.members[i]!, values);
       return c;
@@ -872,15 +1018,20 @@ function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
             <Toggle on={combination()!.auto} onChange={(on) => change((c) => ({ ...c, auto: on }))} />
           </box>
         </Show>
+        <text style={{ fontSize: 12, fontWeight: 700, color: "fg/0.6", padding: [6, 4, 0, 4] }}>Ratio</text>
+        <Ratio
+          outputs={combination()!.members.map((member) => member.device)}
+          volume={Math.min(device()?.volume ?? 1, 1)}
+        />
         <text style={{ fontSize: 12, fontWeight: 700, color: "fg/0.6", padding: [6, 4, 0, 4] }}>Plays On</text>
         <For each={combination()!.members}>
           {(member, i) => {
             const output = () => devices().outputs.find((d) => d.name === member.device);
-            const level = () => (moving()?.i === i() && moving()?.level !== undefined ? moving()!.level! : member.level);
             const delay = () => (moving()?.i === i() && moving()?.delay !== undefined ? moving()!.delay! : member.delay);
             return (
               <box style={{ flexDirection: "column", gap: 4, padding: [6, 10, 10, 10], borderRadius: 14, background: "fg/0.05" }}>
                 <box style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: [2, 0] }}>
+                  <box style={{ width: 10, height: 10, borderRadius: 5, flexShrink: 0, background: COLOURS[i() % COLOURS.length] as any }} />
                   <image icon={output()?.icon ?? "audio-speakers-symbolic"} size={18} />
                   <text style={{ lineClamp: 1, flexShrink: 1 }}>{output() ? titleOf(output()!) : "Not Connected"}</text>
                 </box>
@@ -906,24 +1057,6 @@ function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
                   </For>
                 </box>
                 <Show when={filters()}>
-                  <box style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <text style={{ fontSize: 11, color: "fg/0.6", width: 46 }}>Balance</text>
-                    <Line
-                      value={level()}
-                      onPick={(value) => {
-                        setMoving({ i: i(), level: value });
-                        setMember(i(), { level: value }, false);
-                      }}
-                      onLetGo={() => {
-                        const m = moving();
-                        if (m?.level !== undefined) setMember(i(), { level: m.level }, true);
-                        setMoving(null);
-                      }}
-                    />
-                    <text style={{ fontSize: 11, color: "fg/0.7", width: 44, fontVariantNumeric: "tabular-nums" }}>
-                      {`${Math.round(level() * 100)}%`}
-                    </text>
-                  </box>
                   <box style={{ flexDirection: "row", alignItems: "center", gap: 8, opacity: synced() ? 0.4 : 1 }}>
                     <text style={{ fontSize: 11, color: "fg/0.6", width: 46 }}>Delay</text>
                     <Show when={!synced()} fallback={<box style={{ flexGrow: 1, height: 16, justifyContent: "center", flexDirection: "column" }}><box style={{ height: 4, borderRadius: 2, background: "fg/0.15" }} /></box>}>
