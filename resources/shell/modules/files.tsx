@@ -1,12 +1,16 @@
 // Files: finding them by their names, and opening them. It shows nothing itself: what searches with
 // it shows what it finds its own way, and says when to search.
 
-import { command, onData, type FoundFile } from "bento";
+import { command, data, onData, type FoundFile } from "bento";
 import { createSignal, getOwner, onCleanup } from "solid-js";
 
 // The last search asked for. It starts from the time, so that what one asked for before the shell
 // loaded again finds is never taken for another's.
 let last = Date.now();
+
+/** Whether files can be found, which takes `fd`: for a search field to say so, for one. It's false
+ * until the data program says, and follows `fd` being installed or removed from the next search. */
+export const filesAvailable = () => data("file-search")?.available ?? false;
 
 /** A search for files: what's looked for, and the best `most` that match it, 50 at most. One
  * search runs at a time, so only one of these looks for something at once. */
@@ -14,7 +18,6 @@ export function fileSearch(most = 8) {
   const [query, setQuery] = createSignal("");
   const [files, setFiles] = createSignal<FoundFile[]>([]);
   const [searching, setSearching] = createSignal(false);
-  const [available, setAvailable] = createSignal(true);
   // The search that's on its way.
   let running: { id: number; query: string } | null = null;
 
@@ -43,7 +46,6 @@ export function fileSearch(most = 8) {
     if (event.id !== running?.id) return;
     running = null;
     setSearching(false);
-    setAvailable(event.available);
     setFiles(event.files.slice(0, most));
   });
   // The data program started again, and knows nothing of the search it was on.
@@ -57,8 +59,6 @@ export function fileSearch(most = 8) {
     files,
     /** Whether the query is still being looked for. */
     searching,
-    /** Whether files can be found at all, which takes `fd`, as far as the last search knows. */
-    available,
     /** Looks for `text` right away. */
     search,
     /** Forgets what's looked for and found, as when what searches opens or closes. */

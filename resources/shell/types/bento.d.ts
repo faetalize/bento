@@ -837,6 +837,8 @@ declare module "bento" {
       /** The newest first. */
       entries: ({ id: number; kind: "text"; text: string } | { id: number; kind: "image"; image: string })[];
     };
+    /** Whether files can be found, which takes `fd`. */
+    "file-search": { available: boolean };
     brightness: { displays: { id: string; label: string; value: number }[] };
     theme: { dark: boolean };
     weather:
@@ -885,9 +887,8 @@ declare module "bento" {
     ready: {};
     /** An app's menu for its status icon, as `tray-menu` asks for it: empty when it has none. */
     "tray-menu": { id: string; menu: TrayMenuItem[] };
-    /** The files that the search `id` found, the best first, 50 at most. Without `fd` there's no
-     * finding any, and it isn't `available`. */
-    files: { id: number; available: boolean; files: FoundFile[] };
+    /** The files that the search `id` found, the best first, 50 at most. */
+    files: { id: number; files: FoundFile[] };
   }
 
   /** A file or folder that a search found. */

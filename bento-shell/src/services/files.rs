@@ -4,7 +4,7 @@
 //! leaves out what's hidden or ignored by git. It says which names match, but not how well: what
 //! it finds is ranked here, and only the best of it is kept.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::io::{BufRead, BufReader};
@@ -28,11 +28,14 @@ const SEPARATORS: [char; 3] = ['-', '_', '.'];
 
 pub struct FileSearch {
     running: RefCell<Option<Running>>,
-    on_found: OnFound,
+    /// Whether `fd` was there when last looked for.
+    available: Cell<Option<bool>>,
+    say: Say,
 }
 
-/// What hears the files a search found, from a thread of the search's own.
-type OnFound = fn(&Value);
+/// What hears the files a search found, from a thread of the search's own, and whether there's
+/// finding any.
+type Say = fn(&Value);
 
 /// A search on its way, which ends when this goes.
 struct Running {
@@ -49,11 +52,25 @@ impl Drop for Running {
 }
 
 impl FileSearch {
-    pub fn new(on_found: OnFound) -> Self {
-        Self {
+    pub fn start(say: Say) -> Self {
+        let this = Self {
             running: RefCell::default(),
-            on_found,
+            available: Cell::default(),
+            say,
+        };
+        this.find_fd();
+        this
+    }
+
+    /// Finds `fd`, and says whether it's there when that's news: it's looked for anew for each
+    /// search, as it may be installed or removed meanwhile.
+    fn find_fd(&self) -> Option<PathBuf> {
+        let fd = find_fd();
+        let available = Some(fd.is_some());
+        if self.available.replace(available) != available {
+            (self.say)(&json!({ "type": "file-search", "available": available }));
         }
+        fd
     }
 
     /// Finds the files that `text` names, and says them as `{ "type": "files", "id": id, … }`. It
@@ -61,20 +78,9 @@ impl FileSearch {
     pub fn search(&self, id: Value, text: &str) {
         self.running.take();
         let asked = id.clone();
-        let found = move |available: bool, files: Vec<Value>| {
-            json!({
-                "type": "files",
-                "id": id,
-                "available": available,
-                "files": files,
-            })
-        };
-        let Some(fd) = find_fd() else {
-            (self.on_found)(&found(false, Vec::new()));
-            return;
-        };
-        let Some(query) = Query::new(text) else {
-            (self.on_found)(&found(true, Vec::new()));
+        let found = move |files: Vec<Value>| json!({ "type": "files", "id": id, "files": files });
+        let (Some(fd), Some(query)) = (self.find_fd(), Query::new(text)) else {
+            (self.say)(&found(Vec::new()));
             return;
         };
         let home = glib::home_dir();
@@ -93,7 +99,7 @@ impl FileSearch {
             Ok(fd) => fd,
             Err(err) => {
                 eprintln!("bento-shell --data: couldn't run fd: {err}");
-                (self.on_found)(&found(false, Vec::new()));
+                (self.say)(&found(Vec::new()));
                 return;
             }
         };
@@ -106,7 +112,7 @@ impl FileSearch {
         let (ended, fd) = (running.ended.clone(), running.fd.clone());
         self.running.replace(Some(running));
 
-        let on_found = self.on_found;
+        let say = self.say;
         std::thread::spawn(move || {
             let recent = std::fs::read_to_string(glib::user_data_dir().join("recently-used.xbel"));
             let recent = recent.map(|xbel| read_recent(&xbel)).unwrap_or_default();
@@ -118,7 +124,7 @@ impl FileSearch {
             if !status.as_ref().is_ok_and(|status| status.success()) {
                 eprintln!("bento-shell --data: fd failed: {status:?}");
             }
-            on_found(&found(true, best.iter().map(File::json).collect()));
+            say(&found(best.iter().map(File::json).collect()));
         });
     }
 

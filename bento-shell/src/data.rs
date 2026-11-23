@@ -2,8 +2,8 @@
 //!
 //! bento starts it and reads what it says from its stdout, a JSON object per line: the speaker's
 //! volume, the sound devices, the displays' brightness, the light or dark style, the weather, the
-//! network, the battery, notifications, the clipboard's history and the tray's items, each as it
-//! changes, and the files it's asked to find. Pictures, like a
+//! network, the battery, notifications, the clipboard's history, the tray's items and whether files
+//! can be found, each as it changes, and the files it's asked to find. Pictures, like a
 //! notification's image or a tray icon an app draws itself, are written as PNG files under
 //! `$XDG_RUNTIME_DIR/bento-shell` and named by their path. It takes commands on its stdin, a JSON
 //! object per line, like `{ "cmd": "volume", "value": 0.5 }`.
@@ -306,7 +306,7 @@ pub fn run() -> glib::ExitCode {
     let bluetooth = BluetoothService::start(say);
     let profiles = ProfileService::start(say);
     let media = MediaService::start(say);
-    let file_search = FileSearch::new(say);
+    let file_search = FileSearch::start(say);
     let tray = Tray::start(|items| {
         let items: Vec<Value> = items
             .iter()

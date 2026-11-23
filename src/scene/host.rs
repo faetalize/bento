@@ -3401,7 +3401,7 @@ mod tests {
             &main,
             r#"import { Surface } from "bento";
             import { createEffect, For, Show } from "solid-js";
-            import { fileSearch, openFile } from "bento:modules/files";
+            import { fileSearch, filesAvailable, openFile } from "bento:modules/files";
             export default () => {
               const search = fileSearch(1);
               let field: any;
@@ -3410,7 +3410,7 @@ mod tests {
                 <Surface output="DP-1" keyboard="exclusive" style={{ flexDirection: "column" }}>
                   <box style={{ width: 200 }}><input ref={field} onInput={search.search} /></box>
                   <Show when={search.searching()}><text>Searching</text></Show>
-                  <Show when={!search.available()}><text>Unavailable</text></Show>
+                  <text>{filesAvailable() ? "Search apps and files" : "Search apps"}</text>
                   <For each={search.files()}>
                     {(file) => <box onClick={() => openFile(file)}><text>{file.name}</text></box>}
                   </For>
@@ -3440,10 +3440,24 @@ mod tests {
                 })
                 .collect();
             let said = serde_json::json!({
-                "type": "files", "id": id, "available": true, "files": files,
+                "type": "files", "id": id, "files": files,
             });
             host.data_line(&said.to_string());
         };
+
+        // It's known whether files can be found before anything's looked for.
+        for (line, field) in [
+            (None, "Search apps"),
+            (Some(true), "Search apps and files"),
+            (Some(false), "Search apps"),
+        ] {
+            if let Some(available) = line {
+                let said = serde_json::json!({ "type": "file-search", "available": available });
+                host.data_line(&said.to_string());
+            }
+            settle(&mut host, &mut now);
+            assert!(shows(&host, "DP-1", field), "{line:?}");
+        }
 
         // Each search is asked for right away, and one in its place is another.
         type_keys(&mut host, &["a", "b"]);
