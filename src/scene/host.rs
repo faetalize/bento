@@ -5028,16 +5028,7 @@ mod tests {
             settle(&mut windows, &mut now);
         }
         shot(&windows, "start-menu-main", [520, 260, 780, 820]);
-        if windows
-            .shell
-            .as_ref()
-            .unwrap()
-            .scene
-            .borrow()
-            .find("DP-1", "Games")
-            .len()
-            > 0
-        {
+        if shows(&windows, "DP-1", "Games") {
             let games = middle_of(&windows, "DP-1", "Games");
             click(&mut windows, "DP-1", games);
             settle(&mut windows, &mut now);
