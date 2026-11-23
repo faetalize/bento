@@ -843,6 +843,8 @@ declare module "bento" {
         title: string | null;
         artist: string | null;
         art: string | null;
+        /** The cover's width over its height, to crop it to a shape of one's own. */
+        artAspect: number | null;
         canNext: boolean;
         canPrevious: boolean;
         canPlay: boolean;

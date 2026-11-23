@@ -33,10 +33,11 @@ pub struct MediaService {
 
 impl MediaService {
     /// Starts watching the players. `on_change` hears `{ "type": "media", players: [{ id, name,
-    /// icon, playing, title, artist, art, canNext, canPrevious, canPlay, canSeek, position,
-    /// length, rate, at, volume, canRaise }] }`, the playing ones first. `position` and `length`
-    /// are in seconds, `position` as it was at `at`, in milliseconds since 1970: players don't say
-    /// as it moves, so it's read again only when something else changes or they seek.
+    /// icon, playing, title, artist, art, artAspect, canNext, canPrevious, canPlay, canSeek,
+    /// position, length, rate, at, volume, canRaise }] }`, the playing ones first. `position` and
+    /// `length` are in seconds, `position` as it was at `at`, in milliseconds since 1970:
+    /// players don't say as it moves, so it's read again only when something else changes or
+    /// they seek.
     pub fn start(on_change: impl Fn(&Value) + 'static) -> Rc<Self> {
         let this = Rc::new(Self {
             bus: RefCell::default(),
@@ -258,6 +259,7 @@ async fn read(bus: &DBusConnection) -> Vec<Value> {
         let Some(title) = text("xesam:title") else {
             continue;
         };
+        let art = text("mpris:artUrl").and_then(|url| art(&url));
         players.push(json!({
             "id": id,
             "name": name,
@@ -265,7 +267,8 @@ async fn read(bus: &DBusConnection) -> Vec<Value> {
             "playing": status == "Playing",
             "title": title,
             "artist": artist,
-            "art": text("mpris:artUrl").and_then(|url| art(&url)),
+            "artAspect": art.as_deref().and_then(aspect),
+            "art": art,
             "canNext": can("CanGoNext"),
             "canPrevious": can("CanGoPrevious"),
             "canPlay": can("CanPlay") || can("CanPause"),
@@ -291,6 +294,13 @@ async fn read(bus: &DBusConnection) -> Vec<Value> {
 fn shown(name: &str) -> bool {
     name.strip_prefix(PREFIX)
         .is_some_and(|rest| !rest.is_empty() && rest != "playerctld")
+}
+
+/// The width over the height of the picture at `path`, from its header alone: covers aren't
+/// all square, and the shell crops them to fit.
+fn aspect(path: &str) -> Option<f64> {
+    let (_, width, height) = gtk::gdk_pixbuf::Pixbuf::file_info(path)?;
+    (width > 0 && height > 0).then(|| f64::from(width) / f64::from(height))
 }
 
 /// The id of the track `player` plays, to go to a place in it: none when it plays nothing, or
