@@ -274,6 +274,11 @@ function Menu(props: {
   };
 
   const recent = () => (settings.recent ? data("recent")?.files ?? [] : []);
+  // The group that's open, over the whole menu.
+  const opened = () =>
+    pinned().find((item) => item.key === open() && isGroup(item)) as
+      | Extract<Item, { group: string }>
+      | undefined;
   // The folders along the bottom, asked for as it opens and as the setting changes.
   createEffect(
     () => [...settings.folders],
@@ -324,16 +329,8 @@ function Menu(props: {
                 <MainPage
                   height={props.list}
                   recent={recent()}
-                  open={open()}
                   onOpen={setOpen}
-                  renaming={renaming()}
-                  onRename={(key) => {
-                    setOpen(key);
-                    setRenaming(true);
-                  }}
-                  rename={rename}
                   onLaunch={launch}
-                  onTakeOut={takeOut}
                   onAll={() => setPage("all")}
                   onMore={() => setPage("recent")}
                   onClose={close}
@@ -371,6 +368,22 @@ function Menu(props: {
         onPower={() => setPage(page() === "power" ? "main" : "power")}
         onClose={close}
       />
+      <Show when={opened()}>
+        <GroupCard
+          item={opened()!}
+          height={props.list}
+          renaming={renaming()}
+          onRename={() => setRenaming(true)}
+          rename={(name) => rename(opened()!.key, name)}
+          onDismiss={() => setOpen(null)}
+          onLaunch={launch}
+          onTakeOut={(app) => {
+            takeOut(opened()!.key, app);
+            setOpen(null);
+          }}
+          appMenu={(event, app) => menuAt(event, appMenu(app, opened()!.key))}
+        />
+      </Show>
     </box>
   );
 }
@@ -524,13 +537,8 @@ type Drop = { onto: number } | { before: number };
 function MainPage(props: {
   height: number;
   recent: RecentFile[];
-  open: string | null;
-  onOpen: (key: string | null) => void;
-  renaming: boolean;
-  onRename: (key: string) => void;
-  rename: (key: string, name: string) => void;
+  onOpen: (key: string) => void;
   onLaunch: (app: App) => void;
-  onTakeOut: (key: string, app: App) => void;
   onAll: () => void;
   onMore: () => void;
   onClose: () => void;
@@ -543,10 +551,6 @@ function MainPage(props: {
   const recentHeight = () =>
     files().length > 0 ? GAP + HEAD + Math.ceil(files().length / 2) * HEIGHTS.row : 0;
   const gridHeight = () => Math.max(TILE.height, props.height - HEAD - recentHeight());
-  const opened = () => items().find((item) => item.key === props.open && isGroup(item)) as
-    | Extract<Item, { group: string }>
-    | undefined;
-
   // A press on a tile that may become a drag, and the drag, by where the pointer is from where
   // it was pressed.
   let pressed: { at: number; x: number; y: number } | null = null;
@@ -676,28 +680,12 @@ function MainPage(props: {
           </For>
         </box>
       </Show>
-      <Show when={opened()}>
-        <GroupCard
-          item={opened()!}
-          height={props.height}
-          renaming={props.renaming}
-          onRename={() => props.onRename(opened()!.key)}
-          rename={(name) => props.rename(opened()!.key, name)}
-          onDismiss={() => props.onOpen(null)}
-          onLaunch={props.onLaunch}
-          onTakeOut={(app) => {
-            props.onTakeOut(opened()!.key, app);
-            props.onOpen(null);
-          }}
-          appMenu={(event, app) => props.appMenu(event, app, opened()!.key)}
-        />
-      </Show>
     </box>
   );
 }
 
-/** An open group: its name, which a click changes, and its apps, over the dimmed menu. An app
- * dragged out of it and let go is taken out of the group. */
+/** An open group: its name, which a click changes, and its apps, over the whole menu, dimmed. An
+ * app dragged out of it and let go is taken out of the group. Its apps take up to `height`. */
 function GroupCard(props: {
   item: Extract<Item, { group: string }>;
   height: number;
@@ -748,8 +736,8 @@ function GroupCard(props: {
     <box
       ref={root}
       style={{
-        position: "absolute", top: 0, left: 0, right: 0, height: props.height,
-        alignItems: "center", justifyContent: "center", background: "window/0.6", borderRadius: 10,
+        position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+        alignItems: "center", justifyContent: "center", background: "window/0.6",
       }}
       enter={{ opacity: 0 }}
       exit={{ opacity: 0 }}
