@@ -34,7 +34,35 @@ pub struct FileSearch {
     running: RefCell<Option<Running>>,
     /// Whether `fd` was there when last looked for.
     available: Cell<Option<bool>>,
+    /// The `fd` last found, and whether it marks folders with a slash, which older ones don't.
+    fd: RefCell<Option<(PathBuf, bool)>>,
+    /// The files opened lately, as read when the list last changed.
+    recent: Arc<Mutex<Recent>>,
     say: Say,
+}
+
+/// The files opened lately, with when their list was read, to read it again only once it changes.
+#[derive(Default)]
+struct Recent {
+    read: Option<std::time::SystemTime>,
+    files: Arc<HashMap<PathBuf, String>>,
+}
+
+impl Recent {
+    /// The files opened lately, reading their list again if it changed.
+    fn files(this: &Mutex<Self>) -> Arc<HashMap<PathBuf, String>> {
+        let path = glib::user_data_dir().join("recently-used.xbel");
+        let changed = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
+        let mut recent = this.lock().unwrap();
+        if changed.is_none() || recent.read != changed {
+            let xbel = std::fs::read_to_string(&path);
+            recent.files = Arc::new(xbel.map(|xbel| read_recent(&xbel)).unwrap_or_default());
+            recent.read = changed;
+        }
+        recent.files.clone()
+    }
 }
 
 /// What hears the files a search found, from a thread of the search's own, and whether there's
@@ -63,6 +91,8 @@ impl FileSearch {
         let this = Self {
             running: RefCell::default(),
             available: Cell::default(),
+            fd: RefCell::default(),
+            recent: Arc::default(),
             say,
         };
         this.find_fd();
@@ -71,13 +101,23 @@ impl FileSearch {
 
     /// Finds `fd`, and says whether it's there when that's news: it's looked for anew for each
     /// search, as it may be installed or removed meanwhile.
-    fn find_fd(&self) -> Option<PathBuf> {
+    fn find_fd(&self) -> Option<(PathBuf, bool)> {
         let fd = find_fd();
         let available = Some(fd.is_some());
         if self.available.replace(available) != available {
             (self.say)(&json!({ "type": "file-search", "available": available }));
         }
-        fd
+        let fd = fd?;
+        let mut known = self.fd.borrow_mut();
+        if known.as_ref().is_none_or(|(path, _)| *path != fd) {
+            let version = Command::new(&fd)
+                .arg("--version")
+                .stderr(Stdio::null())
+                .output();
+            let version = version.map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+            *known = Some((fd, marks_folders(&version.unwrap_or_default())));
+        }
+        known.clone()
     }
 
     /// Finds the files that `text` names in `folders`, the home folder when there are none, but
@@ -87,17 +127,11 @@ impl FileSearch {
         self.running.take();
         let asked = id.clone();
         let found = move |files: Vec<Value>| json!({ "type": "files", "id": id, "files": files });
-        let (Some(fd), Some(query)) = (self.find_fd(), Query::new(text)) else {
+        let (Some((fd, marked)), Some(query)) = (self.find_fd(), Query::new(text)) else {
             (self.say)(&found(Vec::new()));
             return;
         };
-        let folders: Vec<PathBuf> = if folders.is_empty() {
-            vec![glib::home_dir()]
-        } else {
-            folders.iter().map(|folder| resolve(folder)).collect()
-        };
-        let excluded: Vec<PathBuf> = excluded.iter().map(|folder| resolve(folder)).collect();
-        let walks = plan(&folders, &excluded);
+        let walks = walks(folders, excluded);
 
         let running = Running {
             id: asked,
@@ -106,10 +140,9 @@ impl FileSearch {
         };
         let (ended, current) = (running.ended.clone(), running.fd.clone());
         self.running.replace(Some(running));
-        let say = self.say;
+        let (say, recent) = (self.say, self.recent.clone());
         std::thread::spawn(move || {
-            let recent = std::fs::read_to_string(glib::user_data_dir().join("recently-used.xbel"));
-            let recent = recent.map(|xbel| read_recent(&xbel)).unwrap_or_default();
+            let recent = Recent::files(&recent);
             let mut best = BinaryHeap::with_capacity(MOST + 1);
             // One folder after another, as each reads on every core.
             for (folder, left_out) in walks {
@@ -144,8 +177,10 @@ impl FileSearch {
                         let _ = child.kill();
                     }
                 }
-                keep_best(&mut best, names, &query, &recent, MOST);
-                let status = current.lock().unwrap().take().map(|mut child| child.wait());
+                keep_best(&mut best, names, &query, &recent, MOST, marked);
+                // Waited for apart from the lock, which ending the search takes.
+                let child = current.lock().unwrap().take();
+                let status = child.map(|mut child| child.wait());
                 if ended.load(Ordering::Relaxed) {
                     return;
                 }
@@ -164,6 +199,17 @@ impl FileSearch {
         if running.as_ref().is_some_and(|running| running.id == *id) {
             running.take();
         }
+    }
+}
+
+/// Whether the `fd` that says `version` for `--version` marks folders with a slash at their end,
+/// as `fd` 8.7 and later do. Not knowing, it's taken not to.
+fn marks_folders(version: &str) -> bool {
+    let number = version.split_whitespace().nth(1).unwrap_or_default();
+    let mut parts = number.split('.').map(|part| part.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor)) => (major, minor) >= (8, 7),
+        _ => false,
     }
 }
 
@@ -314,7 +360,7 @@ fn best(
     most: usize,
 ) -> Vec<File> {
     let mut best = BinaryHeap::with_capacity(most + 1);
-    keep_best(&mut best, paths, query, recent, most);
+    keep_best(&mut best, paths, query, recent, most, true);
     best.into_sorted_vec()
 }
 
@@ -326,6 +372,7 @@ fn keep_best(
     query: &Query,
     recent: &HashMap<PathBuf, String>,
     most: usize,
+    marked: bool,
 ) {
     for path in paths.split(0) {
         let Ok(path) = path else { break };
@@ -333,13 +380,18 @@ fn keep_best(
         let Ok(mut path) = String::from_utf8(path) else {
             continue;
         };
-        let folder = path.ends_with('/');
-        if folder {
+        let slash = path.ends_with('/');
+        if slash {
             path.pop();
         }
         let Some(name) = path.rsplit('/').next() else {
             continue;
         };
+        // Only what has the query's words in its name is looked at on the disk.
+        if query.fit(name, false).is_none() {
+            continue;
+        }
+        let folder = slash || (!marked && Path::new(&path).is_dir());
         let Some(fit) = query.fit(name, folder) else {
             continue;
         };
@@ -357,16 +409,42 @@ fn keep_best(
     }
 }
 
-/// A folder as a setting writes it, with `~` at its start for the home folder, as a path: with
-/// its links followed, so that a folder written two ways is one.
-fn resolve(folder: &str) -> PathBuf {
+/// The folders to read for `folders`, the home folder when there are none, but for `excluded`,
+/// written as settings write them, with what to leave out of each: see [`plan`].
+///
+/// Each folder is read by its path as it's written, with its links, so that what's found starts
+/// the way the home folder and the files opened lately do; its links are followed only to tell
+/// when two folders are one.
+fn walks(folders: &[String], excluded: &[String]) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let written: Vec<PathBuf> = if folders.is_empty() {
+        vec![glib::home_dir()]
+    } else {
+        folders.iter().map(|folder| expand(folder)).collect()
+    };
+    let resolved: Vec<PathBuf> = written.iter().map(|folder| resolve(folder)).collect();
+    let excluded: Vec<PathBuf> = excluded.iter().map(|f| resolve(&expand(f))).collect();
+    plan(&resolved, &excluded)
+        .into_iter()
+        .map(|(folder, left_out)| {
+            let at = resolved.iter().position(|r| *r == folder);
+            (at.map_or(folder, |at| written[at].clone()), left_out)
+        })
+        .collect()
+}
+
+/// A folder as a setting writes it, with `~` at its start for the home folder, as a path.
+fn expand(folder: &str) -> PathBuf {
     let home = glib::home_dir();
-    let path = match folder.strip_prefix('~') {
+    match folder.strip_prefix('~') {
         Some("") => home,
         Some(inside) if inside.starts_with('/') => home.join(inside.trim_start_matches('/')),
         _ => home.join(folder),
-    };
-    std::fs::canonicalize(&path).unwrap_or(path)
+    }
+}
+
+/// A folder's path with its links followed, so that a folder written two ways is one.
+fn resolve(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The folders to read, each with the folders in it to leave out, as paths from it, from the
@@ -643,6 +721,60 @@ mod tests {
         // A pattern matches only that folder, from the one read.
         assert_eq!(exclude_pattern(Path::new("games")), "/games");
         assert_eq!(exclude_pattern(Path::new("a [b]/*")), r"/a \[b\]/\*");
+    }
+
+    #[test]
+    fn a_folder_reached_through_a_link_is_read_as_its_written() {
+        let dir = std::env::temp_dir().join(format!("bento-link-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("real/docs")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("home")).unwrap();
+        let written = |path: &str| dir.join(path).to_string_lossy().into_owned();
+        // What fd finds starts with the folder as it's written, as the home folder and the files
+        // opened lately are, while a folder written two ways is still one.
+        let walked = walks(&[written("home"), written("real")], &[written("home/docs")]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(walked, [(dir.join("home"), vec![PathBuf::from("docs")])]);
+    }
+
+    #[test]
+    fn folders_are_known_without_the_slash_older_fd_leaves_out() {
+        let dir = std::env::temp_dir().join(format!("bento-unmarked-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("v1.2")).unwrap();
+        std::fs::write(dir.join("v1.txt"), "").unwrap();
+        let listed = format!("{0}/v1.2\0{0}/v1.txt\0", dir.display());
+        let query = Query::new("v1").unwrap();
+        let mut best = BinaryHeap::new();
+        keep_best(
+            &mut best,
+            listed.as_bytes(),
+            &query,
+            &HashMap::new(),
+            4,
+            false,
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        let found: Vec<(String, bool, Fit)> = best
+            .into_sorted_vec()
+            .into_iter()
+            .map(|file| (file.name().to_owned(), file.folder, file.fit))
+            .collect();
+        // A folder's name has no extension, so "v1.2" isn't "v1".
+        assert_eq!(
+            found,
+            [
+                (String::from("v1.txt"), false, Fit::Whole),
+                (String::from("v1.2"), true, Fit::Start),
+            ]
+        );
+    }
+
+    #[test]
+    fn it_knows_which_fd_marks_folders() {
+        assert!(marks_folders("fd 10.5.0\n"));
+        assert!(marks_folders("fdfind 8.7.0"));
+        assert!(!marks_folders("fdfind 8.6.0"));
+        assert!(!marks_folders("fd 8.3.2"));
+        assert!(!marks_folders("something else"));
     }
 
     #[test]
