@@ -191,6 +191,35 @@ export function Slider(props: SliderProps) {
   );
 }
 
+/** A thin line filled up to `value`, from 0 to 1, which a press, a drag or the wheel moves: a
+ * quieter slider, for many in a row. `onLetGo` hears the press end. */
+export function Line(props: {
+  value: number;
+  onPick: (value: number) => void;
+  onLetGo?: () => void;
+  onWheel?: (up: boolean) => void;
+}) {
+  const at = (event: any) =>
+    event.frame?.width > 0 &&
+    props.onPick(Math.min(Math.max(event.offsetX / event.frame.width, 0), 1));
+  return (
+    <box
+      style={{
+        flexDirection: "column", justifyContent: "center", flexGrow: 1, height: 16,
+        cursor: "pointer",
+      }}
+      onPress={(event) => event.button === 1 && at(event)}
+      onDrag={at}
+      onRelease={() => props.onLetGo?.()}
+      onScroll={({ dx, dy }) => props.onWheel?.((dy || dx) < 0)}
+    >
+      <box style={{ height: 4, borderRadius: 2, background: "fg/0.15", overflow: "hidden" }}>
+        <box style={{ width: `${props.value * 100}%`, height: 4, background: "fg/0.85" }} />
+      </box>
+    </box>
+  );
+}
+
 /** A switch: a pill whose knob slides to its end when it's on, lit with the accent. */
 export function Toggle(props: { on: boolean; onChange?: (on: boolean) => void }) {
   const [WIDTH, HEIGHT, KNOB] = [40, 22, 16];

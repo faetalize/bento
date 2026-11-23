@@ -103,7 +103,8 @@ The rest are optional: without one, what it's for is left out.
 | What | For |
 | ---- | --- |
 | [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) | X11 apps |
-| PipeWire's PulseAudio server, or PulseAudio | The volume, the sound devices and the volume indicator |
+| PipeWire's PulseAudio server, or PulseAudio | The volume, the sound devices, the apps' own volumes and the volume indicator |
+| PipeWire's `pw-metadata`, with WirePlumber | Telling which apps are kept on a device, and making one follow the default again |
 | NetworkManager | The network's status and Wi-Fi |
 | BlueZ | Bluetooth |
 | UPower | The battery |
@@ -391,10 +392,14 @@ location {
 The right island is the status, and opens into the control center, laid out like a phone's quick settings:
 
 - Along the top, buttons for a screenshot, a screen recording, bento's settings and the power menu (suspend, and restart, power off and log out, which ask for a second click).
-- The volume, and the brightness of that monitor (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Their arrows open the sound devices, with the microphone, and every display's brightness.
+- The volume, and the brightness of that monitor (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Their arrows open the sound page and every display's brightness.
 - Tiles for Wi-Fi (NetworkManager), Bluetooth (BlueZ), Do Not Disturb, the dark style, the power mode (power-profiles-daemon) and the microphone. A tile only shows when its service runs; a click switches it, and its arrow opens a page: Wi-Fi joins networks, asking for a new one's password, and Bluetooth connects devices and pairs nearby ones that need no code.
 - What's playing, from any app that says so over MPRIS. Where the player lets it, a bar shows how far it's gone, and pressing or dragging along it goes elsewhere; a slider sets the player's own volume; and a click on the cover or the title brings its window to the front. Firefox doesn't say when the volume is changed on the page itself, so the slider can be behind then.
 - The notifications. A toast goes after a moment and its notification stays here until it's dismissed, unless the app marked it as transient. With Do Not Disturb on, only critical notifications come as toasts.
+
+The sound page shows the outputs, or the inputs by the switch at its top. Each device that's the default, or that an app plays on, is a card with its volume and the apps on it, each with its own volume; a click on an app's icon mutes it. The others are chips under the cards, and virtual ones nothing uses, like an effects app's, fold away under Other Devices. A click on a device makes it the default, and the pin that shows while hovering an output pins it for the switcher, as its right click does.
+
+Apps follow the default unless they're moved: dragging an app onto another device moves it there, and the sound server keeps it there from then on, which a small pin by its name says. Dropping it on the default's card, or "Follow Default" in its right click, makes it follow the default again. An app that picks its own device, like a chat app's microphone, moves too, until it opens its device again; one that says it can't be moved has a lock. Telling which apps are kept, and making them follow again, takes PipeWire with WirePlumber.
 
 The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title. They're the control center's settings, which Settings → Shell sets while the shell has the control center, kept in the shell's settings:
 

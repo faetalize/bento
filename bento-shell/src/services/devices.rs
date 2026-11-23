@@ -1,5 +1,6 @@
-//! The sound outputs and inputs, which one of each is the default, and each one's volume, through
-//! PulseAudio or PipeWire's PulseAudio server.
+//! The sound outputs and inputs, which one of each is the default, and each one's volume; and the
+//! apps playing and recording on them, each with its own volume, through PulseAudio or PipeWire's
+//! PulseAudio server.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -8,11 +9,13 @@ use std::time::Duration;
 use libpulse_binding::callbacks::ListResult;
 use libpulse_binding::context::subscribe::InterestMaskSet;
 use libpulse_binding::context::{Context, FlagSet, State};
+use libpulse_binding::def::{SinkFlagSet, SourceFlagSet};
 use libpulse_binding::proplist::Proplist;
 use libpulse_binding::volume::{ChannelVolumes, Volume};
 use libpulse_glib_binding::Mainloop;
 
 use super::audio::MAX_VOLUME;
+use super::targets::TargetWatch;
 
 /// How long to wait before connecting again after the sound server went away.
 const RETRY: Duration = Duration::from_secs(1);
@@ -22,8 +25,14 @@ const RETRY: Duration = Duration::from_secs(1);
 pub struct Device {
     /// What the sound server calls it, which stays the same between runs.
     pub name: String,
-    /// What to call it for the user.
+    /// The sound server's description of it.
     pub label: String,
+    /// A short name for the user, like "Line Out" or the headset's own name.
+    pub title: String,
+    /// What it is, like "USB" or its sound card, under the title.
+    pub detail: String,
+    /// Whether it's made by a program, rather than being hardware.
+    pub is_virtual: bool,
     /// A symbolic icon for the kind of device it is.
     pub icon: &'static str,
     /// Whether it's the default one.
@@ -32,13 +41,51 @@ pub struct Device {
     pub volume: f64,
     pub muted: bool,
     volumes: ChannelVolumes,
+    index: u32,
+    /// Its node's `object.serial`, which a stream's target names.
+    serial: Option<String>,
 }
 
-/// The outputs and the inputs.
+/// An app's stream, playing on an output or recording from an input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stream {
+    /// Its index in the sound server, which commands take.
+    pub index: u32,
+    /// The app's name.
+    pub app: String,
+    /// The app's icon, when it says.
+    pub icon: Option<String>,
+    /// The app's program, to find its desktop entry by.
+    pub binary: Option<String>,
+    /// What it plays or records, like a song's or a page's title.
+    pub title: Option<String>,
+    /// The name of the device it's on.
+    pub device: String,
+    /// From 0, where 1 is 100%.
+    pub volume: f64,
+    pub muted: bool,
+    /// Whether it's paused.
+    pub paused: bool,
+    /// Whether it's kept on its device rather than following the default, as it is once moved.
+    pub kept: bool,
+    /// Whether the app asked for a device itself, which wins again the next time it opens one.
+    pub own: bool,
+    /// Whether the app said it can't be moved.
+    pub fixed: bool,
+    volumes: ChannelVolumes,
+    /// Its node's id, which its target in the metadata is kept by.
+    node: Option<u32>,
+}
+
+/// The outputs and the inputs, and the apps on them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Devices {
     pub outputs: Vec<Device>,
     pub inputs: Vec<Device>,
+    pub playing: Vec<Stream>,
+    pub recording: Vec<Stream>,
+    /// Whether streams can be told to follow the default, or be kept where they are.
+    pub can_keep: bool,
 }
 
 /// Which of the two lists a device is in.
@@ -55,6 +102,7 @@ pub struct DeviceService {
     context: RefCell<Option<Context>>,
     mainloop: Option<Mainloop>,
     state: RefCell<Devices>,
+    targets: RefCell<Option<Rc<TargetWatch>>>,
     /// Whether a read of the devices is already on its way.
     reading: Cell<bool>,
     /// Whether something changed while reading, so they're read once more after.
@@ -69,6 +117,9 @@ struct Reading {
     default_input: Option<String>,
     outputs: Option<Vec<Device>>,
     inputs: Option<Vec<Device>>,
+    /// Streams, with the index of the device they're on for now.
+    playing: Option<Vec<(Stream, u32)>>,
+    recording: Option<Vec<(Stream, u32)>>,
 }
 
 impl DeviceService {
@@ -78,48 +129,138 @@ impl DeviceService {
             context: RefCell::default(),
             mainloop,
             state: RefCell::default(),
+            targets: RefCell::default(),
             reading: Cell::new(false),
             stale: Cell::new(false),
             on_change: Box::new(on_change),
         });
         (this.on_change)(&this.state.borrow());
+        let weak = Rc::downgrade(&this);
+        let targets = TargetWatch::start(move || {
+            if let Some(this) = weak.upgrade() {
+                this.targets_changed();
+            }
+        });
+        *this.targets.borrow_mut() = Some(targets);
         this.connect();
         this
     }
 
-    /// Makes the device named `name` the default one, and moves what's playing or recording to
-    /// it.
+    /// The targets changed: which streams are kept is read again.
+    fn targets_changed(&self) {
+        let mut devices = self.state.borrow().clone();
+        self.mark_kept(&mut devices);
+        self.publish(devices);
+    }
+
+    fn mark_kept(&self, devices: &mut Devices) {
+        let watch = self.targets.borrow();
+        let targets = watch
+            .as_ref()
+            .map(|watch| watch.targets())
+            .unwrap_or_default();
+        devices.can_keep = watch.as_ref().is_some_and(|watch| watch.available());
+        for stream in devices.playing.iter_mut().chain(&mut devices.recording) {
+            stream.kept = stream.node.is_some_and(|node| targets.kept(node));
+        }
+    }
+
+    /// Makes the device named `name` the default one. What plays or records follows it, but for
+    /// apps kept on a device: the session manager moves them, as it keeps the others where they
+    /// are.
     pub fn set_default(&self, kind: Kind, name: &str) {
         let mut context = self.context.borrow_mut();
         let Some(context) = context.as_mut() else {
             return;
         };
         match kind {
-            Kind::Output => {
-                context.set_default_sink(name, |_| ());
-                let mut mover = context.introspect();
-                let target = name.to_owned();
-                context
-                    .introspect()
-                    .get_sink_input_info_list(move |result| {
-                        if let ListResult::Item(stream) = result {
-                            mover.move_sink_input_by_name(stream.index, &target, None);
-                        }
-                    });
-            }
-            Kind::Input => {
-                context.set_default_source(name, |_| ());
-                let mut mover = context.introspect();
-                let target = name.to_owned();
-                context
-                    .introspect()
-                    .get_source_output_info_list(move |result| {
-                        if let ListResult::Item(stream) = result {
-                            mover.move_source_output_by_name(stream.index, &target, None);
-                        }
-                    });
-            }
+            Kind::Output => context.set_default_sink(name, |_| ()),
+            Kind::Input => context.set_default_source(name, |_| ()),
+        };
+    }
+
+    /// Sets the volume of an app's stream, from 0, keeping its balance.
+    pub fn set_stream_volume(&self, kind: Kind, index: u32, volume: f64) {
+        let Some(mut volumes) = self.stream(kind, index).map(|stream| stream.volumes) else {
+            return;
+        };
+        let volume = if volume.is_finite() {
+            volume.clamp(0., MAX_VOLUME)
+        } else {
+            0.
+        };
+        let volume = Volume((volume * f64::from(Volume::NORMAL.0)).round() as u32);
+        if volumes.scale(volume).is_none() {
+            return;
         }
+        if let Some(context) = self.context.borrow_mut().as_mut() {
+            let mut introspect = context.introspect();
+            match kind {
+                Kind::Output => introspect.set_sink_input_volume(index, &volumes, None),
+                Kind::Input => introspect.set_source_output_volume(index, &volumes, None),
+            };
+        }
+    }
+
+    pub fn set_stream_muted(&self, kind: Kind, index: u32, muted: bool) {
+        if let Some(context) = self.context.borrow_mut().as_mut() {
+            let mut introspect = context.introspect();
+            match kind {
+                Kind::Output => introspect.set_sink_input_mute(index, muted, None),
+                Kind::Input => introspect.set_source_output_mute(index, muted, None),
+            };
+        }
+    }
+
+    /// Moves an app's stream to the device named `device`, where the session manager keeps the
+    /// app from then on.
+    pub fn move_stream(&self, kind: Kind, index: u32, device: &str) {
+        if self.find(kind, device).is_none() {
+            return;
+        }
+        if let Some(context) = self.context.borrow_mut().as_mut() {
+            let mut introspect = context.introspect();
+            match kind {
+                Kind::Output => introspect.move_sink_input_by_name(index, device, None),
+                Kind::Input => introspect.move_source_output_by_name(index, device, None),
+            };
+        }
+    }
+
+    /// Makes an app's stream follow the default device, and the session manager forget where it
+    /// was kept.
+    pub fn follow_default(&self, kind: Kind, index: u32) {
+        let Some(node) = self.stream(kind, index).and_then(|stream| stream.node) else {
+            return;
+        };
+        if let Some(targets) = self.targets.borrow().as_ref() {
+            targets.follow_default(node);
+        }
+    }
+
+    /// Keeps an app's stream on the device it's on, even when the default changes.
+    pub fn keep_here(&self, kind: Kind, index: u32) {
+        let Some(stream) = self.stream(kind, index) else {
+            return;
+        };
+        let serial = self
+            .find(kind, &stream.device)
+            .and_then(|device| device.serial);
+        let (Some(node), Some(serial)) = (stream.node, serial) else {
+            return;
+        };
+        if let Some(targets) = self.targets.borrow().as_ref() {
+            targets.keep_on(node, &serial);
+        }
+    }
+
+    fn stream(&self, kind: Kind, index: u32) -> Option<Stream> {
+        let state = self.state.borrow();
+        let list = match kind {
+            Kind::Output => &state.playing,
+            Kind::Input => &state.recording,
+        };
+        list.iter().find(|stream| stream.index == index).cloned()
     }
 
     /// Sets the volume of the device named `name`, from 0 to [`MAX_VOLUME`], keeping its balance.
@@ -208,6 +349,8 @@ impl DeviceService {
                 if let Some(context) = self.context.borrow_mut().as_mut() {
                     let interest = InterestMaskSet::SINK
                         | InterestMaskSet::SOURCE
+                        | InterestMaskSet::SINK_INPUT
+                        | InterestMaskSet::SOURCE_OUTPUT
                         | InterestMaskSet::SERVER
                         | InterestMaskSet::CARD;
                     context.subscribe(interest, |_| ());
@@ -263,9 +406,21 @@ impl DeviceService {
         introspect.get_sink_info_list(move |result| match result {
             ListResult::Item(info) => {
                 let port = info.active_port.as_ref();
+                let label = info.description.as_deref().unwrap_or_default().to_owned();
+                let is_virtual = !info.flags.contains(SinkFlagSet::HARDWARE);
+                let (title, detail) = naming(
+                    &info.proplist,
+                    &label,
+                    port.and_then(|port| port.name.as_deref()),
+                    port.and_then(|port| port.description.as_deref()),
+                    is_virtual,
+                );
                 outputs.push(Device {
                     name: info.name.as_deref().unwrap_or_default().to_owned(),
-                    label: info.description.as_deref().unwrap_or_default().to_owned(),
+                    label,
+                    title,
+                    detail,
+                    is_virtual,
                     icon: icon(
                         Kind::Output,
                         &info.proplist,
@@ -275,6 +430,8 @@ impl DeviceService {
                     volume: fraction(info.volume.max()),
                     muted: info.mute,
                     volumes: info.volume,
+                    index: info.index,
+                    serial: info.proplist.get_str("object.serial"),
                 });
             }
             ListResult::End | ListResult::Error => {
@@ -293,9 +450,21 @@ impl DeviceService {
                     return;
                 }
                 let port = info.active_port.as_ref();
+                let label = info.description.as_deref().unwrap_or_default().to_owned();
+                let is_virtual = !info.flags.contains(SourceFlagSet::HARDWARE);
+                let (title, detail) = naming(
+                    &info.proplist,
+                    &label,
+                    port.and_then(|port| port.name.as_deref()),
+                    port.and_then(|port| port.description.as_deref()),
+                    is_virtual,
+                );
                 inputs.push(Device {
                     name: info.name.as_deref().unwrap_or_default().to_owned(),
-                    label: info.description.as_deref().unwrap_or_default().to_owned(),
+                    label,
+                    title,
+                    detail,
+                    is_virtual,
                     icon: icon(
                         Kind::Input,
                         &info.proplist,
@@ -305,10 +474,54 @@ impl DeviceService {
                     volume: fraction(info.volume.max()),
                     muted: info.mute,
                     volumes: info.volume,
+                    index: info.index,
+                    serial: info.proplist.get_str("object.serial"),
                 });
             }
             ListResult::End | ListResult::Error => {
                 gathered.borrow_mut().inputs = Some(std::mem::take(&mut inputs));
+                Self::finish(&weak, &gathered);
+            }
+        });
+
+        let gathered = reading.clone();
+        let weak = Rc::downgrade(self);
+        let mut playing = Vec::new();
+        introspect.get_sink_input_info_list(move |result| match result {
+            ListResult::Item(info) => {
+                if let Some(stream) = stream(
+                    info.index,
+                    &info.proplist,
+                    info.volume,
+                    info.mute,
+                    info.corked,
+                ) {
+                    playing.push((stream, info.sink));
+                }
+            }
+            ListResult::End | ListResult::Error => {
+                gathered.borrow_mut().playing = Some(std::mem::take(&mut playing));
+                Self::finish(&weak, &gathered);
+            }
+        });
+
+        let gathered = reading.clone();
+        let weak = Rc::downgrade(self);
+        let mut recording = Vec::new();
+        introspect.get_source_output_info_list(move |result| match result {
+            ListResult::Item(info) => {
+                if let Some(stream) = stream(
+                    info.index,
+                    &info.proplist,
+                    info.volume,
+                    info.mute,
+                    info.corked,
+                ) {
+                    recording.push((stream, info.source));
+                }
+            }
+            ListResult::End | ListResult::Error => {
+                gathered.borrow_mut().recording = Some(std::mem::take(&mut recording));
                 Self::finish(&weak, &gathered);
             }
         });
@@ -318,7 +531,10 @@ impl DeviceService {
     fn finish(weak: &Weak<Self>, reading: &Rc<RefCell<Reading>>) {
         let done = {
             let reading = reading.borrow();
-            reading.outputs.is_some() && reading.inputs.is_some()
+            reading.outputs.is_some()
+                && reading.inputs.is_some()
+                && reading.playing.is_some()
+                && reading.recording.is_some()
         };
         if !done {
             return;
@@ -328,10 +544,28 @@ impl DeviceService {
         let weak = weak.clone();
         glib::idle_add_local_once(move || {
             let Some(this) = weak.upgrade() else { return };
-            let mut devices = Devices {
-                outputs: reading.outputs.unwrap_or_default(),
-                inputs: reading.inputs.unwrap_or_default(),
+            let outputs = reading.outputs.unwrap_or_default();
+            let inputs = reading.inputs.unwrap_or_default();
+            // A stream is on a device by its index; one on what isn't a device, like an output's
+            // monitor, isn't an app's to show.
+            let on = |streams: Option<Vec<(Stream, u32)>>, devices: &[Device]| -> Vec<Stream> {
+                let streams = streams.unwrap_or_default().into_iter();
+                streams
+                    .filter_map(|(mut stream, index)| {
+                        let device = devices.iter().find(|device| device.index == index)?;
+                        stream.device = device.name.clone();
+                        Some(stream)
+                    })
+                    .collect()
             };
+            let mut devices = Devices {
+                playing: on(reading.playing, &outputs),
+                recording: on(reading.recording, &inputs),
+                outputs,
+                inputs,
+                can_keep: false,
+            };
+            this.mark_kept(&mut devices);
             for device in &mut devices.outputs {
                 device.active = Some(&device.name) == reading.default_output.as_ref();
             }
@@ -352,6 +586,108 @@ impl DeviceService {
         }
         *self.state.borrow_mut() = devices;
         (self.on_change)(&self.state.borrow());
+    }
+}
+
+/// An app's stream, from what the sound server says of it, but for the sound server's own and
+/// bento's, and level meters like pavucontrol's.
+fn stream(
+    index: u32,
+    properties: &Proplist,
+    volumes: ChannelVolumes,
+    muted: bool,
+    paused: bool,
+) -> Option<Stream> {
+    let property = |key: &str| properties.get_str(key).filter(|value| !value.is_empty());
+    if property("media.name").as_deref() == Some("Peak detect")
+        || property("node.name").is_some_and(|name| name.starts_with("bento."))
+    {
+        return None;
+    }
+    let app = property("application.name")
+        .or_else(|| property("node.description"))
+        .or_else(|| property("node.name"))?;
+    let flag = |key: &str| property(key).as_deref() == Some("true");
+    Some(Stream {
+        index,
+        app,
+        icon: property("application.icon_name"),
+        binary: property("application.process.binary"),
+        title: property("media.name"),
+        device: String::new(),
+        volume: f64::from(volumes.max().0) / f64::from(Volume::NORMAL.0),
+        muted,
+        paused,
+        kept: false,
+        own: property("target.object").is_some() || property("node.target").is_some(),
+        fixed: flag("node.dont-move"),
+        volumes,
+        node: property("object.id").and_then(|id| id.parse().ok()),
+    })
+}
+
+/// A short title for a device, and what it is under it: a monitor's own name for its HDMI or
+/// DisplayPort, a USB or Bluetooth device's own name, and a sound card's port, like "Line Out",
+/// over the card. A virtual one keeps its description.
+fn naming(
+    properties: &Proplist,
+    label: &str,
+    port: Option<&str>,
+    port_label: Option<&str>,
+    is_virtual: bool,
+) -> (String, String) {
+    let property = |key: &str| properties.get_str(key).unwrap_or_default();
+    title_of(
+        label,
+        &property("device.product.name"),
+        &property("node.nick"),
+        &property("device.bus"),
+        &property("device.api"),
+        port.unwrap_or_default(),
+        port_label.unwrap_or_default(),
+        is_virtual,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn title_of(
+    label: &str,
+    product: &str,
+    nick: &str,
+    bus: &str,
+    api: &str,
+    port: &str,
+    port_label: &str,
+    is_virtual: bool,
+) -> (String, String) {
+    let product = if product.is_empty() { label } else { product };
+    let port = port.to_lowercase();
+    if is_virtual {
+        return (label.to_owned(), "Virtual".to_owned());
+    }
+    if port.contains("hdmi") || port.contains("displayport") {
+        // A monitor names itself; without, the port's own name says which.
+        let title = if nick.is_empty() || nick == product {
+            if port_label.is_empty() {
+                label
+            } else {
+                port_label
+            }
+        } else {
+            nick
+        };
+        return (title.to_owned(), product.to_owned());
+    }
+    if api == "bluez5" || bus == "bluetooth" {
+        return (product.to_owned(), "Bluetooth".to_owned());
+    }
+    if bus == "usb" {
+        return (product.to_owned(), "USB".to_owned());
+    }
+    if port_label.is_empty() {
+        (label.to_owned(), String::new())
+    } else {
+        (port_label.to_owned(), product.to_owned())
     }
 }
 
@@ -392,6 +728,73 @@ fn icon_for(kind: Kind, form_factor: &str, icon_name: &str, port: &str) -> &'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_is_called_by_what_the_user_knows_it_as() {
+        let title = |label, product, nick, bus, api, port, port_label, is_virtual| {
+            title_of(label, product, nick, bus, api, port, port_label, is_virtual)
+        };
+        let both = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+        assert_eq!(
+            title(
+                "Navi 21/23 HDMI/DP Audio Controller Digital Stereo (HDMI 3)",
+                "Navi 21/23 HDMI/DP Audio Controller",
+                "BenQ EX240N",
+                "pci",
+                "alsa",
+                "hdmi-output-2",
+                "HDMI / DisplayPort 3",
+                false
+            ),
+            both("BenQ EX240N", "Navi 21/23 HDMI/DP Audio Controller"),
+            "a monitor by its own name"
+        );
+        assert_eq!(
+            title(
+                "G435 Wireless Gaming Headset Digital Stereo (IEC958)",
+                "G435 Wireless Gaming Headset",
+                "G435 Wireless Gaming Headset",
+                "usb",
+                "alsa",
+                "iec958-stereo-output",
+                "Digital Output (S/PDIF)",
+                false
+            ),
+            both("G435 Wireless Gaming Headset", "USB"),
+            "a USB device by its own name, not its port's"
+        );
+        assert_eq!(
+            title(
+                "Ryzen HD Audio Controller Analog Stereo",
+                "Ryzen HD Audio Controller",
+                "ALC897 Analog",
+                "pci",
+                "alsa",
+                "analog-output-lineout",
+                "Line Out",
+                false
+            ),
+            both("Line Out", "Ryzen HD Audio Controller"),
+            "a sound card by its port"
+        );
+        assert_eq!(
+            title(
+                "WH-1000XM4",
+                "",
+                "",
+                "",
+                "bluez5",
+                "headphone-output",
+                "Headphone",
+                false
+            ),
+            both("WH-1000XM4", "Bluetooth")
+        );
+        assert_eq!(
+            title("Easy Effects Sink", "", "", "", "", "", "", true),
+            both("Easy Effects Sink", "Virtual")
+        );
+    }
 
     #[test]
     fn a_device_gets_the_icon_of_its_kind() {

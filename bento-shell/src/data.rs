@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use crate::services::bluetooth::BluetoothService;
 use crate::services::brightness::BrightnessService;
 use crate::services::clipboard::{ClipboardService, Content};
-use crate::services::devices::{Device, DeviceService, Kind};
+use crate::services::devices::{Device, DeviceService, Kind, Stream};
 use crate::services::files::{self, FileSearch};
 use crate::services::media::MediaService;
 use crate::services::places::Places;
@@ -52,10 +52,30 @@ fn device(device: &Device) -> Value {
     json!({
         "name": device.name,
         "label": device.label,
+        "title": device.title,
+        "detail": device.detail,
+        "virtual": device.is_virtual,
         "icon": device.icon,
         "active": device.active,
         "volume": device.volume,
         "muted": device.muted,
+    })
+}
+
+fn stream(stream: &Stream) -> Value {
+    json!({
+        "id": stream.index,
+        "app": stream.app,
+        "icon": stream.icon,
+        "binary": stream.binary,
+        "title": stream.title,
+        "device": stream.device,
+        "volume": stream.volume,
+        "muted": stream.muted,
+        "paused": stream.paused,
+        "kept": stream.kept,
+        "own": stream.own,
+        "fixed": stream.fixed,
     })
 }
 
@@ -222,6 +242,9 @@ pub fn run() -> glib::ExitCode {
             "type": "audio-devices",
             "outputs": devices.outputs.iter().map(device).collect::<Vec<_>>(),
             "inputs": devices.inputs.iter().map(device).collect::<Vec<_>>(),
+            "playing": devices.playing.iter().map(stream).collect::<Vec<_>>(),
+            "recording": devices.recording.iter().map(stream).collect::<Vec<_>>(),
+            "canKeep": devices.can_keep,
         }));
     });
     let brightness = BrightnessService::start(|displays| {
@@ -357,6 +380,17 @@ pub fn run() -> glib::ExitCode {
                     &text("name"),
                     command["value"].as_bool().unwrap_or(true),
                 ),
+                "stream-volume" => {
+                    devices.set_stream_volume(kind(), id(), command["value"].as_f64().unwrap_or(0.))
+                }
+                "stream-mute" => devices.set_stream_muted(
+                    kind(),
+                    id(),
+                    command["value"].as_bool().unwrap_or(true),
+                ),
+                "stream-move" => devices.move_stream(kind(), id(), &text("device")),
+                "stream-follow" => devices.follow_default(kind(), id()),
+                "stream-keep" => devices.keep_here(kind(), id()),
                 "brightness" => {
                     brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))
                 }

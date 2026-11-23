@@ -241,6 +241,15 @@ than a switch, like the networks or the sound devices, opens behind it, in the p
 What's playing can go to a place in it, set the player's own volume, and bring the player's
 window to the front, each only where the player can.
 
+The sound page shows the outputs or the inputs, by a switch at its top. A device that's the
+default, or that an app uses, is a card holding its volume and its apps, each with its own volume;
+the rest are chips under the cards, and virtual devices nothing uses fold away. Devices go by short
+names, like a port's or a headset's own, with the hardware under them on the default's card.
+Pinning an output for the switcher is a button that shows while hovering it, and stays lit once
+pinned. Apps follow the default unless they're moved: dragging one onto another device keeps it
+there, marked by a small pin, and dropping it on the default's card makes it follow again. An app
+that picks its own device has no mark, and one that can't be moved has a lock and doesn't drag.
+
 The control center's screenshot and screen recording buttons each run any command the settings
 give them, alone or with a notification of the user's wording once it's done, for tools that show
 none of their own.

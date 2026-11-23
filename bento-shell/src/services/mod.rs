@@ -16,6 +16,7 @@ pub mod notifications;
 pub mod places;
 pub mod power;
 pub mod profiles;
+pub mod targets;
 pub mod tray;
 pub mod weather;
 pub mod wifi;

@@ -3575,6 +3575,20 @@ mod tests {
         {"name":"b","label":"Headphones","icon":"audio-headphones-symbolic","active":false,"volume":0.8,"muted":false}],
         "inputs":[{"name":"m","label":"Microphone","icon":"audio-input-microphone-symbolic","active":true,"volume":1.0,"muted":false}]}"#;
 
+    /// Devices and apps as the data program says them, to look at the sound page.
+    const SOUND: &str = r#"{"type":"audio-devices","canKeep":true,"outputs":[
+        {"name":"a","label":"Ryzen HD Audio Controller Analog Stereo","title":"Line Out","detail":"Ryzen HD Audio Controller","virtual":false,"icon":"audio-speakers-symbolic","active":true,"volume":0.62,"muted":false},
+        {"name":"b","label":"G435","title":"G435 Wireless Gaming Headset","detail":"USB","virtual":false,"icon":"audio-headset-symbolic","active":false,"volume":0.4,"muted":false},
+        {"name":"c","label":"BenQ","title":"BenQ EX240N","detail":"Navi 21/23 HDMI/DP Audio Controller","virtual":false,"icon":"video-display-symbolic","active":false,"volume":1.0,"muted":false},
+        {"name":"d","label":"Easy Effects Sink","title":"Easy Effects Sink","detail":"Virtual","virtual":true,"icon":"audio-speakers-symbolic","active":false,"volume":1.0,"muted":false}],
+        "inputs":[{"name":"m","label":"Seiren","title":"Razer Seiren V3 Mini","detail":"USB","virtual":false,"icon":"audio-input-microphone-symbolic","active":true,"volume":0.85,"muted":false}],
+        "playing":[
+        {"id":1,"app":"Firefox","icon":"web-browser","binary":null,"title":"YouTube Music","device":"a","volume":0.8,"muted":false,"paused":false,"kept":false,"own":false,"fixed":false},
+        {"id":2,"app":"Steam","icon":"applications-games","binary":null,"title":"Elden Ring","device":"a","volume":1.0,"muted":false,"paused":false,"kept":false,"own":false,"fixed":false},
+        {"id":3,"app":"Discord","icon":"user-available","binary":null,"title":"Voice call","device":"b","volume":0.55,"muted":false,"paused":false,"kept":true,"own":false,"fixed":false},
+        {"id":4,"app":"OBS Studio","icon":"media-record","binary":null,"title":"Monitor","device":"b","volume":0.9,"muted":true,"paused":false,"kept":false,"own":false,"fixed":true}],
+        "recording":[]}"#;
+
     /// Opens the control center by a click on the right island's status.
     fn open_control_center(host: &mut SceneHost, now: &mut Instant) {
         let status = middle_of(host, "DP-1", "network-offline-symbolic");
@@ -3645,6 +3659,81 @@ mod tests {
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
+    }
+
+    /// Drags from `from` to `to` on DP-1, past the slop, and lets go there.
+    fn drag_to(host: &mut SceneHost, now: &mut Instant, from: [f32; 2], to: [f32; 2]) {
+        host.press(1, 1, SceneHost::at("DP-1", from));
+        host.pointer_at(Some(("DP-1", [from[0] + 12., from[1]])));
+        host.pointer_at(Some(("DP-1", to)));
+        settle(host, now);
+        host.release(1, 1, SceneHost::at("DP-1", to));
+        settle(host, now);
+    }
+
+    #[test]
+    fn apps_are_dragged_between_outputs_and_back_to_the_default() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let device = |name: &str, title: &str, active: bool| {
+            serde_json::json!({
+                "name": name, "label": title, "title": title, "detail": "", "virtual": false,
+                "icon": "audio-speakers-symbolic", "active": active, "volume": 0.5, "muted": false,
+            })
+        };
+        let stream = |id: u32, app: &str, device: &str, kept: bool| {
+            serde_json::json!({
+                "id": id, "app": app, "icon": null, "binary": null, "title": null,
+                "device": device, "volume": 1.0, "muted": false, "paused": false, "kept": kept,
+                "own": false, "fixed": false,
+            })
+        };
+        host.data_line(
+            &serde_json::json!({
+                "type": "audio-devices",
+                "outputs": [
+                    device("a", "Line Out", true),
+                    device("b", "Headphones", false),
+                    device("c", "Desk", false),
+                ],
+                "inputs": [],
+                "playing": [stream(1, "Firefox", "a", false), stream(2, "Discord", "b", true)],
+                "recording": [],
+                "canKeep": true,
+            })
+            .to_string(),
+        );
+        open_control_center(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
+        commands(&host);
+        let output =
+            |id: u32, cmd: &str| serde_json::json!({ "cmd": cmd, "kind": "output", "id": id });
+
+        // Firefox follows the default; Discord is kept on the headphones, which are a card for
+        // it. Nothing plays on the desk's, a chip.
+        for shown in ["Line Out", "Headphones", "Firefox", "Discord", "Desk"] {
+            assert!(shows(&host, "DP-1", shown), "{shown}");
+        }
+
+        // Dropped on a chip, an app moves there.
+        let firefox = middle_of(&host, "DP-1", "Firefox");
+        let desk = middle_of(&host, "DP-1", "Desk");
+        drag_to(&mut host, &mut now, firefox, desk);
+        let mut moved = output(1, "stream-move");
+        moved["device"] = "c".into();
+        assert_eq!(commands(&host), [moved]);
+
+        // Dropped on the default's card, a kept app follows the default again.
+        let discord = middle_of(&host, "DP-1", "Discord");
+        let line_out = middle_of(&host, "DP-1", "Line Out");
+        drag_to(&mut host, &mut now, discord, line_out);
+        assert_eq!(commands(&host), [output(2, "stream-follow")]);
+
+        // A click on a chip makes its device the default.
+        click(&mut host, "DP-1", desk);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "device", "kind": "output", "name": "c" })]
+        );
     }
 
     /// Opens the page behind the control center's `index`th arrow: the volume's is the first.
@@ -4892,7 +4981,9 @@ mod tests {
         open_control_center(&mut host, &mut now);
         shot(&host, "control-center", [1480, 0, 440, 1000]);
         open_page(&mut host, &mut now, 0);
-        shot(&host, "control-center-sound", [1480, 0, 440, 500]);
+        host.data_line(SOUND);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-sound", [1480, 0, 440, 700]);
         let back = middle_of(&host, "DP-1", "go-previous-symbolic");
         click(&mut host, "DP-1", back);
         settle(&mut host, &mut now);

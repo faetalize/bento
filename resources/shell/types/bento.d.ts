@@ -785,18 +785,60 @@ declare module "bento" {
   export interface AudioDevice {
     /** Its name in the sound server, which commands take. */
     name: string;
+    /** The sound server's description of it. */
     label: string;
+    /** A short name, like "Line Out", a monitor's or a headset's own name. */
+    title: string;
+    /** What it is, like "USB", "Bluetooth" or its sound card, to go under the title. */
+    detail: string;
+    /** Made by a program, like an effects app's, rather than being hardware. */
+    virtual: boolean;
     icon: string;
     volume: number;
     muted: boolean;
     active: boolean;
   }
 
+  /** An app's stream, playing on an output or recording from an input. An app that plays
+   * several, like a browser, has one each. */
+  export interface AudioStream {
+    /** Its index in the sound server, which the stream commands take. */
+    id: number;
+    app: string;
+    /** The app's icon, when it says. */
+    icon: string | null;
+    /** The app's program, to find its desktop entry by. */
+    binary: string | null;
+    /** What it plays or records, like a page's or a song's title. */
+    title: string | null;
+    /** The name of the device it's on. */
+    device: string;
+    /** From 0, 1 being 100%. */
+    volume: number;
+    muted: boolean;
+    paused: boolean;
+    /** Kept on its device, rather than following the default, as an app is once it's moved
+     * there, until it's moved again. */
+    kept: boolean;
+    /** The app asked for its device itself, which wins again the next time it opens one. */
+    own: boolean;
+    /** The app said it can't be moved. */
+    fixed: boolean;
+  }
+
   /** The data program's state, by kind. */
   export interface Data {
     /** The default output's volume. */
     audio: { available: boolean; volume: number; muted: boolean };
-    "audio-devices": { outputs: AudioDevice[]; inputs: AudioDevice[] };
+    "audio-devices": {
+      outputs: AudioDevice[];
+      inputs: AudioDevice[];
+      playing: AudioStream[];
+      recording: AudioStream[];
+      /** Whether streams can follow the default or be kept, which takes PipeWire's
+       * `pw-metadata`. */
+      canKeep: boolean;
+    };
     network: { connected: boolean; name: string | null; wifiStrength: number | null; icon: string };
     battery: { present: boolean; percentage: number; charging: boolean; icon: string };
     /** Each item's `icon` is an icon's name or a picture's path. */
@@ -978,10 +1020,19 @@ declare module "bento" {
     /** The default output's volume. */
     volume: { value: number };
     mute: { value: boolean };
-    /** Makes a device the default. */
+    /** Makes a device the default. What follows the default goes there; apps kept on a device
+     * stay. */
     device: { kind: "output" | "input"; name: string };
     "device-volume": { kind: "output" | "input"; name: string; value: number };
     "device-mute": { kind: "output" | "input"; name: string; value: boolean };
+    "stream-volume": { kind: "output" | "input"; id: number; value: number };
+    "stream-mute": { kind: "output" | "input"; id: number; value: boolean };
+    /** Moves an app's stream to a device, where it's kept from then on. */
+    "stream-move": { kind: "output" | "input"; id: number; device: string };
+    /** Makes an app's stream follow the default device again. */
+    "stream-follow": { kind: "output" | "input"; id: number };
+    /** Keeps an app's stream on the device it's on, even when the default changes. */
+    "stream-keep": { kind: "output" | "input"; id: number };
     dismiss: { id: number };
     expire: { id: number };
     /** Does a notification's action; with `token`, bento hands the app an activation token, to
