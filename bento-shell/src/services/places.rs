@@ -1,7 +1,7 @@
 //! The user and their places, as a start menu shows them: who the user is and their picture, the
 //! files they opened lately, and the folders it has buttons for, each with its icon.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -19,18 +19,6 @@ const USER: &str = "org.freedesktop.Accounts.User";
 /// The most files opened lately that are told.
 const RECENT: usize = 20;
 
-/// The icons of the user's standard folders, by the names `user-dirs.dirs` gives them.
-const ICONS: [(&str, &str); 8] = [
-    ("$XDG_DESKTOP_DIR", "user-desktop-symbolic"),
-    ("$XDG_DOCUMENTS_DIR", "folder-documents-symbolic"),
-    ("$XDG_DOWNLOAD_DIR", "folder-download-symbolic"),
-    ("$XDG_MUSIC_DIR", "folder-music-symbolic"),
-    ("$XDG_PICTURES_DIR", "folder-pictures-symbolic"),
-    ("$XDG_PUBLICSHARE_DIR", "folder-publicshare-symbolic"),
-    ("$XDG_TEMPLATES_DIR", "folder-templates-symbolic"),
-    ("$XDG_VIDEOS_DIR", "folder-videos-symbolic"),
-];
-
 type Say = fn(&Value);
 
 /// Watches who the user is, through AccountsService when it runs, and the files they opened
@@ -42,6 +30,10 @@ pub struct Places {
     monitor: RefCell<Option<gio::FileMonitor>>,
     /// A reading of the files opened lately that's waiting for their list to settle.
     pending: RefCell<Option<glib::SourceId>>,
+    /// How many times the files opened lately and the folders were asked for, so that only the
+    /// latest answer of each is told: they're read on threads of their own, as a folder on a
+    /// network share can take long, and the latest may be done before an earlier one.
+    asked: Rc<Cell<(u64, u64)>>,
 }
 
 impl Places {
@@ -54,6 +46,7 @@ impl Places {
             subscription: RefCell::default(),
             monitor: RefCell::default(),
             pending: RefCell::default(),
+            asked: Rc::default(),
         });
         say(&fallback_user());
 
@@ -89,7 +82,7 @@ impl Places {
                     let id = glib::timeout_add_local_once(Duration::from_millis(300), move || {
                         if let Some(this) = weak.upgrade() {
                             this.pending.take();
-                            (this.say)(&recent());
+                            this.read_recent();
                         }
                     });
                     *this.pending.borrow_mut() = Some(id);
@@ -98,8 +91,24 @@ impl Places {
             }
             Err(err) => eprintln!("bento-shell --data: can't watch the files opened lately: {err}"),
         }
-        say(&recent());
+        this.read_recent();
         this
+    }
+
+    /// Tells the files opened lately, read on a thread of its own.
+    fn read_recent(&self) {
+        let (asked, say) = (self.asked.clone(), self.say);
+        let (recent_asks, folders_asks) = asked.get();
+        let at = recent_asks + 1;
+        asked.set((at, folders_asks));
+        glib::spawn_future_local(async move {
+            let Ok(files) = gio::spawn_blocking(recent).await else {
+                return;
+            };
+            if asked.get().0 == at {
+                say(&files);
+            }
+        });
     }
 
     /// Reads the user's name and picture from AccountsService, and again as they change.
@@ -151,56 +160,73 @@ impl Places {
     }
 
     /// Tells the folders of `written`, as folder settings write them, that are there, in order,
-    /// each with its name and icon.
+    /// each with its name and icon, read on a thread of its own.
     pub fn folders(&self, written: &[String]) {
-        let home = files::resolve(&glib::home_dir());
-        let standard: Vec<(PathBuf, &str)> = files::STANDARD
-            .iter()
-            .zip(ICONS)
-            .filter_map(|((_, dir), (_, icon))| Some((glib::user_special_dir(*dir)?, icon)))
-            .map(|(path, icon)| (files::resolve(&path), icon))
-            // One set to the home folder is turned off.
-            .filter(|(path, _)| *path != home)
-            .collect();
-        let folders: Vec<Value> = written
-            .iter()
-            .filter_map(|written| {
-                let path = files::expand(written)?;
-                let resolved = files::resolve(&path);
-                if !resolved.is_dir() {
-                    return None;
-                }
-                let icon = if resolved == home {
-                    if written != "~" {
-                        // A standard folder turned off, or a folder written as the home one.
-                        if files::STANDARD.iter().any(|(name, _)| name == written) {
-                            return None;
-                        }
-                    }
-                    "user-home-symbolic"
-                } else {
-                    standard
-                        .iter()
-                        .find(|(standard, _)| *standard == resolved)
-                        .map_or("folder-symbolic", |(_, icon)| icon)
-                };
-                let name = if resolved == home {
-                    String::from("Home")
-                } else {
-                    path.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string())
-                };
-                Some(json!({
-                    "written": written,
-                    "path": path.to_string_lossy(),
-                    "name": name,
-                    "icon": icon,
-                }))
-            })
-            .collect();
-        (self.say)(&json!({ "type": "folders", "folders": folders }));
+        let (asked, say) = (self.asked.clone(), self.say);
+        let (recent_asks, folders_asks) = asked.get();
+        let at = folders_asks + 1;
+        asked.set((recent_asks, at));
+        let written = written.to_vec();
+        glib::spawn_future_local(async move {
+            let Ok(folders) = gio::spawn_blocking(move || folders(&written)).await else {
+                return;
+            };
+            if asked.get().1 == at {
+                say(&folders);
+            }
+        });
     }
+}
+
+/// The folders of `written`, as folder settings write them, that are there, in order, each with
+/// its name and icon.
+fn folders(written: &[String]) -> Value {
+    let home = files::resolve(&glib::home_dir());
+    let standard: Vec<(PathBuf, &str)> = files::STANDARD
+        .iter()
+        .filter_map(|(_, dir, icon)| Some((glib::user_special_dir(*dir)?, *icon)))
+        .map(|(path, icon)| (files::resolve(&path), icon))
+        // One set to the home folder is turned off.
+        .filter(|(path, _)| *path != home)
+        .collect();
+    let folders: Vec<Value> = written
+        .iter()
+        .filter_map(|written| {
+            let path = files::expand(written)?;
+            let resolved = files::resolve(&path);
+            if !resolved.is_dir() {
+                return None;
+            }
+            let icon = if resolved == home {
+                if written != "~" {
+                    // A standard folder turned off, or a folder written as the home one.
+                    if files::STANDARD.iter().any(|(name, ..)| name == written) {
+                        return None;
+                    }
+                }
+                "user-home-symbolic"
+            } else {
+                standard
+                    .iter()
+                    .find(|(standard, _)| *standard == resolved)
+                    .map_or("folder-symbolic", |(_, icon)| icon)
+            };
+            let name = if resolved == home {
+                String::from("Home")
+            } else {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string())
+            };
+            Some(json!({
+                "written": written,
+                "path": path.to_string_lossy(),
+                "name": name,
+                "icon": icon,
+            }))
+        })
+        .collect();
+    json!({ "type": "folders", "folders": folders })
 }
 
 /// Who the user is without AccountsService: their name from the system, and `~/.face` as their

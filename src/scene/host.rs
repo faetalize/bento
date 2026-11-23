@@ -2028,6 +2028,266 @@ mod tests {
         super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
     }
 
+    /// The apps a test has, as desktop entries in a folder of its own, which go when this does.
+    struct TestApps(std::path::PathBuf);
+
+    impl TestApps {
+        /// The apps `apps`, by their desktop entries' ids and their names.
+        fn new(apps: &[(&str, &str)]) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "bento-apps-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (id, name) in apps {
+                let entry = format!("[Desktop Entry]\nType=Application\nName={name}\nExec={id}\n");
+                std::fs::write(dir.join(format!("{id}.desktop")), entry).unwrap();
+            }
+            super::super::apps::TEST_DIRS.with(|dirs| *dirs.borrow_mut() = Some(vec![dir.clone()]));
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestApps {
+        fn drop(&mut self) {
+            super::super::apps::TEST_DIRS.with(|dirs| *dirs.borrow_mut() = None);
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The windows shell on an output `size` big, with `text` as its settings file, and its start
+    /// menu open.
+    fn start_menu_with(text: &str, size: (f32, f32)) -> (SceneHost, Instant) {
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), size)];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        host.settings.clone().unwrap().borrow_mut().write_file(text);
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        host.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        (host, now)
+    }
+
+    /// The start menu's pins as the settings have them.
+    fn start_pins(host: &SceneHost) -> serde_json::Value {
+        let settings = host.settings.clone().unwrap();
+        let pinned = settings.borrow().values("start-menu")["pinned"].clone();
+        pinned
+    }
+
+    fn right_click(host: &mut SceneHost, point: [f32; 2]) {
+        host.press(3, 3, SceneHost::at("DP-1", point));
+        host.release(3, 3, SceneHost::at("DP-1", point));
+    }
+
+    const THREE_APPS: [(&str, &str); 3] = [
+        ("test-a", "Test A"),
+        ("test-b", "Test B"),
+        ("test-c", "Test C"),
+    ];
+
+    #[test]
+    fn a_pinned_app_is_pinned_wherever_it_shows() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let text = "start-menu {\n    pinned {\n        app \"test-a\"\n    }\n}\n";
+        let (mut host, mut now) = start_menu_with(text, (1920., 1080.));
+        let at = middle_of(&host, "DP-1", "All apps");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        let at = middle_of(&host, "DP-1", "Test A");
+        right_click(&mut host, at);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Unpin from Start"));
+        assert!(!shows(&host, "DP-1", "Pin to Start"));
+    }
+
+    #[test]
+    fn an_app_pinned_to_the_taskbar_is_pinned_there_wherever_it_shows() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let text = "taskbar {\n    pinned \"test-a\"\n}\n";
+        let (mut host, mut now) = start_menu_with(text, (1920., 1080.));
+        let all = middle_of(&host, "DP-1", "All apps");
+        click(&mut host, "DP-1", all);
+        settle(&mut host, &mut now);
+        let a = middle_of(&host, "DP-1", "Test A");
+        right_click(&mut host, a);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Unpin from Taskbar"));
+    }
+
+    #[test]
+    fn pins_of_apps_that_are_not_installed_stay() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let text =
+            "start-menu {\n    pinned {\n        app \"gone\"\n        app \"test-a\"\n        \
+                    group \"Old\" {\n            app \"gone-too\"\n        }\n    }\n}\n";
+        let (mut host, mut now) = start_menu_with(text, (1920., 1080.));
+        let at = middle_of(&host, "DP-1", "All apps");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        let at = middle_of(&host, "DP-1", "Test B");
+        right_click(&mut host, at);
+        settle(&mut host, &mut now);
+        let at = middle_of(&host, "DP-1", "Pin to Start");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        assert_eq!(
+            start_pins(&host),
+            serde_json::json!(["gone", "test-a", { "group": "Old", "apps": ["gone-too"] }, "test-b"]),
+        );
+    }
+
+    /// The group's name in its card, over its tile among the pins.
+    fn card_title(host: &SceneHost, name: &str) -> [f32; 2] {
+        let found = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", name);
+        let lowest = found
+            .iter()
+            .max_by(|a, b| a[1].total_cmp(&b[1]))
+            .unwrap_or_else(|| panic!("{name:?} doesn't show"));
+        [lowest[0] + lowest[2] / 2., lowest[1] + lowest[3] / 2.]
+    }
+
+    const GAMES: &str = "start-menu {\n    pinned {\n        group \"Games\" {\n            \
+                         app \"test-a\"\n            app \"test-b\"\n        }\n    }\n}\n";
+
+    #[test]
+    fn a_group_closed_while_renaming_it_opens_again_as_it_was() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let (mut host, mut now) = start_menu_with(GAMES, (1920., 1080.));
+        let tile = middle_of(&host, "DP-1", "Games");
+        click(&mut host, "DP-1", tile);
+        settle(&mut host, &mut now);
+        let at = card_title(&host, "Games");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        // Closed by a click on the dimmed menu, and opened again.
+        let at = middle_of(&host, "DP-1", "Search apps");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Test B"), "the group closed");
+        click(&mut host, "DP-1", tile);
+        settle(&mut host, &mut now);
+        // What's typed goes to the search, not to the group's name.
+        type_keys(&mut host, &["q", "Return"]);
+        settle(&mut host, &mut now);
+        assert_eq!(
+            start_pins(&host),
+            serde_json::json!([{ "group": "Games", "apps": ["test-a", "test-b"] }]),
+        );
+    }
+
+    #[test]
+    fn a_renamed_group_stays_open() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let (mut host, mut now) = start_menu_with(GAMES, (1920., 1080.));
+        let at = middle_of(&host, "DP-1", "Games");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        let at = card_title(&host, "Games");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        type_keys(&mut host, &["BackSpace"; 5]);
+        type_keys(&mut host, &["F", "u", "n", "Return"]);
+        settle(&mut host, &mut now);
+        assert_eq!(
+            start_pins(&host),
+            serde_json::json!([{ "group": "Fun", "apps": ["test-a", "test-b"] }]),
+        );
+        assert!(shows(&host, "DP-1", "Test B"), "the group is still open");
+    }
+
+    #[test]
+    fn a_pinned_app_dropped_past_the_grids_left_edge_goes_first() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let text =
+            "start-menu {\n    pinned {\n        app \"test-a\"\n        app \"test-b\"\n        \
+                    app \"test-c\"\n    }\n}\n";
+        let (mut host, mut now) = start_menu_with(text, (1920., 1080.));
+        let a = middle_of(&host, "DP-1", "Test A");
+        let c = middle_of(&host, "DP-1", "Test C");
+        let tile = (c[0] - a[0]) / 2.;
+        // A little past the grid's left edge, in the menu's margin, on the same row.
+        let to = [a[0] - tile * 0.6, c[1]];
+        assert!(host.covers_any("DP-1", c));
+        host.press(1, 1, SceneHost::at("DP-1", c));
+        host.pointer_at(Some(("DP-1", [c[0] - 20., c[1]])));
+        host.pointer_at(Some(("DP-1", to)));
+        settle(&mut host, &mut now);
+        host.release(1, 1, SceneHost::at("DP-1", to));
+        settle(&mut host, &mut now);
+        assert_eq!(
+            start_pins(&host),
+            serde_json::json!(["test-c", "test-a", "test-b"])
+        );
+    }
+
+    #[test]
+    fn an_app_dragged_out_of_its_group_leaves_it() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let (mut host, mut now) = start_menu_with(GAMES, (1920., 1080.));
+        let at = middle_of(&host, "DP-1", "Games");
+        click(&mut host, "DP-1", at);
+        settle(&mut host, &mut now);
+        let b = middle_of(&host, "DP-1", "Test B");
+        let out = [b[0], b[1] - 200.];
+        assert!(host.covers_any("DP-1", b));
+        host.press(1, 1, SceneHost::at("DP-1", b));
+        host.pointer_at(Some(("DP-1", [b[0], b[1] - 12.])));
+        host.pointer_at(Some(("DP-1", out)));
+        settle(&mut host, &mut now);
+        host.release(1, 1, SceneHost::at("DP-1", out));
+        settle(&mut host, &mut now);
+        // A group of one is that app.
+        assert_eq!(start_pins(&host), serde_json::json!(["test-a", "test-b"]));
+    }
+
+    #[test]
+    fn the_files_opened_lately_fit_a_short_start_menu() {
+        let _apps = TestApps::new(&THREE_APPS);
+        let text = "start-menu {\n    pinned {\n        app \"test-a\"\n    }\n}\n";
+        let (mut host, mut now) = start_menu_with(text, (960., 420.));
+        let files: Vec<_> = (1..=6)
+            .map(|i| {
+                serde_json::json!({
+                    "path": format!("/h/r{i}.txt"), "name": format!("r{i}.txt"), "location": "~",
+                    "folder": false, "icon": "text-x-generic", "opened": "2026-11-20T10:00:00Z",
+                })
+            })
+            .collect();
+        host.data_line(&serde_json::json!({ "type": "recent", "files": files }).to_string());
+        settle(&mut host, &mut now);
+        // The files opened lately that show are under a whole row of pinned apps, and over the
+        // bottom bar.
+        let bar = middle_of(&host, "DP-1", "emblem-system-symbolic")[1] - 18.;
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let pinned = scene.find("DP-1", "Test A")[0];
+        for i in 1..=6 {
+            for rect in scene.find("DP-1", &format!("r{i}.txt")) {
+                assert!(
+                    rect[1] >= pinned[1] + pinned[3],
+                    "r{i}.txt at {rect:?}, Test A at {pinned:?}"
+                );
+                assert!(
+                    rect[1] + rect[3] <= bar,
+                    "r{i}.txt at {rect:?}, the bar at {bar}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_windows_shell_has_a_taskbar_with_its_apps_previews_and_start_menu() {
         super::super::modules::TEST_ENTRY
@@ -4782,8 +5042,7 @@ mod tests {
             click(&mut windows, "DP-1", games);
             settle(&mut windows, &mut now);
             shot(&windows, "start-menu-group", [520, 260, 780, 820]);
-            // An app dragged out of the group and let go leaves it, and a group of one is that
-            // app.
+            // An app dragged out of the group.
             let steam = middle_of(&windows, "DP-1", "Steam");
             windows.press(1, 1, SceneHost::at("DP-1", steam));
             windows.pointer_at(Some(("DP-1", [steam[0] + 12., steam[1] - 12.])));
@@ -4793,27 +5052,6 @@ mod tests {
             shot(&windows, "start-menu-drag-out", [520, 260, 780, 820]);
             windows.release(1, 1, SceneHost::at("DP-1", out));
             settle(&mut windows, &mut now);
-            let pinned = windows
-                .settings
-                .clone()
-                .unwrap()
-                .borrow()
-                .values("start-menu")["pinned"]
-                .clone();
-            assert_eq!(
-                pinned,
-                serde_json::json!([
-                    "firefox",
-                    "org.gnome.Nautilus",
-                    "org.gnome.TextEditor",
-                    "discord",
-                    "steam",
-                    "obsidian",
-                    "code",
-                    "org.gnome.Calculator",
-                    "vlc",
-                ]),
-            );
         }
         let all = middle_of(&windows, "DP-1", "All apps");
         click(&mut windows, "DP-1", all);

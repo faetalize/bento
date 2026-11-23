@@ -1216,7 +1216,7 @@ fn shell_action<S: knuffel::traits::ErrorSpan>(
             Ok(TilingOption::String(text)) => args.push(text),
             Ok(TilingOption::Number(n)) => args.push(n.to_string()),
             Ok(TilingOption::Bool(b)) => args.push(b.to_string()),
-            Ok(TilingOption::Gradient(_) | TilingOption::Group(_)) => (),
+            Ok(TilingOption::Gradient(_) | TilingOption::Pin(_) | TilingOption::Group(_)) => (),
             Err(err) => ctx.emit_error(err),
         }
     }

@@ -37,8 +37,20 @@ pub struct Apps {
     launches: Vec<Vec<String>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The folders a test's apps are read from, in place of the XDG data dirs, so that what it
+    /// finds doesn't depend on what the computer running it has installed.
+    pub static TEST_DIRS: std::cell::RefCell<Option<Vec<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// The folders desktop entries are in, the user's first.
 fn dirs() -> Vec<PathBuf> {
+    #[cfg(test)]
+    if let Some(dirs) = TEST_DIRS.with(|dirs| dirs.borrow().clone()) {
+        return dirs;
+    }
     let home = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/share")));

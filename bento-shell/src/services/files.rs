@@ -438,23 +438,55 @@ fn walks(folders: &[String], excluded: &[String]) -> Vec<(PathBuf, Vec<PathBuf>)
 }
 
 /// The user's standard folders, by the names `user-dirs.dirs` gives them, which a folder setting
-/// can be written as.
-pub const STANDARD: [(&str, glib::UserDirectory); 8] = [
-    ("$XDG_DESKTOP_DIR", glib::UserDirectory::Desktop),
-    ("$XDG_DOCUMENTS_DIR", glib::UserDirectory::Documents),
-    ("$XDG_DOWNLOAD_DIR", glib::UserDirectory::Downloads),
-    ("$XDG_MUSIC_DIR", glib::UserDirectory::Music),
-    ("$XDG_PICTURES_DIR", glib::UserDirectory::Pictures),
-    ("$XDG_PUBLICSHARE_DIR", glib::UserDirectory::PublicShare),
-    ("$XDG_TEMPLATES_DIR", glib::UserDirectory::Templates),
-    ("$XDG_VIDEOS_DIR", glib::UserDirectory::Videos),
+/// can be written as, with their icons.
+pub const STANDARD: [(&str, glib::UserDirectory, &str); 8] = [
+    (
+        "$XDG_DESKTOP_DIR",
+        glib::UserDirectory::Desktop,
+        "user-desktop-symbolic",
+    ),
+    (
+        "$XDG_DOCUMENTS_DIR",
+        glib::UserDirectory::Documents,
+        "folder-documents-symbolic",
+    ),
+    (
+        "$XDG_DOWNLOAD_DIR",
+        glib::UserDirectory::Downloads,
+        "folder-download-symbolic",
+    ),
+    (
+        "$XDG_MUSIC_DIR",
+        glib::UserDirectory::Music,
+        "folder-music-symbolic",
+    ),
+    (
+        "$XDG_PICTURES_DIR",
+        glib::UserDirectory::Pictures,
+        "folder-pictures-symbolic",
+    ),
+    (
+        "$XDG_PUBLICSHARE_DIR",
+        glib::UserDirectory::PublicShare,
+        "folder-publicshare-symbolic",
+    ),
+    (
+        "$XDG_TEMPLATES_DIR",
+        glib::UserDirectory::Templates,
+        "folder-templates-symbolic",
+    ),
+    (
+        "$XDG_VIDEOS_DIR",
+        glib::UserDirectory::Videos,
+        "folder-videos-symbolic",
+    ),
 ];
 
 /// A folder as a setting writes it, as a path: with `~` at its start for the home folder, or one
 /// of the user's standard folders by its name, like `$XDG_DOCUMENTS_DIR`, which is none while
 /// `user-dirs.dirs` doesn't set it.
 pub fn expand(folder: &str) -> Option<PathBuf> {
-    if let Some((_, dir)) = STANDARD.iter().find(|(name, _)| *name == folder) {
+    if let Some((_, dir, _)) = STANDARD.iter().find(|(name, ..)| *name == folder) {
         return glib::user_special_dir(*dir);
     }
     let home = glib::home_dir();

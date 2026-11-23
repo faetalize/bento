@@ -154,6 +154,8 @@ pub enum TilingOption {
     String(String),
     /// A gradient, which is written with properties instead of arguments.
     Gradient(LayoutEngineGradient),
+    /// A pinned app, written `app "firefox"` as a child, which only pins take.
+    Pin(String),
     /// A group of pinned apps, written `group "Games" { app "steam"; }`.
     Group(LayoutEngineGroup),
 }
@@ -691,7 +693,7 @@ fn decode_values<S: knuffel::traits::ErrorSpan>(
         .collect::<Result<Vec<TilingOption>, _>>()?;
     for child in node.children() {
         match &**child.node_name {
-            "app" => values.push(TilingOption::String(decode_app(child, ctx)?)),
+            "app" => values.push(TilingOption::Pin(decode_app(child, ctx)?)),
             "group" => values.push(TilingOption::Group(decode_group(child, ctx)?)),
             _ => ctx.emit_error(DecodeError::unexpected(
                 child,

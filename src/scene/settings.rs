@@ -570,6 +570,17 @@ mod tests {
     }
 
     #[test]
+    fn only_pins_take_apps_as_children() {
+        const CLOCK: &str = r#"[{ "name": "format", "type": "string", "default": "%H:%M" }]"#;
+        let text = "clock {\n    format {\n        app \"%H\"\n    }\n}\n";
+        let mut settings = Settings::from_text(text);
+        let values = settings.declare("clock", CLOCK, "[]").unwrap();
+        assert_eq!(values["format"], json!("%H:%M"));
+        let (_, wrong) = settings.problems();
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
+    }
+
+    #[test]
     fn a_setting_is_not_written_over_a_file_that_has_an_error() {
         let mut settings = Settings::from_text("clock {\n    seconds true\n}\n");
         settings.declare("taskbar", TASKBAR, "[]").unwrap();

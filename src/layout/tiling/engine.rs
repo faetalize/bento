@@ -236,7 +236,10 @@ pub fn size_arg(value: &TilingOption) -> Option<SizeChange> {
         TilingOption::String(value) => value.parse().ok(),
         // Numbers come from configs and the command line, like `800` or `-100`.
         TilingOption::Number(value) => value.to_string().parse().ok(),
-        TilingOption::Bool(_) | TilingOption::Gradient(_) | TilingOption::Group(_) => None,
+        TilingOption::Bool(_)
+        | TilingOption::Gradient(_)
+        | TilingOption::Pin(_)
+        | TilingOption::Group(_) => None,
     }
 }
 
@@ -358,7 +361,11 @@ impl SettingMeta {
             (ValueType::Gradient, _) => Err(String::from(
                 r##"must be a gradient, like `from="#000" to="#fff"`"##,
             )),
-            (ValueType::Pins, TilingOption::String(app)) if !app.is_empty() => Ok(json!(app)),
+            (ValueType::Pins, TilingOption::String(app) | TilingOption::Pin(app))
+                if !app.is_empty() =>
+            {
+                Ok(json!(app))
+            }
             (ValueType::Pins, TilingOption::Group(group)) => Ok(json!(group)),
             (ValueType::Folder, _) => Err(String::from(r#"must be a folder, like "~/Documents""#)),
             (ValueType::Pins, _) => Err(String::from(
@@ -400,6 +407,7 @@ fn ipc_scalar(value: &TilingOption) -> Option<LayoutEngineOptionValue> {
         TilingOption::Number(value) => LayoutEngineOptionValue::Number(*value),
         TilingOption::String(value) => LayoutEngineOptionValue::String(value.clone()),
         TilingOption::Gradient(value) => LayoutEngineOptionValue::Gradient(value.clone()),
+        TilingOption::Pin(value) => LayoutEngineOptionValue::String(value.clone()),
         TilingOption::Group(value) => LayoutEngineOptionValue::Group(value.clone()),
     })
 }

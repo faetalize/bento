@@ -9,7 +9,7 @@ import {
 } from "bento";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
-import { appById, appIcon, appId, preloadIcons, start } from "bento:modules/apps";
+import { appById, appIcon, appId, isAppId, preloadIcons, start } from "bento:modules/apps";
 import { FilesPill, SearchLine, everythingSearch, type Line } from "bento:modules/search";
 import { PowerPage } from "bento:modules/power";
 import { openFile, showFile } from "bento:modules/files";
@@ -86,52 +86,63 @@ const SLOP = 8;
 // A group made by dropping an app on another is called this until it's renamed.
 const NEW_GROUP = "New Group";
 
-/** A pinned app, or a group of them, by its place among the pins. */
+/** A pinned app, or a group of them, with its place `at` among the pins as the setting writes
+ * them, which is what changes to them go by. */
 type Item =
-  | { key: string; app: App }
-  | { key: string; group: string; apps: App[] };
+  | { key: string; at: number; app: App }
+  | { key: string; at: number; group: string; apps: App[] };
 
 const isGroup = (item: Item): item is Extract<Item, { group: string }> => "group" in item;
 
-/** The pins as they show: apps that aren't installed are left out, and groups with none. */
+const isApp = isAppId;
+
+/** The pins as they show: apps that aren't installed are left out, and groups with none. They
+ * stay in the setting all the same, for when they are. */
 function pinnedItems(pins: readonly Pin[]): Item[] {
   const items: Item[] = [];
   pins.forEach((pin, at) => {
     if (typeof pin === "string") {
       const app = appById(pin);
-      if (app) items.push({ key: `app:${app.id}`, app });
+      if (app) items.push({ key: `pin:${at}`, at, app });
     } else {
       const list = pin.apps.map(appById).filter((app): app is App => app !== undefined);
-      if (list.length > 0) items.push({ key: `group:${at}:${pin.group}`, group: pin.group, apps: list });
+      if (list.length > 0) items.push({ key: `pin:${at}`, at, group: pin.group, apps: list });
     }
   });
   return items;
 }
 
-/** Writes `items` as the pins, a group of one app as that app. */
-function savePins(items: Item[]) {
-  const pins: Pin[] = items.map((item) => {
-    if (!isGroup(item)) return appId(item.app);
-    if (item.apps.length === 1) return appId(item.apps[0]);
-    return { group: item.group, apps: item.apps.map(appId) };
-  });
-  setSetting("pinned", pins);
-}
-
 const pinned = () => pinnedItems(settings.pinned);
+
+/** The pins as the setting has them, to change and write with `savePins`. */
+const pinsNow = (): Pin[] =>
+  settings.pinned.map((pin) => (typeof pin === "string" ? pin : { group: pin.group, apps: [...pin.apps] }));
+const savePins = (pins: Pin[]) => setSetting("pinned", pins);
+
+/** A group's apps after some were taken out of it: the group, that app when one is left, or
+ * nothing. */
+const shrunk = (group: { group: string; apps: string[] }, apps: string[]): Pin[] =>
+  apps.length === 0 ? [] : apps.length === 1 ? [apps[0]] : [{ ...group, apps }];
+
+/** `pins` without `app`, wherever it is. */
+function withoutApp(pins: Pin[], app: App): Pin[] {
+  return pins.flatMap((pin) => {
+    if (typeof pin === "string") return isApp(pin, app) ? [] : [pin];
+    const apps = pin.apps.filter((id) => !isApp(id, app));
+    return apps.length === pin.apps.length ? [pin] : shrunk(pin, apps);
+  });
+}
 
 /** Whether `app` is pinned to the start menu, on its own or in a group. */
 export const isPinned = (app: App) =>
-  pinned().some((item) => (isGroup(item) ? item.apps.includes(app) : item.app === app));
+  settings.pinned.some((pin) =>
+    typeof pin === "string" ? isApp(pin, app) : pin.apps.some((id) => isApp(id, app)));
 
 /** Pins `app` to the start menu at the end, or unpins it, from its group too. */
 export function pin(app: App, pinnedNow: boolean) {
-  const items = pinned()
-    .map((item) =>
-      isGroup(item) ? { ...item, apps: item.apps.filter((one) => one !== app) } : item)
-    .filter((item) => (isGroup(item) ? item.apps.length > 0 : item.app !== app));
-  if (pinnedNow) items.push({ key: `app:${app.id}`, app });
-  savePins(items);
+  const pins = withoutApp(pinsNow(), app);
+  if (pinnedNow) pins.push(appId(app));
+  savePins(pins);
 }
 
 /** The start menu of `output`, which `popup` opens as `start:<output>`: `gap` over the start
@@ -199,9 +210,14 @@ function Menu(props: {
   // The group that's open, by its key, and whether its name is being changed.
   const [open, setOpen] = createSignal<string | null>(null);
   const [renaming, setRenaming] = createSignal(false);
+  // Opening or closing a group ends a renaming, but the one it's opened for.
+  const openGroup = (key: string | null, rename = false) => {
+    setOpen(key);
+    setRenaming(rename);
+  };
   props.back(() => {
     if (renaming()) setRenaming(false);
-    else if (open()) setOpen(null);
+    else if (open()) openGroup(null);
     else if (page() !== "main" && !search.query().trim()) setPage("main");
     else return false;
     field?.focus();
@@ -231,45 +247,55 @@ function Menu(props: {
     return items;
   };
   const groupMenu = (item: Extract<Item, { group: string }>): MenuItem[] => [
-    { label: "Open", icon: "folder-open-symbolic", run: () => setOpen(item.key) },
-    {
-      label: "Rename…",
-      icon: "document-edit-symbolic",
-      run: () => {
-        setOpen(item.key);
-        setRenaming(true);
-      },
-    },
-    { label: "Ungroup", icon: "view-grid-symbolic", run: () => ungroup(item.key) },
+    { label: "Open", icon: "folder-open-symbolic", run: () => openGroup(item.key) },
+    { label: "Rename…", icon: "document-edit-symbolic", run: () => openGroup(item.key, true) },
+    { label: "Ungroup", icon: "view-grid-symbolic", run: () => ungroup(item) },
     "separator",
-    { label: "Unpin from Start", icon: "view-pin-symbolic", run: () => unpinItem(item.key) },
+    { label: "Unpin from Start", icon: "view-pin-symbolic", run: () => unpinItem(item) },
   ];
   const menuAt = (event: PointerEvent, items: MenuItem[]) =>
     openMenu({ output: event.output ?? props.output, x: event.x, y: event.y }, items);
 
-  // Changes to the pins, by the items' keys.
-  const edit = (fn: (items: Item[]) => Item[]) => savePins(fn(pinned()));
-  const unpinItem = (key: string) => edit((items) => items.filter((item) => item.key !== key));
-  const ungroup = (key: string) => {
-    if (open() === key) setOpen(null);
-    edit((items) =>
-      items.flatMap((item) =>
-        item.key === key && isGroup(item)
-          ? item.apps.map((app) => ({ key: `app:${app.id}`, app }))
-          : [item]));
+  // Changes to the pins, by the items' places among them.
+  const edit = (fn: (pins: Pin[]) => void) => {
+    const pins = pinsNow();
+    fn(pins);
+    savePins(pins);
+  };
+  const unpinItem = (item: Item) => {
+    if (open() === item.key) openGroup(null);
+    edit((pins) => pins.splice(item.at, 1));
+  };
+  const ungroup = (item: Item) => {
+    if (open() === item.key) openGroup(null);
+    edit((pins) => {
+      const group = pins[item.at];
+      if (typeof group !== "string") pins.splice(item.at, 1, ...group.apps);
+    });
   };
   /** Takes `app` out of the group `key`, to right after it. */
-  const takeOut = (key: string, app: App) =>
-    edit((items) =>
-      items.flatMap((item) => {
-        if (item.key !== key || !isGroup(item)) return [item];
-        const rest = { ...item, apps: item.apps.filter((one) => one !== app) };
-        return [rest, { key: `app:${app.id}`, app }].filter((one) => !isGroup(one) || one.apps.length > 0);
-      }));
+  const takeOut = (key: string, app: App) => {
+    const item = pinned().find((one) => one.key === key);
+    if (!item) return;
+    edit((pins) => {
+      const group = pins[item.at];
+      if (typeof group === "string") return;
+      const id = group.apps.find((one) => isApp(one, app));
+      if (id === undefined) return;
+      const rest = group.apps.filter((one) => one !== id);
+      pins.splice(item.at, 1, ...shrunk(group, rest), id);
+    });
+  };
   const rename = (key: string, name: string) => {
     setRenaming(false);
+    const item = pinned().find((one) => one.key === key);
     const group = name.trim();
-    if (group) edit((items) => items.map((item) => (item.key === key && isGroup(item) ? { ...item, group } : item)));
+    if (item && group) {
+      edit((pins) => {
+        const pin = pins[item.at];
+        if (typeof pin !== "string") pins[item.at] = { ...pin, group };
+      });
+    }
     field?.focus();
   };
 
@@ -300,7 +326,7 @@ function Menu(props: {
             autofocus
             placeholder={search.placeholder()}
             onInput={(text) => {
-              setOpen(null);
+              openGroup(null);
               search.type(text);
             }}
             onSubmit={search.submit}
@@ -329,7 +355,7 @@ function Menu(props: {
                 <MainPage
                   height={props.list}
                   recent={recent()}
-                  onOpen={setOpen}
+                  onOpen={(key) => openGroup(key)}
                   onLaunch={launch}
                   onAll={() => setPage("all")}
                   onMore={() => setPage("recent")}
@@ -375,11 +401,11 @@ function Menu(props: {
           renaming={renaming()}
           onRename={() => setRenaming(true)}
           rename={(name) => rename(opened()!.key, name)}
-          onDismiss={() => setOpen(null)}
+          onDismiss={() => openGroup(null)}
           onLaunch={launch}
           onTakeOut={(app) => {
             takeOut(opened()!.key, app);
-            setOpen(null);
+            openGroup(null);
           }}
           appMenu={(event, app) => menuAt(event, appMenu(app, opened()!.key))}
         />
@@ -547,7 +573,12 @@ function MainPage(props: {
   fileMenu: (event: PointerEvent, file: RecentFile) => void;
 }) {
   const items = createMemo(pinned);
-  const files = () => props.recent.slice(0, RECENT);
+  // As many rows of files opened lately as fit under a row of pinned apps, three at most.
+  const recentRows = () => {
+    const room = props.height - HEAD - TILE.height - GAP - HEAD;
+    return Math.max(0, Math.min(RECENT / 2, Math.floor(room / HEIGHTS.row)));
+  };
+  const files = () => props.recent.slice(0, recentRows() * 2);
   const recentHeight = () =>
     files().length > 0 ? GAP + HEAD + Math.ceil(files().length / 2) * HEIGHTS.row : 0;
   const gridHeight = () => Math.max(TILE.height, props.height - HEAD - recentHeight());
@@ -567,7 +598,9 @@ function MainPage(props: {
     const column = Math.max(0, Math.min(COLUMNS - 1, Math.floor(px)));
     const row = Math.max(0, Math.floor(py));
     const cell = Math.min(count, row * COLUMNS + column);
-    const [fx, fy] = [px - Math.floor(px), py - row];
+    // Where in its tile, past the grid's sides being as far as that side goes.
+    const fx = px < 0 ? 0 : px >= COLUMNS ? 1 : px - column;
+    const fy = py < 0 ? 0 : py - row;
     // Over the middle of another, an app goes onto it; a group never goes into another.
     const middle = fx > 0.25 && fx < 0.75 && fy > 0.2 && fy < 0.8;
     if (middle && cell < count && cell !== drag.at && !isGroup(items()[drag.at])) {
@@ -583,20 +616,25 @@ function MainPage(props: {
     if (!where || !drag) return;
     dropped = true;
     after(0, () => (dropped = false));
-    const list = [...items()];
-    const moving = list[drag.at];
+    // By the pins' places in the setting, which has those of apps that aren't installed too.
+    const list = items();
+    const from = list[drag.at].at;
+    const pins = pinsNow();
+    const moving = pins[from];
     if ("onto" in where) {
-      const target = list[where.onto];
-      const app = (moving as { app: App }).app;
-      list[where.onto] = isGroup(target)
-        ? { ...target, apps: [...target.apps, app] }
-        : { key: `group:new`, group: NEW_GROUP, apps: [(target as { app: App }).app, app] };
-      list.splice(drag.at, 1);
+      if (typeof moving !== "string") return;
+      const to = list[where.onto].at;
+      const target = pins[to];
+      pins[to] = typeof target === "string"
+        ? { group: NEW_GROUP, apps: [target, moving] }
+        : { ...target, apps: [...target.apps, moving] };
+      pins.splice(from, 1);
     } else {
-      list.splice(drag.at, 1);
-      list.splice(where.before > drag.at ? where.before - 1 : where.before, 0, moving);
+      const before = where.before < list.length ? list[where.before].at : pins.length;
+      pins.splice(from, 1);
+      pins.splice(before > from ? before - 1 : before, 0, moving);
     }
-    savePins(list);
+    savePins(pins);
   };
 
   return (
@@ -609,7 +647,7 @@ function MainPage(props: {
         }
       >
         <Scroller
-          style={{ height: gridHeight() }}
+          style={{ height: gridHeight(), flexShrink: 0 }}
           inner={{ flexDirection: "row", flexWrap: "wrap", alignContent: "start" }}
         >
           <For each={items()}>
@@ -792,7 +830,7 @@ function GroupCard(props: {
               <Tile
                 item={{ key: app.id, app }}
                 width={tile}
-                style={{ opacity: dragged()?.app === app ? 0.3 : 1 }}
+                style={{ opacity: dragged()?.app.id === app.id ? 0.3 : 1 }}
                 onPress={(event) => {
                   if (event.button === 1) pressed = { app, x: event.x, y: event.y };
                 }}
