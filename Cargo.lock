@@ -564,6 +564,7 @@ dependencies = [
  "libadwaita",
  "libpulse-binding",
  "libpulse-glib-binding",
+ "quick-xml",
  "serde_json",
  "soup3",
  "wayland-backend",

@@ -885,6 +885,18 @@ declare module "bento" {
     ready: {};
     /** An app's menu for its status icon, as `tray-menu` asks for it: empty when it has none. */
     "tray-menu": { id: string; menu: TrayMenuItem[] };
+    /** The files that the search `id` found, the best first, 50 at most. Without `fd` there's no
+     * finding any, and it isn't `available`. */
+    files: { id: number; available: boolean; files: FoundFile[] };
+  }
+
+  /** A file or folder that a search found. */
+  export interface FoundFile {
+    path: string;
+    name: string;
+    folder: boolean;
+    /** Its kind's icon, by its name. */
+    icon: string;
   }
 
   /** An item of an app's menu for its status icon, which `tray-menu-click` picks by its `id`. */
@@ -944,6 +956,17 @@ declare module "bento" {
     "clipboard-copy": { id: number };
     "clipboard-delete": { id: number };
     "clipboard-clear": {};
+    /** Finds the files in the home folder with all of the words of `query` in their names, but for
+     * those hidden or ignored by git, which come as the `files` event with the same `id`. One
+     * search runs at a time: another takes its place. `bento:modules/files` does this as it's
+     * typed. */
+    "files-search": { id: number; query: string };
+    "files-stop": { id: number };
+    /** Opens a file with its app, and a folder in the file manager; with `token`, bento hands the
+     * app an activation token, to raise its window. */
+    "files-open": { path: string; token?: boolean };
+    /** Shows a file in its folder, in the file manager. */
+    "files-show": { path: string; token?: boolean };
   }
   export function command<K extends keyof Commands>(cmd: K, fields: Commands[K]): void;
 

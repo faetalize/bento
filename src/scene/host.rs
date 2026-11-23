@@ -3393,6 +3393,115 @@ mod tests {
     }
 
     #[test]
+    fn a_file_search_looks_once_for_what_was_typed_and_opens_what_it_found() {
+        let dir = std::env::temp_dir().join(format!("bento-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tsx");
+        std::fs::write(
+            &main,
+            r#"import { Surface } from "bento";
+            import { createEffect, For, Show } from "solid-js";
+            import { fileSearch, openFile } from "bento:modules/files";
+            export default () => {
+              const search = fileSearch(1);
+              let field: any;
+              createEffect(() => true, () => field.focus());
+              return (
+                <Surface output="DP-1" keyboard="exclusive" style={{ flexDirection: "column" }}>
+                  <box style={{ width: 200 }}><input ref={field} onInput={search.type} /></box>
+                  <Show when={search.searching()}><text>Searching</text></Show>
+                  <Show when={!search.available()}><text>Unavailable</text></Show>
+                  <For each={search.files()}>
+                    {(file) => <box onClick={() => openFile(file)}><text>{file.name}</text></box>}
+                  </For>
+                </Surface>
+              );
+            };"#,
+        )
+        .unwrap();
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = main.to_string_lossy().into_owned();
+        let gaps = serde_json::json!({ "gaps": 8 });
+        host.ensure_loaded(&outputs, None, &entry, None, gaps);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(host.load_error, None);
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        commands(&host);
+        let found = |host: &mut SceneHost, id: &serde_json::Value, names: &[&str]| {
+            let files: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    serde_json::json!({
+                        "path": format!("/h/{name}"), "name": name, "folder": false,
+                        "icon": "text-x-generic",
+                    })
+                })
+                .collect();
+            let said = serde_json::json!({
+                "type": "files", "id": id, "available": true, "files": files,
+            });
+            host.data_line(&said.to_string());
+        };
+
+        // One letter isn't looked for, and what's typed on is, once typing pauses.
+        type_keys(&mut host, &["a"]);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Searching"));
+        assert!(commands(&host).is_empty());
+        type_keys(&mut host, &["b", "c"]);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Searching"));
+        let asked = commands(&host);
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        let first = asked[0]["id"].clone();
+        assert_eq!(
+            asked[0],
+            serde_json::json!({ "cmd": "files-search", "id": first, "query": "abc" })
+        );
+
+        // Typing on ends that search, and what it finds comes too late.
+        type_keys(&mut host, &["d"]);
+        settle(&mut host, &mut now);
+        let asked = commands(&host);
+        assert_eq!(
+            asked[0],
+            serde_json::json!({ "cmd": "files-stop", "id": first })
+        );
+        assert_eq!(asked[1]["query"], "abcd");
+        let second = asked[1]["id"].clone();
+        assert_ne!(first, second);
+        found(&mut host, &first, &["late"]);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "late") && shows(&host, "DP-1", "Searching"));
+
+        // A data program that started again is asked again, and it finds as many as wanted.
+        host.shell
+            .as_ref()
+            .unwrap()
+            .send(&serde_json::json!({ "type": "data-ready" }));
+        let asked = commands(&host);
+        assert_eq!(asked[0]["query"], "abcd");
+        found(&mut host, &asked[0]["id"], &["abcd.txt", "abcde.txt"]);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Searching"));
+        assert!(shows(&host, "DP-1", "abcd.txt") && !shows(&host, "DP-1", "abcde.txt"));
+        let file = middle_of(&host, "DP-1", "abcd.txt");
+        click(&mut host, "DP-1", file);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "files-open", "path": "/h/abcd.txt", "token": true })]
+        );
+
+        // What was found goes with what was typed, and there's nothing to stop.
+        type_keys(&mut host, &["BackSpace", "BackSpace", "BackSpace"]);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "abcd.txt"));
+        assert!(commands(&host).is_empty());
+    }
+
+    #[test]
     fn tiles_show_only_with_something_behind_them_and_power_mode_has_a_page() {
         let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
         open_control_center(&mut host, &mut now);

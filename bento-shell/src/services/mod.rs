@@ -8,6 +8,7 @@ pub mod brightness;
 pub mod clipboard;
 mod dbus;
 pub mod devices;
+pub mod files;
 pub mod ipc;
 pub mod media;
 pub mod network;

@@ -328,7 +328,9 @@ export function onAction(
 }
 
 // The data program's state, as a store each, and its events.
-const DATA_EVENTS = new Set(["notification", "wifi-error", "bluetooth-error", "ready", "tray-menu"]);
+const DATA_EVENTS = new Set([
+  "notification", "wifi-error", "bluetooth-error", "ready", "tray-menu", "files",
+]);
 const dataStores = new Map<string, readonly [any, (value: any) => void, () => boolean]>();
 const dataListeners = new Map<string, Set<(event: any) => void>>();
 

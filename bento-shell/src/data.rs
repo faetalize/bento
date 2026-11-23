@@ -3,7 +3,7 @@
 //! bento starts it and reads what it says from its stdout, a JSON object per line: the speaker's
 //! volume, the sound devices, the displays' brightness, the light or dark style, the weather, the
 //! network, the battery, notifications, the clipboard's history and the tray's items, each as it
-//! changes. Pictures, like a
+//! changes, and the files it's asked to find. Pictures, like a
 //! notification's image or a tray icon an app draws itself, are written as PNG files under
 //! `$XDG_RUNTIME_DIR/bento-shell` and named by their path. It takes commands on its stdin, a JSON
 //! object per line, like `{ "cmd": "volume", "value": 0.5 }`.
@@ -21,6 +21,7 @@ use crate::services::bluetooth::BluetoothService;
 use crate::services::brightness::BrightnessService;
 use crate::services::clipboard::{ClipboardService, Content};
 use crate::services::devices::{Device, DeviceService, Kind};
+use crate::services::files::{self, FileSearch};
 use crate::services::media::MediaService;
 use crate::services::profiles::ProfileService;
 use crate::services::weather::{Place, WeatherService};
@@ -305,6 +306,7 @@ pub fn run() -> glib::ExitCode {
     let bluetooth = BluetoothService::start(say);
     let profiles = ProfileService::start(say);
     let media = MediaService::start(say);
+    let file_search = FileSearch::new(say);
     let tray = Tray::start(|items| {
         let items: Vec<Value> = items
             .iter()
@@ -403,6 +405,25 @@ pub fn run() -> glib::ExitCode {
                     command["key"].as_str().unwrap_or("default"),
                     command["token"].as_str(),
                 ),
+                "files-search" => file_search.search(command["id"].clone(), &text("query")),
+                "files-stop" => file_search.stop(&command["id"]),
+                cmd @ ("files-open" | "files-show") => {
+                    let (path, show) = (PathBuf::from(text("path")), cmd == "files-show");
+                    let token = command["token"].as_str().map(String::from);
+                    glib::spawn_future_local(async move {
+                        let opened = if show {
+                            files::show(&path, token.as_deref()).await
+                        } else {
+                            files::open(&path, token.as_deref()).await
+                        };
+                        if let Err(err) = opened {
+                            let name = path.file_name().unwrap_or_default().to_string_lossy();
+                            let summary = format!("Couldn't Open “{name}”");
+                            let icon = String::from("dialog-error-symbolic");
+                            notify(summary, err.message().to_owned(), icon, true);
+                        }
+                    });
+                }
                 "clipboard-copy" => clipboard.copy(command["id"].as_u64().unwrap_or(0)),
                 "clipboard-delete" => clipboard.delete(command["id"].as_u64().unwrap_or(0)),
                 "clipboard-clear" => clipboard.clear(),

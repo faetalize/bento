@@ -321,6 +321,17 @@ a flyout that opens on the tray's side. A click activates an icon, and a right c
 app's menu, in bento's own menu, with a way to pin the icon or take it off. Which icons are
 pinned is kept, as pinned apps are, and isn't listed in bento's settings.
 
+## Files are found by their names
+
+`bento:modules/files` finds files, and shows nothing itself: the launcher, start menu or whatever
+else imports it decides what to do with them and how they look. The data program looks for them
+with `fd`, once typing pauses, rather than keeping an index, so it finds them by name, not by what's
+in them.
+
+What fits best is first: a name that is what's typed, then one that starts with it, then one with
+a word that does, then one with it anywhere. Those that fit alike go by when they were last opened,
+then by how few folders deep they are, then by the shortest name.
+
 ## bento starts the shell's data program
 
 bento starts the shell's data program, and hands it a private connection: only it feeds the
