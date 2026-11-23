@@ -5,12 +5,12 @@
 
 import {
   action, after, apps, command, data, focusedOutput, now, onAction, outputSize, outputs, useModule,
-  type App, type Meta, type Pin, type PointerEvent, type RecentFile, type SceneNode,
+  type App, type FoundFile, type Meta, type Pin, type PointerEvent, type RecentFile, type SceneNode,
 } from "bento";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
 import { appById, appIcon, appId, preloadIcons, start } from "bento:modules/apps";
-import { FilesPill, SearchLine, everythingSearch } from "bento:modules/search";
+import { FilesPill, SearchLine, everythingSearch, type Line } from "bento:modules/search";
 import { PowerPage } from "bento:modules/power";
 import { openFile, showFile } from "bento:modules/files";
 import { openMenu, type MenuItem } from "bento:modules/menu";
@@ -307,7 +307,14 @@ function Menu(props: {
         <box style={{ height: props.list, flexDirection: "column" }}>
           <Show
             when={!search.query().trim()}
-            fallback={<Found search={search} height={props.list} />}
+            fallback={
+              <Found
+                search={search}
+                height={props.list}
+                onMenu={(event, line) =>
+                  menuAt(event, line.kind === "app" ? appMenu(line.app) : fileMenu(line.file, close))}
+              />
+            }
           >
             <Show
               when={!search.filesOnly()}
@@ -326,6 +333,7 @@ function Menu(props: {
                   }}
                   rename={rename}
                   onLaunch={launch}
+                  onTakeOut={takeOut}
                   onAll={() => setPage("all")}
                   onMore={() => setPage("recent")}
                   onClose={close}
@@ -368,7 +376,7 @@ function Menu(props: {
 }
 
 /** What a right click on a file offers. */
-const fileMenu = (file: RecentFile, close: () => void): MenuItem[] => [
+const fileMenu = (file: FoundFile, close: () => void): MenuItem[] => [
   { label: "Open", icon: file.icon, run: () => { openFile(file); close(); } },
   { label: "Show in Folder", icon: "folder-open-symbolic", run: () => { showFile(file); close(); } },
 ];
@@ -414,14 +422,25 @@ function Head(props: { title: string; button?: string; back?: boolean; onClick?:
   );
 }
 
-/** What's found for what's typed. */
-function Found(props: { search: ReturnType<typeof everythingSearch>; height: number }) {
+/** What's found for what's typed, whose apps and files a right click opens a menu for. */
+function Found(props: {
+  search: ReturnType<typeof everythingSearch>;
+  height: number;
+  onMenu: (event: PointerEvent, line: Extract<Line, { kind: "app" | "file" }>) => void;
+}) {
   const search = props.search;
   return (
     <Scroller style={{ height: props.height }} inner={{ flexDirection: "column" }} reveal={search.reveal()}>
       <For each={search.lines()}>
         {(line) => (
-          <SearchLine line={line} search={search} heights={HEIGHTS} iconSize={ICON} fontSize={14} />
+          <SearchLine
+            line={line}
+            search={search}
+            heights={HEIGHTS}
+            iconSize={ICON}
+            fontSize={14}
+            onMenu={props.onMenu}
+          />
         )}
       </For>
       <Show when={search.nothing()}>
@@ -511,6 +530,7 @@ function MainPage(props: {
   onRename: (key: string) => void;
   rename: (key: string, name: string) => void;
   onLaunch: (app: App) => void;
+  onTakeOut: (key: string, app: App) => void;
   onAll: () => void;
   onMore: () => void;
   onClose: () => void;
@@ -665,6 +685,10 @@ function MainPage(props: {
           rename={(name) => props.rename(opened()!.key, name)}
           onDismiss={() => props.onOpen(null)}
           onLaunch={props.onLaunch}
+          onTakeOut={(app) => {
+            props.onTakeOut(opened()!.key, app);
+            props.onOpen(null);
+          }}
           appMenu={(event, app) => props.appMenu(event, app, opened()!.key)}
         />
       </Show>
@@ -672,7 +696,8 @@ function MainPage(props: {
   );
 }
 
-/** An open group: its name, which a click changes, and its apps, over the dimmed menu. */
+/** An open group: its name, which a click changes, and its apps, over the dimmed menu. An app
+ * dragged out of it and let go is taken out of the group. */
 function GroupCard(props: {
   item: Extract<Item, { group: string }>;
   height: number;
@@ -681,25 +706,61 @@ function GroupCard(props: {
   rename: (name: string) => void;
   onDismiss: () => void;
   onLaunch: (app: App) => void;
+  onTakeOut: (app: App) => void;
   appMenu: (event: PointerEvent, app: App) => void;
 }) {
   const columns = 4;
   const width = 420;
   const tile = (width - 2 * PAD) / columns;
+  let root: SceneNode | undefined;
+  let card: SceneNode | undefined;
+  // A press on an app that may become a drag, and the drag: the app, and where the pointer is on
+  // the output. The app's grid scrolls and cuts what it holds, so what's dragged is a copy of
+  // its tile over the whole menu.
+  let pressed: { app: App; x: number; y: number } | null = null;
+  const [dragged, setDragged] = createSignal<{ app: App; x: number; y: number } | null>(null);
+  let dropped = false;
+  const outside = () => {
+    const drag = dragged();
+    const rect = card?.layout();
+    if (!drag || !rect) return false;
+    return drag.x < rect.x || drag.x > rect.x + rect.width
+      || drag.y < rect.y || drag.y > rect.y + rect.height;
+  };
+  const release = () => {
+    pressed = null;
+    const drag = dragged();
+    const out = outside();
+    setDragged(null);
+    if (!drag) return;
+    dropped = true;
+    after(0, () => (dropped = false));
+    if (out) props.onTakeOut(drag.app);
+  };
+  // Where the copy is, in the menu.
+  const ghost = () => {
+    const drag = dragged();
+    const rect = root?.layout();
+    if (!drag || !rect) return null;
+    return { left: drag.x - rect.x - tile / 2, top: drag.y - rect.y - TILE.height / 2 };
+  };
   return (
     <box
+      ref={root}
       style={{
         position: "absolute", top: 0, left: 0, right: 0, height: props.height,
         alignItems: "center", justifyContent: "center", background: "window/0.6", borderRadius: 10,
       }}
       enter={{ opacity: 0 }}
       exit={{ opacity: 0 }}
-      onClick={props.onDismiss}
+      onClick={() => !dropped && props.onDismiss()}
     >
       <box
+        ref={card}
         style={{
           width, maxHeight: props.height - 24, flexDirection: "column", gap: 8, padding: PAD,
           borderRadius: 14, background: "window/0.9", borderWidth: 1, borderColor: "fg/0.1",
+          opacity: outside() ? 0.6 : 1,
         }}
         enter={{ scale: 0.96, opacity: 0 }}
         exit={{ scale: 0.96, opacity: 0 }}
@@ -743,13 +804,33 @@ function GroupCard(props: {
               <Tile
                 item={{ key: app.id, app }}
                 width={tile}
-                onClick={() => props.onLaunch(app)}
+                style={{ opacity: dragged()?.app === app ? 0.3 : 1 }}
+                onPress={(event) => {
+                  if (event.button === 1) pressed = { app, x: event.x, y: event.y };
+                }}
+                onDrag={(event) => {
+                  if (!pressed) return;
+                  const far = Math.hypot(event.x - pressed.x, event.y - pressed.y) >= SLOP;
+                  if (dragged() || far) setDragged({ app, x: event.x, y: event.y });
+                }}
+                onRelease={release}
+                onClick={() => !dropped && props.onLaunch(app)}
                 onRightClick={(event) => props.appMenu(event, app)}
               />
             )}
           </For>
         </Scroller>
       </box>
+      <Show when={ghost()}>
+        <Tile
+          item={{ key: dragged()!.app.id, app: dragged()!.app }}
+          width={tile}
+          style={{
+            position: "absolute", left: ghost()!.left, top: ghost()!.top, opacity: 0.9,
+            transition: { frame: 0.04, translate: 0.04 },
+          }}
+        />
+      </Show>
     </box>
   );
 }

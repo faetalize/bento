@@ -4782,8 +4782,38 @@ mod tests {
             click(&mut windows, "DP-1", games);
             settle(&mut windows, &mut now);
             shot(&windows, "start-menu-group", [520, 260, 780, 820]);
-            type_keys(&mut windows, &["Escape"]);
+            // An app dragged out of the group and let go leaves it, and a group of one is that
+            // app.
+            let steam = middle_of(&windows, "DP-1", "Steam");
+            windows.press(1, 1, SceneHost::at("DP-1", steam));
+            windows.pointer_at(Some(("DP-1", [steam[0] + 12., steam[1] - 12.])));
+            let out = [steam[0], steam[1] - 160.];
+            windows.pointer_at(Some(("DP-1", out)));
             settle(&mut windows, &mut now);
+            shot(&windows, "start-menu-drag-out", [520, 260, 780, 820]);
+            windows.release(1, 1, SceneHost::at("DP-1", out));
+            settle(&mut windows, &mut now);
+            let pinned = windows
+                .settings
+                .clone()
+                .unwrap()
+                .borrow()
+                .values("start-menu")["pinned"]
+                .clone();
+            assert_eq!(
+                pinned,
+                serde_json::json!([
+                    "firefox",
+                    "org.gnome.Nautilus",
+                    "org.gnome.TextEditor",
+                    "discord",
+                    "steam",
+                    "obsidian",
+                    "code",
+                    "org.gnome.Calculator",
+                    "vlc",
+                ]),
+            );
         }
         let all = middle_of(&windows, "DP-1", "All apps");
         click(&mut windows, "DP-1", all);
