@@ -188,7 +188,12 @@ impl TargetWatch {
     fn watch(self: &Rc<Self>) {
         let args = ["pw-metadata", "--monitor", "--name", "default"].map(std::ffi::OsStr::new);
         let flags = gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_SILENCE;
-        let process = match gio::Subprocess::newv(&args, flags) {
+        let launcher = gio::SubprocessLauncher::new(flags);
+        // It ends with this program, even killed, rather than watching on for nobody.
+        launcher.set_child_setup(|| unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+        });
+        let process = match launcher.spawn(&args) {
             Ok(process) => process,
             // Without pw-metadata there's nothing to watch, now or later.
             Err(_) => return,
