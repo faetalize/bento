@@ -1027,7 +1027,8 @@ function AllApps(props: {
   );
 }
 
-/** Along the bottom: the user, then the folders that are there, bento's settings and power. */
+/** Along the bottom: the user, whose account bento Settings shows on a click, then the folders
+ * that are there, bento's settings and power. */
 function BottomBar(props: { power: boolean; onPower: () => void; onClose: () => void }) {
   const user = () => data("user");
   const folders = () => data("folders")?.folders ?? [];
@@ -1037,7 +1038,17 @@ function BottomBar(props: { power: boolean; onPower: () => void; onClose: () => 
       <box style={{ height: 1, background: "fg/0.08" }} />
       <box style={{ flexDirection: "row", alignItems: "center", gap: 6, padding: [10, PAD] }}>
         <Show when={user()}>
-          <box style={{ flexDirection: "row", alignItems: "center", gap: 10, flexShrink: 1, minWidth: 0 }}>
+          <box
+            style={{
+              flexDirection: "row", alignItems: "center", gap: 10, flexShrink: 1, minWidth: 0,
+              padding: [2, 12, 2, 2], borderRadius: 18, cursor: "pointer",
+              ":hover": { background: "fg/0.1" },
+            }}
+            onClick={() => {
+              action("spawn", ["bento-settings", "account"]);
+              props.onClose();
+            }}
+          >
             <box
               style={{
                 width: 32, height: 32, borderRadius: 16, overflow: "hidden", flexShrink: 0,
