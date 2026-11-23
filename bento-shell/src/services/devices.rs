@@ -126,6 +126,8 @@ pub struct DeviceService {
     /// Whether something changed while reading, so they're read once more after.
     stale: Cell<bool>,
     on_change: Box<dyn Fn(&Devices)>,
+    /// Others that hear the devices changed, after `on_change`.
+    listeners: RefCell<Vec<Box<dyn Fn()>>>,
 }
 
 /// What a read of the devices has gathered so far.
@@ -153,6 +155,7 @@ impl DeviceService {
             reading: Cell::new(false),
             stale: Cell::new(false),
             on_change: Box::new(on_change),
+            listeners: RefCell::default(),
         });
         (this.on_change)(&this.state.borrow());
         let weak = Rc::downgrade(&this);
@@ -743,6 +746,14 @@ impl DeviceService {
         }
         *self.state.borrow_mut() = devices;
         (self.on_change)(&self.state.borrow());
+        for listener in self.listeners.borrow().iter() {
+            listener();
+        }
+    }
+
+    /// Hears each change of the devices, after the one `start` was given.
+    pub fn listen(&self, heard: impl Fn() + 'static) {
+        self.listeners.borrow_mut().push(Box::new(heard));
     }
 }
 

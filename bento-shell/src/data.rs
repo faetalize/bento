@@ -250,6 +250,23 @@ pub fn run() -> glib::ExitCode {
         }));
     });
     let combine = CombineService::start(say);
+    // Outputs combined before their volume was kept go to full volume as new ones do, once
+    // they're there to read, keeping what they had.
+    {
+        let (weak_devices, weak_combine) = (Rc::downgrade(&devices), Rc::downgrade(&combine));
+        devices.listen(move || {
+            let (Some(devices), Some(combine)) = (weak_devices.upgrade(), weak_combine.upgrade())
+            else {
+                return;
+            };
+            for (id, index, device) in combine.without_restore() {
+                if let Some(volume) = devices.volume(Kind::Output, &device) {
+                    combine.set_restore(&id, index, volume);
+                    devices.set_volume(Kind::Output, &device, 1.);
+                }
+            }
+        });
+    }
     // A combined output that starts again for a change is a node of its own, which apps kept on
     // the one before aren't: they go back once it's there.
     let mover = devices.clone();

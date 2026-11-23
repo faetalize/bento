@@ -381,6 +381,28 @@ impl CombineService {
         }
     }
 
+    /// The outputs of combinations that don't know their volume from before they were combined,
+    /// as the ones made before it was kept: by the combination's id, the output's place in it,
+    /// and its name.
+    pub fn without_restore(&self) -> Vec<(String, usize, String)> {
+        without_restore(&self.combinations.borrow())
+    }
+
+    /// Keeps `volume` as what output `index` of combination `id` had before.
+    pub fn set_restore(&self, id: &str, index: usize, volume: f64) {
+        {
+            let mut combinations = self.combinations.borrow_mut();
+            let member = combinations
+                .iter_mut()
+                .find(|c| c.id == id)
+                .and_then(|c| c.members.get_mut(index));
+            let Some(member) = member else { return };
+            member.restore = Some(volume);
+        }
+        save(&self.combinations.borrow());
+        self.publish();
+    }
+
     /// The combination `id`, if there's one.
     pub fn get(&self, id: &str) -> Option<Combination> {
         self.combinations
@@ -441,6 +463,18 @@ impl CombineService {
         }
         self.publish();
     }
+}
+
+fn without_restore(combinations: &[Combination]) -> Vec<(String, usize, String)> {
+    let mut missing = Vec::new();
+    for combination in combinations {
+        for (i, member) in combination.members.iter().enumerate() {
+            if member.restore.is_none() {
+                missing.push((combination.id.clone(), i, member.device.clone()));
+            }
+        }
+    }
+    missing
 }
 
 /// What a change of starts a combination again: all but its outputs' levels and delays.
@@ -583,6 +617,16 @@ mod tests {
         let mut synced = old.clone();
         synced.auto = true;
         assert_ne!(shape(&old), shape(&synced));
+    }
+
+    #[test]
+    fn outputs_combined_before_their_volume_was_kept_are_found() {
+        // The first output of the pair has no volume kept, the second has.
+        let pair = pair([Role::Same, Role::Same], true);
+        assert_eq!(
+            without_restore(&[pair]),
+            [("c1".to_owned(), 0, "alsa_output.a".to_owned())]
+        );
     }
 
     #[test]
