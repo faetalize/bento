@@ -351,6 +351,7 @@ pub(super) fn option_widget(
             digits,
             choices: &option.choices,
             quiet,
+            item: false,
         };
         field.build(change)
     }
@@ -376,6 +377,8 @@ struct Field<'a> {
     choices: &'a [String],
     /// While set, the row shows a value without calling `change`.
     quiet: Rc<Cell<bool>>,
+    /// Whether it's an item of a list, which a folder is the title of.
+    item: bool,
 }
 
 impl Field<'_> {
@@ -388,6 +391,7 @@ impl Field<'_> {
             digits,
             choices,
             quiet,
+            item,
         } = self;
         let notify = move |value: Option<OptionValue>| {
             if !quiet.get() {
@@ -496,7 +500,7 @@ impl Field<'_> {
                 (row.upcast(), Box::new(show))
             }
             Type::Gradient => gradient_row(title, subtitle, notify),
-            Type::Folder => folder_row(title, subtitle, notify),
+            Type::Folder => folder_row(title, subtitle, !item, notify),
         }
     }
 }
@@ -623,9 +627,11 @@ fn gradient_row(
 }
 
 /// A folder's row: its path, and a button that picks another with the folder chooser.
+/// The path shows under the title, unless the row is an item of a list, which it's the title of.
 fn folder_row(
     title: &str,
     hint: &str,
+    path_under: bool,
     notify: impl Fn(Option<OptionValue>) + 'static,
 ) -> (gtk::Widget, ShowValue) {
     let row = adw::ActionRow::builder()
@@ -652,6 +658,7 @@ fn folder_row(
     row.set_activatable_widget(Some(&choose));
     let shown = row.clone();
     let show = move |value: &Option<OptionValue>| match value {
+        _ if !path_under => (),
         Some(OptionValue::String(path)) if !path.is_empty() => shown.set_subtitle(path),
         _ => shown.set_subtitle("None"),
     };
@@ -761,6 +768,12 @@ impl ListRow {
             building: Rc::new(Cell::new(false)),
         });
         list.rebuild();
+        let weak = Rc::downgrade(&list);
+        list.row.connect_expanded_notify(move |_| {
+            if let Some(list) = weak.upgrade() {
+                list.show_summary();
+            }
+        });
         list
     }
 
@@ -832,6 +845,7 @@ impl ListRow {
                 digits: self.digits,
                 choices: &self.choices,
                 quiet: self.building.clone(),
+                item: true,
             };
             let (row, show) = field.build(change);
             show(&Some(item.clone()));
@@ -893,13 +907,20 @@ impl ListRow {
         self.row.add_row(&add);
         self.children.borrow_mut().push(add.upcast());
 
-        let summary: Vec<String> = items.iter().map(summarize).collect();
-        self.row.set_subtitle(&if summary.is_empty() {
+        self.show_summary();
+        self.building.set(false);
+    }
+
+    /// What it holds, under its title, while it's closed: open, its items show it.
+    fn show_summary(&self) {
+        let summary: Vec<String> = self.items.borrow().iter().map(summarize).collect();
+        self.row.set_subtitle(&if self.row.is_expanded() {
+            String::new()
+        } else if summary.is_empty() {
             String::from("No Items")
         } else {
             summary.join(", ")
         });
-        self.building.set(false);
     }
 
     /// What a new item starts as: a value its field accepts.
