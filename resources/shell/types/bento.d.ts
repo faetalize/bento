@@ -655,7 +655,10 @@ declare module "bento" {
     | "choice"
     | "size"
     | "color"
-    | "gradient";
+    | "gradient"
+    /** A folder's path, with `~` at its start for the home folder, which bento's settings pick
+     * with a folder chooser. */
+    | "folder";
 
   /** A setting as a module or shell declares it. */
   export interface Setting {
@@ -962,10 +965,13 @@ declare module "bento" {
     "clipboard-copy": { id: number };
     "clipboard-delete": { id: number };
     "clipboard-clear": {};
-    /** Finds the files in the home folder with all of the words of `query` in their names, but for
-     * those hidden or ignored by git, which come as the `files` event with the same `id`. One
-     * search runs at a time: another takes its place. `bento:modules/files` does this. */
-    "files-search": { id: number; query: string };
+    /** Finds the files with all of the words of `query` in their names, but for those hidden or
+     * ignored by git, which come as the `files` event with the same `id`: in `folders`, the home
+     * folder unless it says, but for `excluded`, written with `~` for the home folder. A folder in
+     * another is read with it, unless one left out is between them, and one both asked for and
+     * left out is left out. One search runs at a time: another takes its place.
+     * `bento:modules/files` does this. */
+    "files-search": { id: number; query: string; folders?: string[]; excluded?: string[] };
     "files-stop": { id: number };
     /** Opens a file with its app, and a folder in the file manager; with `token`, bento hands the
      * app an activation token, to raise its window. */

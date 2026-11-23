@@ -496,6 +496,7 @@ impl Field<'_> {
                 (row.upcast(), Box::new(show))
             }
             Type::Gradient => gradient_row(title, subtitle, notify),
+            Type::Folder => folder_row(title, subtitle, notify),
         }
     }
 }
@@ -621,6 +622,71 @@ fn gradient_row(
     (row.upcast(), Box::new(show))
 }
 
+/// A folder's row: its path, and a button that picks another with the folder chooser.
+fn folder_row(
+    title: &str,
+    hint: &str,
+    notify: impl Fn(Option<OptionValue>) + 'static,
+) -> (gtk::Widget, ShowValue) {
+    let row = adw::ActionRow::builder()
+        .use_markup(false)
+        .title(title)
+        .build();
+    if !hint.is_empty() {
+        row.set_tooltip_text(Some(hint));
+    }
+    let choose = gtk::Button::builder()
+        .icon_name("folder-open-symbolic")
+        .tooltip_text("Choose Folder…")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let notify = Rc::new(notify);
+    choose.connect_clicked(move |button| {
+        let notify = notify.clone();
+        choose_folder(button.upcast_ref(), move |folder| {
+            notify(Some(OptionValue::String(folder)))
+        });
+    });
+    row.add_suffix(&choose);
+    row.set_activatable_widget(Some(&choose));
+    let shown = row.clone();
+    let show = move |value: &Option<OptionValue>| match value {
+        Some(OptionValue::String(path)) if !path.is_empty() => shown.set_subtitle(path),
+        _ => shown.set_subtitle("None"),
+    };
+    (row.upcast(), Box::new(show))
+}
+
+/// Asks for a folder with the folder chooser, over `from`'s window, and gives it to `picked` as
+/// it's written: with `~` for the home folder.
+fn choose_folder(from: &gtk::Widget, picked: impl Fn(String) + 'static) {
+    let dialog = gtk::FileDialog::builder()
+        .title("Choose a Folder")
+        .modal(true)
+        .build();
+    let window = from.root().and_downcast::<gtk::Window>();
+    dialog.select_folder(
+        window.as_ref(),
+        gtk::gio::Cancellable::NONE,
+        move |folder| {
+            if let Some(path) = folder.ok().and_then(|folder| folder.path()) {
+                picked(written_folder(&path));
+            }
+        },
+    );
+}
+
+/// A folder's path as a setting writes it, with `~` for the home folder.
+fn written_folder(path: &std::path::Path) -> String {
+    let home = glib::home_dir();
+    match path.strip_prefix(&home) {
+        Ok(inside) if inside.as_os_str().is_empty() => String::from("~"),
+        Ok(inside) => format!("~/{}", inside.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 fn entry_row(title: &str, hint: &str) -> adw::EntryRow {
     let row = adw::EntryRow::builder()
         .use_markup(false)
@@ -726,17 +792,39 @@ impl ListRow {
             let weak = Rc::downgrade(self);
             let change: Change = {
                 let weak = weak.clone();
+                let row = self.row.clone();
                 Rc::new(move |value: Option<OptionValue>| {
                     let Some(list) = weak.upgrade() else { return };
                     if let Some(value) = value {
+                        // A folder that's listed already isn't listed twice.
+                        let elsewhere = |(j, item): (usize, &OptionValue)| j != i && *item == value;
+                        if list.r#type == Type::Folder
+                            && list.items.borrow().iter().enumerate().any(elsewhere)
+                        {
+                            toast(
+                                row.upcast_ref(),
+                                &format!("“{}” is already in the list", summarize(&value)),
+                            );
+                            list.rebuild();
+                            return;
+                        }
                         if let Some(item) = list.items.borrow_mut().get_mut(i) {
                             *item = value;
                         }
                         list.commit();
+                        // A folder's row is titled with it. Other rows stay, as one may be typed
+                        // in.
+                        if list.r#type == Type::Folder {
+                            list.rebuild();
+                        }
                     }
                 })
             };
-            let title = format!("Item {}", i + 1);
+            // A folder is its own title.
+            let title = match (self.r#type, item) {
+                (Type::Folder, OptionValue::String(path)) => path.clone(),
+                _ => format!("Item {}", i + 1),
+            };
             let field = Field {
                 r#type: self.r#type,
                 title: &title,
@@ -771,18 +859,36 @@ impl ListRow {
             self.children.borrow_mut().push(row);
         }
 
+        let folders = self.r#type == Type::Folder;
         let add = adw::ActionRow::builder()
-            .title("Add Item")
+            .title(if folders { "Add Folder…" } else { "Add Item" })
             .activatable(true)
             .build();
         add.add_prefix(&gtk::Image::from_icon_name("list-add-symbolic"));
         let weak = Rc::downgrade(self);
-        add.connect_activated(move |_| {
+        add.connect_activated(move |add| {
             let Some(list) = weak.upgrade() else { return };
-            let item = list.new_item();
-            list.items.borrow_mut().push(item);
-            list.rebuild();
-            list.commit();
+            if !folders {
+                let item = list.new_item();
+                list.items.borrow_mut().push(item);
+                list.rebuild();
+                list.commit();
+                return;
+            }
+            // A folder is picked first, and added once.
+            let weak = Rc::downgrade(&list);
+            let from = add.clone().upcast::<gtk::Widget>();
+            choose_folder(&from.clone(), move |folder| {
+                let Some(list) = weak.upgrade() else { return };
+                let item = OptionValue::String(folder.clone());
+                if list.items.borrow().contains(&item) {
+                    toast(&from, &format!("“{folder}” is already in the list"));
+                    return;
+                }
+                list.items.borrow_mut().push(item);
+                list.rebuild();
+                list.commit();
+            });
         });
         self.row.add_row(&add);
         self.children.borrow_mut().push(add.upcast());
@@ -805,6 +911,7 @@ impl ListRow {
             Type::Choice => OptionValue::String(self.choices.first().cloned().unwrap_or_default()),
             Type::Size => OptionValue::String(String::from("50%")),
             Type::Color => OptionValue::String(String::from("#ffffff")),
+            Type::Folder => OptionValue::String(String::from("~")),
             // A gradient can't be a list: it's written with the properties of its one node.
             Type::Gradient => OptionValue::Gradient(LayoutEngineGradient {
                 from: String::from("#000000"),
@@ -814,6 +921,16 @@ impl ListRow {
                 color_space: None,
             }),
         }
+    }
+}
+
+/// Shows `message` in the toasts of the window `from` is in.
+fn toast(from: &gtk::Widget, message: &str) {
+    if let Some(overlay) = from.ancestor(adw::ToastOverlay::static_type()) {
+        overlay
+            .downcast::<adw::ToastOverlay>()
+            .unwrap()
+            .add_toast(adw::Toast::new(message));
     }
 }
 

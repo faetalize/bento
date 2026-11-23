@@ -66,7 +66,15 @@ export type SizingMode = "normal" | "fullscreen" | "maximized";
 
 // Declarations.
 
-export type ValueType = "boolean" | "number" | "string" | "choice" | "size" | "color" | "gradient";
+export type ValueType =
+    | "boolean"
+    | "number"
+    | "string"
+    | "choice"
+    | "size"
+    | "color"
+    | "gradient"
+    | "folder";
 
 /**
  * A setting, or a property an engine's window rules can set, declared the same way as a shell's
@@ -80,7 +88,8 @@ export interface SettingSpec {
      * `"color"` values are written `"#rrggbb"` or `"#rrggbbaa"` and reach the engine as a
      * `Color`. `"gradient"` values are written with properties, like
      * `active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view"`, and reach the
-     * engine as a `Gradient`, or `null` when left out.
+     * engine as a `Gradient`, or `null` when left out. `"folder"` values are paths, written with
+     * `~` for the home folder, and bento Settings picks them with a folder chooser.
      */
     type: ValueType;
     /**
@@ -121,7 +130,7 @@ export interface ArgSpec {
      * - `"monitor"`: written as a connector name like `"DP-2"`; the engine gets a `Monitor`, or
      *   `null`.
      */
-    type: Exclude<ValueType, "color" | "gradient"> | "workspace" | "monitor";
+    type: Exclude<ValueType, "color" | "gradient" | "folder"> | "workspace" | "monitor";
     /** Value when the argument is left out. Arguments without one must be given. */
     default?: boolean | number | string;
     choices?: string[];
