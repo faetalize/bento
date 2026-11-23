@@ -418,8 +418,34 @@ pub fn run() -> glib::ExitCode {
                 "stream-move" => devices.move_stream(kind(), id(), &text("device")),
                 "stream-follow" => devices.follow_default(kind(), id()),
                 "stream-keep" => devices.keep_here(kind(), id()),
-                "combine-set" => combine.set(&command["combination"]),
-                "combine-remove" => combine.remove(&text("id")),
+                "combine-set" => {
+                    let mut combination = command["combination"].clone();
+                    // A new combination's outputs go to their full volume, so that its own
+                    // volume and their balance are all there is to what they play; what they
+                    // were set to comes back when it's removed.
+                    let id = combination["id"].as_str().unwrap_or_default().to_owned();
+                    if combine.get(&id).is_none() {
+                        for member in combination["members"].as_array_mut().into_iter().flatten() {
+                            let device = member["device"].as_str().unwrap_or_default().to_owned();
+                            if let Some(volume) = devices.volume(Kind::Output, &device) {
+                                member["restore"] = volume.into();
+                                devices.set_volume(Kind::Output, &device, 1.);
+                            }
+                        }
+                    }
+                    combine.set(&combination);
+                }
+                "combine-remove" => {
+                    let id = text("id");
+                    if let Some(combination) = combine.get(&id) {
+                        for member in &combination.members {
+                            if let Some(volume) = member.restore {
+                                devices.set_volume(Kind::Output, &member.device, volume);
+                            }
+                        }
+                    }
+                    combine.remove(&id);
+                }
                 "eq-set" => equalizers.set(&text("device"), &command),
                 "brightness" => {
                     brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))

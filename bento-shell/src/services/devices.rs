@@ -384,6 +384,11 @@ impl DeviceService {
         }
     }
 
+    /// The volume of the device named `name`, as it shows.
+    pub fn volume(&self, kind: Kind, name: &str) -> Option<f64> {
+        self.find(kind, name).map(|device| device.volume)
+    }
+
     /// Whose volume is the device named `name`'s: its equalizer's, while it has one.
     fn volume_of(&self, kind: Kind, name: &str) -> String {
         let through = self.find(kind, name).and_then(|device| device.through);

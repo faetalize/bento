@@ -63,10 +63,13 @@ pub struct Member {
     /// The output's name in the sound server.
     pub device: String,
     pub role: Role,
-    /// From 0 to 1.
+    /// Its share of the combination's sound, from 0 to 1: the balance between the outputs.
     pub level: f64,
     /// In milliseconds, when it isn't kept in sync by itself.
     pub delay: f64,
+    /// The output's own volume before the combination set it to full, to put back when it's
+    /// removed.
+    pub restore: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +100,7 @@ impl Combination {
                         .to_owned(),
                     role: Role::parse(member["role"].as_str().unwrap_or_default()),
                     level: member["level"].as_f64().unwrap_or(1.).clamp(0., 1.),
+                    restore: member["restore"].as_f64(),
                     delay: member["delay"].as_f64().unwrap_or(0.).clamp(0., MAX_DELAY),
                 })
             })
@@ -122,6 +126,7 @@ impl Combination {
                 "device": member.device,
                 "role": member.role.name(),
                 "level": member.level,
+                "restore": member.restore,
                 "delay": member.delay,
             })).collect::<Vec<_>>(),
         })
@@ -376,6 +381,15 @@ impl CombineService {
         }
     }
 
+    /// The combination `id`, if there's one.
+    pub fn get(&self, id: &str) -> Option<Combination> {
+        self.combinations
+            .borrow()
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+    }
+
     pub fn remove(&self, id: &str) {
         self.combinations.borrow_mut().retain(|c| c.id != id);
         self.changed();
@@ -489,12 +503,14 @@ mod tests {
                     role: roles[0],
                     level: 1.,
                     delay: 0.,
+                    restore: None,
                 },
                 Member {
                     device: "alsa_output.b".into(),
                     role: roles[1],
                     level: 1.,
                     delay: 40.,
+                    restore: Some(0.3),
                 },
             ],
         }

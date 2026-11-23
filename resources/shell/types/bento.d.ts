@@ -866,10 +866,14 @@ declare module "bento" {
         members: {
           device: string;
           role: "same" | "front" | "back" | "lows" | "highs";
-          /** From 0 to 1. */
+          /** Its share of the combination's sound, the balance between the outputs, from 0
+           * to 1. */
           level: number;
           /** In milliseconds, up to 500. */
           delay: number;
+          /** The output's own volume from before the combination set it to full, which comes
+           * back when the combination is removed. The data program sets it. */
+          restore?: number | null;
         }[];
       }[];
     };
@@ -1068,7 +1072,8 @@ declare module "bento" {
     /** Keeps an app's stream on the device it's on, even when the default changes. */
     "stream-keep": { kind: "output" | "input"; id: number };
     /** Makes a combination of outputs, or changes one, by its `id` (letters, digits and `-`). A
-     * change of levels or delays is made as it plays; any other starts it again. */
+     * new one sets its outputs to their full volume, and removing it puts them back. A change of
+     * levels or delays is made as it plays; any other starts it again. */
     "combine-set": { combination: Omit<Data["combinations"]["combinations"][number], "device"> };
     "combine-remove": { id: string };
     /** Sets an output's equalizer: on or off, and each band's gain in dB. Its gains change as it

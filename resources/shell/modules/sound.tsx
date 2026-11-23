@@ -293,7 +293,7 @@ export interface Combination {
   /** The combined output's name in the sound server. */
   device: string;
   auto: boolean;
-  members: { device: string; role: Role; level: number; delay: number }[];
+  members: { device: string; role: Role; level: number; delay: number; restore?: number | null }[];
 }
 
 const combining = () => data("combinations");
@@ -818,7 +818,8 @@ function NewCombination(props: { width: number }) {
 }
 
 /** A combination's settings: its volume, whether it keeps in sync by itself, and each output's
- * role, level and delay. One just made ends with Done; one opened later can be removed. */
+ * role, its share of the sound, the balance between them, and its delay. Its outputs are at their
+ * full volume while it's there, so its own volume and the balance are all there is to it. One just made ends with Done; one opened later can be removed. */
 function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
   const combination = () => combinations().find((c) => c.id === props.id);
   const device = () => devices().outputs.find((d) => d.name === combination()?.device);
@@ -906,7 +907,7 @@ function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
                 </box>
                 <Show when={filters()}>
                   <box style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <text style={{ fontSize: 11, color: "fg/0.6", width: 40 }}>Level</text>
+                    <text style={{ fontSize: 11, color: "fg/0.6", width: 46 }}>Balance</text>
                     <Line
                       value={level()}
                       onPick={(value) => {
@@ -924,7 +925,7 @@ function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
                     </text>
                   </box>
                   <box style={{ flexDirection: "row", alignItems: "center", gap: 8, opacity: synced() ? 0.4 : 1 }}>
-                    <text style={{ fontSize: 11, color: "fg/0.6", width: 40 }}>Delay</text>
+                    <text style={{ fontSize: 11, color: "fg/0.6", width: 46 }}>Delay</text>
                     <Show when={!synced()} fallback={<box style={{ flexGrow: 1, height: 16, justifyContent: "center", flexDirection: "column" }}><box style={{ height: 4, borderRadius: 2, background: "fg/0.15" }} /></box>}>
                       <Line
                         value={delay() / MAX_DELAY}
