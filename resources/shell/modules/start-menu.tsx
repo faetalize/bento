@@ -1,5 +1,5 @@
-// A start menu: the apps, found by typing as the launcher finds them, or all of them in a grid,
-// and the power menu. It comes out of the start button, or up from the bottom of the output, in its
+// A start menu: apps and files, found by typing as the launcher finds them, or all the apps in a
+// grid, and the power menu. It comes out of the start button, or up from the bottom of the output, in its
 // middle.
 
 import {
@@ -7,7 +7,8 @@ import {
 } from "bento";
 import { createSignal, For, Show } from "solid-js";
 import { Button, Flyout, Scroller, popup } from "bento:modules/ui";
-import { AppRow, appIcon, appSearch, preloadIcons, start } from "bento:modules/apps";
+import { appIcon, preloadIcons, start } from "bento:modules/apps";
+import { FilesPill, SearchLine, everythingSearch } from "bento:modules/search";
 import { PowerPage } from "bento:modules/power";
 
 export const meta = {
@@ -30,6 +31,7 @@ const COLUMNS = 6;
 // How tall the list of apps is, which scrolls.
 const LIST = 420;
 const ICON = 32;
+const HEIGHTS = { head: 28, row: 48, more: 40 };
 
 /** One app in the grid: its icon over its name. */
 function AppTile(props: { app: App; onClick: () => void }) {
@@ -79,8 +81,10 @@ export function StartMenu(props: {
 }
 
 function Menu(props: { onClose: () => void }) {
-  const search = appSearch(8);
+  const search = everythingSearch({ headers: "all", heights: HEIGHTS, done: props.onClose });
+  search.reset();
   const all = apps();
+  let field: any;
   const [power, setPower] = createSignal(false);
   const pick = (app: App) => {
     start(app);
@@ -90,18 +94,21 @@ function Menu(props: { onClose: () => void }) {
     <box style={{ flexDirection: "column", gap: 14, width: WIDTH }}>
       <box
         style={{
-          flexDirection: "row", alignItems: "center", gap: 10, padding: [9, 14], borderRadius: 20,
-          background: "fg/0.08", fontSize: 15,
+          flexDirection: "row", alignItems: "center", gap: 10, height: 42, padding: [0, 6, 0, 14],
+          borderRadius: 21, background: "fg/0.08", fontSize: 15,
         }}
       >
         <image icon="system-search-symbolic" style={{ color: "fg/0.6" }} />
         <input
+          ref={field}
           autofocus
-          placeholder="Search for apps"
+          placeholder={search.placeholder()}
           onInput={search.type}
-          onSubmit={() => search.current() && pick(search.current()!)}
-          onKey={search.key}
+          onSubmit={search.submit}
+          onBeforeKey={search.beforeKey}
+          onKey={(event) => search.key(event, field)}
         />
+        <FilesPill search={search} />
       </box>
       <Show
         when={search.query().trim()}
@@ -110,6 +117,14 @@ function Menu(props: { onClose: () => void }) {
             when={!power()}
             fallback={<PowerPage onDone={props.onClose} />}
           >
+            <Show
+              when={!search.filesOnly()}
+              fallback={
+                <box style={{ height: LIST + 30, padding: [22, 14], alignItems: "center" }}>
+                  <text style={{ color: "fg/0.6" }}>Type to find files and folders by name</text>
+                </box>
+              }
+            >
             <text style={{ fontWeight: 700, paddingLeft: 8 }}>All apps</text>
             <Scroller
               style={{ height: LIST }}
@@ -117,22 +132,32 @@ function Menu(props: { onClose: () => void }) {
             >
               <For each={all}>{(app) => <AppTile app={app} onClick={() => pick(app)} />}</For>
             </Scroller>
+            </Show>
           </Show>
         }
       >
-        <box style={{ flexDirection: "column", gap: 2, minHeight: LIST + 30 }}>
-          <For each={search.matches()}>
-            {(app, index) => (
-              <AppRow
-                app={app}
+        <Scroller
+          style={{ height: LIST + 30 }}
+          inner={{ flexDirection: "column" }}
+          reveal={search.reveal()}
+        >
+          <For each={search.lines()}>
+            {(line) => (
+              <SearchLine
+                line={line}
+                search={search}
+                heights={HEIGHTS}
                 iconSize={ICON}
-                selected={index() === search.selected()}
-                onClick={() => pick(app)}
-                onHover={() => search.select(index())}
+                fontSize={14}
               />
             )}
           </For>
-        </box>
+          <Show when={search.nothing()}>
+            <box style={{ padding: [22, 14], alignItems: "center" }}>
+              <text style={{ color: "fg/0.6" }}>No Results</text>
+            </box>
+          </Show>
+        </Scroller>
       </Show>
       <box style={{ flexDirection: "row", justifyContent: "end" }}>
         <Button

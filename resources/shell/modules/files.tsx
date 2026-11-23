@@ -2,7 +2,7 @@
 // it shows what it finds its own way, and says when to search.
 
 import { command, data, onData, type FoundFile } from "bento";
-import { createSignal, getOwner, onCleanup } from "solid-js";
+import { createMemo, createSignal, getOwner, onCleanup } from "solid-js";
 
 // The last search asked for. It starts from the time, so that what one asked for before the shell
 // loaded again finds is never taken for another's.
@@ -16,7 +16,13 @@ export const filesAvailable = () => data("file-search")?.available ?? false;
  * search runs at a time, so only one of these looks for something at once. */
 export function fileSearch(most = 8) {
   const [query, setQuery] = createSignal("");
-  const [files, setFiles] = createSignal<FoundFile[]>([]);
+  const [found, setFound] = createSignal<FoundFile[]>([]);
+  // What was found before, while something else is looked for, is only what that matches too: it
+  // has the same words in its name.
+  const files = createMemo(() => {
+    const words = query().toLowerCase().split(/\s+/).filter(Boolean);
+    return found().filter((file) => words.every((word) => file.name.toLowerCase().includes(word)));
+  });
   const [searching, setSearching] = createSignal(false);
   // The search that's on its way.
   let running: { id: number; query: string } | null = null;
@@ -38,7 +44,7 @@ export function fileSearch(most = 8) {
     if (wanted) ask(wanted);
     else {
       stop();
-      setFiles([]);
+      setFound([]);
     }
   };
 
@@ -46,7 +52,7 @@ export function fileSearch(most = 8) {
     if (event.id !== running?.id) return;
     running = null;
     setSearching(false);
-    setFiles(event.files.slice(0, most));
+    setFound(event.files.slice(0, most));
   });
   // The data program started again, and knows nothing of the search it was on.
   onData("ready", () => running && ask(running.query));
@@ -54,8 +60,8 @@ export function fileSearch(most = 8) {
 
   return {
     query,
-    /** The files that match, the best first. While `searching()`, they're still those of the
-     * search before. */
+    /** The files that match, the best first. While `searching()`, they're those of the search
+     * before that match what's looked for now. */
     files,
     /** Whether the query is still being looked for. */
     searching,

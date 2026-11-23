@@ -1304,6 +1304,125 @@ mod tests {
     }
 
     #[test]
+    fn the_launcher_finds_files_under_apps_and_alone_with_its_pill() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(r#"{"type":"file-search","available":true}"#);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        assert!(shows(
+            &host,
+            "DP-1",
+            "Search apps, or / for files and folders"
+        ));
+        commands(&host);
+        // What no app is called, which every key looks for.
+        type_keys(&mut host, &["q", "z", "x"]);
+        let asked = commands(&host);
+        assert_eq!(asked.len(), 3, "{asked:?}");
+        assert_eq!(asked[2]["query"], "qzx");
+        let found = |host: &mut SceneHost, id: &serde_json::Value, count: usize| {
+            let files: Vec<_> = (0..count)
+                .map(|i| {
+                    serde_json::json!({
+                        "path": format!("/h/d/qzx-{i}.txt"), "name": format!("qzx-{i}.txt"),
+                        "location": "~/d", "folder": false, "icon": "text-x-generic",
+                    })
+                })
+                .collect();
+            let said = serde_json::json!({ "type": "files", "id": id, "files": files });
+            host.data_line(&said.to_string());
+        };
+        found(&mut host, &asked[2]["id"], 10);
+        settle(&mut host, &mut now);
+        // Alone, files take the room of both, and the rest are a row away. No header says what
+        // the only kind is.
+        assert!(shows(&host, "DP-1", "qzx-7.txt") && !shows(&host, "DP-1", "qzx-8.txt"));
+        assert!(shows(&host, "DP-1", "Show All 10 Files"));
+        assert!(shows(&host, "DP-1", "~/d"));
+
+        // `/` lights the pill and isn't typed: all of them show, and the field still searches
+        // what it did.
+        type_keys(&mut host, &["/"]);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "qzx-9.txt") && !shows(&host, "DP-1", "Show All 10 Files"));
+        assert!(commands(&host).is_empty());
+
+        // The selected file shows in its folder with Ctrl+Enter, which closes the launcher.
+        type_keys(&mut host, &["Down", "Down"]);
+        host.key(&EngineKey {
+            name: String::from("Return"),
+            text: String::new(),
+            modifiers: [false, true, false, false],
+            pressed: true,
+            repeat: false,
+        });
+        settle(&mut host, &mut now);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "files-show", "path": "/h/d/qzx-2.txt", "token": true })]
+        );
+        assert!(!host.wants_keyboard());
+
+        // Opened again, it starts empty, with the pill off; `/` anywhere lights it, and again
+        // puts it out.
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        assert!(shows(
+            &host,
+            "DP-1",
+            "Search apps, or / for files and folders"
+        ));
+        type_keys(&mut host, &["/"]);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Search files and folders"));
+        type_keys(&mut host, &["/"]);
+        settle(&mut host, &mut now);
+        assert!(shows(
+            &host,
+            "DP-1",
+            "Search apps, or / for files and folders"
+        ));
+        // Backspace in the empty field puts it out too.
+        type_keys(&mut host, &["/", "BackSpace"]);
+        settle(&mut host, &mut now);
+        assert!(shows(
+            &host,
+            "DP-1",
+            "Search apps, or / for files and folders"
+        ));
+
+        // Escape empties the field, then puts the pill out, then closes, and Enter opens the
+        // selected file.
+        commands(&host);
+        type_keys(&mut host, &["/", "q"]);
+        let asked = commands(&host);
+        found(&mut host, &asked[0]["id"], 3);
+        settle(&mut host, &mut now);
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Search files and folders") && host.wants_keyboard());
+        type_keys(&mut host, &["Escape"]);
+        settle(&mut host, &mut now);
+        assert!(shows(
+            &host,
+            "DP-1",
+            "Search apps, or / for files and folders"
+        ));
+        assert!(host.wants_keyboard());
+        type_keys(&mut host, &["/", "q"]);
+        let asked = commands(&host);
+        found(&mut host, &asked.last().unwrap()["id"], 3);
+        settle(&mut host, &mut now);
+        type_keys(&mut host, &["Return"]);
+        settle(&mut host, &mut now);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "files-open", "path": "/h/d/qzx-0.txt", "token": true })]
+        );
+        assert!(!host.wants_keyboard());
+    }
+
+    #[test]
     fn an_island_open_on_one_output_stays_open_as_whats_in_it_is_pressed() {
         let mut host = SceneHost::default();
         let outputs = [
@@ -1355,10 +1474,10 @@ mod tests {
         host.shell_action("toggle-launcher", &[], Some(String::from("DP-2")));
         settle(&mut host, &mut now);
         assert!(overlay(&host, "DP-2") > 0, "it opens on the focused output");
-        // In the middle of the output at its tallest, 544 high, and only the search bar until
+        // In the middle of the output at its tallest, 640 high, and only the search bar until
         // something's typed.
         let panel = glass_below_islands(&host, "DP-2").pop().unwrap();
-        assert!((panel[1] - (1440. - 544.) / 2.).abs() < 1., "{panel:?}");
+        assert!((panel[1] - (1440. - 640.) / 2.).abs() < 1., "{panel:?}");
         assert!(panel[3] < 100., "only the bar: {panel:?}");
         assert_eq!(overlay(&host, "DP-1"), 0);
         assert!(host.wants_keyboard());
@@ -1381,6 +1500,10 @@ mod tests {
             "only the bar"
         );
 
+        // Escape empties the field first, and then closes it.
+        host.key(&key("Escape", ""));
+        settle(&mut host, &mut now);
+        assert!(overlay(&host, "DP-2") > 0, "Escape empties it");
         host.key(&key("Escape", ""));
         settle(&mut host, &mut now);
         assert_eq!(overlay(&host, "DP-2"), 0, "Escape closes it");
@@ -1794,7 +1917,7 @@ mod tests {
         click(&mut host, "DP-1", start);
         settle(&mut host, &mut now);
         assert!(host.wants_keyboard());
-        assert!(shows(&host, "DP-1", "Search for apps"));
+        assert!(shows(&host, "DP-1", "Search apps"));
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
@@ -4342,11 +4465,72 @@ mod tests {
         shot(&host, "volume-level", [660, 960, 600, 120]);
         settle(&mut host, &mut now);
 
+        host.data_line(r#"{"type":"file-search","available":true}"#);
         host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
+        shot(&host, "launcher-empty", [560, 180, 800, 140]);
+        commands(&host);
         type_keys(&mut host, &["f", "i"]);
+        let asked = commands(&host);
+        let files: Vec<_> = [
+            ("fireplace.jpg", "~/Pictures", "image-x-generic", false),
+            ("fireworks", "~/Pictures/2026", "folder", true),
+            ("firewall.nft", "~/Source/router", "text-x-generic", false),
+            (
+                "Fire safety plan.pdf",
+                "~/Documents/Home",
+                "x-office-document",
+                false,
+            ),
+            (
+                "firework-01.jpg",
+                "~/Pictures/2026/fireworks",
+                "image-x-generic",
+                false,
+            ),
+            (
+                "firework-02.jpg",
+                "~/Pictures/2026/fireworks",
+                "image-x-generic",
+                false,
+            ),
+        ]
+        .iter()
+        .map(|(name, location, icon, folder)| {
+            serde_json::json!({
+                "path": format!("/h/{name}"), "name": name, "location": location,
+                "folder": folder, "icon": icon,
+            })
+        })
+        .collect();
+        let found = |host: &mut SceneHost, asked: &[serde_json::Value]| {
+            let id = &asked.last().unwrap()["id"];
+            let said = serde_json::json!({ "type": "files", "id": id, "files": files });
+            host.data_line(&said.to_string());
+        };
+        found(&mut host, &asked);
         settle(&mut host, &mut now);
-        shot(&host, "launcher", [560, 240, 800, 420]);
+        shot(&host, "launcher", [560, 180, 800, 700]);
+        type_keys(&mut host, &["/", "Down"]);
+        settle(&mut host, &mut now);
+        shot(&host, "launcher-files", [560, 180, 800, 700]);
+        type_keys(&mut host, &["Escape", "Escape", "Escape"]);
+
+        // The start menu, which searches the same way.
+        super::super::modules::TEST_ENTRY
+            .with(|entry| *entry.borrow_mut() = Some(String::from("bento:shells/windows")));
+        let (mut windows, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        super::super::modules::TEST_ENTRY.with(|entry| *entry.borrow_mut() = None);
+        windows.data_line(r#"{"type":"theme","dark":false}"#);
+        windows.data_line(r#"{"type":"file-search","available":true}"#);
+        windows.shell_action("toggle-start-menu", &[], Some(String::from("DP-1")));
+        settle(&mut windows, &mut now);
+        commands(&windows);
+        type_keys(&mut windows, &["f", "i"]);
+        let asked = commands(&windows);
+        found(&mut windows, &asked);
+        settle(&mut windows, &mut now);
+        shot(&windows, "start-menu", [560, 280, 800, 800]);
         renderer.destroy_target(target);
     }
 

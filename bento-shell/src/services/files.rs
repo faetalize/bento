@@ -245,6 +245,17 @@ impl File {
         self.path.rsplit('/').next().unwrap_or_default()
     }
 
+    /// The folder it's in, with `~` for the home folder.
+    fn location(&self) -> String {
+        let folder = Path::new(&self.path).parent().unwrap_or(Path::new("/"));
+        let home = glib::home_dir();
+        match folder.strip_prefix(&home) {
+            Ok(inside) if inside.as_os_str().is_empty() => String::from("~"),
+            Ok(inside) => format!("~/{}", inside.display()),
+            Err(_) => folder.display().to_string(),
+        }
+    }
+
     fn json(&self) -> Value {
         let icon = if self.folder {
             Some("folder".into())
@@ -256,6 +267,7 @@ impl File {
         json!({
             "path": self.path,
             "name": self.name(),
+            "location": self.location(),
             "folder": self.folder,
             "icon": icon.as_deref().unwrap_or("text-x-generic"),
         })

@@ -354,6 +354,9 @@ declare module "bento" {
     onSubmit?: (text: string) => void;
     /** Keys it doesn't use itself, like Up and Down: `true` says the key was used. */
     onKey?: (event: KeyEvent) => boolean | void;
+    /** Every key, before it uses it: `true` says the key was used, and it isn't typed, like a
+     * character that does something of its own. */
+    onBeforeKey?: (event: KeyEvent) => boolean | void;
     /** Gives it the keys when it's made. */
     autofocus?: boolean;
     placeholderStyle?: StyleProp;
@@ -895,6 +898,8 @@ declare module "bento" {
   export interface FoundFile {
     path: string;
     name: string;
+    /** The folder it's in, written with `~` for the home folder. */
+    location: string;
     folder: boolean;
     /** Its kind's icon, by its name. */
     icon: string;
