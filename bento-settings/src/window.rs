@@ -22,7 +22,9 @@ pub struct Ui {
     /// Section index of each category.
     section_of: Vec<usize>,
     sections: &'static [Section],
-    entries: Vec<Entry>,
+    /// What search finds, read again as each search starts, since what the engine and the shell
+    /// declare changes with them.
+    entries: RefCell<Vec<Entry>>,
     ctx: PageContext,
 
     split: adw::NavigationSplitView,
@@ -54,7 +56,7 @@ pub fn build(
         .enumerate()
         .flat_map(|(idx, s)| std::iter::repeat_n(idx, s.categories.len()))
         .collect();
-    let entries = search::index(sections);
+    let entries = crate::pages::search_index(sections);
 
     let toasts = adw::ToastOverlay::new();
     let ctx = PageContext::new(store.clone(), toasts.clone());
@@ -153,7 +155,7 @@ pub fn build(
         categories,
         section_of,
         sections,
-        entries,
+        entries: RefCell::new(entries),
         ctx,
         split,
         sidebar_stack,
@@ -413,13 +415,19 @@ impl Ui {
             self.result_entries.borrow_mut().clear();
             return;
         }
+        // A search starts.
+        if self.sidebar_stack.visible_child_name().as_deref() == Some("categories") {
+            self.entries
+                .replace(crate::pages::search_index(self.sections));
+        }
 
-        let hits = search::search(&self.entries, query);
+        let entries = self.entries.borrow();
+        let hits = search::search(&entries, query);
         self.results_list.remove_all();
         let mut result_entries = self.result_entries.borrow_mut();
         result_entries.clear();
         for hit in hits.iter().take(50) {
-            let entry = &self.entries[hit.entry];
+            let entry = &entries[hit.entry];
             self.results_list.append(&result_row(
                 self.categories[entry.category],
                 entry,
@@ -436,8 +444,11 @@ impl Ui {
     }
 
     fn open_result(self: &Rc<Self>, entry: usize) {
-        let entry = &self.entries[entry];
-        let (category, anchor) = (entry.category, entry.anchor.clone());
+        let (category, anchor) = {
+            let entries = self.entries.borrow();
+            let entry = &entries[entry];
+            (entry.category, entry.anchor.clone())
+        };
         self.search_entry.set_text("");
         self.show(category, anchor);
     }

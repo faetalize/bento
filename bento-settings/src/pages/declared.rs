@@ -19,7 +19,9 @@ use niri_ipc::{LayoutEngineOption, LayoutEngineOptionValue as OptionValue};
 use super::engine::{option_widget, Change, ShowValue};
 use crate::ipc;
 use crate::kdl::{option_properties, option_values};
+use crate::model::Section;
 use crate::page::PageContext;
+use crate::search::Entry;
 use crate::store::File;
 
 /// Whose a setting is, which says where it's written.
@@ -42,6 +44,14 @@ impl Item {
     fn page(&self) -> Option<&str> {
         let page = self.setting.page.as_deref()?;
         SETTINGS_PAGES.contains(&page).then_some(page)
+    }
+
+    /// Where its row is on its page, which search goes to.
+    fn anchor(&self) -> String {
+        match &self.owner {
+            Owner::Engine => format!("settings.{}", self.setting.name),
+            Owner::Shell(block) => format!("shell.{block}.{}", self.setting.name),
+        }
     }
 
     /// The title of the group it shows in on `page`.
@@ -77,6 +87,47 @@ fn items() -> Vec<Item> {
         }
     }
     items
+}
+
+/// What search finds: the app's own pages and settings, and what the running engine and shell
+/// declare, as they're now.
+pub fn search_index(sections: &[Section]) -> Vec<Entry> {
+    index_with(sections, items())
+}
+
+/// The app's own entries, then a setting's group, which goes to its first setting, and the setting,
+/// for each declared setting on a page it shows on.
+fn index_with(sections: &[Section], declared: Vec<Item>) -> Vec<Entry> {
+    let mut entries = crate::search::index(sections);
+    let categories: Vec<_> = sections.iter().flat_map(|s| &s.categories).collect();
+    for page in SETTINGS_PAGES {
+        let Some(category) = categories.iter().position(|c| c.id == *page) else {
+            continue;
+        };
+        let page_title = categories[category].title;
+        for (group, items) in groups_on(page, declared.clone()) {
+            let Some(first) = items.first() else { continue };
+            entries.push(Entry {
+                category,
+                anchor: Some(first.anchor()),
+                title: group.clone(),
+                context: String::from(page_title),
+                keywords: Vec::new(),
+            });
+            for item in &items {
+                let mut keywords = vec![item.setting.name.replace('-', " ")];
+                keywords.extend(item.setting.description.clone());
+                entries.push(Entry {
+                    category,
+                    anchor: Some(item.anchor()),
+                    title: crate::page::title_from(&item.setting.name),
+                    context: format!("{page_title} › {group}"),
+                    keywords,
+                });
+            }
+        }
+    }
+    entries
 }
 
 /// A group of settings on a page: its title and its settings.
@@ -178,11 +229,7 @@ fn refresh(view: &Rc<View>) {
             for item in items {
                 let change = change(&view.ctx, item);
                 let (row, show) = option_widget(&item.setting, view.updating.clone(), change);
-                let anchor = match &item.owner {
-                    Owner::Engine => format!("settings.{}", item.setting.name),
-                    Owner::Shell(block) => format!("shell.{block}.{}", item.setting.name),
-                };
-                view.ctx.anchor(&anchor, &row);
+                view.ctx.anchor(&item.anchor(), &row);
                 group.add(&row);
                 view.rows.borrow_mut().push(show);
             }
@@ -221,6 +268,62 @@ mod tests {
                 group: group.map(String::from),
             },
         }
+    }
+
+    #[test]
+    fn search_finds_what_the_engine_and_shell_declare_where_it_shows() {
+        let sections = super::super::sections();
+        let taskbar = || Owner::Shell(String::from("taskbar"));
+        let items = vec![
+            item(taskbar(), "height", Some("shell"), Some("Taskbar")),
+            item(Owner::Engine, "gravity", Some("engine"), None),
+            item(taskbar(), "pinned", None, None),
+        ];
+        let entries = index_with(&sections, items);
+        let shell = sections
+            .iter()
+            .flat_map(|s| &s.categories)
+            .position(|c| c.id == "shell")
+            .unwrap();
+        let best = |query: &str| {
+            let hits = crate::search::search(&entries, query);
+            hits.first().map(|hit| {
+                let entry = &entries[hit.entry];
+                (
+                    entry.category,
+                    entry.title.clone(),
+                    entry.context.clone(),
+                    entry.anchor.clone(),
+                )
+            })
+        };
+        // A group goes to its first setting, and a setting to itself.
+        let height = Some(String::from("shell.taskbar.height"));
+        assert_eq!(
+            best("taskbar"),
+            Some((
+                shell,
+                String::from("Taskbar"),
+                String::from("Shell"),
+                height.clone()
+            ))
+        );
+        assert_eq!(
+            best("height"),
+            Some((
+                shell,
+                String::from("Height"),
+                String::from("Shell › Taskbar"),
+                height
+            ))
+        );
+        assert_eq!(
+            best("gravity").unwrap().3,
+            Some(String::from("settings.gravity"))
+        );
+        // What shows on no page isn't found.
+        let pinned = Some(String::from("shell.taskbar.pinned"));
+        assert!(entries.iter().all(|entry| entry.anchor != pinned));
     }
 
     #[test]
