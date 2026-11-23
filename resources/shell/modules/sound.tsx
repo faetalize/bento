@@ -885,6 +885,8 @@ function Ratio(props: { outputs: string[]; volume: number }) {
             return (
               <box
                 style={{
+                  // At its place at once, as the nubs are, so the colours never run past them.
+                  animate: false,
                   width: `${share()}%`, height: HEIGHT, flexDirection: "row", alignItems: "center",
                   justifyContent: "center", gap: 6, overflow: "hidden",
                   background: COLOURS[props.outputs.indexOf(name) % COLOURS.length] as any,
@@ -914,7 +916,8 @@ function Ratio(props: { outputs: string[]; volume: number }) {
               <box
                 style={{
                   position: "absolute", top: -4, left: `${at()}%`, marginLeft: -10, width: 20,
-                  height: HEIGHT + 8, alignItems: "center", cursor: "pointer",
+                  height: HEIGHT + 8, alignItems: "center", justifyContent: "center", cursor: "pointer",
+                  animate: false,
                 }}
                 onPress={() => setHeld([...shares()])}
                 onDrag={(event) => {
