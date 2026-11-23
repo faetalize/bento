@@ -254,6 +254,16 @@ impl DeviceService {
         }
     }
 
+    /// The apps kept on the output named `device`, by their streams' indices.
+    pub fn kept_on(&self, device: &str) -> Vec<u32> {
+        let state = self.state.borrow();
+        let streams = state.playing.iter();
+        streams
+            .filter(|stream| stream.kept && stream.device == device)
+            .map(|stream| stream.index)
+            .collect()
+    }
+
     fn stream(&self, kind: Kind, index: u32) -> Option<Stream> {
         let state = self.state.borrow();
         let list = match kind {
@@ -405,6 +415,9 @@ impl DeviceService {
         let mut outputs = Vec::new();
         introspect.get_sink_info_list(move |result| match result {
             ListResult::Item(info) => {
+                if info.name.as_deref().is_some_and(hidden) {
+                    return;
+                }
                 let port = info.active_port.as_ref();
                 let label = info.description.as_deref().unwrap_or_default().to_owned();
                 let is_virtual = !info.flags.contains(SinkFlagSet::HARDWARE);
@@ -446,7 +459,7 @@ impl DeviceService {
         introspect.get_source_info_list(move |result| match result {
             ListResult::Item(info) => {
                 // What an output plays can be recorded from its monitor, which isn't a device.
-                if info.monitor_of_sink.is_some() {
+                if info.monitor_of_sink.is_some() || info.name.as_deref().is_some_and(hidden) {
                     return;
                 }
                 let port = info.active_port.as_ref();
@@ -589,6 +602,12 @@ impl DeviceService {
     }
 }
 
+/// Whether the device named `name` is a part of something bento built, like the filter one output
+/// of a combination plays through, rather than a device of its own.
+fn hidden(name: &str) -> bool {
+    name.starts_with(super::combine::CHAIN_PREFIX) || name.starts_with("bento.eq.")
+}
+
 /// An app's stream, from what the sound server says of it, but for the sound server's own and
 /// bento's, and level meters like pavucontrol's.
 fn stream(
@@ -601,6 +620,7 @@ fn stream(
     let property = |key: &str| properties.get_str(key).filter(|value| !value.is_empty());
     if property("media.name").as_deref() == Some("Peak detect")
         || property("node.name").is_some_and(|name| name.starts_with("bento."))
+        || property("bento.internal").as_deref() == Some("true")
     {
         return None;
     }

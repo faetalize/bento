@@ -7,7 +7,7 @@ import {
   useModule, type AudioStream, type Meta, type PointerEvent, type SceneNode,
 } from "bento";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
-import { Button, Line, Note, Slider, grows, growsWith } from "bento:modules/ui";
+import { Button, Line, Note, Slider, Toggle, grows, growsWith } from "bento:modules/ui";
 import { openMenu, type MenuItem } from "bento:modules/menu";
 import { appById, appIcon } from "bento:modules/apps";
 
@@ -268,7 +268,75 @@ function deviceMenu(kind: Kind, device: Device, event: PointerEvent) {
     const pin = pinned().includes(device.name);
     items.push({ label: pin ? "Unpin from Switcher" : "Pin to Switcher", run: () => setPinned(device.name, !pin) });
   }
+  const combination = combinationOf(device.name);
+  if (combination) {
+    items.push(
+      "separator",
+      { label: "Edit Combination…", run: () => setSub({ page: "combination", id: combination.id, fresh: false }) },
+      { label: "Remove Combination", danger: true, run: () => command("combine-remove", { id: combination.id }) },
+    );
+  }
   openMenu({ output: event.output, x: event.x, y: event.y }, items);
+}
+
+// ------------------------------------------------------------------------------------------------
+// Combinations of outputs, which the data program makes and keeps.
+// ------------------------------------------------------------------------------------------------
+
+export type Role = "same" | "front" | "back" | "lows" | "highs";
+export interface Combination {
+  id: string;
+  name: string;
+  /** The combined output's name in the sound server. */
+  device: string;
+  auto: boolean;
+  members: { device: string; role: Role; level: number; delay: number }[];
+}
+
+const combining = () => data("combinations");
+export const combinations = (): Combination[] => combining()?.combinations ?? [];
+const combinationOf = (device: string) => combinations().find((c) => c.device === device);
+const ROLES: { role: Role; label: string; filters?: boolean }[] = [
+  { role: "same", label: "Same" },
+  { role: "front", label: "Front" },
+  { role: "back", label: "Back" },
+  { role: "lows", label: "Lows", filters: true },
+  { role: "highs", label: "Highs", filters: true },
+];
+const MAX_DELAY = 500;
+
+function setCombination(combination: Omit<Combination, "device">) {
+  command("combine-set", { combination });
+}
+
+/** A page of the sound page's own, over its devices: a new combination, or one's settings, the
+ * one just made ending with Done. */
+type Sub = { page: "new" } | { page: "combination"; id: string; fresh: boolean };
+const [sub, setSub] = createSignal<Sub | null>(null);
+// The card that lights up for a moment, as a combination just made.
+const [flashed, setFlashed] = createSignal<string | null>(null);
+
+/** The sound page's title while one of its own pages shows, for whoever shows the page. */
+export function soundTitle(): string | null {
+  const page = sub();
+  if (!page) return null;
+  if (page.page === "new") return "New Combination";
+  return combinations().find((c) => c.id === page.id)?.name ?? "Combination";
+}
+
+/** Steps back from one of the sound page's own pages, and says whether there was one. */
+export function soundBack(): boolean {
+  const page = sub();
+  if (!page) return false;
+  setSub(null);
+  if (page.page === "combination" && page.fresh) flash(`bento.combine.${page.id}`);
+  return true;
+}
+
+function flash(device: string) {
+  setFlashed(device);
+  // Taken away at once, it fades out on its exit pose, deaf to the pointer.
+  after(60, () => setFlashed(null));
 }
 
 // How far a press moves before it's a drag.
@@ -282,6 +350,7 @@ const CARD = { borderRadius: 14, padding: [2, 0, 6, 0] } as const;
 export function SoundPage(props: { width: number }) {
   const [kind, setKind] = createSignal<Kind>("outputs");
   const [showOther, setShowOther] = createSignal(false);
+  onCleanup(() => setSub(null));
   // Where apps can be dropped: each device's card or chip, by its name.
   const drops = new Map<string, SceneNode>();
   let root: SceneNode | undefined;
@@ -325,8 +394,34 @@ export function SoundPage(props: { width: number }) {
     const all = list().filter(isCard);
     return names([...all.filter((device) => device.active), ...all.filter((device) => !device.active)]);
   };
-  const chips = () => names(list().filter((device) => !isCard(device) && !device.virtual));
-  const other = () => names(list().filter((device) => !isCard(device) && device.virtual));
+  // A combination is a virtual output, but one the user made: it's a chip, not folded away.
+  const isOwn = (device: Device) => !device.virtual || Boolean(combinationOf(device.name));
+  const chips = () => names(list().filter((device) => !isCard(device) && isOwn(device)));
+  const other = () => names(list().filter((device) => !isCard(device) && !isOwn(device)));
+  const realOutputs = () => devices().outputs.filter((device) => !device.virtual);
+  const canCombine = () => kind() === "outputs" && Boolean(combining()?.available) && realOutputs().length >= 2;
+  const iconOf = (device: Device) => (combinationOf(device.name) ? "ph-intersect-three-symbolic" : device.icon);
+  const detailOf = (device: Device) => {
+    const combination = combinationOf(device.name);
+    if (!combination) return device.detail;
+    const titleByName = (name: string) => {
+      const found = devices().outputs.find((output) => output.name === name);
+      return found ? titleOf(found) : "Not Connected";
+    };
+    return combination.members.map((m) => `${titleByName(m.device)} · ${m.role}`).join(", ");
+  };
+  /** The light a card or chip shows for a moment, fading out as it's taken away. */
+  const Flash = (name: string, radius: number) => (
+    <Show when={flashed() === name}>
+      <box
+        style={{
+          position: "absolute", top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius,
+          background: "accent/0.35", transition: { opacity: 1.4 },
+        }}
+        exit={{ opacity: 0 }}
+      />
+    </Show>
+  );
 
   const AppRow = (key: string) => (
     <Show when={appOf(key)}>{(app) => AppRowOf(app)}</Show>
@@ -439,7 +534,7 @@ export function SoundPage(props: { width: number }) {
           onRightClick={(event) => deviceMenu(kind(), device(), event)}
         >
           <image
-            icon={device().icon}
+            icon={iconOf(device())}
             size={18}
             style={{ color: device().active ? "accent" : "fg", flexShrink: 0 }}
           />
@@ -459,12 +554,20 @@ export function SoundPage(props: { width: number }) {
                 </box>
               }
             >
-              <Show when={device().detail}>
-                <text style={{ fontSize: 11, color: "fg/0.55", lineClamp: 1 }}>{device().detail!}</text>
+              <Show when={detailOf(device())}>
+                <text style={{ fontSize: 11, color: "fg/0.55", lineClamp: 1 }}>{detailOf(device())!}</text>
               </Show>
             </Show>
           </box>
           {PinButton(device, hover)}
+          <Show when={combinationOf(device().name)}>
+            <Button
+              icon="go-next-symbolic"
+              size={14}
+              style={{ width: 26, height: 26, borderRadius: 8, flexShrink: 0, background: "fg/0.08" }}
+              onClick={() => setSub({ page: "combination", id: combinationOf(device().name)!.id, fresh: false })}
+            />
+          </Show>
         </box>
         <Show when={device().active}>
           <box style={{ padding: [0, 10, 10, 10] }}>
@@ -472,6 +575,7 @@ export function SoundPage(props: { width: number }) {
           </box>
         </Show>
         <For each={appsOn(device().name)}>{(key) => AppRow(key)}</For>
+        {Flash(device().name, 14)}
       </box>
     );
   };
@@ -496,9 +600,10 @@ export function SoundPage(props: { width: number }) {
         onClick={() => command("device", { kind: one(kind()), name: device().name })}
         onRightClick={(event) => deviceMenu(kind(), device(), event)}
       >
-        <image icon={device().icon} size={14} />
+        <image icon={iconOf(device())} size={14} />
         <text style={{ fontSize: 12, lineClamp: 1 }}>{titleOf(device())}</text>
         {PinButton(device, hover)}
+        {Flash(device().name, 10)}
       </box>
     );
   };
@@ -510,6 +615,19 @@ export function SoundPage(props: { width: number }) {
     return { left: drag.x - rect.x - 16, top: drag.y - rect.y - 16 };
   };
 
+  return (
+    <Show when={sub()} keyed fallback={devicesPage()}>
+      {(page: Sub) =>
+        page.page === "new" ? (
+          <NewCombination width={props.width} />
+        ) : (
+          <CombinationPage id={page.id} fresh={page.fresh} width={props.width} />
+        )
+      }
+    </Show>
+  );
+
+  function devicesPage() {
   return (
     <box ref={root} style={{ flexDirection: "column", gap: 8 }}>
       <box style={{ flexDirection: "row", padding: 3, borderRadius: 12, background: "fg/0.08" }}>
@@ -532,9 +650,22 @@ export function SoundPage(props: { width: number }) {
       </box>
       <Show when={list().length > 0} fallback={<Note>{kind() === "outputs" ? "No Outputs" : "No Inputs"}</Note>}>
         <For each={cards()}>{(name) => DeviceCard(name)}</For>
-        <Show when={chips().length > 0}>
+        <Show when={chips().length > 0 || canCombine()}>
           <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
             <For each={chips()}>{(name) => Chip(name)}</For>
+            <Show when={canCombine()}>
+              <box
+                style={{
+                  flexDirection: "row", alignItems: "center", gap: 6, height: 32, padding: [0, 12, 0, 10],
+                  borderRadius: 10, borderWidth: 1, borderColor: "fg/0.15", cursor: "pointer",
+                  ":hover": { background: "fg/0.06" },
+                }}
+                onClick={() => setSub({ page: "new" })}
+              >
+                <image icon="list-add-symbolic" size={14} />
+                <text style={{ fontSize: 12 }}>Combine</text>
+              </box>
+            </Show>
           </box>
         </Show>
         <Show when={other().length > 0}>
@@ -565,6 +696,229 @@ export function SoundPage(props: { width: number }) {
         </box>
       </Show>
     </box>
+  );
+  }
+}
+
+/** A wide button at a page's end: lit, for what finishes it, or red, for what can't be undone. */
+function EndButton(props: { label: string; kind: "done" | "danger"; disabled?: boolean; onClick: () => void }) {
+  return (
+    <box
+      style={{
+        height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center", marginTop: 4,
+        cursor: props.disabled ? "default" : "pointer", opacity: props.disabled ? 0.45 : 1,
+        background: props.kind === "done" ? "accent/0.85" : "#ff5a5024",
+        ":hover": { background: props.kind === "done" ? "accent" : "#ff5a5040" },
+      }}
+      onClick={() => !props.disabled && props.onClick()}
+    >
+      <text style={{ fontWeight: 700, color: props.kind === "done" ? "#ffffff" : "#ff8a80" }}>{props.label}</text>
+    </box>
+  );
+}
+
+/** Picks the outputs a new combination plays on, two or more, and makes it. */
+function NewCombination(props: { width: number }) {
+  const [picked, setPicked] = createSignal<string[]>([]);
+  const outputs = () => devices().outputs.filter((device) => !device.virtual);
+  const toggle = (name: string) =>
+    setPicked(picked().includes(name) ? picked().filter((n) => n !== name) : [...picked(), name]);
+  const make = () => {
+    const chosen = outputs().filter((device) => picked().includes(device.name));
+    const id = `c${Date.now().toString(36)}`;
+    setCombination({
+      id,
+      name: chosen.map(titleOf).join(" + "),
+      auto: true,
+      members: chosen.map((device) => ({ device: device.name, role: "same", level: 1, delay: 0 })),
+    });
+    setSub({ page: "combination", id, fresh: true });
+  };
+  return (
+    <box style={{ flexDirection: "column", gap: 4 }}>
+      <text style={{ fontSize: 12, color: "fg/0.6", padding: [0, 4, 6, 4] }}>
+        Pick the outputs to play on together.
+      </text>
+      <For each={outputs()}>
+        {(device) => (
+          <box
+            style={{
+              flexDirection: "row", alignItems: "center", gap: 10, padding: [8, 10], borderRadius: 12,
+              cursor: "pointer", ":hover": { background: "fg/0.05" },
+            }}
+            onClick={() => toggle(device.name)}
+          >
+            <box
+              style={{
+                width: 18, height: 18, borderRadius: 5, alignItems: "center", justifyContent: "center",
+                background: picked().includes(device.name) ? "accent/0.9" : "#00000000",
+                borderWidth: picked().includes(device.name) ? 0 : 2, borderColor: "fg/0.35",
+              }}
+            >
+              <Show when={picked().includes(device.name)}>
+                <image icon="object-select-symbolic" size={12} style={{ color: "#ffffff" }} />
+              </Show>
+            </box>
+            <image icon={device.icon} size={18} />
+            <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
+              <text style={{ lineClamp: 1 }}>{titleOf(device)}</text>
+              <Show when={device.detail}>
+                <text style={{ fontSize: 11, color: "fg/0.55", lineClamp: 1 }}>{device.detail!}</text>
+              </Show>
+            </box>
+          </box>
+        )}
+      </For>
+      <EndButton
+        label={picked().length >= 2 ? `Combine ${picked().length} Outputs` : "Combine"}
+        kind="done"
+        disabled={picked().length < 2}
+        onClick={make}
+      />
+    </box>
+  );
+}
+
+/** A combination's settings: its volume, whether it keeps in sync by itself, and each output's
+ * role, level and delay. One just made ends with Done; one opened later can be removed. */
+function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
+  const combination = () => combinations().find((c) => c.id === props.id);
+  const device = () => devices().outputs.find((d) => d.name === combination()?.device);
+  const autoSync = () => Boolean(combining()?.autoSync);
+  const filters = () => Boolean(combining()?.filters);
+  const synced = () => autoSync() && Boolean(combination()?.auto);
+  // Levels and delays as they're dragged, sent as they go but not more than every 100 ms.
+  const [moving, setMoving] = createSignal<{ i: number; level?: number; delay?: number } | null>(null);
+  let sentAt = 0;
+  const change = (update: (c: Combination) => Combination, now = true) => {
+    const c = combination();
+    if (!c || (!now && Date.now() - sentAt < 100)) return;
+    sentAt = Date.now();
+    const { device: _, ...next } = update(JSON.parse(JSON.stringify(c)));
+    setCombination(next);
+  };
+  const setMember = (i: number, values: { level?: number; delay?: number }, now: boolean) =>
+    change((c) => {
+      Object.assign(c.members[i]!, values);
+      return c;
+    }, now);
+  const done = () => {
+    setSub(null);
+    flash(combination()?.device ?? "");
+  };
+  const remove = () => {
+    command("combine-remove", { id: props.id });
+    setSub(null);
+  };
+  return (
+    <Show when={combination()} fallback={<Note>Making the combination…</Note>}>
+      <box style={{ flexDirection: "column", gap: 8 }}>
+        <Show when={device()}>
+          <Slider
+            width={props.width}
+            value={Math.min(device()!.volume, 1)}
+            icon={volumeIcon(device())}
+            onChange={(value) => {
+              quiet();
+              command("device-volume", { kind: "output", name: device()!.name, value });
+            }}
+          />
+        </Show>
+        <Show when={autoSync()}>
+          <box style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: [6, 4] }}>
+            <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
+              <text>Keep in Sync Automatically</text>
+              <text style={{ fontSize: 11, color: "fg/0.55" }}>Delays the quicker outputs to match the slowest</text>
+            </box>
+            <Toggle on={combination()!.auto} onChange={(on) => change((c) => ({ ...c, auto: on }))} />
+          </box>
+        </Show>
+        <text style={{ fontSize: 12, fontWeight: 700, color: "fg/0.6", padding: [6, 4, 0, 4] }}>Plays On</text>
+        <For each={combination()!.members}>
+          {(member, i) => {
+            const output = () => devices().outputs.find((d) => d.name === member.device);
+            const level = () => (moving()?.i === i() && moving()?.level !== undefined ? moving()!.level! : member.level);
+            const delay = () => (moving()?.i === i() && moving()?.delay !== undefined ? moving()!.delay! : member.delay);
+            return (
+              <box style={{ flexDirection: "column", gap: 4, padding: [6, 10, 10, 10], borderRadius: 14, background: "fg/0.05" }}>
+                <box style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: [2, 0] }}>
+                  <image icon={output()?.icon ?? "audio-speakers-symbolic"} size={18} />
+                  <text style={{ lineClamp: 1, flexShrink: 1 }}>{output() ? titleOf(output()!) : "Not Connected"}</text>
+                </box>
+                <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                  <For each={ROLES.filter((role) => !role.filters || filters())}>
+                    {(role) => (
+                      <box
+                        style={{
+                          height: 26, padding: [0, 10], borderRadius: 8, alignItems: "center", justifyContent: "center",
+                          cursor: "pointer", background: member.role === role.role ? "accent/0.8" : "fg/0.1",
+                        }}
+                        onClick={() =>
+                          member.role !== role.role &&
+                          change((c) => {
+                            c.members[i()]!.role = role.role;
+                            return c;
+                          })
+                        }
+                      >
+                        <text style={{ fontSize: 12, color: member.role === role.role ? "#ffffff" : "fg" }}>{role.label}</text>
+                      </box>
+                    )}
+                  </For>
+                </box>
+                <Show when={filters()}>
+                  <box style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    <text style={{ fontSize: 11, color: "fg/0.6", width: 40 }}>Level</text>
+                    <Line
+                      value={level()}
+                      onPick={(value) => {
+                        setMoving({ i: i(), level: value });
+                        setMember(i(), { level: value }, false);
+                      }}
+                      onLetGo={() => {
+                        const m = moving();
+                        if (m?.level !== undefined) setMember(i(), { level: m.level }, true);
+                        setMoving(null);
+                      }}
+                    />
+                    <text style={{ fontSize: 11, color: "fg/0.7", width: 44, fontVariantNumeric: "tabular-nums" }}>
+                      {`${Math.round(level() * 100)}%`}
+                    </text>
+                  </box>
+                  <box style={{ flexDirection: "row", alignItems: "center", gap: 8, opacity: synced() ? 0.4 : 1 }}>
+                    <text style={{ fontSize: 11, color: "fg/0.6", width: 40 }}>Delay</text>
+                    <Show when={!synced()} fallback={<box style={{ flexGrow: 1, height: 16, justifyContent: "center", flexDirection: "column" }}><box style={{ height: 4, borderRadius: 2, background: "fg/0.15" }} /></box>}>
+                      <Line
+                        value={delay() / MAX_DELAY}
+                        onPick={(value) => {
+                          const ms = Math.round((value * MAX_DELAY) / 5) * 5;
+                          setMoving({ i: i(), delay: ms });
+                          setMember(i(), { delay: ms }, false);
+                        }}
+                        onLetGo={() => {
+                          const m = moving();
+                          if (m?.delay !== undefined) setMember(i(), { delay: m.delay }, true);
+                          setMoving(null);
+                        }}
+                      />
+                    </Show>
+                    <text style={{ fontSize: 11, color: "fg/0.7", width: 44, fontVariantNumeric: "tabular-nums" }}>
+                      {synced() ? "Auto" : `${delay()} ms`}
+                    </text>
+                  </box>
+                </Show>
+              </box>
+            );
+          }}
+        </For>
+        <Show
+          when={props.fresh}
+          fallback={<EndButton label="Remove Combination" kind="danger" onClick={remove} />}
+        >
+          <EndButton label="Done" kind="done" onClick={done} />
+        </Show>
+      </box>
+    </Show>
   );
 }
 

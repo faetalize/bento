@@ -839,6 +839,30 @@ declare module "bento" {
        * `pw-metadata`. */
       canKeep: boolean;
     };
+    /** Outputs combined into one, which the data program makes and keeps. */
+    combinations: {
+      /** Whether PipeWire's combine-stream is there to make them. */
+      available: boolean;
+      /** Whether it keeps outputs in sync by itself; without, each output's delay does. */
+      autoSync: boolean;
+      /** Whether PipeWire's filter-chain is there, for the lows and highs, levels and delays. */
+      filters: boolean;
+      combinations: {
+        id: string;
+        name: string;
+        /** The combined output's name in the sound server. */
+        device: string;
+        auto: boolean;
+        members: {
+          device: string;
+          role: "same" | "front" | "back" | "lows" | "highs";
+          /** From 0 to 1. */
+          level: number;
+          /** In milliseconds, up to 500. */
+          delay: number;
+        }[];
+      }[];
+    };
     network: { connected: boolean; name: string | null; wifiStrength: number | null; icon: string };
     battery: { present: boolean; percentage: number; charging: boolean; icon: string };
     /** Each item's `icon` is an icon's name or a picture's path. */
@@ -1033,6 +1057,10 @@ declare module "bento" {
     "stream-follow": { kind: "output" | "input"; id: number };
     /** Keeps an app's stream on the device it's on, even when the default changes. */
     "stream-keep": { kind: "output" | "input"; id: number };
+    /** Makes a combination of outputs, or changes one, by its `id` (letters, digits and `-`). A
+     * change of levels or delays is made as it plays; any other starts it again. */
+    "combine-set": { combination: Omit<Data["combinations"]["combinations"][number], "device"> };
+    "combine-remove": { id: string };
     dismiss: { id: number };
     expire: { id: number };
     /** Does a notification's action; with `token`, bento hands the app an activation token, to

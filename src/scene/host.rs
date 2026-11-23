@@ -3736,6 +3736,109 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_combination_is_made_from_the_outputs_picked_and_ends_with_done() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let device = |name: &str, title: &str, active: bool| {
+            serde_json::json!({
+                "name": name, "label": title, "title": title, "detail": "", "virtual": false,
+                "icon": "audio-speakers-symbolic", "active": active, "volume": 0.5, "muted": false,
+            })
+        };
+        let devices = |extra: Vec<serde_json::Value>| {
+            let mut outputs = vec![device("a", "Line Out", true), device("b", "Desk", false)];
+            outputs.extend(extra);
+            serde_json::json!({
+                "type": "audio-devices", "outputs": outputs, "inputs": [], "playing": [],
+                "recording": [], "canKeep": true,
+            })
+            .to_string()
+        };
+        let combinations = |list: serde_json::Value| {
+            serde_json::json!({
+                "type": "combinations", "available": true, "autoSync": true, "filters": true,
+                "combinations": list,
+            })
+            .to_string()
+        };
+        host.data_line(&devices(vec![]));
+        host.data_line(&combinations(serde_json::json!([])));
+        open_control_center(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
+        commands(&host);
+
+        let combine = middle_of(&host, "DP-1", "Combine");
+        click(&mut host, "DP-1", combine);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "New Combination"), "the page's title");
+        for output in ["Line Out", "Desk"] {
+            let at = middle_of(&host, "DP-1", output);
+            click(&mut host, "DP-1", at);
+        }
+        let make = middle_of(&host, "DP-1", "Combine 2 Outputs");
+        click(&mut host, "DP-1", make);
+        settle(&mut host, &mut now);
+        let sent = commands(&host);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["cmd"], "combine-set");
+        let mut made = sent[0]["combination"].clone();
+        assert_eq!(made["name"], "Line Out + Desk");
+        assert_eq!(made["members"][0]["device"], "a");
+        assert_eq!(made["members"][1]["device"], "b");
+        assert_eq!(made["members"][1]["role"], "same");
+
+        // The data program makes it, and its page sets each output's role.
+        let id = made["id"].as_str().unwrap().to_owned();
+        made["device"] = format!("bento.combine.{id}").into();
+        host.data_line(&combinations(serde_json::json!([made])));
+        let mut combined = device(&format!("bento.combine.{id}"), "Line Out + Desk", false);
+        combined["virtual"] = true.into();
+        host.data_line(&devices(vec![combined]));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Plays On"));
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let back_role = scene.find("DP-1", "Back")[1];
+        drop(scene);
+        click(
+            &mut host,
+            "DP-1",
+            [
+                back_role[0] + back_role[2] / 2.,
+                back_role[1] + back_role[3] / 2.,
+            ],
+        );
+        let sent = commands(&host);
+        assert_eq!(sent[0]["cmd"], "combine-set");
+        assert_eq!(sent[0]["combination"]["members"][1]["role"], "back");
+
+        // Done goes back to the devices, where it's a chip of its own.
+        let done = middle_of(&host, "DP-1", "Done");
+        click(&mut host, "DP-1", done);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Plays On"));
+        assert!(shows(&host, "DP-1", "Line Out + Desk"));
+        assert!(host.wants_keyboard(), "still in the control center");
+
+        // The back button steps back from its page to the devices, not out of the sound page.
+        let combined = middle_of(&host, "DP-1", "Line Out + Desk");
+        right_click(&mut host, combined);
+        // The menu opens over the sound page, which stays as it is under it.
+        assert!(shows(&host, "DP-1", "Desk"));
+        settle(&mut host, &mut now);
+        let edit = middle_of(&host, "DP-1", "Edit Combination…");
+        click(&mut host, "DP-1", edit);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Plays On"), "its page");
+        assert!(
+            shows(&host, "DP-1", "Remove Combination"),
+            "one opened later can be removed"
+        );
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Desk") && !shows(&host, "DP-1", "Plays On"));
+    }
+
     /// Opens the page behind the control center's `index`th arrow: the volume's is the first.
     fn open_page(host: &mut SceneHost, now: &mut Instant, index: usize) {
         let scene = host.shell.as_ref().unwrap().scene.borrow();

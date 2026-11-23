@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use crate::services::bluetooth::BluetoothService;
 use crate::services::brightness::BrightnessService;
 use crate::services::clipboard::{ClipboardService, Content};
+use crate::services::combine::CombineService;
 use crate::services::devices::{Device, DeviceService, Kind, Stream};
 use crate::services::files::{self, FileSearch};
 use crate::services::media::MediaService;
@@ -247,6 +248,22 @@ pub fn run() -> glib::ExitCode {
             "canKeep": devices.can_keep,
         }));
     });
+    let combine = CombineService::start(say);
+    // A combined output that starts again for a change is a node of its own, which apps kept on
+    // the one before aren't: they go back once it's there.
+    let mover = devices.clone();
+    combine.on_restart(move |device| {
+        let kept = mover.kept_on(device);
+        if kept.is_empty() {
+            return;
+        }
+        let (mover, device) = (mover.clone(), device.to_owned());
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            for index in kept {
+                mover.move_stream(Kind::Output, index, &device);
+            }
+        });
+    });
     let brightness = BrightnessService::start(|displays| {
         let displays: Vec<Value> = displays
             .iter()
@@ -391,6 +408,8 @@ pub fn run() -> glib::ExitCode {
                 "stream-move" => devices.move_stream(kind(), id(), &text("device")),
                 "stream-follow" => devices.follow_default(kind(), id()),
                 "stream-keep" => devices.keep_here(kind(), id()),
+                "combine-set" => combine.set(&command["combination"]),
+                "combine-remove" => combine.remove(&text("id")),
                 "brightness" => {
                     brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))
                 }

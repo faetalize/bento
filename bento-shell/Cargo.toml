@@ -18,6 +18,7 @@ gtk = { version = "0.10.3", package = "gtk4", features = ["v4_14"] }
 gtk4-layer-shell = "0.6"
 libpulse-binding = "2.30"
 libpulse-glib-binding = "2.29"
+libc = "0.2.189"
 bento-ipc = { version = "26.4.0", path = "../bento-ipc" }
 serde_json.workspace = true
 wayland-backend = { version = "0.3", features = ["client_system"] }

@@ -281,7 +281,9 @@ export function Island(props: IslandProps) {
   let stop: (() => void) | null = null;
   createEffect(
     () => props.open ?? null,
-    (open) => {
+    (open, was) => {
+      // What it reads changes as a menu opens over it, but not which panel's open.
+      if (open === was) return;
       stop?.();
       stop = null;
       if (!open) {
@@ -363,8 +365,8 @@ function PanelHolder(props: {
   let opened = 0;
   createEffect(
     () => props.open,
-    (open) => {
-      if (open) setMade(++opened);
+    (open, was) => {
+      if (open && !was) setMade(++opened);
     },
   );
   let stop: (() => void) | null = null;
