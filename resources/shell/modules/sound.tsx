@@ -513,15 +513,20 @@ export function SoundPage(props: { width: number }) {
   };
 
   /** The pin for the switcher, while `shown` or pinned. */
-  const PinButton = (device: () => Device, shown: () => boolean) => {
+  /** The pin for the switcher, on every output: faint while it isn't pinned, lit once it is. Always
+   * there, so nothing changes size as the pointer comes and goes. */
+  const PinButton = (device: () => Device) => {
     const pin = () => pinned().includes(device().name);
     return (
-      <Show when={kind() === "outputs" && (shown() || pin())}>
+      <Show when={kind() === "outputs"}>
         <Button
           icon="view-pin-symbolic"
           size={12}
           active={pin()}
-          style={{ width: 26, height: 26, borderRadius: 8, flexShrink: 0 }}
+          style={[
+            { width: 26, height: 26, borderRadius: 8, flexShrink: 0 },
+            !pin() && { opacity: 0.45 },
+          ]}
           onClick={() => setPinned(device().name, !pin())}
         />
       </Show>
@@ -532,7 +537,6 @@ export function SoundPage(props: { width: number }) {
     <Show when={deviceOf(name)}>{(device) => DeviceCardOf(device)}</Show>
   );
   const DeviceCardOf = (device: () => Device) => {
-    const [hover, setHover] = createSignal(false);
     const lit = () => over() === device().name;
     const setThis = (value: number) => {
       quiet();
@@ -546,7 +550,6 @@ export function SoundPage(props: { width: number }) {
           background: lit() ? "accent/0.2" : device().active ? "fg/0.1" : "fg/0.05",
           borderWidth: lit() ? 2 : 0, borderColor: "accent",
         }}
-        onHover={({ inside }) => setHover(inside)}
       >
         <box
           style={{
@@ -582,7 +585,7 @@ export function SoundPage(props: { width: number }) {
               </Show>
             </Show>
           </box>
-          {PinButton(device, hover)}
+          {PinButton(device)}
           <Show when={kind() === "outputs" && equalizing()?.available}>
             <Button
               icon="ph-faders-symbolic"
@@ -622,13 +625,12 @@ export function SoundPage(props: { width: number }) {
   const ChipOf = (device: () => Device) => {
     const [hover, setHover] = createSignal(false);
     const lit = () => over() === device().name;
-    const pin = () => kind() === "outputs" && (hover() || pinned().includes(device().name));
     return (
       <box
         ref={dropTarget(device().name)}
         style={{
           flexDirection: "row", alignItems: "center", gap: 6, height: 32,
-          padding: [0, pin() ? 4 : 12, 0, 10], borderRadius: 10, cursor: "pointer",
+          padding: [0, kind() === "outputs" ? 4 : 12, 0, 10], borderRadius: 10, cursor: "pointer",
           background: lit() ? "accent/0.2" : hover() ? "fg/0.1" : "fg/0.06",
           borderWidth: lit() ? 2 : 0, borderColor: "accent",
         }}
@@ -638,7 +640,7 @@ export function SoundPage(props: { width: number }) {
       >
         <image icon={iconOf(device())} size={14} />
         <text style={{ fontSize: 12, lineClamp: 1 }}>{titleOf(device())}</text>
-        {PinButton(device, hover)}
+        {PinButton(device)}
         {Flash(device().name, 10)}
       </box>
     );

@@ -3714,6 +3714,17 @@ mod tests {
             assert!(shows(&host, "DP-1", shown), "{shown}");
         }
 
+        // Every output has its pin, hovered or not, so nothing grows as the pointer comes: a
+        // chip that grew on hover wrapped to the next row, out from under the pointer, and back.
+        let pins = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "view-pin-symbolic");
+        assert_eq!(pins.len(), 3, "one for each output");
+
         // Dropped on a chip, an app moves there.
         let firefox = middle_of(&host, "DP-1", "Firefox");
         let desk = middle_of(&host, "DP-1", "Desk");

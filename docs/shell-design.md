@@ -245,8 +245,8 @@ The sound page shows the outputs or the inputs, by a switch at its top. A device
 default, or that an app uses, is a card holding its volume and its apps, each with its own volume;
 the rest are chips under the cards, and virtual devices nothing uses fold away. Devices go by short
 names, like a port's or a headset's own, with the hardware under them on the default's card.
-Pinning an output for the switcher is a button that shows while hovering it, and stays lit once
-pinned. Apps follow the default unless they're moved: dragging one onto another device keeps it
+Pinning an output for the switcher is a button on every output, faint until it's pinned, then
+lit. Apps follow the default unless they're moved: dragging one onto another device keeps it
 there, marked by a small pin, and dropping it on the default's card makes it follow again. An app
 that picks its own device has no mark, and one that can't be moved has a lock and doesn't drag.
 
