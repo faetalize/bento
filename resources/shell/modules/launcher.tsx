@@ -119,7 +119,7 @@ function Palette(props: { output: string; open: boolean }) {
             </Scroller>
           </Show>
           <Show when={search.nothing()}>
-            <box style={{ padding: [14, 14], alignItems: "center" }}>
+            <box style={{ padding: [14, 14], justifyContent: "center" }}>
               <text style={{ color: "fg/0.6" }}>No Results</text>
             </box>
           </Show>

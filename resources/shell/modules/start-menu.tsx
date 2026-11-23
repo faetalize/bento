@@ -120,7 +120,12 @@ function Menu(props: { onClose: () => void }) {
             <Show
               when={!search.filesOnly()}
               fallback={
-                <box style={{ height: LIST + 30, padding: [22, 14], alignItems: "center" }}>
+                <box
+                  style={{
+                    height: LIST + 30, padding: [22, 14], alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
                   <text style={{ color: "fg/0.6" }}>Type to find files and folders by name</text>
                 </box>
               }
@@ -153,7 +158,7 @@ function Menu(props: { onClose: () => void }) {
             )}
           </For>
           <Show when={search.nothing()}>
-            <box style={{ padding: [22, 14], alignItems: "center" }}>
+            <box style={{ padding: [22, 14], justifyContent: "center" }}>
               <text style={{ color: "fg/0.6" }}>No Results</text>
             </box>
           </Show>
