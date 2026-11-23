@@ -267,6 +267,9 @@ function deviceMenu(kind: Kind, device: Device, event: PointerEvent) {
   if (kind === "outputs") {
     const pin = pinned().includes(device.name);
     items.push({ label: pin ? "Unpin from Switcher" : "Pin to Switcher", run: () => setPinned(device.name, !pin) });
+    if (equalizing()?.available) {
+      items.push({ label: "Equalizer…", run: () => setSub({ page: "equalizer", device: device.name }) });
+    }
   }
   const combination = combinationOf(device.name);
   if (combination) {
@@ -309,9 +312,28 @@ function setCombination(combination: Omit<Combination, "device">) {
   command("combine-set", { combination });
 }
 
+// ------------------------------------------------------------------------------------------------
+// Each output's own equalizer, which the data program runs.
+// ------------------------------------------------------------------------------------------------
+
+const equalizing = () => data("equalizers");
+const equalizerOf = (device: string) => equalizing()?.devices[device];
+const PRESETS: Record<string, number[]> = {
+  Flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "Bass Boost": [7, 6, 4, 2, 0, 0, 0, 0, 0, 0],
+  Vocal: [-2, -2, -1, 1, 3, 4, 3, 1, 0, -1],
+  Treble: [0, 0, 0, 0, 0, 1, 2, 4, 5, 6],
+  Loudness: [6, 4, 1, 0, -1, 0, 1, 3, 4, 5],
+};
+const presetOf = (gains: number[]) =>
+  Object.keys(PRESETS).find((name) => PRESETS[name]!.every((gain, i) => gain === gains[i])) ?? "Custom";
+
 /** A page of the sound page's own, over its devices: a new combination, or one's settings, the
- * one just made ending with Done. */
-type Sub = { page: "new" } | { page: "combination"; id: string; fresh: boolean };
+ * one just made ending with Done; or an output's equalizer. */
+type Sub =
+  | { page: "new" }
+  | { page: "combination"; id: string; fresh: boolean }
+  | { page: "equalizer"; device: string };
 const [sub, setSub] = createSignal<Sub | null>(null);
 // The card that lights up for a moment, as a combination just made.
 const [flashed, setFlashed] = createSignal<string | null>(null);
@@ -321,6 +343,7 @@ export function soundTitle(): string | null {
   const page = sub();
   if (!page) return null;
   if (page.page === "new") return "New Combination";
+  if (page.page === "equalizer") return "Equalizer";
   return combinations().find((c) => c.id === page.id)?.name ?? "Combination";
 }
 
@@ -560,6 +583,19 @@ export function SoundPage(props: { width: number }) {
             </Show>
           </box>
           {PinButton(device, hover)}
+          <Show when={kind() === "outputs" && equalizing()?.available}>
+            <Button
+              icon="ph-faders-symbolic"
+              size={14}
+              active={Boolean(equalizerOf(device().name)?.on)}
+              // Lit while it's on, which a background of its own would hide.
+              style={[
+                { width: 26, height: 26, borderRadius: 8, flexShrink: 0 },
+                !equalizerOf(device().name)?.on && { background: "fg/0.08" },
+              ]}
+              onClick={() => setSub({ page: "equalizer", device: device().name })}
+            />
+          </Show>
           <Show when={combinationOf(device().name)}>
             <Button
               icon="go-next-symbolic"
@@ -620,6 +656,8 @@ export function SoundPage(props: { width: number }) {
       {(page: Sub) =>
         page.page === "new" ? (
           <NewCombination width={props.width} />
+        ) : page.page === "equalizer" ? (
+          <EqualizerPage device={page.device} />
         ) : (
           <CombinationPage id={page.id} fresh={page.fresh} width={props.width} />
         )
@@ -997,5 +1035,110 @@ export function VolumeIndicator() {
         </box>
       </Surface>
     </Show>
+  );
+}
+
+/** An output's equalizer: whether it's on, a preset, and its ten bands, which a press or a drag
+ * along each sets, sent as they go but not more than every 100 ms. */
+function EqualizerPage(props: { device: string }) {
+  const output = () => devices().outputs.find((device) => device.name === props.device);
+  const range = () => equalizing()?.range ?? 12;
+  const bands = () => equalizing()?.bands ?? [];
+  const saved = () => equalizerOf(props.device) ?? { on: false, preset: "Flat", gains: PRESETS.Flat!, title: "" };
+  // The gains as they're dragged, until what's saved says the same.
+  const [moving, setMoving] = createSignal<number[] | null>(null);
+  const gains = () => moving() ?? saved().gains;
+  let sentAt = 0;
+  const send = (values: { on?: boolean; gains?: number[] }, now = true) => {
+    if (!now && Date.now() - sentAt < 100) return;
+    sentAt = Date.now();
+    const next = values.gains ?? gains();
+    command("eq-set", {
+      device: props.device,
+      title: output() ? titleOf(output()!) : props.device,
+      on: values.on ?? saved().on,
+      preset: presetOf(next),
+      gains: next,
+    });
+  };
+  const label = (hz: number) => (hz >= 1000 ? `${hz / 1000}k` : `${hz}`);
+  const Band = (i: number) => {
+    const at = (event: any) => {
+      if (!(event.frame?.height > 0) || !saved().on) return;
+      const along = Math.min(Math.max(event.offsetY / event.frame.height, 0), 1);
+      const db = Math.round((0.5 - along) * 2 * range() * 2) / 2;
+      const next = [...gains()];
+      next[i] = db;
+      setMoving(next);
+      send({ gains: next }, false);
+    };
+    const gain = () => gains()[i] ?? 0;
+    // Where the knob is, from the top, as a fraction.
+    const y = () => 0.5 - gain() / range() / 2;
+    return (
+      <box style={{ flexDirection: "column", alignItems: "center", gap: 6, width: 28 }}>
+        <text style={{ fontSize: 10, color: "fg/0.75", fontVariantNumeric: "tabular-nums" }}>
+          {`${gain() > 0 ? "+" : ""}${gain()}`}
+        </text>
+        <box
+          style={{ width: 24, height: 150, alignItems: "center", cursor: "pointer" }}
+          onPress={(event) => event.button === 1 && at(event)}
+          onDrag={at}
+          onRelease={() => {
+            const m = moving();
+            if (m) send({ gains: m });
+            setMoving(null);
+          }}
+        >
+          <box style={{ width: 6, height: 150, borderRadius: 3, background: "fg/0.12" }} />
+          <box style={{ position: "absolute", left: 4, right: 4, top: 75, height: 1, background: "fg/0.25" }} />
+          <box
+            style={{
+              position: "absolute", left: 9, width: 6, borderRadius: 3, background: "accent/0.85",
+              top: Math.min(y(), 0.5) * 150, height: Math.abs(y() - 0.5) * 150,
+            }}
+          />
+          <box
+            style={{
+              position: "absolute", left: 5, width: 14, height: 14, borderRadius: 7,
+              background: "#ffffff", top: y() * 150 - 7,
+            }}
+          />
+        </box>
+        <text style={{ fontSize: 10, color: "fg/0.55" }}>{label(bands()[i] ?? 0)}</text>
+      </box>
+    );
+  };
+  return (
+    <box style={{ flexDirection: "column", gap: 10 }}>
+      <box style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: [2, 4] }}>
+        <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minWidth: 0 }}>
+          <text style={{ lineClamp: 1 }}>{output() ? titleOf(output()!) : "Not Connected"}</text>
+          <text style={{ fontSize: 11, color: "fg/0.55" }}>Only for this output; the others keep their own</text>
+        </box>
+        <Toggle on={saved().on} onChange={(on) => send({ on })} />
+      </box>
+      <box style={{ flexDirection: "column", gap: 10, opacity: saved().on ? 1 : 0.4 }}>
+        <box style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+          <For each={[...Object.keys(PRESETS), "Custom"]}>
+            {(name) => (
+              <box
+                style={{
+                  height: 26, padding: [0, 10], borderRadius: 8, alignItems: "center", justifyContent: "center",
+                  cursor: name === "Custom" || !saved().on ? "default" : "pointer",
+                  background: presetOf(gains()) === name ? "accent/0.8" : "fg/0.1",
+                }}
+                onClick={() => saved().on && name !== "Custom" && send({ gains: [...PRESETS[name]!] })}
+              >
+                <text style={{ fontSize: 12, color: presetOf(gains()) === name ? "#ffffff" : "fg" }}>{name}</text>
+              </box>
+            )}
+          </For>
+        </box>
+        <box style={{ flexDirection: "row", justifyContent: "space-between", padding: [4, 2, 0, 2] }}>
+          <For each={bands().map((_, i) => i)}>{(i) => Band(i)}</For>
+        </box>
+      </box>
+    </box>
   );
 }

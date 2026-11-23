@@ -9,6 +9,7 @@ pub mod clipboard;
 pub mod combine;
 mod dbus;
 pub mod devices;
+pub mod equalizer;
 pub mod files;
 pub mod ipc;
 pub mod media;

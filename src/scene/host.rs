@@ -3839,6 +3839,61 @@ mod tests {
         assert!(shows(&host, "DP-1", "Desk") && !shows(&host, "DP-1", "Plays On"));
     }
 
+    #[test]
+    fn an_outputs_equalizer_takes_presets_and_bands() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(
+            &serde_json::json!({
+                "type": "audio-devices",
+                "outputs": [{
+                    "name": "a", "label": "Line Out", "title": "Line Out", "detail": "",
+                    "virtual": false, "icon": "audio-speakers-symbolic", "active": true,
+                    "volume": 0.5, "muted": false,
+                }],
+                "inputs": [], "playing": [], "recording": [], "canKeep": true,
+            })
+            .to_string(),
+        );
+        host.data_line(
+            &serde_json::json!({
+                "type": "equalizers", "available": true, "range": 12.0,
+                "bands": [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
+                "devices": { "a": {
+                    "on": true, "preset": "Flat", "gains": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    "title": "Line Out",
+                } },
+            })
+            .to_string(),
+        );
+        open_control_center(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
+        let eq = middle_of(&host, "DP-1", "ph-faders-symbolic");
+        click(&mut host, "DP-1", eq);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Equalizer"), "the page's title");
+        commands(&host);
+
+        let bass = middle_of(&host, "DP-1", "Bass Boost");
+        click(&mut host, "DP-1", bass);
+        let sent = commands(&host);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["cmd"], "eq-set");
+        assert_eq!(sent[0]["device"], "a");
+        assert_eq!(sent[0]["on"], true);
+        assert_eq!(sent[0]["preset"], "Bass Boost");
+        assert_eq!(sent[0]["gains"][0], 7);
+
+        // A press at the top of the lowest band boosts it all the way, a custom curve.
+        let label = middle_of(&host, "DP-1", "31");
+        let top = [label[0], label[1] - 12. - 150. + 2.];
+        click(&mut host, "DP-1", top);
+        let sent = commands(&host);
+        let last = sent.last().unwrap();
+        assert_eq!(last["cmd"], "eq-set");
+        assert!(last["gains"][0].as_f64().unwrap() > 10., "{last:?}");
+        assert_eq!(last["preset"], "Custom");
+    }
+
     /// Opens the page behind the control center's `index`th arrow: the volume's is the first.
     fn open_page(host: &mut SceneHost, now: &mut Instant, index: usize) {
         let scene = host.shell.as_ref().unwrap().scene.borrow();
@@ -5085,8 +5140,44 @@ mod tests {
         shot(&host, "control-center", [1480, 0, 440, 1000]);
         open_page(&mut host, &mut now, 0);
         host.data_line(SOUND);
+        host.data_line(
+            r#"{"type":"equalizers","available":true,"range":12.0,"bands":[31,62,125,250,500,1000,2000,4000,8000,16000],"devices":{"a":{"on":true,"preset":"Bass Boost","gains":[7,6,4,2,0,0,0,0,0,0],"title":"Line Out"}}}"#,
+        );
+        host.data_line(
+            r#"{"type":"combinations","available":true,"autoSync":true,"filters":true,"combinations":[{"id":"c1","name":"Line Out + BenQ EX240N","device":"bento.combine.c1","auto":false,"members":[{"device":"a","role":"front","level":1.0,"delay":0},{"device":"c","role":"back","level":0.8,"delay":40}]}]}"#,
+        );
         settle(&mut host, &mut now);
         shot(&host, "control-center-sound", [1480, 0, 440, 700]);
+        let eq = middle_of(&host, "DP-1", "ph-faders-symbolic");
+        click(&mut host, "DP-1", eq);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-equalizer", [1480, 0, 440, 500]);
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
+        let mut combined = serde_json::from_str::<serde_json::Value>(SOUND).unwrap();
+        combined["outputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "bento.combine.c1", "label": "Line Out + BenQ EX240N",
+                "title": "Line Out + BenQ EX240N", "detail": "Virtual", "virtual": true,
+                "icon": "audio-speakers-symbolic", "active": false, "volume": 0.8, "muted": false,
+            }));
+        host.data_line(&combined.to_string());
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-sound-combined", [1480, 0, 440, 700]);
+        let combined = middle_of(&host, "DP-1", "Line Out + BenQ EX240N");
+        right_click(&mut host, combined);
+        settle(&mut host, &mut now);
+        let edit = middle_of(&host, "DP-1", "Edit Combination…");
+        click(&mut host, "DP-1", edit);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-combination", [1480, 0, 440, 700]);
+        // Back to the devices, for the back after to go out of the sound page.
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
         let back = middle_of(&host, "DP-1", "go-previous-symbolic");
         click(&mut host, "DP-1", back);
         settle(&mut host, &mut now);

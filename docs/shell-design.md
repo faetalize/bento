@@ -256,6 +256,9 @@ A combination is an output like the others, pinned and made the default the same
 page sets what each of its outputs plays (the same, front, back, lows or highs), its level, and
 its delay when they aren't kept in sync by themselves.
 
+Each output has an equalizer of its own, opened from its card: on or off, presets, and ten
+bands. The others keep their own curves.
+
 The control center's screenshot and screen recording buttons each run any command the settings
 give them, alone or with a notification of the user's wording once it's done, for tools that show
 none of their own.

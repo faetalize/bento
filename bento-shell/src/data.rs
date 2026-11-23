@@ -22,6 +22,7 @@ use crate::services::brightness::BrightnessService;
 use crate::services::clipboard::{ClipboardService, Content};
 use crate::services::combine::CombineService;
 use crate::services::devices::{Device, DeviceService, Kind, Stream};
+use crate::services::equalizer::EqualizerService;
 use crate::services::files::{self, FileSearch};
 use crate::services::media::MediaService;
 use crate::services::places::Places;
@@ -264,6 +265,15 @@ pub fn run() -> glib::ExitCode {
             }
         });
     });
+    let equalizers = EqualizerService::start(say);
+    let turner = devices.clone();
+    equalizers.on_turn(move |device, on| {
+        if on {
+            turner.adopt_equalizer(device);
+        } else {
+            turner.release_equalizer(device);
+        }
+    });
     let brightness = BrightnessService::start(|displays| {
         let displays: Vec<Value> = displays
             .iter()
@@ -410,6 +420,7 @@ pub fn run() -> glib::ExitCode {
                 "stream-keep" => devices.keep_here(kind(), id()),
                 "combine-set" => combine.set(&command["combination"]),
                 "combine-remove" => combine.remove(&text("id")),
+                "eq-set" => equalizers.set(&text("device"), &command),
                 "brightness" => {
                     brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))
                 }

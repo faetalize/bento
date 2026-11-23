@@ -839,6 +839,16 @@ declare module "bento" {
        * `pw-metadata`. */
       canKeep: boolean;
     };
+    /** Each output's own equalizer, by the output's name, which the data program runs. */
+    equalizers: {
+      /** Whether PipeWire's filter-chain is there to make them. */
+      available: boolean;
+      /** The bands' frequencies, in Hz. */
+      bands: number[];
+      /** The most a band boosts or cuts, in dB. */
+      range: number;
+      devices: Record<string, { on: boolean; preset: string; gains: number[]; title: string }>;
+    };
     /** Outputs combined into one, which the data program makes and keeps. */
     combinations: {
       /** Whether PipeWire's combine-stream is there to make them. */
@@ -1061,6 +1071,10 @@ declare module "bento" {
      * change of levels or delays is made as it plays; any other starts it again. */
     "combine-set": { combination: Omit<Data["combinations"]["combinations"][number], "device"> };
     "combine-remove": { id: string };
+    /** Sets an output's equalizer: on or off, and each band's gain in dB. Its gains change as it
+     * plays; turning it on routes what plays on the output through it. `title` names it in other
+     * mixers. */
+    "eq-set": { device: string; title: string; on: boolean; preset: string; gains: number[] };
     dismiss: { id: number };
     expire: { id: number };
     /** Does a notification's action; with `token`, bento hands the app an activation token, to

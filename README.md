@@ -105,7 +105,8 @@ The rest are optional: without one, what it's for is left out.
 | [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) | X11 apps |
 | PipeWire's PulseAudio server, or PulseAudio | The volume, the sound devices, the apps' own volumes and the volume indicator |
 | PipeWire's `pw-metadata`, with WirePlumber | Telling which apps are kept on a device, and making one follow the default again |
-| PipeWire's combine-stream module, and filter-chain | Combined outputs; filter-chain for their lows and highs, levels and delays |
+| PipeWire's combine-stream module | Combined outputs |
+| PipeWire's filter-chain module | The equalizer, and combined outputs' lows and highs, levels and delays |
 | NetworkManager | The network's status and Wi-Fi |
 | BlueZ | Bluetooth |
 | UPower | The battery |
@@ -402,7 +403,9 @@ The sound page shows the outputs, or the inputs by the switch at its top. Each d
 
 Apps follow the default unless they're moved: dragging an app onto another device moves it there, and the sound server keeps it there from then on, which a small pin by its name says. Dropping it on the default's card, or "Follow Default" in its right click, makes it follow the default again. An app that picks its own device, like a chat app's microphone, moves too, until it opens its device again; one that says it can't be moved has a lock. Telling which apps are kept, and making them follow again, takes PipeWire with WirePlumber.
 
-Combine, after the chips, makes one output out of several, to play on two pairs of speakers at once. A combined output is a device like the others, whose arrow opens its settings: its volume; whether the quicker outputs wait for the slowest by themselves, which takes PipeWire 1.2 or so, and otherwise each output's delay keeps them together; and for each output, what it plays (the same as the rest, the front or the back of four channels, or the lows or the highs, split at 200 Hz) and its level. The data program keeps them in `~/.local/state/bento/combinations.json`, and runs each as a small PipeWire client of its own.
+Combine, after the chips, makes one output out of several, to play on two pairs of speakers at once. A combined output is a device like the others, whose arrow opens its settings: its volume; whether the quicker outputs wait for the slowest by themselves, where the installed PipeWire can, and otherwise each output's delay keeps them together; and for each output, what it plays (the same as the rest, the front or the back of four channels, or the lows or the highs, split at 200 Hz) and its level. The data program keeps them in `~/.local/state/bento/combinations.json`, and runs each as a small PipeWire client of its own.
+
+Each output has an equalizer of its own, behind the faders button on its card: ten bands an octave apart, up to 12 dB up or down, and presets. While it's on, what plays on the output goes through it, and the output's volume is the equalizer's, so the volume keys and the page agree. Equalizers are kept in `~/.local/state/bento/equalizers.json`.
 
 The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title. They're the control center's settings, which Settings → Shell sets while the shell has the control center, kept in the shell's settings:
 

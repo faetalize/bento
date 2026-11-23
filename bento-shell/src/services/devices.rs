@@ -15,6 +15,7 @@ use libpulse_binding::volume::{ChannelVolumes, Volume};
 use libpulse_glib_binding::Mainloop;
 
 use super::audio::MAX_VOLUME;
+use super::equalizer;
 use super::targets::TargetWatch;
 
 /// How long to wait before connecting again after the sound server went away.
@@ -44,6 +45,19 @@ pub struct Device {
     index: u32,
     /// Its node's `object.serial`, which a stream's target names.
     serial: Option<String>,
+    /// The equalizer it plays through, whose volume is its own while it's on, so that the
+    /// default's volume, as keys set it, is what it shows.
+    through: Option<Through>,
+}
+
+/// An output's equalizer, as the sound server says it.
+#[derive(Debug, Clone, PartialEq)]
+struct Through {
+    name: String,
+    index: u32,
+    serial: Option<String>,
+    /// The output's own volume, under the equalizer's.
+    own: ChannelVolumes,
 }
 
 /// An app's stream, playing on an output or recording from an input.
@@ -75,6 +89,8 @@ pub struct Stream {
     volumes: ChannelVolumes,
     /// Its node's id, which its target in the metadata is kept by.
     node: Option<u32>,
+    /// The name of the sink it's on: its device's, or its device's equalizer's.
+    actual: String,
 }
 
 /// The outputs and the inputs, and the apps on them.
@@ -86,6 +102,8 @@ pub struct Devices {
     pub recording: Vec<Stream>,
     /// Whether streams can be told to follow the default, or be kept where they are.
     pub can_keep: bool,
+    /// The default output's name as the sound server says it, an equalizer's when it's one.
+    default_output: Option<String>,
 }
 
 /// Which of the two lists a device is in.
@@ -117,6 +135,8 @@ struct Reading {
     default_input: Option<String>,
     outputs: Option<Vec<Device>>,
     inputs: Option<Vec<Device>>,
+    /// The outputs' equalizers, read as outputs of their own.
+    equalizers: Vec<Device>,
     /// Streams, with the index of the device they're on for now.
     playing: Option<Vec<(Stream, u32)>>,
     recording: Option<Vec<(Stream, u32)>>,
@@ -174,9 +194,70 @@ impl DeviceService {
             return;
         };
         match kind {
-            Kind::Output => context.set_default_sink(name, |_| ()),
+            Kind::Output => {
+                let through = self.find(kind, name).and_then(|device| device.through);
+                let name = through.as_ref().map_or(name, |through| &through.name);
+                context.set_default_sink(name, |_| ())
+            }
             Kind::Input => context.set_default_source(name, |_| ()),
         };
+    }
+
+    /// The equalizer of the output named `device` is there: what plays on the output goes through
+    /// it, with the output's volume, the output at its full volume under it.
+    pub fn adopt_equalizer(&self, device: &str) {
+        let state = self.state.borrow().clone();
+        let Some(output) = state.outputs.iter().find(|output| output.name == device) else {
+            return;
+        };
+        let Some(through) = &output.through else {
+            return;
+        };
+        let mut context = self.context.borrow_mut();
+        let Some(context) = context.as_mut() else {
+            return;
+        };
+        let mut introspect = context.introspect();
+        let mut full = through.own;
+        full.scale(Volume::NORMAL);
+        introspect.set_sink_volume_by_name(&through.name, &through.own, None);
+        introspect.set_sink_volume_by_name(device, &full, None);
+        if state.default_output.as_deref() == Some(device) {
+            context.set_default_sink(&through.name, |_| ());
+        }
+        let mut introspect = context.introspect();
+        for stream in &state.playing {
+            if stream.actual == device && stream.kept {
+                introspect.move_sink_input_by_name(stream.index, &through.name, None);
+            }
+        }
+    }
+
+    /// The equalizer of the output named `device` is going: what plays through it goes back to
+    /// the output, with its volume.
+    pub fn release_equalizer(&self, device: &str) {
+        let state = self.state.borrow().clone();
+        let Some(output) = state.outputs.iter().find(|output| output.name == device) else {
+            return;
+        };
+        let Some(through) = &output.through else {
+            return;
+        };
+        let mut context = self.context.borrow_mut();
+        let Some(context) = context.as_mut() else {
+            return;
+        };
+        let mut introspect = context.introspect();
+        introspect.set_sink_volume_by_name(device, &output.volumes, None);
+        if state.default_output.as_deref() == Some(through.name.as_str()) {
+            context.set_default_sink(device, |_| ());
+        }
+        let mut introspect = context.introspect();
+        for stream in &state.playing {
+            if stream.actual == through.name && stream.kept {
+                introspect.move_sink_input_by_name(stream.index, device, None);
+            }
+        }
     }
 
     /// Sets the volume of an app's stream, from 0, keeping its balance.
@@ -215,9 +296,13 @@ impl DeviceService {
     /// Moves an app's stream to the device named `device`, where the session manager keeps the
     /// app from then on.
     pub fn move_stream(&self, kind: Kind, index: u32, device: &str) {
-        if self.find(kind, device).is_none() {
+        let Some(found) = self.find(kind, device) else {
             return;
-        }
+        };
+        let device = found
+            .through
+            .as_ref()
+            .map_or(device, |through| &through.name);
         if let Some(context) = self.context.borrow_mut().as_mut() {
             let mut introspect = context.introspect();
             match kind {
@@ -243,9 +328,11 @@ impl DeviceService {
         let Some(stream) = self.stream(kind, index) else {
             return;
         };
-        let serial = self
-            .find(kind, &stream.device)
-            .and_then(|device| device.serial);
+        let device = self.find(kind, &stream.device);
+        let serial = device.and_then(|device| match device.through {
+            Some(through) if through.name == stream.actual => through.serial,
+            _ => device.serial,
+        });
         let (Some(node), Some(serial)) = (stream.node, serial) else {
             return;
         };
@@ -259,7 +346,7 @@ impl DeviceService {
         let state = self.state.borrow();
         let streams = state.playing.iter();
         streams
-            .filter(|stream| stream.kept && stream.device == device)
+            .filter(|stream| stream.kept && stream.actual == device)
             .map(|stream| stream.index)
             .collect()
     }
@@ -287,21 +374,29 @@ impl DeviceService {
         if volumes.scale(volume).is_none() {
             return;
         }
+        let name = self.volume_of(kind, name);
         if let Some(context) = self.context.borrow_mut().as_mut() {
             let mut introspect = context.introspect();
             match kind {
-                Kind::Output => introspect.set_sink_volume_by_name(name, &volumes, None),
-                Kind::Input => introspect.set_source_volume_by_name(name, &volumes, None),
+                Kind::Output => introspect.set_sink_volume_by_name(&name, &volumes, None),
+                Kind::Input => introspect.set_source_volume_by_name(&name, &volumes, None),
             };
         }
     }
 
+    /// Whose volume is the device named `name`'s: its equalizer's, while it has one.
+    fn volume_of(&self, kind: Kind, name: &str) -> String {
+        let through = self.find(kind, name).and_then(|device| device.through);
+        through.map_or_else(|| name.to_owned(), |through| through.name)
+    }
+
     pub fn set_muted(&self, kind: Kind, name: &str, muted: bool) {
+        let name = self.volume_of(kind, name);
         if let Some(context) = self.context.borrow_mut().as_mut() {
             let mut introspect = context.introspect();
             match kind {
-                Kind::Output => introspect.set_sink_mute_by_name(name, muted, None),
-                Kind::Input => introspect.set_source_mute_by_name(name, muted, None),
+                Kind::Output => introspect.set_sink_mute_by_name(&name, muted, None),
+                Kind::Input => introspect.set_source_mute_by_name(&name, muted, None),
             };
         }
     }
@@ -413,11 +508,16 @@ impl DeviceService {
         let gathered = reading.clone();
         let weak = Rc::downgrade(self);
         let mut outputs = Vec::new();
+        let mut equalizers = Vec::new();
         introspect.get_sink_info_list(move |result| match result {
             ListResult::Item(info) => {
                 if info.name.as_deref().is_some_and(hidden) {
                     return;
                 }
+                let is_equalizer = info
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with(equalizer::PREFIX));
                 let port = info.active_port.as_ref();
                 let label = info.description.as_deref().unwrap_or_default().to_owned();
                 let is_virtual = !info.flags.contains(SinkFlagSet::HARDWARE);
@@ -428,7 +528,12 @@ impl DeviceService {
                     port.and_then(|port| port.description.as_deref()),
                     is_virtual,
                 );
-                outputs.push(Device {
+                let list = if is_equalizer {
+                    &mut equalizers
+                } else {
+                    &mut outputs
+                };
+                list.push(Device {
                     name: info.name.as_deref().unwrap_or_default().to_owned(),
                     label,
                     title,
@@ -445,10 +550,14 @@ impl DeviceService {
                     volumes: info.volume,
                     index: info.index,
                     serial: info.proplist.get_str("object.serial"),
+                    through: None,
                 });
             }
             ListResult::End | ListResult::Error => {
-                gathered.borrow_mut().outputs = Some(std::mem::take(&mut outputs));
+                let mut reading = gathered.borrow_mut();
+                reading.outputs = Some(std::mem::take(&mut outputs));
+                reading.equalizers = std::mem::take(&mut equalizers);
+                drop(reading);
                 Self::finish(&weak, &gathered);
             }
         });
@@ -489,6 +598,7 @@ impl DeviceService {
                     volumes: info.volume,
                     index: info.index,
                     serial: info.proplist.get_str("object.serial"),
+                    through: None,
                 });
             }
             ListResult::End | ListResult::Error => {
@@ -557,16 +667,39 @@ impl DeviceService {
         let weak = weak.clone();
         glib::idle_add_local_once(move || {
             let Some(this) = weak.upgrade() else { return };
-            let outputs = reading.outputs.unwrap_or_default();
+            let mut outputs = reading.outputs.unwrap_or_default();
             let inputs = reading.inputs.unwrap_or_default();
+            // An output with an equalizer has the equalizer's volume.
+            for output in &mut outputs {
+                let name = equalizer::sink(&output.name);
+                if let Some(eq) = reading.equalizers.iter().find(|eq| eq.name == name) {
+                    output.through = Some(Through {
+                        name: eq.name.clone(),
+                        index: eq.index,
+                        serial: eq.serial.clone(),
+                        own: output.volumes,
+                    });
+                    output.volume = eq.volume;
+                    output.muted = eq.muted;
+                    output.volumes = eq.volumes;
+                }
+            }
             // A stream is on a device by its index; one on what isn't a device, like an output's
             // monitor, isn't an app's to show.
             let on = |streams: Option<Vec<(Stream, u32)>>, devices: &[Device]| -> Vec<Stream> {
                 let streams = streams.unwrap_or_default().into_iter();
                 streams
                     .filter_map(|(mut stream, index)| {
-                        let device = devices.iter().find(|device| device.index == index)?;
+                        // On an output's equalizer, it's on the output.
+                        let device = devices.iter().find(|device| {
+                            device.index == index
+                                || device.through.as_ref().is_some_and(|t| t.index == index)
+                        })?;
                         stream.device = device.name.clone();
+                        stream.actual = match &device.through {
+                            Some(through) if through.index == index => through.name.clone(),
+                            _ => device.name.clone(),
+                        };
                         Some(stream)
                     })
                     .collect()
@@ -574,13 +707,19 @@ impl DeviceService {
             let mut devices = Devices {
                 playing: on(reading.playing, &outputs),
                 recording: on(reading.recording, &inputs),
+                default_output: reading.default_output.clone(),
                 outputs,
                 inputs,
                 can_keep: false,
             };
             this.mark_kept(&mut devices);
+            // The default being an output's equalizer is the output being the default.
+            let default = reading
+                .default_output
+                .as_deref()
+                .map(|name| name.strip_prefix(equalizer::PREFIX).unwrap_or(name));
             for device in &mut devices.outputs {
-                device.active = Some(&device.name) == reading.default_output.as_ref();
+                device.active = Some(device.name.as_str()) == default;
             }
             for device in &mut devices.inputs {
                 device.active = Some(&device.name) == reading.default_input.as_ref();
@@ -605,7 +744,7 @@ impl DeviceService {
 /// Whether the device named `name` is a part of something bento built, like the filter one output
 /// of a combination plays through, rather than a device of its own.
 fn hidden(name: &str) -> bool {
-    name.starts_with(super::combine::CHAIN_PREFIX) || name.starts_with("bento.eq.")
+    name.starts_with(super::combine::CHAIN_PREFIX)
 }
 
 /// An app's stream, from what the sound server says of it, but for the sound server's own and
@@ -643,6 +782,7 @@ fn stream(
         fixed: flag("node.dont-move"),
         volumes,
         node: property("object.id").and_then(|id| id.parse().ok()),
+        actual: String::new(),
     })
 }
 
