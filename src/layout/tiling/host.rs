@@ -399,6 +399,8 @@ fn option_json(arg: &TilingOption) -> Value {
         TilingOption::Number(value) => json!(value),
         TilingOption::String(value) => json!(value),
         TilingOption::Gradient(value) => json!(value),
+        TilingOption::Pin(value) => json!(value),
+        TilingOption::Group(value) => json!(value),
     }
 }
 
@@ -1429,7 +1431,9 @@ impl<W: LayoutElement> Layout<W> {
                 LayoutEngineOptionValue::Number(value) => TilingOption::Number(*value),
                 LayoutEngineOptionValue::String(value) => TilingOption::String(value.clone()),
                 // Action arguments are single values; only settings are lists or gradients.
-                LayoutEngineOptionValue::Gradient(_) | LayoutEngineOptionValue::List(_) => break,
+                LayoutEngineOptionValue::Gradient(_)
+                | LayoutEngineOptionValue::List(_)
+                | LayoutEngineOptionValue::Group(_) => break,
             };
             values.push(convert(i, &default));
         }
@@ -1449,7 +1453,10 @@ impl<W: LayoutElement> Layout<W> {
             TilingOption::String(name) => self
                 .find_workspace_by_name(name)
                 .map(|(_, ws)| ws.id().get()),
-            TilingOption::Bool(_) | TilingOption::Gradient(_) => None,
+            TilingOption::Bool(_)
+            | TilingOption::Gradient(_)
+            | TilingOption::Pin(_)
+            | TilingOption::Group(_) => None,
         }
     }
 

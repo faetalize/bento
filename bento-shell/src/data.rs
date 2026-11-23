@@ -23,6 +23,7 @@ use crate::services::clipboard::{ClipboardService, Content};
 use crate::services::devices::{Device, DeviceService, Kind};
 use crate::services::files::{self, FileSearch};
 use crate::services::media::MediaService;
+use crate::services::places::Places;
 use crate::services::profiles::ProfileService;
 use crate::services::weather::{Place, WeatherService};
 use crate::services::wifi::WifiService;
@@ -307,6 +308,7 @@ pub fn run() -> glib::ExitCode {
     let profiles = ProfileService::start(say);
     let media = MediaService::start(say);
     let file_search = FileSearch::start(say);
+    let places = Places::start(say);
     let tray = Tray::start(|items| {
         let items: Vec<Value> = items
             .iter()
@@ -414,6 +416,12 @@ pub fn run() -> glib::ExitCode {
                     file_search.search(command["id"].clone(), &text("query"), &folders, &excluded);
                 }
                 "files-stop" => file_search.stop(&command["id"]),
+                "folders" => {
+                    let list = command["folders"].as_array().into_iter().flatten();
+                    let written: Vec<String> =
+                        list.filter_map(Value::as_str).map(String::from).collect();
+                    places.folders(&written);
+                }
                 cmd @ ("files-open" | "files-show") => {
                     let (path, show) = (PathBuf::from(text("path")), cmd == "files-show");
                     let token = command["token"].as_str().map(String::from);

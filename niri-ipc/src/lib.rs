@@ -1137,8 +1137,16 @@ pub enum LayoutEngineOptionType {
     /// A linear gradient, written with properties like `from="#80c8ff" to="#c7ff7f" angle=45`. An
     /// option of this type has no value when it's left out.
     Gradient,
-    /// A folder, written as its path, with `~` at its start for the home folder.
+    /// A folder, written as its path, with `~` at its start for the home folder, or as one of the
+    /// user's standard folders by the name `user-dirs.dirs` gives it, like `$XDG_DOCUMENTS_DIR`.
     Folder,
+    /// Apps pinned in order, some of them in named groups, written as children: `app "firefox"`,
+    /// and `group "Games" { app "steam"; }`. Its value is always a list, of apps' desktop entry
+    /// ids and [`LayoutEngineGroup`]s.
+    Pins,
+    /// A type this client doesn't know, from a newer bento.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Value of a layout engine option.
@@ -1158,6 +1166,19 @@ pub enum LayoutEngineOptionValue {
     List(Vec<LayoutEngineOptionValue>),
     /// A gradient.
     Gradient(LayoutEngineGradient),
+    /// A group of a `Pins` option.
+    Group(LayoutEngineGroup),
+}
+
+/// A named group of apps, as a `Pins` option has it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct LayoutEngineGroup {
+    /// The group's name.
+    pub group: String,
+    /// Its apps' desktop entry ids, in order.
+    pub apps: Vec<String>,
 }
 
 /// A linear gradient, as a layout engine option has it and as the layout engine draws it.

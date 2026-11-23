@@ -40,8 +40,14 @@ struct Item {
 }
 
 impl Item {
-    /// The page it shows on, if it shows.
+    /// The page it shows on, if it shows. One of a type the app has no row for, like pins, which
+    /// what declares it changes where it shows, or a type from a newer bento, doesn't.
     fn page(&self) -> Option<&str> {
+        use niri_ipc::LayoutEngineOptionType as Type;
+
+        if matches!(self.setting.r#type, Type::Pins | Type::Unknown) {
+            return None;
+        }
         let page = self.setting.page.as_deref()?;
         SETTINGS_PAGES.contains(&page).then_some(page)
     }

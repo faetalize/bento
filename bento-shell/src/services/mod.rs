@@ -13,6 +13,7 @@ pub mod ipc;
 pub mod media;
 pub mod network;
 pub mod notifications;
+pub mod places;
 pub mod power;
 pub mod profiles;
 pub mod tray;

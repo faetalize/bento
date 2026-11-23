@@ -109,6 +109,10 @@ export const appId = (app: App) => app.id.replace(/\.desktop$/, "");
 
 const bare = (id: string) => id.replace(/\.desktop$/, "").toLowerCase();
 
+/** Whether `id`, written with `.desktop` or without, as settings name apps, is `app`. Apps are
+ * read anew each time they're listed, so the same app isn't always the same object. */
+export const isAppId = (id: string, app: App) => bare(id) === bare(app.id);
+
 /** The app with id `id`, written with `.desktop` or without. */
 export function appById(id: string): App | undefined {
   return known().find((app) => bare(app.id) === bare(id));

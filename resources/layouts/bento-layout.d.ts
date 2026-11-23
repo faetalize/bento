@@ -74,7 +74,8 @@ export type ValueType =
     | "size"
     | "color"
     | "gradient"
-    | "folder";
+    | "folder"
+    | "pins";
 
 /**
  * A setting, or a property an engine's window rules can set, declared the same way as a shell's
@@ -89,7 +90,11 @@ export interface SettingSpec {
      * `Color`. `"gradient"` values are written with properties, like
      * `active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view"`, and reach the
      * engine as a `Gradient`, or `null` when left out. `"folder"` values are paths, written with
-     * `~` for the home folder, and bento Settings picks them with a folder chooser.
+     * `~` for the home folder, or the user's standard folders by the names `user-dirs.dirs` gives
+     * them, like `"$XDG_DOCUMENTS_DIR"`, and bento Settings picks them with a folder chooser.
+     * `"pins"` are apps pinned in order, some in named groups, written as children,
+     * `pinned { app "firefox"; group "Games" { app "steam"; }; }`, and always a list of app ids
+     * and `{ group, apps }`; bento Settings doesn't show them.
      */
     type: ValueType;
     /**
@@ -130,7 +135,7 @@ export interface ArgSpec {
      * - `"monitor"`: written as a connector name like `"DP-2"`; the engine gets a `Monitor`, or
      *   `null`.
      */
-    type: Exclude<ValueType, "color" | "gradient" | "folder"> | "workspace" | "monitor";
+    type: Exclude<ValueType, "color" | "gradient" | "folder" | "pins"> | "workspace" | "monitor";
     /** Value when the argument is left out. Arguments without one must be given. */
     default?: boolean | number | string;
     choices?: string[];

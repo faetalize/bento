@@ -111,7 +111,7 @@ The rest are optional: without one, what it's for is left out.
 | `ddcutil` | Monitors' brightness, over DDC/CI |
 | [`fd`](https://github.com/sharkdp/fd) | Finding files in the launcher and the start menu |
 | A file manager with `org.freedesktop.FileManager1`, like Files | Showing a file in its folder |
-| AccountsService | The account's name and picture in the settings app |
+| AccountsService | The account's name and picture in the settings app and the start menu, which has the system's name and `~/.face` without it |
 | gnome-keyring or oo7-portal | The secrets portal |
 
 Tools made for niri run the `niri` command, so link it to bento.
@@ -308,6 +308,20 @@ shell {
 bento has two shells: `unix`, the islands, and `windows`, laid out like Windows 11's, with a taskbar along the bottom, in the middle or on the left, with apps pinned to it in the order they're dragged to, a start menu, live previews of windows, quick settings and a notification center. They're chosen on the Shell page of bento Settings, which also makes a copy of one, saved wherever you like, to start a shell of your own from; bento's own aren't edited in place. Picking a shell of your own there asks where its settings come from: Start Fresh makes an empty file in `~/.config/bento/shells/`, and Use a Backup… takes one you have, wherever it is. Either way the config names it next to the shell, and what you set under that shell stays in its file. A shell's default export is its root component. It uses bento's modules with `bento:modules/<name>`, like `bento:modules/clock`, which are always bento's own; a module of your own is a file of your own, imported by its path, like `import Clock from "./my-clock"`, and yours to keep up. bento loads the shell again whenever one of its files changes.
 
 The unix shell's launcher and the windows shell's start menu find apps and files as you type, apps first, then files and folders in your home folder by their names, leaving out hidden ones and what git ignores. Finding files needs [`fd`](https://github.com/sharkdp/fd); without it they find apps alone. Type `/` anywhere, or press the Files pill, to search files and folders alone. Up and Down go through what's found, Tab goes to the next kind, Enter opens, Ctrl+Enter shows a file in its folder, and Escape empties the field before it closes. Settings → Shell → Search says whether files are found along with apps, which folders are searched, the home folder unless you change it, with none meaning files aren't found, and which are left out; a folder in one left out is still searched when it's listed itself.
+
+The windows shell's start menu shows the apps pinned to it, then the files opened lately, as apps tell GTK. A right click on an app, pinned, in All apps or found by typing, pins it to the start menu or the taskbar, and one on a file found opens it or shows it in its folder. Dragging a pinned app moves it, and dropping it on another makes a group of the two, or puts it in that group; a click opens a group, where its name is changed and an app dragged out of it leaves it, and a right click renames it, ungroups it or unpins it. All apps lists every app under its letter, with the letters down the side to jump to, and More lists the files opened lately with where they are. Along the bottom are you, with your picture, which opens your account in bento Settings, a button for each of your Documents, Downloads, Pictures, Music and Videos folders that's there, bento Settings and the power menu. Settings → Shell → Start Menu turns the files opened lately off and picks the folders, by their paths or by their standard names. Its pins are kept in `shell.kdl`:
+
+```kdl
+start-menu {
+    pinned {
+        app "firefox"
+        group "Games" {
+            app "steam"
+            app "heroic"
+        }
+    }
+}
+```
 
 On the windows shell's taskbar, an app's button has a mark under it for each of its windows, the long one for the window with the focus; past three windows, the last mark stands for the rest. The overview's button has a pip for each workspace of its monitor and the current one's name, "Workspace 2" when it has none. Scrolling over it goes through the workspaces, and resting on it shows previews of them, to click. A right click on it renames the current workspace or takes its name away. While the overview is open its icon is filled. The pips, the name, the previews and the scrolling each have a setting on the Shell page of bento Settings, under Overview Button, and so does showing the workspace's number in the icon, which is off by default:
 
@@ -516,6 +530,8 @@ A setting is its name followed by its values, and the engine declares the type o
 - a size, written like `"50%"` for a proportion of the working area or `"800"` for logical pixels;
 - a color, written `"#rrggbb"` or `"#rrggbbaa"`, or `"#rgb"`;
 - a gradient, written with properties instead of values, like niri's: `from` and `to` colors, and optionally an `angle` in degrees (0 goes up, 90 to the right, and 180, top to bottom, by default), `relative-to` (`"node"`, the default, or `"view"` for the whole view of the workspace) and `in`, the color space to mix in (`"srgb"`, `"srgb-linear"`, `"oklab"`, or `"oklch"` with `"shorter hue"`, `"longer hue"`, `"increasing hue"` or `"decreasing hue"`): `active-gradient from="#80c8ff" to="#c7ff7f" angle=45 relative-to="view" in="oklch shorter hue"`;
+- a folder, written as its path with `~` for the home folder, like `"~/Projects"`, or as one of your standard folders by the name `~/.config/user-dirs.dirs` gives it, like `"$XDG_DOCUMENTS_DIR"`, which is that folder whatever it's called in your language;
+- pins, apps pinned in order, some in named groups, which are always a list, written as children, `pinned { app "firefox"; group "Games" { app "steam"; app "heroic"; }; }`, and reach what declares them as `["firefox", { group: "Games", apps: ["steam", "heroic"] }]`;
 - or a list of any of those but a gradient, written as several values: `preset-column-widths "33%" "50%" "67%"`.
 
 A size written with no value, like `default-column-width` alone on its line, leaves it to the window.

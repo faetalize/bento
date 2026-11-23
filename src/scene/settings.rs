@@ -22,12 +22,13 @@ use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context as _};
 use niri_config::binds::{Bind, Key};
-use niri_config::edit::{option_properties, option_values, Document};
+use niri_config::edit::{option_properties, option_values, pin_children, Document};
 use niri_config::{bind_set, EngineSettings, ShellSettings};
 use niri_ipc::{LayoutEngineAction, LayoutEngineOption, LayoutEngineOptionValue};
 
 use crate::layout::tiling::engine::{
-    ipc_settings, is_native_action, parse_actions, resolve_settings, warn_unknown_page, SettingMeta,
+    ipc_settings, is_native_action, parse_actions, resolve_settings, warn_unknown_page,
+    SettingMeta, ValueType,
 };
 
 /// The settings file, and what the running shell declares.
@@ -346,10 +347,19 @@ impl Settings {
         let value: Option<LayoutEngineOptionValue> =
             serde_json::from_str(value).context("the value isn't JSON")?;
 
+        // Pins are written as children, the rest as arguments and properties.
+        let write = |doc: &mut Document, path: &[&str]| {
+            if declared.r#type == ValueType::Pins {
+                doc.set_with_children(path, Vec::new(), &pin_children(&value));
+            } else {
+                doc.set_node(path, option_values(&value), option_properties(&value));
+            }
+        };
+
         // Check it the way the file is read.
         let mut doc = Document::parse(format!("{name} {{\n}}\n"))?;
         let path = [name, setting];
-        doc.set_node(&path, option_values(&value), option_properties(&value));
+        write(&mut doc, &path);
         let check = ShellSettings::parse(doc.text())?;
         let written = check
             .of(name)
@@ -375,7 +385,7 @@ impl Settings {
         if value.is_none() || value == declared.default {
             doc.remove(&path);
         } else {
-            doc.set_node(&path, option_values(&value), option_properties(&value));
+            write(&mut doc, &path);
         }
         let text = String::from(doc.text());
         #[cfg(test)]
@@ -529,6 +539,45 @@ mod tests {
         let wrong = settings.set("taskbar", "size", r#""big""#);
         assert!(wrong.is_err());
         assert!(settings.set("taskbar", "nothing", "1").is_err());
+    }
+
+    #[test]
+    fn pins_are_read_and_written_as_apps_and_groups() {
+        const START: &str = r#"[{ "name": "pinned", "type": "pins", "default": [] }]"#;
+        let text = "start-menu {\n    pinned {\n        app \"firefox\"\n    }\n}\n";
+        let mut settings = Settings::from_text(text);
+        let values = settings.declare("start-menu", START, "[]").unwrap();
+        assert_eq!(values, json!({ "pinned": ["firefox"] }));
+
+        let pins = r#"["foot", { "group": "Games", "apps": ["steam", "heroic"] }, "firefox"]"#;
+        settings.set("start-menu", "pinned", pins).unwrap();
+        assert_eq!(
+            settings.text,
+            "start-menu {\n    pinned {\n        app \"foot\"\n        group \"Games\" {\n            \
+             app \"steam\"\n            app \"heroic\"\n        }\n        app \"firefox\"\n    \
+             }\n}\n"
+        );
+        assert_eq!(
+            settings.values("start-menu")["pinned"],
+            serde_json::from_str::<serde_json::Value>(pins).unwrap()
+        );
+
+        // A group's apps are all it has.
+        let wrong = Settings::from_text(
+            "start-menu {\n    pinned {\n        group \"G\" { size 1; }\n    }\n}\n",
+        );
+        assert!(wrong.error().is_some());
+    }
+
+    #[test]
+    fn only_pins_take_apps_as_children() {
+        const CLOCK: &str = r#"[{ "name": "format", "type": "string", "default": "%H:%M" }]"#;
+        let text = "clock {\n    format {\n        app \"%H\"\n    }\n}\n";
+        let mut settings = Settings::from_text(text);
+        let values = settings.declare("clock", CLOCK, "[]").unwrap();
+        assert_eq!(values["format"], json!("%H:%M"));
+        let (_, wrong) = settings.problems();
+        assert_eq!(wrong.len(), 1, "{wrong:?}");
     }
 
     #[test]

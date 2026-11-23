@@ -317,37 +317,43 @@ struct File {
 }
 
 impl File {
-    fn name(&self) -> &str {
-        self.path.rsplit('/').next().unwrap_or_default()
+    fn json(&self) -> Value {
+        describe(&self.path, self.folder)
     }
+}
 
-    /// The folder it's in, with `~` for the home folder.
-    fn location(&self) -> String {
-        let folder = Path::new(&self.path).parent().unwrap_or(Path::new("/"));
+/// The name of the file or folder at `path`: its last part.
+fn name_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or_default()
+}
+
+/// A file or folder as the shell shows it: its path, its name, the folder it's in, with `~` for
+/// the home folder, whether it's a folder, and its kind's icon.
+pub fn describe(path: &str, folder: bool) -> Value {
+    let name = name_of(path);
+    let location = {
+        let inside = Path::new(path).parent().unwrap_or(Path::new("/"));
         let home = glib::home_dir();
-        match folder.strip_prefix(&home) {
+        match inside.strip_prefix(&home) {
             Ok(inside) if inside.as_os_str().is_empty() => String::from("~"),
             Ok(inside) => format!("~/{}", inside.display()),
-            Err(_) => folder.display().to_string(),
+            Err(_) => inside.display().to_string(),
         }
-    }
-
-    fn json(&self) -> Value {
-        let icon = if self.folder {
-            Some("folder".into())
-        } else {
-            let (kind, _) = gio::content_type_guess(Some(self.name()), None);
-            // The kind's own icon is only in some themes.
-            gio::content_type_get_generic_icon_name(&kind)
-        };
-        json!({
-            "path": self.path,
-            "name": self.name(),
-            "location": self.location(),
-            "folder": self.folder,
-            "icon": icon.as_deref().unwrap_or("text-x-generic"),
-        })
-    }
+    };
+    let icon = if folder {
+        Some("folder".into())
+    } else {
+        let (kind, _) = gio::content_type_guess(Some(name), None);
+        // The kind's own icon is only in some themes.
+        gio::content_type_get_generic_icon_name(&kind)
+    };
+    json!({
+        "path": path,
+        "name": name,
+        "location": location,
+        "folder": folder,
+        "icon": icon.as_deref().unwrap_or("text-x-generic"),
+    })
 }
 
 /// The `most` files that fit `query` best among `paths`, which each end with a zero byte, a
@@ -419,10 +425,14 @@ fn walks(folders: &[String], excluded: &[String]) -> Vec<(PathBuf, Vec<PathBuf>)
     let written: Vec<PathBuf> = if folders.is_empty() {
         vec![glib::home_dir()]
     } else {
-        folders.iter().map(|folder| expand(folder)).collect()
+        folders.iter().filter_map(|folder| expand(folder)).collect()
     };
     let resolved: Vec<PathBuf> = written.iter().map(|folder| resolve(folder)).collect();
-    let excluded: Vec<PathBuf> = excluded.iter().map(|f| resolve(&expand(f))).collect();
+    let excluded: Vec<PathBuf> = excluded
+        .iter()
+        .filter_map(|f| expand(f))
+        .map(|f| resolve(&f))
+        .collect();
     plan(&resolved, &excluded)
         .into_iter()
         .map(|(folder, left_out)| {
@@ -432,18 +442,68 @@ fn walks(folders: &[String], excluded: &[String]) -> Vec<(PathBuf, Vec<PathBuf>)
         .collect()
 }
 
-/// A folder as a setting writes it, with `~` at its start for the home folder, as a path.
-fn expand(folder: &str) -> PathBuf {
+/// The user's standard folders, by the names `user-dirs.dirs` gives them, which a folder setting
+/// can be written as, with their icons.
+pub const STANDARD: [(&str, glib::UserDirectory, &str); 8] = [
+    (
+        "$XDG_DESKTOP_DIR",
+        glib::UserDirectory::Desktop,
+        "user-desktop-symbolic",
+    ),
+    (
+        "$XDG_DOCUMENTS_DIR",
+        glib::UserDirectory::Documents,
+        "folder-documents-symbolic",
+    ),
+    (
+        "$XDG_DOWNLOAD_DIR",
+        glib::UserDirectory::Downloads,
+        "folder-download-symbolic",
+    ),
+    (
+        "$XDG_MUSIC_DIR",
+        glib::UserDirectory::Music,
+        "folder-music-symbolic",
+    ),
+    (
+        "$XDG_PICTURES_DIR",
+        glib::UserDirectory::Pictures,
+        "folder-pictures-symbolic",
+    ),
+    (
+        "$XDG_PUBLICSHARE_DIR",
+        glib::UserDirectory::PublicShare,
+        "folder-publicshare-symbolic",
+    ),
+    (
+        "$XDG_TEMPLATES_DIR",
+        glib::UserDirectory::Templates,
+        "folder-templates-symbolic",
+    ),
+    (
+        "$XDG_VIDEOS_DIR",
+        glib::UserDirectory::Videos,
+        "folder-videos-symbolic",
+    ),
+];
+
+/// A folder as a setting writes it, as a path: with `~` at its start for the home folder, or one
+/// of the user's standard folders by its name, like `$XDG_DOCUMENTS_DIR`, which is none while
+/// `user-dirs.dirs` doesn't set it.
+pub fn expand(folder: &str) -> Option<PathBuf> {
+    if let Some((_, dir, _)) = STANDARD.iter().find(|(name, ..)| *name == folder) {
+        return glib::user_special_dir(*dir);
+    }
     let home = glib::home_dir();
-    match folder.strip_prefix('~') {
+    Some(match folder.strip_prefix('~') {
         Some("") => home,
         Some(inside) if inside.starts_with('/') => home.join(inside.trim_start_matches('/')),
         _ => home.join(folder),
-    }
+    })
 }
 
 /// A folder's path with its links followed, so that a folder written two ways is one.
-fn resolve(path: &Path) -> PathBuf {
+pub fn resolve(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
@@ -497,7 +557,7 @@ fn exclude_pattern(inside: &Path) -> String {
 
 /// The files apps said they opened, and when, in UTC as ISO 8601, which sorts as it reads. It's
 /// the list GTK keeps, read here rather than by GTK, which needs a display this program hasn't.
-fn read_recent(xbel: &str) -> HashMap<PathBuf, String> {
+pub fn read_recent(xbel: &str) -> HashMap<PathBuf, String> {
     let mut recent = HashMap::new();
     let mut reader = Reader::from_str(xbel);
     loop {
@@ -756,7 +816,7 @@ mod tests {
         let found: Vec<(String, bool, Fit)> = best
             .into_sorted_vec()
             .into_iter()
-            .map(|file| (file.name().to_owned(), file.folder, file.fit))
+            .map(|file| (name_of(&file.path).to_owned(), file.folder, file.fit))
             .collect();
         // A folder's name has no extension, so "v1.2" isn't "v1".
         assert_eq!(

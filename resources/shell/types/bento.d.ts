@@ -657,8 +657,16 @@ declare module "bento" {
     | "color"
     | "gradient"
     /** A folder's path, with `~` at its start for the home folder, which bento's settings pick
-     * with a folder chooser. */
-    | "folder";
+     * with a folder chooser, or one of the user's standard folders by the name `user-dirs.dirs`
+     * gives it, like `"$XDG_DOCUMENTS_DIR"`, which is where that is on each system. */
+    | "folder"
+    /** Apps pinned in order, some in named groups: always a list of `Pin`s, written as children,
+     * `app "firefox"` and `group "Games" { app "steam"; }`. It never shows in bento's settings:
+     * what declares it changes it where it shows. */
+    | "pins";
+
+  /** A pinned app, by its desktop entry's id, or a named group of them. */
+  export type Pin = string | { group: string; apps: string[] };
 
   /** A setting as a module or shell declares it. */
   export interface Setting {
@@ -734,9 +742,11 @@ declare module "bento" {
           : string;
 
   /** The value a setting reads as. */
-  export type SettingValue<S extends Setting> = S["list"] extends true
-    ? ScalarOf<S["type"]>[]
-    : ScalarOf<S["type"]>;
+  export type SettingValue<S extends Setting> = S["type"] extends "pins"
+    ? Pin[]
+    : S["list"] extends true
+      ? ScalarOf<S["type"]>[]
+      : ScalarOf<S["type"]>;
 
   /** The settings `M` declares, by name, with their values. */
   export type Settings<M extends Meta> = {
@@ -845,6 +855,13 @@ declare module "bento" {
     };
     /** Whether files can be found, which takes `fd`. */
     "file-search": { available: boolean };
+    /** Who the user is: their name, and their picture's path, if they have one. */
+    user: { name: string; picture: string | null };
+    /** The files opened lately that are still there, the latest first, 20 at most, as apps
+     * tell GTK. */
+    recent: { files: RecentFile[] };
+    /** The folders `folders` asked about that are there, in order. */
+    folders: { folders: PlaceFolder[] };
     brightness: { displays: { id: string; label: string; value: number }[] };
     theme: { dark: boolean };
     weather:
@@ -905,6 +922,23 @@ declare module "bento" {
     location: string;
     folder: boolean;
     /** Its kind's icon, by its name. */
+    icon: string;
+  }
+
+  /** A file opened lately. */
+  export interface RecentFile extends FoundFile {
+    /** When, in UTC as ISO 8601. */
+    opened: string;
+  }
+
+  /** A folder as a start menu shows it. */
+  export interface PlaceFolder {
+    /** As the setting writes it, like `"$XDG_DOCUMENTS_DIR"` or `"~/Projects"`. */
+    written: string;
+    path: string;
+    /** Its own name, as the file manager shows it. */
+    name: string;
+    /** The standard folder's icon, the home folder's, or a plain folder's. */
     icon: string;
   }
 
@@ -978,6 +1012,9 @@ declare module "bento" {
     "files-open": { path: string; token?: boolean };
     /** Shows a file in its folder, in the file manager. */
     "files-show": { path: string; token?: boolean };
+    /** Asks which of `folders`, written as folder settings write them, are there, with their
+     * names and icons, which come as the `folders` state. */
+    folders: { folders: string[] };
   }
   export function command<K extends keyof Commands>(cmd: K, fields: Commands[K]): void;
 

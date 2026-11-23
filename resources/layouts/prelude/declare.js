@@ -2,10 +2,10 @@
 // for both, checked here the same way, and handed to bento as lists in the order they're declared,
 // for settings screens. bento's shell runtime imports this file too.
 
-// Colours, gradients and folders are for settings and window rules: binds write an action's
+// Colours, gradients, folders and pins are for settings and window rules: binds write an action's
 // arguments as plain values.
 export const ARG_VALUE_TYPES = ["boolean", "number", "string", "choice", "size"];
-export const VALUE_TYPES = [...ARG_VALUE_TYPES, "color", "gradient", "folder"];
+export const VALUE_TYPES = [...ARG_VALUE_TYPES, "color", "gradient", "folder", "pins"];
 export const ARG_TYPES = [...ARG_VALUE_TYPES, "workspace", "monitor"];
 
 const text = (value) => (typeof value === "string" ? value : null);
@@ -47,7 +47,8 @@ export function checkSettings(what, specs, types = VALUE_TYPES) {
         return {
             name,
             type: spec.type,
-            list: spec.list === true,
+            // Pins are always a list.
+            list: spec.list === true || spec.type === "pins",
             default: spec.default ?? null,
             choices: spec.type === "choice" ? spec.choices : [],
             description: text(spec.description),

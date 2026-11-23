@@ -7,7 +7,7 @@ import { action, after, useModule, windows, type App, type Meta, type Window } f
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { Flyout } from "bento:modules/ui";
 import { menuOpen, openMenu, type MenuItem } from "bento:modules/menu";
-import { appById, appIcon, appId, appOf, start } from "bento:modules/apps";
+import { appById, appIcon, appId, appOf, isAppId, start } from "bento:modules/apps";
 
 export const meta = {
   settings: {
@@ -23,11 +23,11 @@ export const meta = {
 export const { settings, setSetting } = useModule(import.meta, meta);
 
 /** Whether `app` is pinned. */
-export const isPinned = (app: App) => settings.pinned.some((id) => appById(id) === app);
+export const isPinned = (app: App) => settings.pinned.some((id) => isAppId(id, app));
 
 /** Pins `app` at the end, or unpins it. */
 export function pin(app: App, pinned: boolean) {
-  const list = settings.pinned.filter((id) => appById(id) !== app);
+  const list = settings.pinned.filter((id) => !isAppId(id, app));
   if (pinned) list.push(appId(app));
   setSetting("pinned", list);
 }

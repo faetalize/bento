@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use knuffel::errors::DecodeError;
 use knuffel::Decode as _;
-use niri_ipc::LayoutEngineGradient;
+use niri_ipc::{LayoutEngineGradient, LayoutEngineGroup};
 
 use crate::appearance::{Color, Gradient, GradientInterpolation, GradientRelativeTo};
 use crate::binds::{Action, Bind, Binds};
@@ -154,6 +154,10 @@ pub enum TilingOption {
     String(String),
     /// A gradient, which is written with properties instead of arguments.
     Gradient(LayoutEngineGradient),
+    /// A pinned app, written `app "firefox"` as a child, which only pins take.
+    Pin(String),
+    /// A group of pinned apps, written `group "Games" { app "steam"; }`.
+    Group(LayoutEngineGroup),
 }
 
 /// Checks a gradient that a layout engine writes, and turns it into the gradient that bento draws
@@ -672,8 +676,8 @@ fn decode_gradient<S: knuffel::traits::ErrorSpan>(
     Ok(vec![TilingOption::Gradient(gradient)])
 }
 
-/// The values of a setting or window rule property: the node's arguments, or for a gradient its
-/// properties.
+/// The values of a setting or window rule property: the node's arguments, for a gradient its
+/// properties, and for pins its `app` and `group` children, after any arguments.
 fn decode_values<S: knuffel::traits::ErrorSpan>(
     node: &knuffel::ast::SpannedNode<S>,
     ctx: &mut knuffel::decode::Context<S>,
@@ -681,21 +685,95 @@ fn decode_values<S: knuffel::traits::ErrorSpan>(
     if !node.properties.is_empty() {
         return decode_gradient(node, ctx);
     }
+
+    let mut values = node
+        .arguments
+        .iter()
+        .map(|value| knuffel::traits::DecodeScalar::decode(value, ctx))
+        .collect::<Result<Vec<TilingOption>, _>>()?;
+    for child in node.children() {
+        match &**child.node_name {
+            "app" => values.push(TilingOption::Pin(decode_app(child, ctx)?)),
+            "group" => values.push(TilingOption::Group(decode_group(child, ctx)?)),
+            _ => ctx.emit_error(DecodeError::unexpected(
+                child,
+                "node",
+                format!(
+                    "`{}` takes its values as arguments, not children",
+                    node.node_name.escape_default()
+                ),
+            )),
+        }
+    }
+    Ok(values)
+}
+
+/// A pinned app, `app "firefox"`: its desktop entry's id.
+fn decode_app<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<String, DecodeError<S>> {
+    let name = only_argument(node, ctx, "an app's id, like `app \"firefox\"`")?;
     for child in node.children() {
         ctx.emit_error(DecodeError::unexpected(
             child,
             "node",
-            format!(
-                "`{}` takes its values as arguments, not children",
-                node.node_name.escape_default()
-            ),
+            "an app is only its id",
         ));
     }
+    Ok(name)
+}
 
-    node.arguments
-        .iter()
-        .map(|value| knuffel::traits::DecodeScalar::decode(value, ctx))
-        .collect()
+/// A group of pinned apps, `group "Games" { app "steam"; }`: its name and its apps.
+fn decode_group<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+) -> Result<LayoutEngineGroup, DecodeError<S>> {
+    let group = only_argument(node, ctx, "the group's name, like `group \"Games\"`")?;
+    let mut apps = Vec::new();
+    for child in node.children() {
+        if &**child.node_name == "app" {
+            apps.push(decode_app(child, ctx)?);
+        } else {
+            ctx.emit_error(DecodeError::unexpected(
+                child,
+                "node",
+                format!(
+                    "unexpected node `{}`, a group has `app`s",
+                    child.node_name.escape_default()
+                ),
+            ));
+        }
+    }
+    Ok(LayoutEngineGroup { group, apps })
+}
+
+/// The one string argument of `node`, which has no properties, as `what` says.
+fn only_argument<S: knuffel::traits::ErrorSpan>(
+    node: &knuffel::ast::SpannedNode<S>,
+    ctx: &mut knuffel::decode::Context<S>,
+    what: &str,
+) -> Result<String, DecodeError<S>> {
+    for name in node.properties.keys() {
+        ctx.emit_error(DecodeError::unexpected(
+            name,
+            "property",
+            format!("unexpected property `{}`", name.escape_default()),
+        ));
+    }
+    let mut arguments = node.arguments.iter();
+    let Some(first) = arguments.next() else {
+        ctx.emit_error(DecodeError::missing(node, format!("needs {what}")));
+        return Ok(String::new());
+    };
+    for value in arguments {
+        ctx.emit_error(DecodeError::unexpected(
+            &value.literal,
+            "argument",
+            format!("takes only {what}"),
+        ));
+    }
+    knuffel::traits::DecodeScalar::decode(first, ctx)
 }
 
 /// A `window-rule` of the engine's file: `match` and `exclude` like bento's own rules, and every

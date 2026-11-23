@@ -7,7 +7,8 @@
 // with files, and which folders files are searched in.
 
 import {
-  apps, useModule, type App, type FoundFile, type InputNode, type KeyEvent, type Meta, type Style,
+  apps, useModule, type App, type FoundFile, type InputNode, type KeyEvent, type Meta,
+  type PointerEvent, type Style,
 } from "bento";
 import { createMemo, createSignal, Show } from "solid-js";
 import { ACTIVE } from "bento:modules/ui";
@@ -326,6 +327,8 @@ export function SearchLine(props: {
   heights: Heights;
   iconSize: number;
   fontSize: number;
+  /** A right click on an app's or a file's line, for a menu of what can be done with it. */
+  onMenu?: (event: PointerEvent, line: Extract<Line, { kind: "app" | "file" }>) => void;
 }) {
   const line = props.line;
   const selected = () => props.search.selected() === line.key;
@@ -365,6 +368,7 @@ export function SearchLine(props: {
     <box
       style={[row, { height: props.heights.row, background: selected() ? "fg/0.1" : undefined }]}
       onClick={() => props.search.activate(line)}
+      onRightClick={(event) => props.onMenu?.(event, line)}
       onHover={({ inside }) => inside && pick()}
     >
       <image icon={icon} size={props.iconSize} />
