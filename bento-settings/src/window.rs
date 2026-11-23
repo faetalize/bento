@@ -56,7 +56,9 @@ pub fn build(
         .enumerate()
         .flat_map(|(idx, s)| std::iter::repeat_n(idx, s.categories.len()))
         .collect();
-    let entries = crate::pages::search_index(sections);
+    // The app's own, for now: what the engine and the shell declare is asked for as a search
+    // starts, rather than as the window opens.
+    let entries = search::index(sections);
 
     let toasts = adw::ToastOverlay::new();
     let ctx = PageContext::new(store.clone(), toasts.clone());
