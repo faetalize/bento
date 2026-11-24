@@ -106,6 +106,9 @@ pub struct Devices {
     pub can_keep: bool,
     /// The default output's name as the sound server says it, an equalizer's when it's one.
     default_output: Option<String>,
+    /// Whether the sound server is PipeWire's, which what bento builds out of PipeWire's
+    /// modules needs.
+    pub on_pipewire: bool,
 }
 
 /// Which of the two lists a device is in.
@@ -135,6 +138,7 @@ pub struct DeviceService {
 /// What a read of the devices has gathered so far.
 #[derive(Default)]
 struct Reading {
+    server: Option<String>,
     default_output: Option<String>,
     default_input: Option<String>,
     outputs: Option<Vec<Device>>,
@@ -412,6 +416,11 @@ impl DeviceService {
         }
     }
 
+    /// Whether the sound server is PipeWire's.
+    pub fn on_pipewire(&self) -> bool {
+        self.state.borrow().on_pipewire
+    }
+
     /// The volume of the device named `name`, as it shows.
     pub fn volume(&self, kind: Kind, name: &str) -> Option<f64> {
         self.find(kind, name).map(|device| device.volume)
@@ -532,6 +541,7 @@ impl DeviceService {
         let weak = Rc::downgrade(self);
         introspect.get_server_info(move |info| {
             let mut reading = gathered.borrow_mut();
+            reading.server = info.server_name.as_deref().map(String::from);
             reading.default_output = info.default_sink_name.as_deref().map(String::from);
             reading.default_input = info.default_source_name.as_deref().map(String::from);
             drop(reading);
@@ -741,6 +751,7 @@ impl DeviceService {
                 playing: on(reading.playing, &outputs),
                 recording: on(reading.recording, &inputs),
                 default_output: reading.default_output.clone(),
+                on_pipewire: is_pipewire(reading.server.as_deref()),
                 outputs,
                 inputs,
                 can_keep: false,
@@ -780,6 +791,12 @@ impl DeviceService {
     pub fn listen(&self, heard: impl Fn() + 'static) {
         self.listeners.borrow_mut().push(Box::new(heard));
     }
+}
+
+/// Whether the sound server named `server` is PipeWire's, which names itself like "PulseAudio
+/// (on PipeWire 1.6.11)", rather than PulseAudio itself.
+fn is_pipewire(server: Option<&str>) -> bool {
+    server.is_some_and(|server| server.contains("PipeWire"))
 }
 
 /// Whether the device named `name` is a part of something bento built, like the filter one output
@@ -995,6 +1012,13 @@ mod tests {
             title("Easy Effects Sink", "", "", "", "", "", "", true),
             both("Easy Effects Sink", "Virtual")
         );
+    }
+
+    #[test]
+    fn only_pipewires_sound_server_is_pipewire() {
+        assert!(is_pipewire(Some("PulseAudio (on PipeWire 1.6.11)")));
+        assert!(!is_pipewire(Some("pulseaudio")));
+        assert!(!is_pipewire(None));
     }
 
     #[test]

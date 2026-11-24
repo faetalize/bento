@@ -271,6 +271,9 @@ pub struct CombineService {
     rigs: Rc<Rigs>,
     /// Whether PipeWire's combine-stream is there to make them.
     available: bool,
+    /// Whether the sound server is PipeWire's, as the devices say once they're read: until
+    /// then, and on PulseAudio itself, nothing runs.
+    on_pipewire: std::cell::Cell<bool>,
     /// Whether it keeps outputs in sync by itself.
     compensates: bool,
     /// Whether filter-chain is there, for crossovers and delays.
@@ -292,11 +295,25 @@ impl CombineService {
                 .as_deref()
                 .is_some_and(|path| rigs::knows(path, "combine.latency-compensate")),
             filters: can_run && rigs::module("libpipewire-module-filter-chain").is_some(),
+            on_pipewire: std::cell::Cell::new(false),
             on_change: Box::new(on_change),
             on_restart: RefCell::default(),
         });
         this.apply();
         this
+    }
+
+    /// Whether combinations can be made and run: combine-stream is there, and the sound server
+    /// is PipeWire's.
+    fn usable(&self) -> bool {
+        self.available && self.on_pipewire.get()
+    }
+
+    /// Notes whether the sound server is PipeWire's, running the combinations once it is.
+    pub fn set_pipewire(&self, on_pipewire: bool) {
+        if self.on_pipewire.replace(on_pipewire) != on_pipewire {
+            self.apply();
+        }
     }
 
     /// Hears the name of each combined output that starts again for a change.
@@ -323,7 +340,7 @@ impl CombineService {
                 None => combinations.push(combination.clone()),
             }
         }
-        let restarts = self.available && old.is_some();
+        let restarts = self.usable() && old.is_some();
         if let Some(old) = old.filter(|old| self.filters && shape(old) == shape(&combination)) {
             self.tune(&old, &combination);
             save(&self.combinations.borrow());
@@ -388,7 +405,7 @@ impl CombineService {
         let combinations = self.combinations.borrow();
         (self.on_change)(&json!({
             "type": "combinations",
-            "available": self.available,
+            "available": self.usable(),
             "autoSync": self.compensates,
             "filters": self.filters,
             "combinations": combinations.iter().map(Combination::to_value).collect::<Vec<_>>(),
@@ -399,7 +416,7 @@ impl CombineService {
     fn apply(&self) {
         {
             let combinations = self.combinations.borrow();
-            if self.available {
+            if self.usable() {
                 let wanted: Vec<String> = combinations.iter().map(|c| rig_id(&c.id)).collect();
                 for id in self.rigs.ids() {
                     if !wanted.contains(&id) {

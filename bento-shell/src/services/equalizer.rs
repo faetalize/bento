@@ -140,6 +140,9 @@ pub struct EqualizerService {
     rigs: Rc<Rigs>,
     /// Whether PipeWire's filter-chain is there to make them.
     available: bool,
+    /// Whether the sound server is PipeWire's, as the devices say once they're read: until
+    /// then, and on PulseAudio itself, nothing runs.
+    on_pipewire: std::cell::Cell<bool>,
     on_change: Box<dyn Fn(&Value)>,
     /// Hears an output whose equalizer turns on, once it's there, or off, before it goes.
     on_turn: RefCell<Option<Box<dyn Fn(&str, bool)>>>,
@@ -151,11 +154,24 @@ impl EqualizerService {
             equalizers: RefCell::new(load()),
             rigs: Rigs::new(),
             available: rigs::can_run() && rigs::module("libpipewire-module-filter-chain").is_some(),
+            on_pipewire: std::cell::Cell::new(false),
             on_change: Box::new(on_change),
             on_turn: RefCell::default(),
         });
         this.apply();
         this
+    }
+
+    /// Whether equalizers can run: filter-chain is there, and the sound server is PipeWire's.
+    fn usable(&self) -> bool {
+        self.available && self.on_pipewire.get()
+    }
+
+    /// Notes whether the sound server is PipeWire's, running the equalizers once it is.
+    pub fn set_pipewire(&self, on_pipewire: bool) {
+        if self.on_pipewire.replace(on_pipewire) != on_pipewire {
+            self.apply();
+        }
     }
 
     pub fn on_turn(&self, heard: impl Fn(&str, bool) + 'static) {
@@ -179,7 +195,7 @@ impl EqualizerService {
             .borrow_mut()
             .insert(device.to_owned(), new.clone());
         save(&self.equalizers.borrow());
-        if !self.available {
+        if !self.usable() {
             self.publish();
             return;
         }
@@ -251,7 +267,7 @@ impl EqualizerService {
 
     /// Runs the equalizers that are on, stops the rest, and says so.
     fn apply(&self) {
-        if self.available {
+        if self.usable() {
             let equalizers = self.equalizers.borrow();
             let wanted: Vec<String> = equalizers
                 .iter()
@@ -279,7 +295,7 @@ impl EqualizerService {
             .collect();
         (self.on_change)(&json!({
             "type": "equalizers",
-            "available": self.available,
+            "available": self.usable(),
             "bands": BANDS,
             "range": RANGE,
             "devices": devices,

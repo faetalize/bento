@@ -274,6 +274,27 @@ pub fn run() -> glib::ExitCode {
             turner.release_equalizer(device);
         }
     });
+    // What bento builds out of PipeWire's modules runs once the sound server is known to be
+    // PipeWire's, and not on PulseAudio itself, even with PipeWire installed beside it.
+    {
+        let (weak, combine, equalizers) = (
+            Rc::downgrade(&devices),
+            Rc::downgrade(&combine),
+            Rc::downgrade(&equalizers),
+        );
+        devices.listen(move || {
+            let Some(devices) = weak.upgrade() else {
+                return;
+            };
+            let on_pipewire = devices.on_pipewire();
+            if let Some(combine) = combine.upgrade() {
+                combine.set_pipewire(on_pipewire);
+            }
+            if let Some(equalizers) = equalizers.upgrade() {
+                equalizers.set_pipewire(on_pipewire);
+            }
+        });
+    }
     let brightness = BrightnessService::start(|displays| {
         let displays: Vec<Value> = displays
             .iter()
