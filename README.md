@@ -103,7 +103,10 @@ The rest are optional: without one, what it's for is left out.
 | What | For |
 | ---- | --- |
 | [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite) | X11 apps |
-| PipeWire's PulseAudio server, or PulseAudio | The volume, the sound devices and the volume indicator |
+| PipeWire's PulseAudio server, or PulseAudio | The volume, the sound devices, the apps' own volumes and the volume indicator |
+| PipeWire's `pw-metadata`, with WirePlumber | Telling which apps are kept on a device, and making one follow the default again |
+| PipeWire's combine-stream module | Combined outputs |
+| PipeWire's filter-chain module | The equalizer, and combined outputs' lows and highs and delays |
 | NetworkManager | The network's status and Wi-Fi |
 | BlueZ | Bluetooth |
 | UPower | The battery |
@@ -391,10 +394,18 @@ location {
 The right island is the status, and opens into the control center, laid out like a phone's quick settings:
 
 - Along the top, buttons for a screenshot, a screen recording, bento's settings and the power menu (suspend, and restart, power off and log out, which ask for a second click).
-- The volume, and the brightness of that monitor (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Their arrows open the sound devices, with the microphone, and every display's brightness.
+- The volume, and the brightness of that monitor (a laptop's backlight, and monitors over DDC/CI, which needs `ddcutil`). Their arrows open the sound page and every display's brightness.
 - Tiles for Wi-Fi (NetworkManager), Bluetooth (BlueZ), Do Not Disturb, the dark style, the power mode (power-profiles-daemon) and the microphone. A tile only shows when its service runs; a click switches it, and its arrow opens a page: Wi-Fi joins networks, asking for a new one's password, and Bluetooth connects devices and pairs nearby ones that need no code.
 - What's playing, from any app that says so over MPRIS. Where the player lets it, a bar shows how far it's gone, and pressing or dragging along it goes elsewhere; a slider sets the player's own volume; and a click on the cover or the title brings its window to the front. Firefox doesn't say when the volume is changed on the page itself, so the slider can be behind then.
 - The notifications. A toast goes after a moment and its notification stays here until it's dismissed, unless the app marked it as transient. With Do Not Disturb on, only critical notifications come as toasts.
+
+The sound page shows the outputs, or the inputs by the switch at its top. Each device that's the default, or that an app plays on, is a card with its volume and the apps on it, each with its own volume; a click on an app's icon mutes it. The others are chips under the cards, and virtual ones nothing uses, like an effects app's, fold away under Other Devices. A click on a device makes it the default, and each output's pin, lit once it's pinned, pins it for the switcher, as its right click does.
+
+Apps follow the default unless they're moved: dragging an app onto another device moves it there, and the sound server keeps it there from then on, which a small pin by its name says. Dropping it on the default's card, or "Follow Default" in its right click, makes it follow the default again. An app that picks its own device, like a chat app's microphone, moves too, until it opens its device again; one that says it can't be moved has a lock. Telling which apps are kept, and making them follow again, takes PipeWire with WirePlumber.
+
+Combine, after the chips, makes one output out of several, to play on two pairs of speakers at once. A combined output is a device like the others, whose arrow opens its settings: its volume; whether the quicker outputs wait for the slowest by themselves, where the installed PipeWire can, and otherwise each output's delay keeps them together; and for each output, what it plays (the same as the rest, the front or the back of four channels, or the lows or the highs, split at 200 Hz) and the ratio between them: one bar split into a segment for each output, in whole percents, with a nub between each two to drag, or to turn the wheel over for a percent at a time. Under it is each output's effective volume: the combination's volume times its own. The ratio is the outputs' own volumes, so changing one on its card moves the bar too, and dragging it sets them, the biggest share at full. The data program keeps them in `~/.local/state/bento/combinations.json`, and runs each as a small PipeWire client of its own.
+
+Each output has an equalizer of its own, behind the faders button on its card: ten bands an octave apart, up to 12 dB up or down, and presets. While it's on, what plays on the output goes through it, and the output's volume is the equalizer's, so the volume keys and the page agree. Equalizers are kept in `~/.local/state/bento/equalizers.json`.
 
 The screenshot button takes bento's own screenshot unless a command is set, and the screen record button runs the command set for it. Each runs with `sh`, and a notification shows once it's done if it has a title. They're the control center's settings, which Settings → Shell sets while the shell has the control center, kept in the shell's settings:
 

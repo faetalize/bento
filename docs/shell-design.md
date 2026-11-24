@@ -241,6 +241,27 @@ than a switch, like the networks or the sound devices, opens behind it, in the p
 What's playing can go to a place in it, set the player's own volume, and bring the player's
 window to the front, each only where the player can.
 
+The sound page shows the outputs or the inputs, by a switch at its top. A device that's the
+default, or that an app uses, is a card holding its volume and its apps, each with its own volume;
+the rest are chips under the cards, and virtual devices nothing uses fold away. Devices go by short
+names, like a port's or a headset's own, with the hardware under them on the default's card.
+Pinning an output for the switcher is a button on every output, faint until it's pinned, then
+lit. Apps follow the default unless they're moved: dragging one onto another device keeps it
+there, marked by a small pin, and dropping it on the default's card makes it follow again. An app
+that picks its own device has no mark, and one that can't be moved has a lock and doesn't drag.
+
+Outputs can be combined into one, made from a chip after the others: picking two or more, then
+setting the new one up, ends with Done, which goes back to the devices with the new one lit up.
+A combination is an output like the others, pinned and made the default the same way, whose
+page sets what each of its outputs plays (the same, front, back, lows or highs), the ratio
+between them, and their delays when they aren't kept in sync by themselves. Its volume is the one
+volume: the ratio is a bar split into a segment per output, shares in whole percents with nubs to
+drag between them, and under it each output's effective volume. The ratio is the outputs' own
+volumes, the biggest share at full, so nothing but the sound server keeps a volume.
+
+Each output has an equalizer of its own, opened from its card: on or off, presets, and ten
+bands. The others keep their own curves.
+
 The control center's screenshot and screen recording buttons each run any command the settings
 give them, alone or with a notification of the user's wording once it's done, for tools that show
 none of their own.

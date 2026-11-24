@@ -2,7 +2,7 @@
 
 import { command, data, now } from "bento";
 import { createEffect, createSignal, Show } from "solid-js";
-import { Button, popup } from "bento:modules/ui";
+import { Button, Line, popup } from "bento:modules/ui";
 import { volumeIcon } from "bento:modules/sound";
 import { appById, appIcon } from "bento:modules/apps";
 
@@ -209,34 +209,6 @@ function Owner(props: { player: Player; onClick: () => void }) {
         size={11}
         style={{ color: "fg/0.65", flexShrink: 0 }}
       />
-    </box>
-  );
-}
-
-/** A thin line filled up to `value`, from 0 to 1, which a press, a drag or the wheel moves. */
-function Line(props: {
-  value: number;
-  onPick: (value: number) => void;
-  onLetGo?: () => void;
-  onWheel?: (up: boolean) => void;
-}) {
-  const at = (event: any) =>
-    event.frame?.width > 0 &&
-    props.onPick(Math.min(Math.max(event.offsetX / event.frame.width, 0), 1));
-  return (
-    <box
-      style={{
-        flexDirection: "column", justifyContent: "center", flexGrow: 1, height: 16,
-        cursor: "pointer",
-      }}
-      onPress={(event) => event.button === 1 && at(event)}
-      onDrag={at}
-      onRelease={() => props.onLetGo?.()}
-      onScroll={({ dx, dy }) => props.onWheel?.((dy || dx) < 0)}
-    >
-      <box style={{ height: 4, borderRadius: 2, background: "fg/0.15", overflow: "hidden" }}>
-        <box style={{ width: `${props.value * 100}%`, height: 4, background: "fg/0.85" }} />
-      </box>
     </box>
   );
 }

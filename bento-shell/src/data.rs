@@ -20,7 +20,9 @@ use serde_json::{json, Value};
 use crate::services::bluetooth::BluetoothService;
 use crate::services::brightness::BrightnessService;
 use crate::services::clipboard::{ClipboardService, Content};
-use crate::services::devices::{Device, DeviceService, Kind};
+use crate::services::combine::CombineService;
+use crate::services::devices::{Device, DeviceService, Kind, Stream};
+use crate::services::equalizer::EqualizerService;
 use crate::services::files::{self, FileSearch};
 use crate::services::media::MediaService;
 use crate::services::places::Places;
@@ -52,10 +54,30 @@ fn device(device: &Device) -> Value {
     json!({
         "name": device.name,
         "label": device.label,
+        "title": device.title,
+        "detail": device.detail,
+        "virtual": device.is_virtual,
         "icon": device.icon,
         "active": device.active,
         "volume": device.volume,
         "muted": device.muted,
+    })
+}
+
+fn stream(stream: &Stream) -> Value {
+    json!({
+        "id": stream.index,
+        "app": stream.app,
+        "icon": stream.icon,
+        "binary": stream.binary,
+        "title": stream.title,
+        "device": stream.device,
+        "volume": stream.volume,
+        "muted": stream.muted,
+        "paused": stream.paused,
+        "kept": stream.kept,
+        "own": stream.own,
+        "fixed": stream.fixed,
     })
 }
 
@@ -222,8 +244,91 @@ pub fn run() -> glib::ExitCode {
             "type": "audio-devices",
             "outputs": devices.outputs.iter().map(device).collect::<Vec<_>>(),
             "inputs": devices.inputs.iter().map(device).collect::<Vec<_>>(),
+            "playing": devices.playing.iter().map(stream).collect::<Vec<_>>(),
+            "recording": devices.recording.iter().map(stream).collect::<Vec<_>>(),
+            "canKeep": devices.can_keep,
         }));
     });
+    let combine = CombineService::start(say);
+    // A combined output that starts again for a change is a node of its own, which apps kept on
+    // the one before aren't: they go back once it's there.
+    let mover = devices.clone();
+    combine.on_restart(move |device| {
+        let kept = mover.kept_on(device);
+        if kept.is_empty() {
+            return;
+        }
+        let (mover, device) = (mover.clone(), device.to_owned());
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            for index in kept {
+                mover.move_stream(Kind::Output, index, &device);
+            }
+        });
+    });
+    let equalizers = EqualizerService::start(say);
+    {
+        let devices_ = Rc::downgrade(&devices);
+        equalizers.on_release(move |device| {
+            if let Some(devices) = devices_.upgrade() {
+                devices.release_equalizer(device);
+            }
+        });
+        let devices_ = Rc::downgrade(&devices);
+        equalizers.set_positions(move |device| {
+            let devices = devices_.upgrade();
+            devices.map(|d| d.positions(device)).unwrap_or_default()
+        });
+        combine.set_equalized(equalizers.on_outputs());
+        // An equalizer takes over once its sink is there: one just turned on is adopted, and
+        // one coming back resumed. One whose sink went, though it's on, comes back that way,
+        // and one that has taken over keeps its volume for then.
+        let (devices_, equalizers_) = (Rc::downgrade(&devices), Rc::downgrade(&equalizers));
+        devices.listen(move || {
+            let (Some(devices), Some(equalizers)) = (devices_.upgrade(), equalizers_.upgrade())
+            else {
+                return;
+            };
+            for (device, fresh, volume) in equalizers.pending() {
+                if !devices.has_equalizer(&device) {
+                    continue;
+                }
+                if fresh {
+                    devices.adopt_equalizer(&device);
+                } else {
+                    devices.resume_equalizer(&device, volume);
+                }
+                equalizers.adopted(&device);
+            }
+            for device in equalizers.adopted_outputs() {
+                if !devices.has_equalizer(&device) {
+                    equalizers.lost(&device);
+                } else if let Some(volume) = devices.volume(Kind::Output, &device) {
+                    equalizers.note_volume(&device, volume);
+                }
+            }
+        });
+    }
+    // What bento builds out of PipeWire's modules runs once the sound server is known to be
+    // PipeWire's, and not on PulseAudio itself, even with PipeWire installed beside it.
+    {
+        let (weak, combine, equalizers) = (
+            Rc::downgrade(&devices),
+            Rc::downgrade(&combine),
+            Rc::downgrade(&equalizers),
+        );
+        devices.listen(move || {
+            let Some(devices) = weak.upgrade() else {
+                return;
+            };
+            let on_pipewire = devices.on_pipewire();
+            if let Some(combine) = combine.upgrade() {
+                combine.set_pipewire(on_pipewire);
+            }
+            if let Some(equalizers) = equalizers.upgrade() {
+                equalizers.set_pipewire(on_pipewire);
+            }
+        });
+    }
     let brightness = BrightnessService::start(|displays| {
         let displays: Vec<Value> = displays
             .iter()
@@ -357,6 +462,29 @@ pub fn run() -> glib::ExitCode {
                     &text("name"),
                     command["value"].as_bool().unwrap_or(true),
                 ),
+                "stream-volume" => {
+                    devices.set_stream_volume(kind(), id(), command["value"].as_f64().unwrap_or(0.))
+                }
+                "stream-mute" => devices.set_stream_muted(
+                    kind(),
+                    id(),
+                    command["value"].as_bool().unwrap_or(true),
+                ),
+                "stream-move" => devices.move_stream(kind(), id(), &text("device")),
+                "stream-follow" => devices.follow_default(kind(), id()),
+                "stream-keep" => devices.keep_here(kind(), id()),
+                "combine-set" => combine.set(&command["combination"]),
+                "combine-remove" => {
+                    // Its equalizer, which would have nothing to play on.
+                    let id = text("id");
+                    equalizers.forget(&format!("{}{id}", crate::services::combine::PREFIX));
+                    combine.set_equalized(equalizers.on_outputs());
+                    combine.remove(&id);
+                }
+                "eq-set" => {
+                    equalizers.set(&text("device"), &command);
+                    combine.set_equalized(equalizers.on_outputs());
+                }
                 "brightness" => {
                     brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))
                 }

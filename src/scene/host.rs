@@ -3575,6 +3575,20 @@ mod tests {
         {"name":"b","label":"Headphones","icon":"audio-headphones-symbolic","active":false,"volume":0.8,"muted":false}],
         "inputs":[{"name":"m","label":"Microphone","icon":"audio-input-microphone-symbolic","active":true,"volume":1.0,"muted":false}]}"#;
 
+    /// Devices and apps as the data program says them, to look at the sound page.
+    const SOUND: &str = r#"{"type":"audio-devices","canKeep":true,"outputs":[
+        {"name":"a","label":"Ryzen HD Audio Controller Analog Stereo","title":"Line Out","detail":"Ryzen HD Audio Controller","virtual":false,"icon":"audio-speakers-symbolic","active":true,"volume":0.62,"muted":false},
+        {"name":"b","label":"G435","title":"G435 Wireless Gaming Headset","detail":"USB","virtual":false,"icon":"audio-headset-symbolic","active":false,"volume":0.4,"muted":false},
+        {"name":"c","label":"BenQ","title":"BenQ EX240N","detail":"Navi 21/23 HDMI/DP Audio Controller","virtual":false,"icon":"video-display-symbolic","active":false,"volume":1.0,"muted":false},
+        {"name":"d","label":"Easy Effects Sink","title":"Easy Effects Sink","detail":"Virtual","virtual":true,"icon":"audio-speakers-symbolic","active":false,"volume":1.0,"muted":false}],
+        "inputs":[{"name":"m","label":"Seiren","title":"Razer Seiren V3 Mini","detail":"USB","virtual":false,"icon":"audio-input-microphone-symbolic","active":true,"volume":0.85,"muted":false}],
+        "playing":[
+        {"id":1,"app":"Firefox","icon":"web-browser","binary":null,"title":"YouTube Music","device":"a","volume":0.8,"muted":false,"paused":false,"kept":false,"own":false,"fixed":false},
+        {"id":2,"app":"Steam","icon":"applications-games","binary":null,"title":"Elden Ring","device":"a","volume":1.0,"muted":false,"paused":false,"kept":false,"own":false,"fixed":false},
+        {"id":3,"app":"Discord","icon":"user-available","binary":null,"title":"Voice call","device":"b","volume":0.55,"muted":false,"paused":false,"kept":true,"own":false,"fixed":false},
+        {"id":4,"app":"OBS Studio","icon":"media-record","binary":null,"title":"Monitor","device":"b","volume":0.9,"muted":true,"paused":false,"kept":false,"own":false,"fixed":true}],
+        "recording":[]}"#;
+
     /// Opens the control center by a click on the right island's status.
     fn open_control_center(host: &mut SceneHost, now: &mut Instant) {
         let status = middle_of(host, "DP-1", "network-offline-symbolic");
@@ -3645,6 +3659,349 @@ mod tests {
         type_keys(&mut host, &["Escape"]);
         settle(&mut host, &mut now);
         assert!(!host.wants_keyboard());
+    }
+
+    /// Drags from `from` to `to` on DP-1, past the slop, and lets go there.
+    fn drag_to(host: &mut SceneHost, now: &mut Instant, from: [f32; 2], to: [f32; 2]) {
+        host.press(1, 1, SceneHost::at("DP-1", from));
+        host.pointer_at(Some(("DP-1", [from[0] + 12., from[1]])));
+        host.pointer_at(Some(("DP-1", to)));
+        settle(host, now);
+        host.release(1, 1, SceneHost::at("DP-1", to));
+        settle(host, now);
+    }
+
+    #[test]
+    fn apps_are_dragged_between_outputs_and_back_to_the_default() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let device = |name: &str, title: &str, active: bool| {
+            serde_json::json!({
+                "name": name, "label": title, "title": title, "detail": "", "virtual": false,
+                "icon": "audio-speakers-symbolic", "active": active, "volume": 0.5, "muted": false,
+            })
+        };
+        let stream = |id: u32, app: &str, device: &str, kept: bool| {
+            serde_json::json!({
+                "id": id, "app": app, "icon": null, "binary": null, "title": null,
+                "device": device, "volume": 1.0, "muted": false, "paused": false, "kept": kept,
+                "own": false, "fixed": false,
+            })
+        };
+        host.data_line(
+            &serde_json::json!({
+                "type": "audio-devices",
+                "outputs": [
+                    device("a", "Line Out", true),
+                    device("b", "Headphones", false),
+                    device("c", "Desk", false),
+                ],
+                "inputs": [],
+                // Names no installed app has: an app shows by its desktop entry's name, which
+                // differs between systems.
+                "playing": [stream(1, "Test Player", "a", false), stream(2, "Test Chat", "b", true)],
+                "recording": [],
+                "canKeep": true,
+            })
+            .to_string(),
+        );
+        open_control_center(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
+        commands(&host);
+        let output =
+            |id: u32, cmd: &str| serde_json::json!({ "cmd": cmd, "kind": "output", "id": id });
+
+        // The player follows the default; the chat is kept on the headphones, which are a card for
+        // it. Nothing plays on the desk's, a chip.
+        for shown in ["Line Out", "Headphones", "Test Player", "Test Chat", "Desk"] {
+            assert!(shows(&host, "DP-1", shown), "{shown}");
+        }
+
+        // Every output has its pin, hovered or not, so nothing grows as the pointer comes: a
+        // chip that grew on hover wrapped to the next row, out from under the pointer, and back.
+        let pins = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "view-pin-symbolic");
+        assert_eq!(pins.len(), 3, "one for each output");
+
+        // Dropped on a chip, an app moves there.
+        let firefox = middle_of(&host, "DP-1", "Test Player");
+        let desk = middle_of(&host, "DP-1", "Desk");
+        drag_to(&mut host, &mut now, firefox, desk);
+        let mut moved = output(1, "stream-move");
+        moved["device"] = "c".into();
+        assert_eq!(commands(&host), [moved]);
+
+        // Dropped on the default's card, a kept app follows the default again.
+        let discord = middle_of(&host, "DP-1", "Test Chat");
+        let line_out = middle_of(&host, "DP-1", "Line Out");
+        drag_to(&mut host, &mut now, discord, line_out);
+        assert_eq!(commands(&host), [output(2, "stream-follow")]);
+
+        // A click on a chip makes its device the default.
+        click(&mut host, "DP-1", desk);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "device", "kind": "output", "name": "c" })]
+        );
+    }
+
+    #[test]
+    fn a_combination_is_made_from_the_outputs_picked_and_ends_with_done() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        let device = |name: &str, title: &str, active: bool| {
+            serde_json::json!({
+                "name": name, "label": title, "title": title, "detail": "", "virtual": false,
+                "icon": "audio-speakers-symbolic", "active": active, "volume": 0.5, "muted": false,
+            })
+        };
+        let devices = |extra: Vec<serde_json::Value>| {
+            let mut outputs = vec![device("a", "Line Out", true), device("b", "Desk", false)];
+            outputs.extend(extra);
+            serde_json::json!({
+                "type": "audio-devices", "outputs": outputs, "inputs": [], "playing": [],
+                "recording": [], "canKeep": true,
+            })
+            .to_string()
+        };
+        let combinations = |list: serde_json::Value| {
+            serde_json::json!({
+                "type": "combinations", "available": true, "autoSync": true, "filters": true,
+                "combinations": list,
+            })
+            .to_string()
+        };
+        host.data_line(&devices(vec![]));
+        host.data_line(&combinations(serde_json::json!([])));
+        open_control_center(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
+        commands(&host);
+
+        let combine = middle_of(&host, "DP-1", "Combine");
+        click(&mut host, "DP-1", combine);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "New Combination"), "the page's title");
+        for output in ["Line Out", "Desk"] {
+            let at = middle_of(&host, "DP-1", output);
+            click(&mut host, "DP-1", at);
+        }
+        let make = middle_of(&host, "DP-1", "Combine 2 Outputs");
+        click(&mut host, "DP-1", make);
+        settle(&mut host, &mut now);
+        let sent = commands(&host);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["cmd"], "combine-set");
+        let mut made = sent[0]["combination"].clone();
+        assert_eq!(made["name"], "Line Out + Desk");
+        assert_eq!(made["members"][0]["device"], "a");
+        assert_eq!(made["members"][1]["device"], "b");
+        assert_eq!(made["members"][1]["role"], "same");
+
+        // The data program makes it, and its page sets each output's role.
+        let id = made["id"].as_str().unwrap().to_owned();
+        made["device"] = format!("bento.combine.{id}").into();
+        host.data_line(&combinations(serde_json::json!([made])));
+        let mut combined = device(&format!("bento.combine.{id}"), "Line Out + Desk", false);
+        combined["virtual"] = true.into();
+        host.data_line(&devices(vec![combined]));
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Plays On"));
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let back_role = scene.find("DP-1", "Back")[1];
+        drop(scene);
+        click(
+            &mut host,
+            "DP-1",
+            [
+                back_role[0] + back_role[2] / 2.,
+                back_role[1] + back_role[3] / 2.,
+            ],
+        );
+        let sent = commands(&host);
+        assert_eq!(sent[0]["cmd"], "combine-set");
+        assert_eq!(sent[0]["combination"]["members"][1]["role"], "back");
+
+        // The ratio is the outputs' own volumes, both at a half here: 50% each, and what each
+        // plays is the combination's volume, a half too, times its own.
+        let halves = host
+            .shell
+            .as_ref()
+            .unwrap()
+            .scene
+            .borrow()
+            .find("DP-1", "50%");
+        assert_eq!(halves.len(), 2, "a segment each");
+        assert!(shows(&host, "DP-1", "Effective volume: 25%"));
+        // Dragging the nub between them to a quarter of the bar sets the volumes, the bigger
+        // share at full.
+        let middle = |r: &[f32; 4]| [r[0] + r[2] / 2., r[1] + r[3] / 2.];
+        let (left, right) = (middle(&halves[0]), middle(&halves[1]));
+        // Each segment's percent is centred with its icon before it, 14 wide and 6 apart, so the
+        // line between them is half that before the middle of the two.
+        let nub = [(left[0] + right[0]) / 2. - 10., left[1]];
+        drag_to(&mut host, &mut now, nub, [left[0] - 10., left[1]]);
+        let sent = commands(&host);
+        let last = |name: &str| {
+            sent.iter()
+                .rev()
+                .find(|c| c["cmd"] == "device-volume" && c["name"] == name)
+                .unwrap_or_else(|| panic!("{name} in {sent:?}"))["value"]
+                .as_f64()
+                .unwrap()
+        };
+        assert!((last("a") - 25. / 75.).abs() < 0.03, "{sent:?}");
+        assert_eq!(last("b"), 1.);
+
+        // Done goes back to the devices, where it's a chip of its own.
+        let done = middle_of(&host, "DP-1", "Done");
+        click(&mut host, "DP-1", done);
+        settle(&mut host, &mut now);
+        assert!(!shows(&host, "DP-1", "Plays On"));
+        assert!(shows(&host, "DP-1", "Line Out + Desk"));
+        assert!(host.wants_keyboard(), "still in the control center");
+
+        // The back button steps back from its page to the devices, not out of the sound page.
+        let combined = middle_of(&host, "DP-1", "Line Out + Desk");
+        right_click(&mut host, combined);
+        // The menu opens over the sound page, which stays as it is under it.
+        assert!(shows(&host, "DP-1", "Desk"));
+        settle(&mut host, &mut now);
+        let edit = middle_of(&host, "DP-1", "Edit Combination…");
+        click(&mut host, "DP-1", edit);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Plays On"), "its page");
+        assert!(
+            shows(&host, "DP-1", "Remove Combination"),
+            "one opened later can be removed"
+        );
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Desk") && !shows(&host, "DP-1", "Plays On"));
+
+        // Pinned, then removed, it's unpinned: it won't come back, as an unplugged output would.
+        let combined = middle_of(&host, "DP-1", "Line Out + Desk");
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let pin = scene
+            .find("DP-1", "view-pin-symbolic")
+            .into_iter()
+            .find(|r| (r[1] + r[3] / 2. - combined[1]).abs() < 10. && r[0] > combined[0])
+            .expect("the combination's own pin");
+        drop(scene);
+        click(
+            &mut host,
+            "DP-1",
+            [pin[0] + pin[2] / 2., pin[1] + pin[3] / 2.],
+        );
+        let pinned = |host: &SceneHost| {
+            let settings = host.settings.clone().unwrap();
+            let pinned = settings.borrow().values("sound")["pinned"].clone();
+            pinned
+        };
+        let output = format!("bento.combine.{id}");
+        assert_eq!(pinned(&host), serde_json::json!([output]));
+        right_click(&mut host, combined);
+        settle(&mut host, &mut now);
+        let remove = middle_of(&host, "DP-1", "Remove Combination");
+        click(&mut host, "DP-1", remove);
+        settle(&mut host, &mut now);
+        assert!(commands(&host).iter().any(|c| c["cmd"] == "combine-remove"));
+        assert_eq!(
+            pinned(&host),
+            serde_json::json!([]),
+            "unpinned as it's removed"
+        );
+    }
+
+    #[test]
+    fn the_output_switcher_shows_only_with_a_pinned_output_there() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        // The default's icon is the switcher's.
+        host.data_line(
+            &serde_json::json!({
+                "type": "audio-devices",
+                "outputs": [{
+                    "name": "a", "label": "Headphones", "title": "Headphones", "detail": "",
+                    "virtual": false, "icon": "audio-headphones-symbolic", "active": true,
+                    "volume": 0.5, "muted": false,
+                }],
+                "inputs": [], "playing": [], "recording": [], "canKeep": true,
+            })
+            .to_string(),
+        );
+        let pin = |host: &mut SceneHost, now: &mut Instant, names: &str| {
+            let settings = host.settings.clone().unwrap();
+            settings
+                .borrow_mut()
+                .write_file(&format!("sound {{\n    pinned {names}\n}}\n"));
+            let outputs = [(String::from("DP-1"), (1920., 1080.))];
+            host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+            settle(host, now);
+        };
+        // Pinned outputs that aren't there, like a combination since removed: no switcher.
+        pin(&mut host, &mut now, "\"gone\"");
+        assert!(!shows(&host, "DP-1", "audio-headphones-symbolic"));
+        // One that is: the switcher.
+        pin(&mut host, &mut now, "\"gone\" \"a\"");
+        assert!(shows(&host, "DP-1", "audio-headphones-symbolic"));
+    }
+
+    #[test]
+    fn an_outputs_equalizer_takes_presets_and_bands() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        host.data_line(
+            &serde_json::json!({
+                "type": "audio-devices",
+                "outputs": [{
+                    "name": "a", "label": "Line Out", "title": "Line Out", "detail": "",
+                    "virtual": false, "icon": "audio-speakers-symbolic", "active": true,
+                    "volume": 0.5, "muted": false,
+                }],
+                "inputs": [], "playing": [], "recording": [], "canKeep": true,
+            })
+            .to_string(),
+        );
+        host.data_line(
+            &serde_json::json!({
+                "type": "equalizers", "available": true, "range": 12.0,
+                "bands": [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000],
+                "devices": { "a": {
+                    "on": true, "preset": "Flat", "gains": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    "title": "Line Out",
+                } },
+            })
+            .to_string(),
+        );
+        open_control_center(&mut host, &mut now);
+        open_page(&mut host, &mut now, 0);
+        let eq = middle_of(&host, "DP-1", "ph-faders-symbolic");
+        click(&mut host, "DP-1", eq);
+        settle(&mut host, &mut now);
+        assert!(shows(&host, "DP-1", "Equalizer"), "the page's title");
+        commands(&host);
+
+        let bass = middle_of(&host, "DP-1", "Bass Boost");
+        click(&mut host, "DP-1", bass);
+        let sent = commands(&host);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["cmd"], "eq-set");
+        assert_eq!(sent[0]["device"], "a");
+        assert_eq!(sent[0]["on"], true);
+        assert_eq!(sent[0]["preset"], "Bass Boost");
+        assert_eq!(sent[0]["gains"][0], 7);
+
+        // A press at the top of the lowest band boosts it all the way, a custom curve.
+        let label = middle_of(&host, "DP-1", "31");
+        let top = [label[0], label[1] - 12. - 150. + 2.];
+        click(&mut host, "DP-1", top);
+        let sent = commands(&host);
+        let last = sent.last().unwrap();
+        assert_eq!(last["cmd"], "eq-set");
+        assert!(last["gains"][0].as_f64().unwrap() > 10., "{last:?}");
+        assert_eq!(last["preset"], "Custom");
     }
 
     /// Opens the page behind the control center's `index`th arrow: the volume's is the first.
@@ -4892,7 +5249,45 @@ mod tests {
         open_control_center(&mut host, &mut now);
         shot(&host, "control-center", [1480, 0, 440, 1000]);
         open_page(&mut host, &mut now, 0);
-        shot(&host, "control-center-sound", [1480, 0, 440, 500]);
+        host.data_line(SOUND);
+        host.data_line(
+            r#"{"type":"equalizers","available":true,"range":12.0,"bands":[31,62,125,250,500,1000,2000,4000,8000,16000],"devices":{"a":{"on":true,"preset":"Bass Boost","gains":[7,6,4,2,0,0,0,0,0,0],"title":"Line Out"}}}"#,
+        );
+        host.data_line(
+            r#"{"type":"combinations","available":true,"autoSync":true,"filters":true,"combinations":[{"id":"c1","name":"Line Out + BenQ EX240N","device":"bento.combine.c1","auto":false,"members":[{"device":"a","role":"front","delay":0},{"device":"c","role":"back","delay":40}]}]}"#,
+        );
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-sound", [1480, 0, 440, 700]);
+        let eq = middle_of(&host, "DP-1", "ph-faders-symbolic");
+        click(&mut host, "DP-1", eq);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-equalizer", [1480, 0, 440, 500]);
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
+        let mut combined = serde_json::from_str::<serde_json::Value>(SOUND).unwrap();
+        combined["outputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "bento.combine.c1", "label": "Line Out + BenQ EX240N",
+                "title": "Line Out + BenQ EX240N", "detail": "Virtual", "virtual": true,
+                "icon": "audio-speakers-symbolic", "active": false, "volume": 0.8, "muted": false,
+            }));
+        host.data_line(&combined.to_string());
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-sound-combined", [1480, 0, 440, 700]);
+        let combined = middle_of(&host, "DP-1", "Line Out + BenQ EX240N");
+        right_click(&mut host, combined);
+        settle(&mut host, &mut now);
+        let edit = middle_of(&host, "DP-1", "Edit Combination…");
+        click(&mut host, "DP-1", edit);
+        settle(&mut host, &mut now);
+        shot(&host, "control-center-combination", [1480, 0, 440, 700]);
+        // Back to the devices, for the back after to go out of the sound page.
+        let back = middle_of(&host, "DP-1", "go-previous-symbolic");
+        click(&mut host, "DP-1", back);
+        settle(&mut host, &mut now);
         let back = middle_of(&host, "DP-1", "go-previous-symbolic");
         click(&mut host, "DP-1", back);
         settle(&mut host, &mut now);

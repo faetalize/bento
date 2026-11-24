@@ -23,7 +23,8 @@ import { Tray } from "bento:modules/tray";
 import { ClipboardHistory } from "bento:modules/clipboard";
 import { NotificationCard, notifications } from "bento:modules/notifications";
 import {
-  OutputSwitcher, SoundPage, VolumeSlider, activeDevice, devices, micIcon, toggleMute, volumeIcon,
+  OutputSwitcher, SoundPage, VolumeSlider, activeDevice, devices, micIcon, soundBack, soundTitle,
+  toggleMute, volumeIcon,
 } from "bento:modules/sound";
 import { WifiPage, networkIcon, setWifi, wifiState } from "bento:modules/network";
 import { BluetoothPage, bluetoothState, setBluetooth } from "bento:modules/bluetooth";
@@ -334,10 +335,13 @@ export function QuickSettings(props: { output: string; onClose: () => void; chil
               <Button
                 icon="go-previous-symbolic"
                 style={{ width: 32, height: 32, borderRadius: 16 }}
-                onClick={() => setPage(null)}
+                // The sound page steps back through its own pages first.
+                onClick={() => (which === "sound" && soundBack()) || setPage(null)}
               />
               <box style={{ flexGrow: 1 }}>
-                <text style={{ fontWeight: 700, fontSize: 16 }}>{PAGES[which]}</text>
+                <text style={{ fontWeight: 700, fontSize: 16 }}>
+                  {(which === "sound" && soundTitle()) || PAGES[which]}
+                </text>
               </box>
               <Show when={switchOf(which)}>
                 <Toggle on={switchOf(which)!.on} onChange={(on) => switchOf(which)!.set(on)} />

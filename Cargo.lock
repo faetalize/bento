@@ -562,6 +562,7 @@ dependencies = [
  "gtk4",
  "gtk4-layer-shell",
  "libadwaita",
+ "libc",
  "libpulse-binding",
  "libpulse-glib-binding",
  "quick-xml",
