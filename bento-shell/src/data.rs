@@ -266,14 +266,48 @@ pub fn run() -> glib::ExitCode {
         });
     });
     let equalizers = EqualizerService::start(say);
-    let turner = devices.clone();
-    equalizers.on_turn(move |device, on| {
-        if on {
-            turner.adopt_equalizer(device);
-        } else {
-            turner.release_equalizer(device);
-        }
-    });
+    {
+        let devices_ = Rc::downgrade(&devices);
+        equalizers.on_release(move |device| {
+            if let Some(devices) = devices_.upgrade() {
+                devices.release_equalizer(device);
+            }
+        });
+        let devices_ = Rc::downgrade(&devices);
+        equalizers.set_positions(move |device| {
+            let devices = devices_.upgrade();
+            devices.map(|d| d.positions(device)).unwrap_or_default()
+        });
+        combine.set_equalized(equalizers.on_outputs());
+        // An equalizer takes over once its sink is there: one just turned on is adopted, and
+        // one coming back resumed. One whose sink went, though it's on, comes back that way,
+        // and one that has taken over keeps its volume for then.
+        let (devices_, equalizers_) = (Rc::downgrade(&devices), Rc::downgrade(&equalizers));
+        devices.listen(move || {
+            let (Some(devices), Some(equalizers)) = (devices_.upgrade(), equalizers_.upgrade())
+            else {
+                return;
+            };
+            for (device, fresh, volume) in equalizers.pending() {
+                if !devices.has_equalizer(&device) {
+                    continue;
+                }
+                if fresh {
+                    devices.adopt_equalizer(&device);
+                } else {
+                    devices.resume_equalizer(&device, volume);
+                }
+                equalizers.adopted(&device);
+            }
+            for device in equalizers.adopted_outputs() {
+                if !devices.has_equalizer(&device) {
+                    equalizers.lost(&device);
+                } else if let Some(volume) = devices.volume(Kind::Output, &device) {
+                    equalizers.note_volume(&device, volume);
+                }
+            }
+        });
+    }
     // What bento builds out of PipeWire's modules runs once the sound server is known to be
     // PipeWire's, and not on PulseAudio itself, even with PipeWire installed beside it.
     {
@@ -440,8 +474,17 @@ pub fn run() -> glib::ExitCode {
                 "stream-follow" => devices.follow_default(kind(), id()),
                 "stream-keep" => devices.keep_here(kind(), id()),
                 "combine-set" => combine.set(&command["combination"]),
-                "combine-remove" => combine.remove(&text("id")),
-                "eq-set" => equalizers.set(&text("device"), &command),
+                "combine-remove" => {
+                    // Its equalizer, which would have nothing to play on.
+                    let id = text("id");
+                    equalizers.forget(&format!("{}{id}", crate::services::combine::PREFIX));
+                    combine.set_equalized(equalizers.on_outputs());
+                    combine.remove(&id);
+                }
+                "eq-set" => {
+                    equalizers.set(&text("device"), &command);
+                    combine.set_equalized(equalizers.on_outputs());
+                }
                 "brightness" => {
                     brightness.set(&text("id"), command["value"].as_f64().unwrap_or(f64::NAN))
                 }

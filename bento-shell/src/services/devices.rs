@@ -50,6 +50,8 @@ pub struct Device {
     /// The equalizer it plays through, whose volume is its own while it's on, so that the
     /// default's volume, as keys set it, is what it shows.
     through: Option<Through>,
+    /// Its channels, by PipeWire's names, like FL and FR.
+    positions: Vec<String>,
 }
 
 /// An output's equalizer, as the sound server says it.
@@ -236,12 +238,13 @@ impl DeviceService {
             context
                 .introspect()
                 .set_sink_volume_by_name(&through.name, &full, None);
-            if state.default_output.as_deref() == Some(device) {
+            let is_default = state.default_output.as_deref() == Some(device);
+            if is_default {
                 context.set_default_sink(&through.name, |_| ());
             }
             let mut introspect = context.introspect();
             for stream in &state.playing {
-                if stream.actual == device && stream.kept {
+                if stream.actual == device && moves_with_equalizer(stream, is_default) {
                     introspect.move_sink_input_by_name(stream.index, &through.name, None);
                 }
             }
@@ -281,12 +284,13 @@ impl DeviceService {
         full.scale(Volume::NORMAL);
         introspect.set_sink_volume_by_name(device, &output.volumes, None);
         introspect.set_sink_volume_by_name(&through.name, &full, None);
-        if state.default_output.as_deref() == Some(through.name.as_str()) {
+        let is_default = state.default_output.as_deref() == Some(through.name.as_str());
+        if is_default {
             context.set_default_sink(device, |_| ());
         }
         let mut introspect = context.introspect();
         for stream in &state.playing {
-            if stream.actual == through.name && stream.kept {
+            if stream.actual == through.name && moves_with_equalizer(stream, is_default) {
                 introspect.move_sink_input_by_name(stream.index, device, None);
             }
         }
@@ -413,6 +417,51 @@ impl DeviceService {
                 Kind::Output => introspect.set_sink_volume_by_name(&name, &volumes, None),
                 Kind::Input => introspect.set_source_volume_by_name(&name, &volumes, None),
             };
+        }
+    }
+
+    /// Whether the output named `device` plays through its equalizer, which is there.
+    pub fn has_equalizer(&self, device: &str) -> bool {
+        self.find(Kind::Output, device)
+            .is_some_and(|output| output.through.is_some())
+    }
+
+    /// The channels of the output named `device`, by PipeWire's names.
+    pub fn positions(&self, device: &str) -> Vec<String> {
+        self.find(Kind::Output, device)
+            .map(|output| output.positions)
+            .unwrap_or_default()
+    }
+
+    /// An equalizer that's there again, as after a re-login or a PipeWire restart, its output
+    /// still at full under it from when it came: it gets the volume it had, from 0, and what
+    /// plays on the output goes through it again.
+    pub fn resume_equalizer(&self, device: &str, volume: Option<f64>) {
+        let state = self.state.borrow().clone();
+        let Some(output) = state.outputs.iter().find(|output| output.name == device) else {
+            return;
+        };
+        let Some(through) = &output.through else {
+            return;
+        };
+        let mut context = self.context.borrow_mut();
+        let Some(context) = context.as_mut() else {
+            return;
+        };
+        if let Some(volume) = volume.filter(|v| v.is_finite()) {
+            let mut volumes = output.volumes;
+            let level = Volume((volume.clamp(0., MAX_VOLUME) * f64::from(Volume::NORMAL.0)) as u32);
+            if volumes.scale(level).is_some() {
+                context
+                    .introspect()
+                    .set_sink_volume_by_name(&through.name, &volumes, None);
+            }
+        }
+        let mut introspect = context.introspect();
+        for stream in &state.playing {
+            if stream.actual == device && moves_with_equalizer(stream, false) {
+                introspect.move_sink_input_by_name(stream.index, &through.name, None);
+            }
         }
     }
 
@@ -594,6 +643,12 @@ impl DeviceService {
                     index: info.index,
                     serial: info.proplist.get_str("object.serial"),
                     through: None,
+                    positions: info
+                        .channel_map
+                        .get()
+                        .iter()
+                        .map(|p| position(*p))
+                        .collect(),
                 });
             }
             ListResult::End | ListResult::Error => {
@@ -642,6 +697,12 @@ impl DeviceService {
                     index: info.index,
                     serial: info.proplist.get_str("object.serial"),
                     through: None,
+                    positions: info
+                        .channel_map
+                        .get()
+                        .iter()
+                        .map(|p| position(*p))
+                        .collect(),
                 });
             }
             ListResult::End | ListResult::Error => {
@@ -791,6 +852,44 @@ impl DeviceService {
     pub fn listen(&self, heard: impl Fn() + 'static) {
         self.listeners.borrow_mut().push(Box::new(heard));
     }
+}
+
+/// A channel's name as PipeWire writes it, like FL or AUX3.
+fn position(position: libpulse_binding::channelmap::Position) -> String {
+    use libpulse_binding::channelmap::Position as P;
+    let aux = position as i32 - P::Aux0 as i32;
+    if (0..32).contains(&aux) {
+        return format!("AUX{aux}");
+    }
+    match position {
+        P::Mono => "MONO",
+        P::FrontLeft => "FL",
+        P::FrontRight => "FR",
+        P::FrontCenter => "FC",
+        P::RearCenter => "RC",
+        P::RearLeft => "RL",
+        P::RearRight => "RR",
+        P::Lfe => "LFE",
+        P::FrontLeftOfCenter => "FLC",
+        P::FrontRightOfCenter => "FRC",
+        P::SideLeft => "SL",
+        P::SideRight => "SR",
+        P::TopCenter => "TC",
+        P::TopFrontLeft => "TFL",
+        P::TopFrontRight => "TFR",
+        P::TopFrontCenter => "TFC",
+        P::TopRearLeft => "TRL",
+        P::TopRearRight => "TRR",
+        P::TopRearCenter => "TRC",
+        _ => "UNK",
+    }
+    .to_owned()
+}
+
+/// Whether `stream` is moved to an output's equalizer as it comes, or back as it goes, when the
+/// output is the default or not: what follows the default goes with it on its own.
+fn moves_with_equalizer(stream: &Stream, is_default: bool) -> bool {
+    !stream.fixed && (stream.kept || stream.own || !is_default)
 }
 
 /// Whether the sound server named `server` is PipeWire's, which names itself like "PulseAudio
@@ -1012,6 +1111,37 @@ mod tests {
             title("Easy Effects Sink", "", "", "", "", "", "", true),
             both("Easy Effects Sink", "Virtual")
         );
+    }
+
+    #[test]
+    fn every_app_that_doesnt_follow_the_default_moves_with_an_equalizer() {
+        let stream = |kept: bool, own: bool, fixed: bool| Stream {
+            index: 1,
+            app: "app".into(),
+            icon: None,
+            binary: None,
+            title: None,
+            device: "a".into(),
+            volume: 1.,
+            muted: false,
+            paused: false,
+            kept,
+            own,
+            fixed,
+            volumes: ChannelVolumes::default(),
+            node: None,
+            actual: "a".into(),
+        };
+        // Following the default: the default moves it.
+        assert!(!moves_with_equalizer(&stream(false, false, false), true));
+        // Kept there, or picked by the app: it's moved.
+        assert!(moves_with_equalizer(&stream(true, false, false), true));
+        assert!(moves_with_equalizer(&stream(false, true, false), true));
+        // On an output that isn't the default, it doesn't follow the default, whatever's
+        // known of it: without pw-metadata nothing's known to be kept.
+        assert!(moves_with_equalizer(&stream(false, false, false), false));
+        // One that can't be moved isn't.
+        assert!(!moves_with_equalizer(&stream(true, false, true), false));
     }
 
     #[test]

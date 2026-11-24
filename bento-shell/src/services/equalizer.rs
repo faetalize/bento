@@ -3,6 +3,11 @@
 //! sink named `bento.eq.` and the output's name, which plays on the output; what plays on the
 //! output goes through it, and the devices say it as the output itself. Its bands change as it
 //! plays.
+//!
+//! Turned on, one waits for its sink, then what plays on the output goes through it and it takes
+//! the output's volume, the output at full under it ("adopted"); turned off, that's undone before
+//! it goes. Its volume is kept too, since a sink made again, after a re-login or a PipeWire
+//! restart, starts at full: one that comes back gets it again ("resumed").
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -33,6 +38,8 @@ pub struct Equalizer {
     pub gains: [f64; 10],
     /// The output's title, for the equalizer's description.
     pub title: String,
+    /// Its volume, from 0, which is the output's while it's on: kept for when it's made again.
+    pub volume: Option<f64>,
 }
 
 impl Default for Equalizer {
@@ -42,6 +49,7 @@ impl Default for Equalizer {
             preset: "Flat".into(),
             gains: [0.; 10],
             title: String::new(),
+            volume: None,
         }
     }
 }
@@ -60,11 +68,15 @@ impl Equalizer {
             preset: value["preset"].as_str().unwrap_or("Custom").to_owned(),
             gains,
             title: value["title"].as_str().unwrap_or_default().to_owned(),
+            volume: value["volume"].as_f64(),
         }
     }
 
     fn to_value(&self) -> Value {
-        json!({ "on": self.on, "preset": self.preset, "gains": self.gains, "title": self.title })
+        json!({
+            "on": self.on, "preset": self.preset, "gains": self.gains, "title": self.title,
+            "volume": self.volume,
+        })
     }
 }
 
@@ -74,7 +86,13 @@ pub fn sink(device: &str) -> String {
 }
 
 /// The config of the rig that makes `device`'s equalizer, which `title` names for the user.
-pub fn config(device: &str, title: &str, equalizer: &Equalizer) -> String {
+pub fn config(device: &str, title: &str, equalizer: &Equalizer, positions: &[String]) -> String {
+    // The output's own channels, so nothing of it is lost; stereo until they're known.
+    let positions = if positions.is_empty() {
+        vec!["FL".to_owned(), "FR".to_owned()]
+    } else {
+        positions.to_vec()
+    };
     let nodes: Vec<String> = BANDS
         .iter()
         .zip(equalizer.gains)
@@ -98,8 +116,8 @@ pub fn config(device: &str, title: &str, equalizer: &Equalizer) -> String {
         r#"    {{ name = libpipewire-module-filter-chain
         args = {{
             node.description = {description}
-            audio.channels = 2
-            audio.position = [ FL FR ]
+            audio.channels = {channels}
+            audio.position = [ {position} ]
             filter.graph = {{
                 nodes = [
                     {nodes}
@@ -125,6 +143,8 @@ pub fn config(device: &str, title: &str, equalizer: &Equalizer) -> String {
 ]
 "#,
         description = rigs::quoted(&format!("{title} (Equalizer)")),
+        channels = positions.len(),
+        position = positions.join(" "),
         nodes = nodes.join("\n                    "),
         links = links.join(" "),
         name = rigs::quoted(&sink(device)),
@@ -144,8 +164,16 @@ pub struct EqualizerService {
     /// then, and on PulseAudio itself, nothing runs.
     on_pipewire: std::cell::Cell<bool>,
     on_change: Box<dyn Fn(&Value)>,
-    /// Hears an output whose equalizer turns on, once it's there, or off, before it goes.
-    on_turn: RefCell<Option<Box<dyn Fn(&str, bool)>>>,
+    /// Hears an output whose equalizer turns off, before it goes, to undo its adoption.
+    on_release: RefCell<Option<Box<dyn Fn(&str)>>>,
+    /// Gives an output's channels, by PipeWire's names.
+    positions: RefCell<Option<Box<dyn Fn(&str) -> Vec<String>>>>,
+    /// The outputs whose equalizer is on but not there yet: `true` for one just turned on, to
+    /// be adopted, `false` for one coming back, to be resumed.
+    pending: RefCell<BTreeMap<String, bool>>,
+    /// The outputs whose equalizer has taken over, with when, since its volume is only its own
+    /// once it has settled.
+    adopted: RefCell<BTreeMap<String, std::time::Instant>>,
 }
 
 impl EqualizerService {
@@ -156,7 +184,10 @@ impl EqualizerService {
             available: rigs::can_run() && rigs::module("libpipewire-module-filter-chain").is_some(),
             on_pipewire: std::cell::Cell::new(false),
             on_change: Box::new(on_change),
-            on_turn: RefCell::default(),
+            on_release: RefCell::default(),
+            positions: RefCell::default(),
+            pending: RefCell::default(),
+            adopted: RefCell::default(),
         });
         this.apply();
         this
@@ -174,23 +205,117 @@ impl EqualizerService {
         }
     }
 
-    pub fn on_turn(&self, heard: impl Fn(&str, bool) + 'static) {
-        *self.on_turn.borrow_mut() = Some(Box::new(heard));
+    pub fn on_release(&self, heard: impl Fn(&str) + 'static) {
+        *self.on_release.borrow_mut() = Some(Box::new(heard));
+    }
+
+    pub fn set_positions(&self, positions: impl Fn(&str) -> Vec<String> + 'static) {
+        *self.positions.borrow_mut() = Some(Box::new(positions));
+    }
+
+    fn positions(&self, device: &str) -> Vec<String> {
+        self.positions
+            .borrow()
+            .as_ref()
+            .map(|positions| positions(device))
+            .unwrap_or_default()
+    }
+
+    /// The outputs whose equalizer is on and waits for its sink: `true` to adopt, `false` to
+    /// resume, with the volume to resume at.
+    pub fn pending(&self) -> Vec<(String, bool, Option<f64>)> {
+        let equalizers = self.equalizers.borrow();
+        let pending = self.pending.borrow();
+        let pending = pending.iter();
+        pending
+            .map(|(device, fresh)| {
+                let volume = equalizers.get(device).and_then(|eq| eq.volume);
+                (device.clone(), *fresh, volume)
+            })
+            .collect()
+    }
+
+    /// Notes that the equalizer of `device` has taken over.
+    pub fn adopted(&self, device: &str) {
+        self.pending.borrow_mut().remove(device);
+        self.adopted
+            .borrow_mut()
+            .insert(device.to_owned(), std::time::Instant::now());
+    }
+
+    /// The outputs whose equalizer has taken over.
+    pub fn adopted_outputs(&self) -> Vec<String> {
+        self.adopted.borrow().keys().cloned().collect()
+    }
+
+    /// The equalizer of `device` went, though it's on, as when PipeWire restarts: it's resumed
+    /// once it's there again.
+    pub fn lost(&self, device: &str) {
+        if self.adopted.borrow_mut().remove(device).is_some() {
+            self.pending.borrow_mut().insert(device.to_owned(), false);
+        }
+    }
+
+    /// Keeps `volume` as the volume of the equalizer of `device`, which has taken over, once it
+    /// has settled there.
+    pub fn note_volume(&self, device: &str, volume: f64) {
+        let settled = self
+            .adopted
+            .borrow()
+            .get(device)
+            .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(1));
+        if !settled {
+            return;
+        }
+        let mut equalizers = self.equalizers.borrow_mut();
+        let Some(equalizer) = equalizers.get_mut(device) else {
+            return;
+        };
+        if equalizer.volume.is_some_and(|v| (v - volume).abs() < 0.001) {
+            return;
+        }
+        equalizer.volume = Some(volume);
+        save(&equalizers);
+    }
+
+    /// The outputs whose equalizer is on.
+    pub fn on_outputs(&self) -> std::collections::BTreeSet<String> {
+        let equalizers = self.equalizers.borrow();
+        let on = equalizers.iter().filter(|(_, eq)| eq.on);
+        on.map(|(device, _)| device.clone()).collect()
+    }
+
+    /// Turns off the equalizer of `device`, and forgets it, as for a combination removed.
+    pub fn forget(self: &Rc<Self>, device: &str) {
+        let Some(equalizer) = self.equalizers.borrow().get(device).cloned() else {
+            return;
+        };
+        if equalizer.on {
+            let mut off = equalizer.to_value();
+            off["on"] = false.into();
+            self.set(device, &off);
+        }
+        self.equalizers.borrow_mut().remove(device);
+        save(&self.equalizers.borrow());
+        self.publish();
     }
 
     /// Sets the equalizer of the output named `device`. Bands change as it plays; turning it on
-    /// or off makes it or takes it away.
+    /// makes it, to be adopted once it's there, and turning it off undoes its adoption before
+    /// it goes.
     pub fn set(self: &Rc<Self>, device: &str, value: &Value) {
         if device.is_empty() || device.starts_with(PREFIX) {
             return;
         }
-        let new = Equalizer::from_value(value);
         let old = self
             .equalizers
             .borrow()
             .get(device)
             .cloned()
             .unwrap_or_default();
+        let mut new = Equalizer::from_value(value);
+        // The volume is the data program's to keep, not the shell's.
+        new.volume = old.volume;
         self.equalizers
             .borrow_mut()
             .insert(device.to_owned(), new.clone());
@@ -202,33 +327,34 @@ impl EqualizerService {
         match (old.on, new.on) {
             (true, true) => {
                 self.tune(device, &old, &new);
-                self.rigs
-                    .remember(&rig_id(device), &config(device, &self.title(device), &new));
+                let config = config(device, &self.title(device), &new, &self.positions(device));
+                self.rigs.remember(&rig_id(device), &config);
                 self.publish();
             }
             (false, true) => {
+                self.pending.borrow_mut().insert(device.to_owned(), true);
                 self.apply();
-                // What plays there goes through it once it's there.
-                let (this, device) = (Rc::downgrade(self), device.to_owned());
-                glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
-                    if let Some(this) = this.upgrade() {
-                        if let Some(heard) = this.on_turn.borrow().as_ref() {
-                            heard(&device, true);
-                        }
-                    }
-                });
             }
             (true, false) => {
-                // What plays through it goes back to the output before it goes.
-                if let Some(heard) = self.on_turn.borrow().as_ref() {
-                    heard(device, false);
-                }
-                let this = Rc::downgrade(self);
-                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
-                    if let Some(this) = this.upgrade() {
-                        this.apply();
+                self.pending.borrow_mut().remove(device);
+                if self.adopted.borrow_mut().remove(device).is_some() {
+                    // What plays through it goes back to the output before it goes.
+                    if let Some(heard) = self.on_release.borrow().as_ref() {
+                        heard(device);
                     }
-                });
+                    let this = Rc::downgrade(self);
+                    glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(400),
+                        move || {
+                            if let Some(this) = this.upgrade() {
+                                this.apply();
+                            }
+                        },
+                    );
+                } else {
+                    // Never taken over: nothing to undo.
+                    self.apply();
+                }
             }
             (false, false) => self.publish(),
         }
@@ -280,9 +406,24 @@ impl EqualizerService {
                 }
             }
             for (device, equalizer) in equalizers.iter().filter(|(_, eq)| eq.on) {
-                let config = config(device, &self.title(device), equalizer);
+                let config = config(
+                    device,
+                    &self.title(device),
+                    equalizer,
+                    &self.positions(device),
+                );
                 self.rigs.set(&rig_id(device), Some(&config));
+                // One on that hasn't taken over, as at the start, comes back as it was.
+                let adopted = self.adopted.borrow().contains_key(device);
+                let mut pending = self.pending.borrow_mut();
+                if !adopted && !pending.contains_key(device) {
+                    pending.insert(device.clone(), false);
+                }
             }
+            let mut pending = self.pending.borrow_mut();
+            pending.retain(|device, _| equalizers.get(device).is_some_and(|eq| eq.on));
+            let mut adopted = self.adopted.borrow_mut();
+            adopted.retain(|device, _| equalizers.get(device).is_some_and(|eq| eq.on));
         }
         self.publish();
     }
@@ -359,7 +500,7 @@ mod tests {
         let mut equalizer = Equalizer::default();
         equalizer.gains[0] = 6.;
         equalizer.gains[9] = -3.;
-        let config = config("alsa_output.a", "Line Out", &equalizer);
+        let config = config("alsa_output.a", "Line Out", &equalizer, &[]);
         assert_eq!(config.matches("label = bq_peaking").count(), 10);
         assert!(config.contains("name = band0 label = bq_peaking control = { \"Freq\" = 31.0 \"Q\" = 1.41 \"Gain\" = 6.0 }"));
         assert!(config.contains("\"Gain\" = -3.0"));
@@ -367,6 +508,23 @@ mod tests {
         assert!(config.contains("node.name = \"bento.eq.alsa_output.a\""));
         assert!(config.contains("target.object = \"alsa_output.a\""));
         assert!(config.contains("node.description = \"Line Out (Equalizer)\""));
+    }
+
+    #[test]
+    fn an_equalizer_has_its_outputs_channels() {
+        let positions: Vec<String> = ["FL", "FR", "RL", "RR"].map(String::from).into();
+        let four = config(
+            "bento.combine.c1",
+            "Front + Back",
+            &Equalizer::default(),
+            &positions,
+        );
+        assert!(four.contains("audio.channels = 4"), "{four}");
+        assert!(four.contains("audio.position = [ FL FR RL RR ]"));
+        // Without the output's channels, as before it's read: stereo.
+        let two = config("alsa_output.a", "Line Out", &Equalizer::default(), &[]);
+        assert!(two.contains("audio.channels = 2"));
+        assert!(two.contains("audio.position = [ FL FR ]"));
     }
 
     #[test]

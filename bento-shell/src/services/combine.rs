@@ -128,7 +128,20 @@ impl Combination {
 /// combine-stream keeps outputs in sync by itself; without, delays are what keep them. With
 /// `filters`, each output plays through a filter of its own; without, there are no crossovers,
 /// delays.
-pub fn config(combination: &Combination, compensates: bool, filters: bool) -> String {
+pub fn config(
+    combination: &Combination,
+    compensates: bool,
+    filters: bool,
+    equalized: &std::collections::BTreeSet<String>,
+) -> String {
+    // An output with its equalizer on plays through it, as everything else on it does.
+    let output = |device: &str| {
+        if equalized.contains(device) {
+            super::equalizer::sink(device)
+        } else {
+            device.to_owned()
+        }
+    };
     let id = &combination.id;
     let auto = combination.auto && compensates;
     let four = combination
@@ -170,7 +183,7 @@ pub fn config(combination: &Combination, compensates: bool, filters: bool) -> St
             ));
         }
         let target = if nodes.is_empty() {
-            member.device.clone()
+            output(&member.device)
         } else {
             let names: Vec<&str> = nodes
                 .iter()
@@ -222,7 +235,7 @@ pub fn config(combination: &Combination, compensates: bool, filters: bool) -> St
                 links = links.join(" "),
                 chain = rigs::quoted(&chain),
                 chain_out = rigs::quoted(&format!("{chain}.out")),
-                device = rigs::quoted(&member.device),
+                device = rigs::quoted(&output(&member.device)),
             ));
             chain
         };
@@ -281,6 +294,8 @@ pub struct CombineService {
     on_change: Box<dyn Fn(&Value)>,
     /// Hears the name of a combined output that starts again, so apps kept on it go back.
     on_restart: RefCell<Option<Box<dyn Fn(&str)>>>,
+    /// The outputs whose equalizer is on, which the combinations play through.
+    equalized: RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl CombineService {
@@ -298,6 +313,7 @@ impl CombineService {
             on_pipewire: std::cell::Cell::new(false),
             on_change: Box::new(on_change),
             on_restart: RefCell::default(),
+            equalized: RefCell::default(),
         });
         this.apply();
         this
@@ -314,6 +330,37 @@ impl CombineService {
         if self.on_pipewire.replace(on_pipewire) != on_pipewire {
             self.apply();
         }
+    }
+
+    /// Notes which outputs have their equalizer on: a combination with one of them plays
+    /// through it, and starts again for it, its kept apps going back after.
+    pub fn set_equalized(&self, equalized: std::collections::BTreeSet<String>) {
+        let changed: Vec<String> = self
+            .equalized
+            .borrow()
+            .symmetric_difference(&equalized)
+            .cloned()
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        *self.equalized.borrow_mut() = equalized;
+        let restarting: Vec<String> = self
+            .combinations
+            .borrow()
+            .iter()
+            .filter(|c| c.members.iter().any(|m| changed.contains(&m.device)))
+            .map(|c| format!("{PREFIX}{}", c.id))
+            .collect();
+        // The apps kept there, before it starts again.
+        if self.usable() {
+            if let Some(heard) = self.on_restart.borrow().as_ref() {
+                for output in &restarting {
+                    heard(output);
+                }
+            }
+        }
+        self.apply();
     }
 
     /// Hears the name of each combined output that starts again for a change.
@@ -346,7 +393,12 @@ impl CombineService {
             save(&self.combinations.borrow());
             self.rigs.remember(
                 &rig_id(&combination.id),
-                &config(&combination, self.compensates, self.filters),
+                &config(
+                    &combination,
+                    self.compensates,
+                    self.filters,
+                    &self.equalized.borrow(),
+                ),
             );
             self.publish();
             return;
@@ -380,15 +432,6 @@ impl CombineService {
                 process.wait_async(gio::Cancellable::NONE, |_| ());
             }
         }
-    }
-
-    /// The combination `id`, if there's one.
-    pub fn get(&self, id: &str) -> Option<Combination> {
-        self.combinations
-            .borrow()
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
     }
 
     pub fn remove(&self, id: &str) {
@@ -434,7 +477,12 @@ impl CombineService {
                             member.delay = 0.;
                         }
                     }
-                    let config = config(&combination, self.compensates, self.filters);
+                    let config = config(
+                        &combination,
+                        self.compensates,
+                        self.filters,
+                        &self.equalized.borrow(),
+                    );
                     self.rigs.set(&rig_id(&combination.id), Some(&config));
                 }
             }
@@ -514,7 +562,12 @@ mod tests {
 
     #[test]
     fn the_same_sound_on_two_outputs_is_two_streams_of_one_sink() {
-        let config = config(&pair([Role::Same, Role::Same], true), true, false);
+        let config = config(
+            &pair([Role::Same, Role::Same], true),
+            true,
+            false,
+            &Default::default(),
+        );
         assert!(config.contains("node.name = \"bento.combine.c1\""));
         assert!(config.contains("node.description = \"Speakers + Desk\""));
         assert!(config.contains("combine.latency-compensate = true"));
@@ -529,7 +582,12 @@ mod tests {
 
     #[test]
     fn front_and_back_split_four_channels() {
-        let config = config(&pair([Role::Front, Role::Back], true), true, true);
+        let config = config(
+            &pair([Role::Front, Role::Back], true),
+            true,
+            true,
+            &Default::default(),
+        );
         assert!(config.contains("audio.position = [ FL FR RL RR ]"));
         assert!(config.contains("combine.audio.position = [ RL RR ]"));
     }
@@ -537,7 +595,7 @@ mod tests {
     #[test]
     fn lows_and_highs_and_delays_play_through_filters_made_for_them() {
         let combination = pair([Role::Lows, Role::Highs], false);
-        let config = config(&combination, true, true);
+        let config = config(&combination, true, true, &Default::default());
         assert!(
             !config.contains("latency-compensate"),
             "the user's own delays"
@@ -555,7 +613,12 @@ mod tests {
 
     #[test]
     fn without_sync_of_its_own_delays_are_kept() {
-        let config = config(&pair([Role::Same, Role::Same], true), false, true);
+        let config = config(
+            &pair([Role::Same, Role::Same], true),
+            false,
+            true,
+            &Default::default(),
+        );
         assert!(!config.contains("latency-compensate"));
         assert!(
             config.contains("\"Delay (s)\" = 0.0400"),
@@ -575,6 +638,35 @@ mod tests {
         let mut synced = old.clone();
         synced.auto = true;
         assert_ne!(shape(&old), shape(&synced));
+    }
+
+    #[test]
+    fn an_output_with_its_equalizer_on_plays_through_it() {
+        let equalized = ["alsa_output.a".to_owned()].into();
+        // Played as it is: straight to the equalizer.
+        let plain = config(
+            &pair([Role::Same, Role::Same], true),
+            true,
+            false,
+            &equalized,
+        );
+        assert!(
+            plain.contains("node.name = \"bento.eq.alsa_output.a\""),
+            "{plain}"
+        );
+        assert!(plain.contains("node.name = \"alsa_output.b\""));
+        // Through a filter of its own: the filter plays to the equalizer.
+        let filtered = config(
+            &pair([Role::Same, Role::Same], true),
+            true,
+            true,
+            &equalized,
+        );
+        assert!(
+            filtered.contains("target.object = \"bento.eq.alsa_output.a\""),
+            "{filtered}"
+        );
+        assert!(filtered.contains("target.object = \"alsa_output.b\""));
     }
 
     #[test]
