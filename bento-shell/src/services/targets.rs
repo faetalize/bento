@@ -271,7 +271,7 @@ mod tests {
             })
         );
         assert_eq!(
-            parse("remove: id:158 key:'(null)'"),
+            parse("remove: id:158 all keys"),
             Some(Change::Remove { id: 158, key: None })
         );
         assert_eq!(
@@ -295,10 +295,10 @@ mod tests {
         );
         targets.apply("update: id:158 key:'target.object' value:'5302' type:'Spa:Id'");
         assert!(targets.kept(158));
-        assert!(targets.apply("remove: id:158 key:'(null)'"));
+        assert!(targets.apply("remove: id:158 all keys"));
         assert!(!targets.kept(158));
         assert!(
-            !targets.apply("remove: id:158 key:'(null)'"),
+            !targets.apply("remove: id:158 all keys"),
             "nothing left to change"
         );
     }

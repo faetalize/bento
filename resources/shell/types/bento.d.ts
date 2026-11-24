@@ -855,7 +855,7 @@ declare module "bento" {
       available: boolean;
       /** Whether it keeps outputs in sync by itself; without, each output's delay does. */
       autoSync: boolean;
-      /** Whether PipeWire's filter-chain is there, for the lows and highs, levels and delays. */
+      /** Whether PipeWire's filter-chain is there, for the lows and highs and the delays. */
       filters: boolean;
       combinations: {
         id: string;

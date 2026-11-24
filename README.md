@@ -106,7 +106,7 @@ The rest are optional: without one, what it's for is left out.
 | PipeWire's PulseAudio server, or PulseAudio | The volume, the sound devices, the apps' own volumes and the volume indicator |
 | PipeWire's `pw-metadata`, with WirePlumber | Telling which apps are kept on a device, and making one follow the default again |
 | PipeWire's combine-stream module | Combined outputs |
-| PipeWire's filter-chain module | The equalizer, and combined outputs' lows and highs, levels and delays |
+| PipeWire's filter-chain module | The equalizer, and combined outputs' lows and highs and delays |
 | NetworkManager | The network's status and Wi-Fi |
 | BlueZ | Bluetooth |
 | UPower | The battery |

@@ -5252,7 +5252,7 @@ mod tests {
             r#"{"type":"equalizers","available":true,"range":12.0,"bands":[31,62,125,250,500,1000,2000,4000,8000,16000],"devices":{"a":{"on":true,"preset":"Bass Boost","gains":[7,6,4,2,0,0,0,0,0,0],"title":"Line Out"}}}"#,
         );
         host.data_line(
-            r#"{"type":"combinations","available":true,"autoSync":true,"filters":true,"combinations":[{"id":"c1","name":"Line Out + BenQ EX240N","device":"bento.combine.c1","auto":false,"members":[{"device":"a","role":"front","level":1.0,"delay":0},{"device":"c","role":"back","level":0.8,"delay":40}]}]}"#,
+            r#"{"type":"combinations","available":true,"autoSync":true,"filters":true,"combinations":[{"id":"c1","name":"Line Out + BenQ EX240N","device":"bento.combine.c1","auto":false,"members":[{"device":"a","role":"front","delay":0},{"device":"c","role":"back","delay":40}]}]}"#,
         );
         settle(&mut host, &mut now);
         shot(&host, "control-center-sound", [1480, 0, 440, 700]);
