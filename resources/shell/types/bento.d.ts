@@ -1067,9 +1067,7 @@ declare module "bento" {
     "stream-keep": { kind: "output" | "input"; id: number };
     /** Makes a combination of outputs, or changes one, by its `id` (letters, digits and `-`).
      * What each of its outputs plays is the combination's volume times the output's own, the
-     * ratio between them; a new one turns its loudest output to full, the others with it, and
-     * starts at the volume the loudest had. A change of delays is made as it plays; any other
-     * starts it again. */
+     * ratio between them. A change of delays is made as it plays; any other starts it again. */
     "combine-set": { combination: Omit<Data["combinations"]["combinations"][number], "device"> };
     "combine-remove": { id: string };
     /** Sets an output's equalizer: on or off, and each band's gain in dB. Its gains change as it
