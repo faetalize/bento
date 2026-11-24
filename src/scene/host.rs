@@ -3879,6 +3879,72 @@ mod tests {
         click(&mut host, "DP-1", back);
         settle(&mut host, &mut now);
         assert!(shows(&host, "DP-1", "Desk") && !shows(&host, "DP-1", "Plays On"));
+
+        // Pinned, then removed, it's unpinned: it won't come back, as an unplugged output would.
+        let combined = middle_of(&host, "DP-1", "Line Out + Desk");
+        let scene = host.shell.as_ref().unwrap().scene.borrow();
+        let pin = scene
+            .find("DP-1", "view-pin-symbolic")
+            .into_iter()
+            .find(|r| (r[1] + r[3] / 2. - combined[1]).abs() < 10. && r[0] > combined[0])
+            .expect("the combination's own pin");
+        drop(scene);
+        click(
+            &mut host,
+            "DP-1",
+            [pin[0] + pin[2] / 2., pin[1] + pin[3] / 2.],
+        );
+        let pinned = |host: &SceneHost| {
+            let settings = host.settings.clone().unwrap();
+            let pinned = settings.borrow().values("sound")["pinned"].clone();
+            pinned
+        };
+        let output = format!("bento.combine.{id}");
+        assert_eq!(pinned(&host), serde_json::json!([output]));
+        right_click(&mut host, combined);
+        settle(&mut host, &mut now);
+        let remove = middle_of(&host, "DP-1", "Remove Combination");
+        click(&mut host, "DP-1", remove);
+        settle(&mut host, &mut now);
+        assert!(commands(&host).iter().any(|c| c["cmd"] == "combine-remove"));
+        assert_eq!(
+            pinned(&host),
+            serde_json::json!([]),
+            "unpinned as it's removed"
+        );
+    }
+
+    #[test]
+    fn the_output_switcher_shows_only_with_a_pinned_output_there() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        // The default's icon is the switcher's.
+        host.data_line(
+            &serde_json::json!({
+                "type": "audio-devices",
+                "outputs": [{
+                    "name": "a", "label": "Headphones", "title": "Headphones", "detail": "",
+                    "virtual": false, "icon": "audio-headphones-symbolic", "active": true,
+                    "volume": 0.5, "muted": false,
+                }],
+                "inputs": [], "playing": [], "recording": [], "canKeep": true,
+            })
+            .to_string(),
+        );
+        let pin = |host: &mut SceneHost, now: &mut Instant, names: &str| {
+            let settings = host.settings.clone().unwrap();
+            settings
+                .borrow_mut()
+                .write_file(&format!("sound {{\n    pinned {names}\n}}\n"));
+            let outputs = [(String::from("DP-1"), (1920., 1080.))];
+            host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+            settle(host, now);
+        };
+        // Pinned outputs that aren't there, like a combination since removed: no switcher.
+        pin(&mut host, &mut now, "\"gone\"");
+        assert!(!shows(&host, "DP-1", "audio-headphones-symbolic"));
+        // One that is: the switcher.
+        pin(&mut host, &mut now, "\"gone\" \"a\"");
+        assert!(shows(&host, "DP-1", "audio-headphones-symbolic"));
     }
 
     #[test]

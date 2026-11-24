@@ -138,11 +138,14 @@ export function switchOutput() {
 }
 onAction("switch-audio-output", switchOutput);
 
+/** The pinned outputs that are there now. */
+const pinnedThere = () => pinned().filter((name) => devices().outputs.some((o) => o.name === name));
+
 /** The switcher's button: the output that plays, which a click switches from, and a right click
- * opens `onMore`. It shows while outputs are pinned. */
+ * opens `onMore`. It shows while a pinned output is there to switch to. */
 export function OutputSwitcher(props: { onMore?: () => void; style?: any; size?: number }) {
   return (
-    <Show when={pinned().length > 0}>
+    <Show when={pinnedThere().length > 0}>
       <Button
         icon={activeDevice("outputs")?.icon ?? "audio-speakers-symbolic"}
         size={props.size}
@@ -276,7 +279,7 @@ function deviceMenu(kind: Kind, device: Device, event: PointerEvent) {
     items.push(
       "separator",
       { label: "Edit Combination…", run: () => setSub({ page: "combination", id: combination.id, fresh: false }) },
-      { label: "Remove Combination", danger: true, run: () => command("combine-remove", { id: combination.id }) },
+      { label: "Remove Combination", danger: true, run: () => removeCombination(combination.id) },
     );
   }
   openMenu({ output: event.output, x: event.x, y: event.y }, items);
@@ -310,6 +313,12 @@ const MAX_DELAY = 500;
 
 function setCombination(combination: Omit<Combination, "device">) {
   command("combine-set", { combination });
+}
+
+/** Removes the combination `id`, and its pin: unlike an output unplugged, it won't be back. */
+function removeCombination(id: string) {
+  setPinned(`bento.combine.${id}`, false);
+  command("combine-remove", { id });
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -997,7 +1006,7 @@ function CombinationPage(props: { id: string; fresh: boolean; width: number }) {
     flash(combination()?.device ?? "");
   };
   const remove = () => {
-    command("combine-remove", { id: props.id });
+    removeCombination(props.id);
     setSub(null);
   };
   return (
