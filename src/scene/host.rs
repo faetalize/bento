@@ -4188,6 +4188,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn whats_playing_seeks_sets_its_volume_and_raises() {
+        let (mut host, mut now) = loaded(serde_json::json!({ "gaps": 8 }));
+        // Paused, so where it is stays put while the test looks.
+        host.data_line(
+            r#"{"type":"media","players":[{"id":"org.mpris.MediaPlayer2.music","name":"Music","icon":null,"playing":false,"title":"A Song","artist":"Someone","art":null,"canNext":true,"canPrevious":true,"canPlay":true,"canSeek":true,"position":60,"length":240,"rate":1,"at":0,"volume":0.5,"canRaise":true}]}"#,
+        );
+        open_control_center(&mut host, &mut now);
+        commands(&host);
+        let player = "org.mpris.MediaPlayer2.music";
+
+        // The line runs over how far it's gone and how long it is, at the card's two ends: three
+        // quarters of the way from one to the other is near three quarters of the song.
+        let [gone, long] = [
+            middle_of(&host, "DP-1", "1:00"),
+            middle_of(&host, "DP-1", "4:00"),
+        ];
+        assert!(long[0] - gone[0] > 250., "the times are at the card's ends");
+        click(
+            &mut host,
+            "DP-1",
+            [gone[0] + (long[0] - gone[0]) * 0.75, gone[1] - 15.],
+        );
+        let sent = commands(&host);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["cmd"], "media-position");
+        assert_eq!(sent[0]["player"], player);
+        let position = sent[0]["position"].as_f64().unwrap();
+        assert!(
+            (160.0..195.0).contains(&position),
+            "about 3:00, not {position}"
+        );
+
+        // The volume's line comes after its icon.
+        let volume = middle_of(&host, "DP-1", "audio-volume-medium-symbolic");
+        click(&mut host, "DP-1", [volume[0] + 20., volume[1]]);
+        let sent = commands(&host);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["cmd"], "media-volume");
+        let value = sent[0]["value"].as_f64().unwrap();
+        assert!((0.0..0.5).contains(&value), "near its start, not {value}");
+
+        let title = middle_of(&host, "DP-1", "A Song");
+        click(&mut host, "DP-1", title);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "media-raise", "player": player })]
+        );
+        assert!(
+            !host.wants_keyboard(),
+            "the control center closes for its window"
+        );
+
+        // So does the player's name.
+        open_control_center(&mut host, &mut now);
+        commands(&host);
+        let name = middle_of(&host, "DP-1", "Music");
+        click(&mut host, "DP-1", name);
+        assert_eq!(
+            commands(&host),
+            [serde_json::json!({ "cmd": "media-raise", "player": player })]
+        );
+    }
+
     /// A notification as the data program says it.
     fn notification(id: u32, summary: &str, transient: bool) -> String {
         serde_json::json!({
@@ -4818,7 +4882,7 @@ mod tests {
             r#"{"type":"power-profile","available":true,"active":"performance","profiles":["power-saver","balanced","performance"]}"#,
         );
         host.data_line(
-            r#"{"type":"media","players":[{"id":"org.mpris.MediaPlayer2.music","name":"Music","icon":null,"playing":true,"title":"A Song With a Long Name","artist":"Someone","art":null,"canNext":true,"canPrevious":true,"canPlay":true}]}"#,
+            r#"{"type":"media","players":[{"id":"org.mpris.MediaPlayer2.music","name":"Music","icon":null,"playing":false,"title":"A Song With a Long Name","artist":"Someone","art":null,"artAspect":null,"canNext":true,"canPrevious":true,"canPlay":true,"canSeek":true,"position":27,"length":211,"rate":1,"at":0,"volume":0.7,"canRaise":true}]}"#,
         );
         host.data_line(&notification(41, "Build finished", false));
         host.data_line(
