@@ -3696,7 +3696,9 @@ mod tests {
                     device("c", "Desk", false),
                 ],
                 "inputs": [],
-                "playing": [stream(1, "Firefox", "a", false), stream(2, "Discord", "b", true)],
+                // Names no installed app has: an app shows by its desktop entry's name, which
+                // differs between systems.
+                "playing": [stream(1, "Test Player", "a", false), stream(2, "Test Chat", "b", true)],
                 "recording": [],
                 "canKeep": true,
             })
@@ -3708,9 +3710,9 @@ mod tests {
         let output =
             |id: u32, cmd: &str| serde_json::json!({ "cmd": cmd, "kind": "output", "id": id });
 
-        // Firefox follows the default; Discord is kept on the headphones, which are a card for
+        // The player follows the default; the chat is kept on the headphones, which are a card for
         // it. Nothing plays on the desk's, a chip.
-        for shown in ["Line Out", "Headphones", "Firefox", "Discord", "Desk"] {
+        for shown in ["Line Out", "Headphones", "Test Player", "Test Chat", "Desk"] {
             assert!(shows(&host, "DP-1", shown), "{shown}");
         }
 
@@ -3726,7 +3728,7 @@ mod tests {
         assert_eq!(pins.len(), 3, "one for each output");
 
         // Dropped on a chip, an app moves there.
-        let firefox = middle_of(&host, "DP-1", "Firefox");
+        let firefox = middle_of(&host, "DP-1", "Test Player");
         let desk = middle_of(&host, "DP-1", "Desk");
         drag_to(&mut host, &mut now, firefox, desk);
         let mut moved = output(1, "stream-move");
@@ -3734,7 +3736,7 @@ mod tests {
         assert_eq!(commands(&host), [moved]);
 
         // Dropped on the default's card, a kept app follows the default again.
-        let discord = middle_of(&host, "DP-1", "Discord");
+        let discord = middle_of(&host, "DP-1", "Test Chat");
         let line_out = middle_of(&host, "DP-1", "Line Out");
         drag_to(&mut host, &mut now, discord, line_out);
         assert_eq!(commands(&host), [output(2, "stream-follow")]);
