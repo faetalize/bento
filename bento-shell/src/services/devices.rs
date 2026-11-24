@@ -20,6 +20,8 @@ use super::targets::TargetWatch;
 
 /// How long to wait before connecting again after the sound server went away.
 const RETRY: Duration = Duration::from_secs(1);
+/// How long apps take to go through an equalizer once they're sent to it.
+const EQUALIZER_SETTLES: Duration = Duration::from_millis(300);
 
 /// A sound output or input.
 #[derive(Debug, Clone, PartialEq)]
@@ -207,37 +209,57 @@ impl DeviceService {
     }
 
     /// The equalizer of the output named `device` is there: what plays on the output goes through
-    /// it, with the output's volume, the output at its full volume under it.
-    pub fn adopt_equalizer(&self, device: &str) {
+    /// it, with the output's volume, the output at its full volume under it. What plays never
+    /// gets louder on the way: the apps go through the equalizer while it's at full and the
+    /// output still has its volume, which sounds the same; once they're there, the equalizer
+    /// takes the output's volume before the output goes to full, which is quieter for a moment
+    /// rather than louder.
+    pub fn adopt_equalizer(self: &Rc<Self>, device: &str) {
         let state = self.state.borrow().clone();
         let Some(output) = state.outputs.iter().find(|output| output.name == device) else {
             return;
         };
-        let Some(through) = &output.through else {
+        let Some(through) = output.through.clone() else {
             return;
         };
-        let mut context = self.context.borrow_mut();
-        let Some(context) = context.as_mut() else {
-            return;
-        };
-        let mut introspect = context.introspect();
-        let mut full = through.own;
-        full.scale(Volume::NORMAL);
-        introspect.set_sink_volume_by_name(&through.name, &through.own, None);
-        introspect.set_sink_volume_by_name(device, &full, None);
-        if state.default_output.as_deref() == Some(device) {
-            context.set_default_sink(&through.name, |_| ());
-        }
-        let mut introspect = context.introspect();
-        for stream in &state.playing {
-            if stream.actual == device && stream.kept {
-                introspect.move_sink_input_by_name(stream.index, &through.name, None);
+        {
+            let mut context = self.context.borrow_mut();
+            let Some(context) = context.as_mut() else {
+                return;
+            };
+            let mut full = through.own;
+            full.scale(Volume::NORMAL);
+            context
+                .introspect()
+                .set_sink_volume_by_name(&through.name, &full, None);
+            if state.default_output.as_deref() == Some(device) {
+                context.set_default_sink(&through.name, |_| ());
+            }
+            let mut introspect = context.introspect();
+            for stream in &state.playing {
+                if stream.actual == device && stream.kept {
+                    introspect.move_sink_input_by_name(stream.index, &through.name, None);
+                }
             }
         }
+        let (weak, device) = (Rc::downgrade(self), device.to_owned());
+        glib::timeout_add_local_once(EQUALIZER_SETTLES, move || {
+            let Some(this) = weak.upgrade() else { return };
+            let mut context = this.context.borrow_mut();
+            let Some(context) = context.as_mut() else {
+                return;
+            };
+            let mut introspect = context.introspect();
+            let mut full = through.own;
+            full.scale(Volume::NORMAL);
+            introspect.set_sink_volume_by_name(&through.name, &through.own, None);
+            introspect.set_sink_volume_by_name(&device, &full, None);
+        });
     }
 
     /// The equalizer of the output named `device` is going: what plays through it goes back to
-    /// the output, with its volume.
+    /// the output, with its volume. As when it came, never louder on the way: the output takes
+    /// its volume back before the equalizer goes to full, then the apps go back to the output.
     pub fn release_equalizer(&self, device: &str) {
         let state = self.state.borrow().clone();
         let Some(output) = state.outputs.iter().find(|output| output.name == device) else {
@@ -251,7 +273,10 @@ impl DeviceService {
             return;
         };
         let mut introspect = context.introspect();
+        let mut full = output.volumes;
+        full.scale(Volume::NORMAL);
         introspect.set_sink_volume_by_name(device, &output.volumes, None);
+        introspect.set_sink_volume_by_name(&through.name, &full, None);
         if state.default_output.as_deref() == Some(through.name.as_str()) {
             context.set_default_sink(device, |_| ());
         }
