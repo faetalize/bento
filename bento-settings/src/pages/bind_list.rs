@@ -135,7 +135,12 @@ pub fn general_group(name: &str) -> &'static str {
         "Windows"
     } else if matches!(
         name,
-        "quit" | "suspend" | "change-vt" | "show-hotkey-overlay" | "do-screen-transition"
+        "quit"
+            | "suspend"
+            | "change-vt"
+            | "show-hotkey-overlay"
+            | "do-screen-transition"
+            | "reload-shell"
     ) {
         "System"
     } else {

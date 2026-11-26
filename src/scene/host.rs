@@ -251,6 +251,8 @@ type Mtimes = Vec<(std::path::PathBuf, Option<SystemTime>)>;
 #[derive(Default)]
 pub struct SceneHost {
     shell: Option<Shell>,
+    /// Whether the shell starts over on the next look, as `reload-shell` asks.
+    reload: bool,
     /// The module the shell starts from and when its files had last changed when they were
     /// loaded, or failed to.
     loaded_mtimes: Option<(String, Mtimes)>,
@@ -316,10 +318,10 @@ impl std::fmt::Debug for SceneHost {
 
 impl SceneHost {
     /// Loads the shell that starts from module `entry`, again when its files changed, it's
-    /// another one, or it was cut off part way through a call, onto `outputs`, each with its
-    /// logical size, with bento's own shell and modules read from `dir` if it's given, and its
-    /// settings and binds from `settings_file`. A shell that fails to load leaves the last one,
-    /// or bento's unix shell when there's none yet.
+    /// another one, it was cut off part way through a call or asked to start over, onto `outputs`,
+    /// each with its logical size, with bento's own shell and modules read from `dir` if it's
+    /// given, and its settings and binds from `settings_file`. A shell that fails to load
+    /// leaves the last one, or bento's unix shell when there's none yet.
     pub fn ensure_loaded(
         &mut self,
         outputs: &[(String, (f32, f32))],
@@ -354,9 +356,10 @@ impl SceneHost {
             .map(|shell| shell.files())
             .unwrap_or_default();
         loaded.extend(self.failed_files.iter().cloned());
-        // A shell cut off part way through a call starts over. There's no last one to keep should
-        // that fail, so bento's unix shell takes over from one of the user's then.
-        if self.shell.as_ref().is_some_and(Shell::cut_off) {
+        // A shell cut off part way through a call starts over, as one asked to does. There's no
+        // last one to keep should that fail, so bento's unix shell takes over from one of the
+        // user's then.
+        if std::mem::take(&mut self.reload) || self.shell.as_ref().is_some_and(Shell::cut_off) {
             self.shell = None;
             self.loaded_mtimes = None;
         }
@@ -756,6 +759,14 @@ impl SceneHost {
             None => (),
         }
         true
+    }
+
+    /// Starts the shell over on the next look, and lets go of the keyboard until then.
+    pub fn reload(&mut self) {
+        self.reload = true;
+        if let Some(shell) = &self.shell {
+            shell.scene.borrow_mut().wants_keyboard = false;
+        }
     }
 
     /// Whether the shell wants the keyboard.
@@ -2667,6 +2678,32 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_ne!(scene(&host), first, "loaded again");
         assert!(!shows(&host, "DP-1", "Popup"));
+        assert!(!host.wants_keyboard());
+    }
+
+    #[test]
+    fn reload_shell_starts_the_shell_over_and_lets_go_of_the_keyboard() {
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        let mut now = Instant::now();
+        settle(&mut host, &mut now);
+        let scene = |host: &SceneHost| Rc::as_ptr(&host.shell.as_ref().unwrap().scene);
+        let first = scene(&host);
+        host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
+        settle(&mut host, &mut now);
+        assert!(host.wants_keyboard());
+
+        host.reload();
+        assert!(!host.wants_keyboard(), "lets go straight away");
+        host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
+        settle(&mut host, &mut now);
+        assert_ne!(scene(&host), first, "loaded again");
+        assert!(!shows(
+            &host,
+            "DP-1",
+            "Search apps, or / for files and folders"
+        ));
         assert!(!host.wants_keyboard());
     }
 

@@ -1733,6 +1733,12 @@ impl State {
                     self.niri.a11y_announce_hotkey_overlay();
                 }
             }
+            Action::ReloadShell => {
+                if let Some(scene) = &mut self.niri.scene {
+                    scene.reload();
+                    self.niri.queue_redraw_all();
+                }
+            }
             // The shell's, bento's own or a program's.
             Action::ShellAction(name, args) => match &self.niri.scene {
                 Some(scene) => {
