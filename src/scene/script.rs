@@ -38,6 +38,8 @@ pub struct Shell {
     /// the clock on the wall, as in tests.
     clock: Rc<Cell<Instant>>,
     deadline: Rc<Cell<Option<Instant>>>,
+    /// Whether a call ran past its time and was cut off part way through.
+    cut_off: Rc<Cell<bool>>,
     dispatch: Persistent<Function<'static>>,
     context: Context,
     _runtime: Runtime,
@@ -149,8 +151,14 @@ impl Shell {
 
         let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
         let deadline_ = deadline.clone();
+        let cut_off = Rc::new(Cell::new(false));
+        let cut_off_ = cut_off.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
-            deadline_.get().is_some_and(|d| d < Instant::now())
+            let over = deadline_.get().is_some_and(|d| d < Instant::now());
+            if over {
+                cut_off_.set(true);
+            }
+            over
         })));
 
         let context = Context::full(&runtime).context("error creating the JS context")?;
@@ -472,6 +480,7 @@ impl Shell {
             timers,
             clock,
             deadline,
+            cut_off,
             dispatch: dispatch?,
             context,
             _runtime: runtime,
@@ -486,6 +495,9 @@ impl Shell {
 
     /// Hands the script an event, as JSON: `{ "type": ..., ... }`.
     pub fn send(&self, event: &serde_json::Value) {
+        if self.cut_off.get() {
+            return;
+        }
         self.deadline.set(Some(Instant::now() + CALL_TIME_LIMIT));
         let res = self.context.with(|ctx| -> anyhow::Result<()> {
             let dispatch = self.dispatch.clone().restore(&ctx)?;
@@ -498,6 +510,16 @@ impl Shell {
             Ok(())
         });
         self.deadline.set(None);
+        if self.cut_off.get() {
+            // Too slow, on a busy machine as much as in a loop: not a bug tests can catch. Cut
+            // off part way through, it may hold the keyboard for a popup that never finished, so
+            // it lets go of it and hears nothing more until the host loads it again.
+            warn!(
+                "the shell took longer than {CALL_TIME_LIMIT:?} handling {event}, and starts over"
+            );
+            self.scene.borrow_mut().wants_keyboard = false;
+            return;
+        }
         if let Err(err) = res {
             // A script that throws is a bug in bento's own shell, which tests catch.
             if cfg!(test) {
@@ -505,6 +527,12 @@ impl Shell {
             }
             warn!("the shell failed handling {event}: {err:?}");
         }
+    }
+
+    /// Whether a call ran past its time and was cut off part way through, which leaves the
+    /// shell in no state to go on.
+    pub fn cut_off(&self) -> bool {
+        self.cut_off.get()
     }
 
     /// The bento actions the shell asked to run since this was last asked.
