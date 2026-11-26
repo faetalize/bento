@@ -2665,7 +2665,8 @@ mod tests {
         assert_eq!(host.load_error, None);
         let mut now = Instant::now();
         settle(&mut host, &mut now);
-        let scene = |host: &SceneHost| Rc::as_ptr(&host.shell.as_ref().unwrap().scene);
+        // Held, so that the scene loaded again can't be put where it was.
+        let scene = |host: &SceneHost| host.shell.as_ref().unwrap().scene.clone();
         let first = scene(&host);
 
         host.shell_action("open", &[], Some(String::from("DP-1")));
@@ -2676,7 +2677,7 @@ mod tests {
         load(&mut host);
         settle(&mut host, &mut now);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_ne!(scene(&host), first, "loaded again");
+        assert!(!Rc::ptr_eq(&scene(&host), &first), "loaded again");
         assert!(!shows(&host, "DP-1", "Popup"));
         assert!(!host.wants_keyboard());
     }
@@ -2688,7 +2689,8 @@ mod tests {
         host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         let mut now = Instant::now();
         settle(&mut host, &mut now);
-        let scene = |host: &SceneHost| Rc::as_ptr(&host.shell.as_ref().unwrap().scene);
+        // Held, so that the scene loaded again can't be put where it was.
+        let scene = |host: &SceneHost| host.shell.as_ref().unwrap().scene.clone();
         let first = scene(&host);
         host.shell_action("toggle-launcher", &[], Some(String::from("DP-1")));
         settle(&mut host, &mut now);
@@ -2698,7 +2700,7 @@ mod tests {
         assert!(!host.wants_keyboard(), "lets go straight away");
         host.ensure_loaded(&outputs, None, UNIX, None, serde_json::json!({ "gaps": 8 }));
         settle(&mut host, &mut now);
-        assert_ne!(scene(&host), first, "loaded again");
+        assert!(!Rc::ptr_eq(&scene(&host), &first), "loaded again");
         assert!(!shows(
             &host,
             "DP-1",
