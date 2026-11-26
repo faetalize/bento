@@ -2618,7 +2618,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_cut_off_part_way_through_a_call_lets_go_of_the_keyboard_and_starts_over() {
+    fn a_cut_off_shell_lets_go_of_the_keyboard() {
         let dir = std::env::temp_dir().join(format!("bento-cut-off-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let main = dir.join("main.tsx");
