@@ -2670,6 +2670,41 @@ mod tests {
         assert!(!host.wants_keyboard());
     }
 
+    #[test]
+    fn a_call_kept_waiting_by_a_busy_machine_isnt_cut_off() {
+        let dir = std::env::temp_dir().join(format!("bento-kept-waiting-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main.tsx");
+        // Off the CPU for longer than a call may take, then busy long enough to be timed.
+        std::fs::write(
+            &main,
+            "import { onAction } from \"bento\";\n\
+             export default () => {\n\
+             onAction(\"wait\", () => {\n\
+             (globalThis as any).__bento.sleep(400);\n\
+             for (let i = 0; i < 200000; i++) {}\n\
+             });\n\
+             return null;\n\
+             };\n",
+        )
+        .unwrap();
+        let mut host = SceneHost::default();
+        let outputs = [(String::from("DP-1"), (1920., 1080.))];
+        let entry = main.to_string_lossy().into_owned();
+        host.ensure_loaded(
+            &outputs,
+            None,
+            &entry,
+            None,
+            serde_json::json!({ "gaps": 8 }),
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(host.load_error, None);
+
+        host.shell_action("wait", &[], Some(String::from("DP-1")));
+        assert!(!host.shell.as_ref().unwrap().cut_off());
+    }
+
     /// Shells that use it keep working.
     #[test]
     fn minimap_says_where_the_active_workspaces_windows_are() {
