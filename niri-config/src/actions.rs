@@ -50,6 +50,11 @@ pub fn native_actions() -> Vec<Declaration> {
             vec![],
         ),
         action(
+            "reload-shell",
+            "Start bento's own shell over, which lets go of the keyboard if it holds it.",
+            vec![],
+        ),
+        action(
             "shell-action",
             "Run one of the shell's own actions, by the name the module that declares it gives it, with what it takes after the name.",
             vec![required("name", Type::String, "The action's name.")],

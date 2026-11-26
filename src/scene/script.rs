@@ -23,7 +23,16 @@ use super::settings::Settings;
 use super::{ImageSource, Scene};
 
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+/// How long a call may run, in the time bento's thread spends on the CPU: a script stuck in a
+/// loop runs past it, while one a busy machine keeps waiting doesn't.
 const CALL_TIME_LIMIT: Duration = Duration::from_millis(200);
+
+/// The time this thread has spent on the CPU, which calls are timed by.
+fn thread_time() -> Duration {
+    use smithay::reexports::rustix::time::{clock_gettime, ClockId};
+    let ts = clock_gettime(ClockId::ThreadCPUTime);
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
 
 /// A loaded shell: its scene, and the script that drives it.
 pub struct Shell {
@@ -37,7 +46,10 @@ pub struct Shell {
     /// The time the host last moved the shell on to, which timers count from when it's ahead of
     /// the clock on the wall, as in tests.
     clock: Rc<Cell<Instant>>,
-    deadline: Rc<Cell<Option<Instant>>>,
+    /// When the call that runs has to be done by, in [`thread_time`].
+    deadline: Rc<Cell<Option<Duration>>>,
+    /// Whether a call ran past its time and was cut off part way through.
+    cut_off: Rc<Cell<bool>>,
     dispatch: Persistent<Function<'static>>,
     context: Context,
     _runtime: Runtime,
@@ -147,10 +159,16 @@ impl Shell {
         };
         runtime.set_loader(loader.clone(), loader);
 
-        let deadline: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+        let deadline: Rc<Cell<Option<Duration>>> = Rc::new(Cell::new(None));
         let deadline_ = deadline.clone();
+        let cut_off = Rc::new(Cell::new(false));
+        let cut_off_ = cut_off.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
-            deadline_.get().is_some_and(|d| d < Instant::now())
+            let over = deadline_.get().is_some_and(|d| d < thread_time());
+            if over {
+                cut_off_.set(true);
+            }
+            over
         })));
 
         let context = Context::full(&runtime).context("error creating the JS context")?;
@@ -161,7 +179,7 @@ impl Shell {
         let apps: Rc<RefCell<super::apps::Apps>> = Rc::default();
         let next_timer = Rc::new(Cell::new(0u32));
 
-        deadline.set(Some(Instant::now() + CALL_TIME_LIMIT * 5));
+        deadline.set(Some(thread_time() + CALL_TIME_LIMIT * 5));
         let dispatch = context.with(|ctx| -> anyhow::Result<_> {
             let native = rquickjs::Object::new(ctx.clone())?;
             let js = |err: rquickjs::Error| anyhow!("{err}");
@@ -438,6 +456,15 @@ impl Shell {
                 )
                 .map_err(js)?,
             )?;
+            // Keeps bento waiting, as a busy machine does, for tests.
+            #[cfg(test)]
+            native.set(
+                "sleep",
+                Function::new(ctx.clone(), |ms: u32| {
+                    std::thread::sleep(Duration::from_millis(u64::from(ms)));
+                })
+                .map_err(js)?,
+            )?;
             ctx.globals().set("__bento", native)?;
 
             // The shell's root component, mounted by bento's renderer.
@@ -472,6 +499,7 @@ impl Shell {
             timers,
             clock,
             deadline,
+            cut_off,
             dispatch: dispatch?,
             context,
             _runtime: runtime,
@@ -486,7 +514,10 @@ impl Shell {
 
     /// Hands the script an event, as JSON: `{ "type": ..., ... }`.
     pub fn send(&self, event: &serde_json::Value) {
-        self.deadline.set(Some(Instant::now() + CALL_TIME_LIMIT));
+        if self.cut_off.get() {
+            return;
+        }
+        self.deadline.set(Some(thread_time() + CALL_TIME_LIMIT));
         let res = self.context.with(|ctx| -> anyhow::Result<()> {
             let dispatch = self.dispatch.clone().restore(&ctx)?;
             dispatch
@@ -498,6 +529,13 @@ impl Shell {
             Ok(())
         });
         self.deadline.set(None);
+        if self.cut_off.get() {
+            // Cut off part way through, it may hold the keyboard for a popup that never finished,
+            // so it lets go of it and hears nothing more until the host loads it again.
+            warn!("the shell ran for over {CALL_TIME_LIMIT:?} handling {event}, and starts over");
+            self.scene.borrow_mut().wants_keyboard = false;
+            return;
+        }
         if let Err(err) = res {
             // A script that throws is a bug in bento's own shell, which tests catch.
             if cfg!(test) {
@@ -505,6 +543,12 @@ impl Shell {
             }
             warn!("the shell failed handling {event}: {err:?}");
         }
+    }
+
+    /// Whether a call ran past its time and was cut off part way through, which leaves the
+    /// shell in no state to go on.
+    pub fn cut_off(&self) -> bool {
+        self.cut_off.get()
     }
 
     /// The bento actions the shell asked to run since this was last asked.

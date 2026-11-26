@@ -369,6 +369,8 @@ What a shell can use, an editor shows: bento keeps a copy of its modules, its sh
 
 `bento msg shell` prints the running shell's settings and actions.
 
+A call the shell spends more than 200 ms of CPU time on, like a script stuck in a loop, is cut off, and bento starts the shell over, since the call left it half-way through; time a busy machine keeps bento waiting doesn't count. `reload-shell`, on <kbd>Mod</kbd><kbd>Shift</kbd><kbd>Escape</kbd>, starts it over when you ask, and lets go of the keyboard should the shell ever keep it; it's `bento msg action reload-shell` from a terminal.
+
 A shell program named with `shell "…"` keeps running alongside it.
 
 To work on bento's own shell and its modules, point bento at their folder; each file there is read in place of the one built in with its path, like `modules/ui.tsx`, and they're loaded again whenever they change:
